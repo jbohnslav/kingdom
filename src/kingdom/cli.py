@@ -6,7 +6,11 @@ Usage example:
     kd --help
 """
 
+from pathlib import Path
+
 import typer
+
+from kingdom.state import ensure_run_layout, set_current_run
 
 app = typer.Typer(
     name="kd",
@@ -22,7 +26,10 @@ def not_implemented(command: str) -> None:
 
 @app.command(help="Initialize a run, state, and tmux session.")
 def start(feature: str = typer.Argument(..., help="Feature name for the run.")) -> None:
-    not_implemented("kd start")
+    base = Path.cwd()
+    paths = ensure_run_layout(base, feature)
+    set_current_run(base, feature)
+    typer.echo(f"Initialized run: {paths['run_root']}")
 
 
 @app.command(help="Attach to the Hand (persistent chat window).")
