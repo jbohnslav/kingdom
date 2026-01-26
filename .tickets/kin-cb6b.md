@@ -1,6 +1,6 @@
 ---
 id: kin-cb6b
-status: open
+status: closed
 deps: [kin-ac22, kin-c6d0, kin-1ecc, kin-43a7]
 links: []
 created: 2026-01-25T22:53:48Z

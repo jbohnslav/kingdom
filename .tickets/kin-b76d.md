@@ -1,6 +1,6 @@
 ---
 id: kin-b76d
-status: open
+status: closed
 deps: [kin-2cbb, kin-c6d0, kin-49f1, kin-43a7]
 links: []
 created: 2026-01-25T22:53:39Z

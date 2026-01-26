@@ -1,6 +1,6 @@
 ---
 id: kin-f968
-status: open
+status: closed
 deps: [kin-1ecc]
 links: []
 created: 2026-01-25T22:53:23Z

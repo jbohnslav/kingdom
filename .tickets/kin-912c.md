@@ -1,6 +1,6 @@
 ---
 id: kin-912c
-status: open
+status: closed
 deps: [kin-ac22, kin-43a7]
 links: []
 created: 2026-01-25T22:53:44Z

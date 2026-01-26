@@ -1,6 +1,6 @@
 ---
 id: kin-96ab
-status: open
+status: closed
 deps: [kin-d0b5, kin-2cbb, kin-f968, kin-43a7]
 links: []
 created: 2026-01-25T22:53:34Z

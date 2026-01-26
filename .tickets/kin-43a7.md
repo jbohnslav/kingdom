@@ -1,6 +1,6 @@
 ---
 id: kin-43a7
-status: open
+status: closed
 deps: [kin-d0b5, kin-2cbb, kin-c6d0, kin-f968]
 links: []
 created: 2026-01-25T22:53:29Z

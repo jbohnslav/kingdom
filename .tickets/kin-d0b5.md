@@ -1,6 +1,6 @@
 ---
 id: kin-d0b5
-status: in_progress
+status: closed
 deps: [kin-ac22]
 links: []
 created: 2026-01-25T22:52:58Z

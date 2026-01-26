@@ -1,6 +1,6 @@
 ---
 id: kin-295e
-status: open
+status: closed
 deps: [kin-2cbb, kin-c6d0]
 links: []
 created: 2026-01-25T22:53:09Z

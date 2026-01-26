@@ -1,6 +1,6 @@
 ---
 id: kin-2cbb
-status: open
+status: closed
 deps: [kin-ac22]
 links: []
 created: 2026-01-25T22:53:02Z

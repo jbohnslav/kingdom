@@ -1,6 +1,6 @@
 ---
 id: kin-1ecc
-status: open
+status: closed
 deps: [kin-d0b5, kin-49f1]
 links: []
 created: 2026-01-25T22:53:19Z
