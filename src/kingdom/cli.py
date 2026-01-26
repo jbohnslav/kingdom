@@ -113,9 +113,21 @@ def council() -> None:
 
     target = f"{feature}:council"
     panes = sorted(list_panes(server, target), key=int)
-    commands = ["claude", "codex", "agent", "claude"]
-    for pane, command in zip(panes, commands):
+    if len(panes) < 4:
+        raise RuntimeError("Council layout requires 4 panes")
+
+    hand_pane = panes[0]
+    council_panes = panes[1:4]
+    council_commands = ["claude", "codex", "agent"]
+
+    send_keys(server, f"{target}.{hand_pane}", "HAND=1 claude")
+    for pane, command in zip(council_panes, council_commands):
         send_keys(server, f"{target}.{pane}", command)
+
+    typer.echo(
+        f"Hand pane: {hand_pane}. Council panes: "
+        + ", ".join(f"{pane}:{cmd}" for pane, cmd in zip(council_panes, council_commands))
+    )
 
     attach_window(server, feature, "council")
 
