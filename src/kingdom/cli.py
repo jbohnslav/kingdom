@@ -46,7 +46,7 @@ def not_implemented(command: str) -> None:
 
 
 def hand_command() -> str:
-    return "claude --model opus-4.5"
+    return "claude --model opus"
 
 
 def ensure_feature_branch(feature: str) -> None:
