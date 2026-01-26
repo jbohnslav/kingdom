@@ -17,3 +17,20 @@
    ln -sf "$PWD/ticket" ~/.local/bin/ticket
    ln -sf "$PWD/ticket" ~/.local/bin/tk
    ```
+
+## MVP quick start
+
+```sh
+uv run kd start example-feature
+uv run kd chat
+uv run kd council
+uv run kd plan
+uv run kd plan --apply
+uv run kd peasant <ticket-id>
+```
+
+## Smoke check
+
+```sh
+scripts/smoke.sh
+```
