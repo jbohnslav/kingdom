@@ -26,8 +26,10 @@ from kingdom.tmux import (
     ensure_council_layout,
     ensure_session,
     ensure_window,
+    get_pane_command,
     list_panes,
     list_windows,
+    should_send_command,
     send_keys,
 )
 
@@ -120,9 +122,15 @@ def council() -> None:
     council_panes = panes[1:4]
     council_commands = ["claude", "codex", "agent"]
 
-    send_keys(server, f"{target}.{hand_pane}", "HAND=1 claude")
+    hand_target = f"{target}.{hand_pane}"
+    hand_current = get_pane_command(server, hand_target)
+    if should_send_command(hand_current):
+        send_keys(server, hand_target, "HAND=1 claude")
     for pane, command in zip(council_panes, council_commands):
-        send_keys(server, f"{target}.{pane}", command)
+        pane_target = f"{target}.{pane}"
+        current = get_pane_command(server, pane_target)
+        if should_send_command(current):
+            send_keys(server, pane_target, command)
 
     typer.echo(
         f"Hand pane: {hand_pane}. Council panes: "

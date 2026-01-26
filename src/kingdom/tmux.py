@@ -91,6 +91,18 @@ def send_keys(server: str, target: str, text: str) -> None:
     run_tmux(server, ["send-keys", "-t", target, text, "Enter"])
 
 
+def get_pane_command(server: str, target: str) -> str:
+    result = run_tmux(server, ["display-message", "-p", "-t", target, "#{pane_current_command}"])
+    return result.stdout.strip()
+
+
+def should_send_command(current_command: str) -> bool:
+    normalized = current_command.strip().lower()
+    if normalized == "":
+        return True
+    return normalized in {"zsh", "bash", "sh", "fish"}
+
+
 def attach_window(server: str, session: str, window: str | None = None) -> None:
     target = session if window is None else f"{session}:{window}"
     run_tmux(server, ["attach", "-t", target])
