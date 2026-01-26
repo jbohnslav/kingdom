@@ -4,7 +4,7 @@
 Deliver the minimum useful workflow: start a feature run, talk to the Hand in a persistent tmux window, generate an editable `plan.md` via the Council, convert approved plan items into `tk` markdown tickets, and hand off a single ticket to a Peasant worktree.
 
 ## Tickets
-- [ ] T1: Add `kd` CLI skeleton + command routing
+- [x] T1: Add `kd` CLI skeleton + command routing
   - Priority: 0
   - Depends on: none
   - Description:
@@ -14,7 +14,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd --help` works and lists MVP commands.
     - [ ] Each MVP command has a help/usage string and returns a non-zero exit code on bad input.
 
-- [ ] T2: Implement `.kd/` run state layout + read/write helpers
+- [x] T2: Implement `.kd/` run state layout + read/write helpers
   - Priority: 0
   - Depends on: T1
   - Description:
@@ -28,7 +28,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] Running `kd start <feature>` creates `.kd/` and `.kd/runs/<feature>/` consistently.
     - [ ] Missing/invalid `.kd/current` yields a clear error for commands that require an active run.
 
-- [ ] T3: Add tmux orchestration helpers (server/session/windows)
+- [x] T3: Add tmux orchestration helpers (server/session/windows)
   - Priority: 0
   - Depends on: T1
   - Description:
@@ -42,7 +42,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd start <feature>` creates (or reuses) a tmux session without clobbering existing unrelated sessions.
     - [ ] `kd attach hand` (once implemented) reliably attaches to the correct tmux server/session for the current repo/run.
 
-- [ ] T4: Implement `kd start <feature>` (initialize run + tmux session)
+- [x] T4: Implement `kd start <feature>` (initialize run + tmux session)
   - Priority: 0
   - Depends on: T2, T3
   - Description:
@@ -55,7 +55,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd start oauth-refresh` creates `.kd/runs/oauth-refresh/` and sets `.kd/current`.
     - [ ] A tmux session exists with a `hand` window after `kd start`.
 
-- [ ] T5: Implement `kd chat` (persistent Hand window)
+- [x] T5: Implement `kd chat` (persistent Hand window)
   - Priority: 0
   - Depends on: T3, T4
   - Description:
@@ -68,7 +68,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd chat` attaches to the same persistent Hand window across invocations.
     - [ ] Hand output is written to `.kd/runs/<feature>/logs/hand.jsonl` (or a clearly-documented MVP alternative).
 
-- [ ] T6: Implement `kd council` (claude/codex/agent + synthesis panes)
+- [x] T6: Implement `kd council` (claude/codex/agent + synthesis panes)
   - Priority: 1
   - Depends on: T3, T4
   - Description:
@@ -81,7 +81,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd council` opens a `council` window with the expected panes.
     - [ ] Each pane runs its configured CLI command (or clearly errors with actionable guidance if the CLI is missing).
 
-- [ ] T7: Implement `kd plan` (Council-backed plan drafting into `plan.md`)
+- [x] T7: Implement `kd plan` (Council-backed plan drafting into `plan.md`)
   - Priority: 0
   - Depends on: T2, T6
   - Description:
@@ -96,7 +96,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd plan` produces `.kd/runs/<feature>/plan.md` in the documented format.
     - [ ] Re-running `kd plan` updates the existing plan (and uses `## Revisions` after dev starts, per MVP policy).
 
-- [ ] T8: Implement ticket creation from `plan.md` via `tk` (markdown tickets only)
+- [x] T8: Implement ticket creation from `plan.md` via `tk` (markdown tickets only)
   - Priority: 0
   - Depends on: T7
   - Description:
@@ -109,7 +109,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] With a sample `plan.md`, the system can generate a dry-run list of `tk` commands.
     - [ ] With approval, tickets are created as markdown files and dependencies are applied.
 
-- [ ] T9: Implement `kd peasant <ticket>` (single-ticket worktree + tmux window)
+- [x] T9: Implement `kd peasant <ticket>` (single-ticket worktree + tmux window)
   - Priority: 0
   - Depends on: T2, T3, T4, T8
   - Description:
@@ -121,7 +121,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd peasant <ticket-id>` creates a worktree and starts `peasant-1` in tmux.
     - [ ] The Peasant runs in the correct working directory (the ticket worktree).
 
-- [ ] T10: Implement `kd status` (current phase + tickets + tmux overview)
+- [x] T10: Implement `kd status` (current phase + tickets + tmux overview)
   - Priority: 1
   - Depends on: T2, T3, T8, T9
   - Description:
@@ -132,7 +132,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
   - Acceptance:
     - [ ] `kd status` is useful without attaching to tmux: it reports what's running and what the next action is.
 
-- [ ] T11: Implement `kd attach <target>` (hand/council/peasant-1)
+- [x] T11: Implement `kd attach <target>` (hand/council/peasant-1)
   - Priority: 1
   - Depends on: T3, T4, T6, T9
   - Description:
@@ -142,7 +142,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
   - Acceptance:
     - [ ] `kd attach hand` / `kd attach council` / `kd attach peasant-1` attach reliably for the current run.
 
-- [ ] T12: Implement `kd dev` as a reserved/stub command (MVP-safe behavior)
+- [x] T12: Implement `kd dev` as a reserved/stub command (MVP-safe behavior)
   - Priority: 2
   - Depends on: T1, T9
   - Description:
@@ -153,7 +153,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd dev` does not start parallel Peasants or introduce non-MVP behavior.
     - [ ] The output clearly tells the user what to do in MVP (`kd peasant <ticket>`).
 
-- [ ] T13: MVP docs + smoke tests
+- [x] T13: MVP docs + smoke tests
   - Priority: 2
   - Depends on: T1, T4, T7, T9
   - Description:
@@ -164,4 +164,3 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
       - `kd peasant` creates a worktree path deterministically (can be stubbed if tmux/agents absent in CI)
   - Acceptance:
     - [ ] A new developer can follow docs to run through: `kd start` -> `kd chat` -> `kd plan` -> `tk` tickets -> `kd peasant`.
-
