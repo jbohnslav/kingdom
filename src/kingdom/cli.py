@@ -27,6 +27,7 @@ from kingdom.tmux import (
     ensure_session,
     ensure_window,
     list_panes,
+    list_windows,
     send_keys,
 )
 
@@ -225,17 +226,56 @@ def peasant(ticket: str = typer.Argument(..., help="Ticket id to execute.")) -> 
 
 @app.command(help="Reserved for broader develop phase (MVP stub).")
 def dev(ticket: str | None = typer.Argument(None, help="Optional ticket id.")) -> None:
-    not_implemented("kd dev")
+    if ticket:
+        typer.echo("MVP uses `kd peasant <ticket>` for single-ticket execution.")
+        raise typer.Exit(code=1)
+    typer.echo("`kd dev` is reserved. Use `kd peasant <ticket>` in the MVP.")
 
 
 @app.command(help="Show current phase, run, and ticket status.")
 def status() -> None:
-    not_implemented("kd status")
+    base = Path.cwd()
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)
+
+    paths = ensure_run_layout(base, feature)
+    state = read_json(paths["state_json"])
+    typer.echo(f"Run: {feature}")
+    if state:
+        typer.echo(f"State: {state}")
+
+    server = derive_server_name(base)
+    try:
+        windows = list_windows(server, feature)
+        typer.echo(f"Tmux windows: {', '.join(windows) if windows else 'none'}")
+    except RuntimeError as exc:
+        typer.echo(f"Tmux: {exc}")
+
+    tickets = state.get("tickets", {})
+    if tickets:
+        typer.echo("Tickets:")
+        for plan_id, ticket_id in tickets.items():
+            typer.echo(f"  {plan_id} -> {ticket_id}")
 
 
 @app.command(help="Attach to hand/council/peasant windows.")
 def attach(target: str = typer.Argument(..., help="Target window name.")) -> None:
-    not_implemented("kd attach")
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    server = derive_server_name(base)
+    ensure_session(server, feature)
+
+    windows = list_windows(server, feature)
+    if target not in windows:
+        typer.echo(
+            f"Window '{target}' not found in session '{feature}'. Available: {', '.join(windows)}"
+        )
+        raise typer.Exit(code=1)
+
+    attach_window(server, feature, target)
 
 
 def main() -> None:
