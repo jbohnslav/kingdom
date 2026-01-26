@@ -20,19 +20,41 @@ def run_tmux(server: str, args: Iterable[str]) -> subprocess.CompletedProcess[st
 
 
 def list_sessions(server: str) -> list[str]:
-    result = run_tmux(server, ["list-sessions", "-F", "#{session_name}"])
+    try:
+        result = run_tmux(server, ["list-sessions", "-F", "#{session_name}"])
+    except RuntimeError as exc:
+        message = str(exc)
+        if "No such file or directory" in message:
+            return []
+        raise
     names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return names
 
 
 def list_windows(server: str, session: str) -> list[str]:
-    result = run_tmux(server, ["list-windows", "-t", session, "-F", "#{window_name}"])
+    try:
+        result = run_tmux(
+            server, ["list-windows", "-t", session, "-F", "#{window_name}"]
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "No such file or directory" in message:
+            return []
+        raise
     names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return names
 
 
 def list_panes(server: str, target: str) -> list[str]:
-    result = run_tmux(server, ["list-panes", "-t", target, "-F", "#{pane_index}"])
+    try:
+        result = run_tmux(
+            server, ["list-panes", "-t", target, "-F", "#{pane_index}"]
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "No such file or directory" in message:
+            return []
+        raise
     names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return names
 
