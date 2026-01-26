@@ -45,6 +45,10 @@ def not_implemented(command: str) -> None:
     raise typer.Exit(code=1)
 
 
+def hand_command() -> str:
+    return "claude --model opus-4.5"
+
+
 def ensure_feature_branch(feature: str) -> None:
     result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -125,7 +129,7 @@ def council() -> None:
     hand_target = f"{target}.{hand_pane}"
     hand_current = get_pane_command(server, hand_target)
     if should_send_command(hand_current):
-        send_keys(server, hand_target, "HAND=1 claude")
+        send_keys(server, hand_target, f"HAND=1 {hand_command()}")
     for pane, command in zip(council_panes, council_commands):
         pane_target = f"{target}.{pane}"
         current = get_pane_command(server, pane_target)
