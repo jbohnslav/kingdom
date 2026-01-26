@@ -11,8 +11,13 @@ import subprocess
 
 import typer
 
-from kingdom.state import ensure_run_layout, set_current_run
-from kingdom.tmux import derive_server_name, ensure_session, ensure_window
+from kingdom.state import ensure_run_layout, logs_root, resolve_current_run, set_current_run
+from kingdom.tmux import (
+    attach_window,
+    derive_server_name,
+    ensure_session,
+    ensure_window,
+)
 
 app = typer.Typer(
     name="kd",
@@ -66,7 +71,18 @@ def start(feature: str = typer.Argument(..., help="Feature name for the run.")) 
 
 @app.command(help="Attach to the Hand (persistent chat window).")
 def chat() -> None:
-    not_implemented("kd chat")
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    ensure_run_layout(base, feature)
+
+    log_path = logs_root(base, feature) / "hand.jsonl"
+    if not log_path.exists():
+        log_path.write_text("", encoding="utf-8")
+
+    server = derive_server_name(base)
+    ensure_session(server, feature)
+    ensure_window(server, feature, "hand")
+    attach_window(server, feature, "hand")
 
 
 @app.command(help="Open council panes for claude/codex/agent plus synthesis.")
