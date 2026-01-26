@@ -43,10 +43,13 @@ def ensure_session(server: str, session: str) -> None:
     run_tmux(server, ["new-session", "-d", "-s", session])
 
 
-def ensure_window(server: str, session: str, window: str) -> None:
+def ensure_window(server: str, session: str, window: str, cwd: Path | None = None) -> None:
     if window in list_windows(server, session):
         return
-    run_tmux(server, ["new-window", "-t", session, "-n", window])
+    command = ["new-window", "-t", session, "-n", window]
+    if cwd is not None:
+        command.extend(["-c", str(cwd)])
+    run_tmux(server, command)
 
 
 def ensure_council_layout(server: str, session: str, window: str = "council") -> None:

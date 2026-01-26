@@ -195,7 +195,32 @@ def plan(
 
 @app.command(help="Start a Peasant for the given ticket.")
 def peasant(ticket: str = typer.Argument(..., help="Ticket id to execute.")) -> None:
-    not_implemented("kd peasant")
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    paths = ensure_run_layout(base, feature)
+    ensure_feature_branch(feature)
+
+    worktrees_root = paths["state_root"] / "worktrees" / feature
+    worktree_path = worktrees_root / "peasant-1"
+    worktrees_root.mkdir(parents=True, exist_ok=True)
+
+    if not worktree_path.exists():
+        result = subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), feature],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "git worktree add failed")
+
+    server = derive_server_name(base)
+    ensure_session(server, feature)
+    ensure_window(server, feature, "peasant-1", cwd=worktree_path)
+    send_keys(server, f"{feature}:peasant-1", "codex")
+
+    state = read_json(paths["state_json"])
+    state["peasant"] = {"ticket": ticket, "worktree": str(worktree_path)}
+    write_json(paths["state_json"], state)
 
 
 @app.command(help="Reserved for broader develop phase (MVP stub).")
