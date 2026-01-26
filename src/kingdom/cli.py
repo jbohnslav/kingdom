@@ -7,10 +7,12 @@ Usage example:
 """
 
 from pathlib import Path
+import subprocess
 
 import typer
 
 from kingdom.state import ensure_run_layout, set_current_run
+from kingdom.tmux import derive_server_name, ensure_session, ensure_window
 
 app = typer.Typer(
     name="kd",
@@ -24,12 +26,42 @@ def not_implemented(command: str) -> None:
     raise typer.Exit(code=1)
 
 
+def ensure_feature_branch(feature: str) -> None:
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Failed to read git branch")
+
+    current = result.stdout.strip()
+    if current == feature:
+        return
+
+    if current in {"main", "master"}:
+        checkout = subprocess.run(["git", "checkout", "-b", feature], text=True)
+        if checkout.returncode != 0:
+            raise RuntimeError(f"Failed to create branch '{feature}'")
+        typer.echo(f"Created branch: {feature}")
+        return
+
+    typer.echo(
+        f"Warning: current branch '{current}' does not match feature '{feature}'."
+    )
+
+
 @app.command(help="Initialize a run, state, and tmux session.")
 def start(feature: str = typer.Argument(..., help="Feature name for the run.")) -> None:
     base = Path.cwd()
     paths = ensure_run_layout(base, feature)
     set_current_run(base, feature)
+    ensure_feature_branch(feature)
+    server = derive_server_name(base)
+    ensure_session(server, feature)
+    ensure_window(server, feature, "hand")
     typer.echo(f"Initialized run: {paths['run_root']}")
+    typer.echo(f"Tmux: server={server} session={feature} window=hand")
 
 
 @app.command(help="Attach to the Hand (persistent chat window).")
