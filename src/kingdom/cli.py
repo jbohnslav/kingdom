@@ -113,7 +113,29 @@ def council() -> None:
 
 @app.command(help="Draft or iterate the current plan.")
 def plan() -> None:
-    not_implemented("kd plan")
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    paths = ensure_run_layout(base, feature)
+    plan_path = paths["plan_md"]
+    if plan_path.read_text(encoding="utf-8").strip() == "":
+        template = (
+            f"# Plan: {feature}\n\n"
+            "## Goal\n"
+            "<short goal>\n\n"
+            "## Tickets\n"
+            "- [ ] T1: <title>\n"
+            "  - Priority: 2\n"
+            "  - Depends on: <none|ticket ids>\n"
+            "  - Description: ...\n"
+            "  - Acceptance:\n"
+            "    - [ ] ...\n\n"
+            "## Revisions\n"
+            "(append-only after dev starts)\n"
+        )
+        plan_path.write_text(template, encoding="utf-8")
+        typer.echo(f"Created plan template at {plan_path}")
+        return
+    typer.echo(f"Plan already exists at {plan_path}")
 
 
 @app.command(help="Start a Peasant for the given ticket.")
