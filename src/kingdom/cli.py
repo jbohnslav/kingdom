@@ -11,7 +11,15 @@ import subprocess
 
 import typer
 
-from kingdom.state import ensure_run_layout, logs_root, resolve_current_run, set_current_run
+from kingdom.plan import parse_plan_tickets
+from kingdom.state import (
+    ensure_run_layout,
+    logs_root,
+    read_json,
+    resolve_current_run,
+    set_current_run,
+    write_json,
+)
 from kingdom.tmux import (
     attach_window,
     derive_server_name,
@@ -112,7 +120,11 @@ def council() -> None:
 
 
 @app.command(help="Draft or iterate the current plan.")
-def plan() -> None:
+def plan(
+    apply: bool = typer.Option(
+        False, "--apply", help="Create tk tickets from plan.md."
+    ),
+) -> None:
     base = Path.cwd()
     feature = resolve_current_run(base)
     paths = ensure_run_layout(base, feature)
@@ -135,7 +147,50 @@ def plan() -> None:
         plan_path.write_text(template, encoding="utf-8")
         typer.echo(f"Created plan template at {plan_path}")
         return
-    typer.echo(f"Plan already exists at {plan_path}")
+
+    if not apply:
+        typer.echo(f"Plan already exists at {plan_path}")
+        typer.echo("Use --apply to create tk tickets from the plan.")
+        return
+
+    tickets = parse_plan_tickets(plan_path.read_text(encoding="utf-8"))
+    if not tickets:
+        raise RuntimeError("No tickets found in plan.md")
+
+    created: dict[str, str] = {}
+    for ticket in tickets:
+        args = [
+            "tk",
+            "create",
+            ticket["title"],
+            "-p",
+            str(ticket["priority"]),
+        ]
+        if ticket["description"]:
+            args.extend(["-d", ticket["description"]])
+        acceptance = "\n".join(ticket["acceptance"]).strip()
+        if acceptance:
+            args.extend(["--acceptance", acceptance])
+
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "tk create failed")
+
+        ticket_id = result.stdout.strip()
+        created[ticket["plan_id"]] = ticket_id
+        typer.echo(f"Created ticket {ticket_id} for {ticket['plan_id']}")
+
+    for ticket in tickets:
+        ticket_id = created.get(ticket["plan_id"])
+        for dep in ticket["depends_on"]:
+            dep_id = created.get(dep, dep)
+            result = subprocess.run(["tk", "dep", ticket_id, dep_id], text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"tk dep failed for {ticket_id} -> {dep_id}")
+
+    state = read_json(paths["state_json"])
+    state["tickets"] = {**state.get("tickets", {}), **created}
+    write_json(paths["state_json"], state)
 
 
 @app.command(help="Start a Peasant for the given ticket.")
