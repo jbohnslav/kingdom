@@ -15,8 +15,11 @@ from kingdom.state import ensure_run_layout, logs_root, resolve_current_run, set
 from kingdom.tmux import (
     attach_window,
     derive_server_name,
+    ensure_council_layout,
     ensure_session,
     ensure_window,
+    list_panes,
+    send_keys,
 )
 
 app = typer.Typer(
@@ -87,7 +90,25 @@ def chat() -> None:
 
 @app.command(help="Open council panes for claude/codex/agent plus synthesis.")
 def council() -> None:
-    not_implemented("kd council")
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    ensure_run_layout(base, feature)
+
+    log_path = logs_root(base, feature) / "council.jsonl"
+    if not log_path.exists():
+        log_path.write_text("", encoding="utf-8")
+
+    server = derive_server_name(base)
+    ensure_session(server, feature)
+    ensure_council_layout(server, feature)
+
+    target = f"{feature}:council"
+    panes = sorted(list_panes(server, target), key=int)
+    commands = ["claude", "codex", "agent", "claude"]
+    for pane, command in zip(panes, commands):
+        send_keys(server, f"{target}.{pane}", command)
+
+    attach_window(server, feature, "council")
 
 
 @app.command(help="Draft or iterate the current plan.")

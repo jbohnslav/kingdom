@@ -31,6 +31,12 @@ def list_windows(server: str, session: str) -> list[str]:
     return names
 
 
+def list_panes(server: str, target: str) -> list[str]:
+    result = run_tmux(server, ["list-panes", "-t", target, "-F", "#{pane_index}"])
+    names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return names
+
+
 def ensure_session(server: str, session: str) -> None:
     if session in list_sessions(server):
         return
@@ -41,6 +47,23 @@ def ensure_window(server: str, session: str, window: str) -> None:
     if window in list_windows(server, session):
         return
     run_tmux(server, ["new-window", "-t", session, "-n", window])
+
+
+def ensure_council_layout(server: str, session: str, window: str = "council") -> None:
+    ensure_window(server, session, window)
+    target = f"{session}:{window}"
+    panes = list_panes(server, target)
+    if len(panes) >= 4:
+        return
+
+    run_tmux(server, ["split-window", "-t", target, "-h"])
+    run_tmux(server, ["split-window", "-t", target, "-v"])
+    run_tmux(server, ["split-window", "-t", f"{target}.1", "-v"])
+    run_tmux(server, ["select-layout", "-t", target, "tiled"])
+
+
+def send_keys(server: str, target: str, text: str) -> None:
+    run_tmux(server, ["send-keys", "-t", target, text, "Enter"])
 
 
 def attach_window(server: str, session: str, window: str | None = None) -> None:
