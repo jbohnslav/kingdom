@@ -37,6 +37,11 @@ def sessions_root(base: Path, feature: str) -> Path:
     return run_root(base, feature) / "sessions"
 
 
+def hand_session_path(base: Path, feature: str) -> Path:
+    """Path to the Hand's session file."""
+    return sessions_root(base, feature) / "hand.session"
+
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
