@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Iterable
+import os
 
 
 def derive_server_name(base: Path) -> str:
@@ -78,12 +79,13 @@ def ensure_council_layout(server: str, session: str, window: str = "council") ->
     ensure_window(server, session, window)
     target = f"{session}:{window}"
     panes = list_panes(server, target)
-    if len(panes) >= 4:
+    if len(panes) >= 3:
         return
 
-    run_tmux(server, ["split-window", "-t", target, "-h"])
-    run_tmux(server, ["split-window", "-t", target, "-v"])
-    run_tmux(server, ["split-window", "-t", f"{target}.1", "-v"])
+    if len(panes) < 2:
+        run_tmux(server, ["split-window", "-t", target, "-h"])
+    if len(list_panes(server, target)) < 3:
+        run_tmux(server, ["split-window", "-t", target, "-v"])
     run_tmux(server, ["select-layout", "-t", target, "tiled"])
 
 
@@ -105,4 +107,14 @@ def should_send_command(current_command: str) -> bool:
 
 def attach_window(server: str, session: str, window: str | None = None) -> None:
     target = session if window is None else f"{session}:{window}"
+    tmux_env = os.environ.get("TMUX")
+    if tmux_env:
+        # If we're already inside the same tmux socket as `server`, switch windows.
+        # If not, fall back to attaching (this nests tmux, but it's the simplest
+        # behavior that still "works" from inside another tmux server).
+        socket_path = tmux_env.split(",", 1)[0]
+        socket_name = Path(socket_path).name
+        if socket_name == server:
+            run_tmux(server, ["switch-client", "-t", target])
+            return
     run_tmux(server, ["attach", "-t", target])
