@@ -1,8 +1,6 @@
 from kingdom import cli
 
 
-def test_hand_command_defaults_to_opus_alias() -> None:
+def test_hand_command_runs_hand_module() -> None:
     tokens = cli.hand_command().lower().split()
-    assert "--model" in tokens
-    model_index = tokens.index("--model") + 1
-    assert tokens[model_index] == "opus"
+    assert tokens[:3] == ["python", "-m", "kingdom.hand"]
