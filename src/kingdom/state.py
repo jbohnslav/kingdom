@@ -33,6 +33,10 @@ def logs_root(base: Path, feature: str) -> Path:
     return run_root(base, feature) / "logs"
 
 
+def sessions_root(base: Path, feature: str) -> Path:
+    return run_root(base, feature) / "sessions"
+
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -51,6 +55,13 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(f"{serialized}\n", encoding="utf-8")
 
 
+def append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    serialized = json.dumps(record, sort_keys=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{serialized}\n")
+
+
 def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
     ensure_dir(state_root(base))
     ensure_dir(runs_root(base))
@@ -58,6 +69,7 @@ def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
     run_dir = run_root(base, feature)
     ensure_dir(run_dir)
     ensure_dir(logs_root(base, feature))
+    ensure_dir(sessions_root(base, feature))
 
     config_path = state_root(base) / "config.json"
     if not config_path.exists():
@@ -75,6 +87,7 @@ def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
         "state_root": state_root(base),
         "run_root": run_dir,
         "logs_root": logs_root(base, feature),
+        "sessions_root": sessions_root(base, feature),
         "config_json": config_path,
         "state_json": state_path,
         "plan_md": plan_path,
