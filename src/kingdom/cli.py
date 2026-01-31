@@ -8,15 +8,18 @@ Usage example:
 
 from pathlib import Path
 import subprocess
+from typing import Optional
 
 import typer
 
+from kingdom.council import Council
 from kingdom.plan import parse_plan_tickets
 from kingdom.state import (
     ensure_run_layout,
     logs_root,
     read_json,
     resolve_current_run,
+    sessions_root,
     set_current_run,
     write_json,
 )
@@ -29,8 +32,8 @@ from kingdom.tmux import (
     get_pane_command,
     list_panes,
     list_windows,
-    should_send_command,
     send_keys,
+    should_send_command,
 )
 
 app = typer.Typer(
@@ -46,7 +49,7 @@ def not_implemented(command: str) -> None:
 
 
 def hand_command() -> str:
-    return "claude --model opus"
+    return "python -m kingdom.hand"
 
 
 def ensure_feature_branch(feature: str) -> None:
@@ -100,48 +103,64 @@ def chat() -> None:
     server = derive_server_name(base)
     ensure_session(server, feature)
     ensure_window(server, feature, "hand")
+    hand_target = f"{feature}:hand"
+    panes = sorted(list_panes(server, hand_target), key=int)
+    if not panes:
+        raise RuntimeError("Hand window has no panes")
+    pane_target = f"{hand_target}.{panes[0]}"
+    current = get_pane_command(server, pane_target)
+    if should_send_command(current):
+        send_keys(server, pane_target, hand_command())
     attach_window(server, feature, "hand")
 
 
-@app.command(help="Open council panes for claude/codex/agent plus synthesis.")
-def council() -> None:
+@app.command(help="Query council or manage sessions.")
+def council(
+    prompt: Optional[str] = typer.Argument(None, help="One-shot prompt to query."),
+    reset: bool = typer.Option(False, "--reset", help="Clear all sessions."),
+) -> None:
     base = Path.cwd()
     feature = resolve_current_run(base)
     ensure_run_layout(base, feature)
 
-    log_path = logs_root(base, feature) / "council.jsonl"
-    if not log_path.exists():
-        log_path.write_text("", encoding="utf-8")
+    logs_dir = logs_root(base, feature)
+    sessions_dir = sessions_root(base, feature)
 
-    server = derive_server_name(base)
-    ensure_session(server, feature)
-    ensure_council_layout(server, feature)
+    c = Council.create(logs_dir=logs_dir)
+    c.load_sessions(sessions_dir)
 
-    target = f"{feature}:council"
-    panes = sorted(list_panes(server, target), key=int)
-    if len(panes) < 4:
-        raise RuntimeError("Council layout requires 4 panes")
+    if reset:
+        c.reset_sessions()
+        c.save_sessions(sessions_dir)
+        typer.echo("Sessions cleared.")
+        return
 
-    hand_pane = panes[0]
-    council_panes = panes[1:4]
-    council_commands = ["claude", "codex", "agent"]
+    if not prompt:
+        typer.echo("Usage: kd council \"your prompt here\"")
+        typer.echo("       kd council --reset")
+        typer.echo("")
+        typer.echo("For interactive mode, use: kd chat")
+        return
 
-    hand_target = f"{target}.{hand_pane}"
-    hand_current = get_pane_command(server, hand_target)
-    if should_send_command(hand_current):
-        send_keys(server, hand_target, f"HAND=1 {hand_command()}")
-    for pane, command in zip(council_panes, council_commands):
-        pane_target = f"{target}.{pane}"
-        current = get_pane_command(server, pane_target)
-        if should_send_command(current):
-            send_keys(server, pane_target, command)
+    # One-shot query
+    typer.echo(f"Querying council: {prompt[:50]}{'...' if len(prompt) > 50 else ''}")
+    typer.echo("")
 
-    typer.echo(
-        f"Hand pane: {hand_pane}. Council panes: "
-        + ", ".join(f"{pane}:{cmd}" for pane, cmd in zip(council_panes, council_commands))
-    )
+    responses = c.query(prompt)
+    c.save_sessions(sessions_dir)
 
-    attach_window(server, feature, "council")
+    for name in ["claude", "codex", "agent"]:
+        response = responses.get(name)
+        if response:
+            typer.echo(f"[{response.name}] ({response.elapsed:.1f}s)")
+            if response.error:
+                typer.echo(f"ERROR: {response.error}")
+            if response.text:
+                typer.echo(response.text)
+        else:
+            typer.echo(f"[{name}]")
+            typer.echo("No response")
+        typer.echo("")
 
 
 @app.command(help="Draft or iterate the current plan.")
@@ -291,6 +310,28 @@ def attach(target: str = typer.Argument(..., help="Target window name.")) -> Non
     feature = resolve_current_run(base)
     server = derive_server_name(base)
     ensure_session(server, feature)
+
+    # Special handling for council: set up log tailing panes
+    if target == "council":
+        logs_dir = logs_root(base, feature)
+        ensure_council_layout(server, feature)
+        window_target = f"{feature}:council"
+        panes = sorted(list_panes(server, window_target), key=int)
+
+        agent_names = ["claude", "codex", "agent"]
+        for pane, agent in zip(panes[:3], agent_names):
+            pane_target = f"{window_target}.{pane}"
+            log_file = logs_dir / f"council-{agent}.log"
+            # Ensure log file exists
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            log_file.touch()
+
+            current = get_pane_command(server, pane_target)
+            if should_send_command(current):
+                send_keys(server, pane_target, f"tail -f {log_file}")
+
+        attach_window(server, feature, "council")
+        return
 
     windows = list_windows(server, feature)
     if target not in windows:
