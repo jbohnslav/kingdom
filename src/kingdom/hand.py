@@ -12,6 +12,22 @@ from pathlib import Path
 from uuid import uuid4
 
 from kingdom.council import Council, AgentResponse
+from kingdom.breakdown import (
+    build_breakdown_council_prompt,
+    build_breakdown_update_prompt,
+    ensure_breakdown_initialized,
+    parse_breakdown_update_response,
+    read_breakdown,
+    write_breakdown,
+)
+from kingdom.design import (
+    build_design_council_prompt,
+    build_design_update_prompt,
+    ensure_design_initialized,
+    parse_design_update_response,
+    read_design,
+    write_design,
+)
 from kingdom.state import (
     append_jsonl,
     ensure_run_layout,
@@ -185,6 +201,8 @@ def main() -> None:
     sessions_dir = sessions_root(base, feature)
     hand_log = logs_dir / "hand.jsonl"
     hand_session_file = hand_session_path(base, feature)
+    design_path = paths["design_md"]
+    breakdown_path = paths["breakdown_md"]
 
     # Create Hand session and load existing session
     hand = HandSession(log_path=hand_log)
@@ -197,9 +215,10 @@ def main() -> None:
     # Track last council responses for /verbose command
     last_council_responses: dict[str, AgentResponse] = {}
     verbose_mode = False
+    active_mode: str | None = None
 
     print(f"Hand ready. Council members: {', '.join(m.name for m in council.members)}")
-    print("Commands: /verbose (toggle), /reset, exit/quit")
+    print("Commands: /verbose (toggle), /reset, /design, /breakdown, exit/quit")
     print()
 
     while True:
@@ -232,14 +251,95 @@ def main() -> None:
             print("All sessions cleared.")
             continue
 
+        if prompt.lower().startswith("/design"):
+            cmd = prompt.strip().lower()
+            if cmd in {"/design", "/design on"}:
+                active_mode = "design"
+                current = ensure_design_initialized(design_path, feature=feature)
+                print(f"Design mode enabled. Editing: {design_path}")
+                print("Commands: /design show, /design off, /design approve")
+                print()
+                print(current.rstrip())
+                print()
+                continue
+
+            if cmd == "/design show":
+                current = ensure_design_initialized(design_path, feature=feature)
+                print(current.rstrip())
+                print()
+                continue
+
+            if cmd in {"/design off", "/design exit"}:
+                active_mode = None
+                print("Design mode disabled.")
+                continue
+
+            if cmd == "/design approve":
+                active_mode = None
+                print("Design marked approved. Design mode disabled.")
+                continue
+
+            print(f"Unknown design command: {prompt}")
+            continue
+
+        if prompt.lower().startswith("/breakdown"):
+            cmd = prompt.strip()
+            if cmd.lower() in {"/breakdown", "/breakdown on"}:
+                active_mode = "breakdown"
+                ensure_design_initialized(design_path, feature=feature)
+                current = ensure_breakdown_initialized(breakdown_path, feature=feature)
+                print(f"Breakdown mode enabled. Editing: {breakdown_path}")
+                print(f"Design source: {design_path}")
+                print("Commands: /breakdown show, /breakdown off, /breakdown approve")
+                print()
+                print(current.rstrip())
+                print()
+                continue
+
+            if cmd.lower() == "/breakdown show":
+                current = ensure_breakdown_initialized(breakdown_path, feature=feature)
+                print(current.rstrip())
+                print()
+                continue
+
+            if cmd.lower() in {"/breakdown off", "/breakdown exit"}:
+                active_mode = None
+                print("Breakdown mode disabled.")
+                continue
+
+            if cmd.lower() == "/breakdown approve":
+                active_mode = None
+                print("Breakdown marked approved. Breakdown mode disabled.")
+                continue
+
+            print(f"Unknown breakdown command: {prompt}")
+            continue
+
         if prompt.startswith("/"):
             print(f"Unknown command: {prompt}")
             continue
 
+        current_design = read_design(design_path)
+        current_breakdown = read_breakdown(breakdown_path)
+
+        if active_mode == "design":
+            council_prompt = build_design_council_prompt(
+                feature=feature, instruction=prompt, design_text=current_design
+            )
+        elif active_mode == "breakdown":
+            council_prompt = build_breakdown_council_prompt(
+                feature=feature,
+                instruction=prompt,
+                design_text=current_design,
+                breakdown_text=current_breakdown,
+            )
+        else:
+            council_prompt = prompt
+
         # Query council
         request_id = uuid4().hex
         with Spinner("Consulting advisors..."):
-            council_responses = council.query(prompt)
+            council_responses = council.query(council_prompt)
         council.save_sessions(sessions_dir)
         last_council_responses = council_responses
 
@@ -247,18 +347,66 @@ def main() -> None:
         if verbose_mode:
             print_council_responses(council_responses)
 
-        # Build synthesis prompt and query Hand
-        synthesis_prompt = build_synthesis_prompt(prompt, council_responses)
-        with Spinner("Synthesizing..."):
-            hand_response = hand.query(synthesis_prompt)
+        # Build Hand prompt and query Hand
+        if active_mode == "design":
+            hand_prompt_type = "design_update"
+            hand_prompt = build_design_update_prompt(
+                feature=feature,
+                instruction=prompt,
+                design_text=current_design,
+                responses=council_responses,
+            )
+            with Spinner("Updating design.md..."):
+                hand_response = hand.query(hand_prompt)
+        elif active_mode == "breakdown":
+            hand_prompt_type = "breakdown_update"
+            hand_prompt = build_breakdown_update_prompt(
+                feature=feature,
+                instruction=prompt,
+                design_text=current_design,
+                breakdown_text=current_breakdown,
+                responses=council_responses,
+            )
+            with Spinner("Updating breakdown.md..."):
+                hand_response = hand.query(hand_prompt)
+        else:
+            hand_prompt_type = "synthesis"
+            hand_prompt = build_synthesis_prompt(prompt, council_responses)
+            with Spinner("Synthesizing..."):
+                hand_response = hand.query(hand_prompt)
         hand.save_session(hand_session_file)
 
-        # Display synthesized response
-        if hand_response.error:
-            print(f"[Hand Error] {hand_response.error}")
-        if hand_response.text:
-            print(hand_response.text)
-        print()
+        if active_mode == "design" and hand_response.text and not hand_response.error:
+            try:
+                update = parse_design_update_response(hand_response.text)
+                write_design(design_path, update.markdown)
+                print(update.summary.strip() or f"Updated {design_path}")
+                print()
+                print(read_design(design_path).rstrip())
+                print()
+            except ValueError as exc:
+                print(f"[Design Parse Error] {exc}")
+                print(hand_response.text)
+                print()
+        elif active_mode == "breakdown" and hand_response.text and not hand_response.error:
+            try:
+                update = parse_breakdown_update_response(hand_response.text)
+                write_breakdown(breakdown_path, update.markdown)
+                print(update.summary.strip() or f"Updated {breakdown_path}")
+                print()
+                print(read_breakdown(breakdown_path).rstrip())
+                print()
+            except ValueError as exc:
+                print(f"[Breakdown Parse Error] {exc}")
+                print(hand_response.text)
+                print()
+        else:
+            # Display synthesized response
+            if hand_response.error:
+                print(f"[Hand Error] {hand_response.error}")
+            if hand_response.text:
+                print(hand_response.text)
+            print()
 
         # Log to hand.jsonl
         log_record = {
@@ -272,12 +420,16 @@ def main() -> None:
                 }
                 for name, r in council_responses.items()
             },
-            "synthesis_prompt": synthesis_prompt,
+            "hand_prompt_type": hand_prompt_type,
+            "hand_prompt": hand_prompt,
             "hand_response": {
                 "text": hand_response.text,
                 "error": hand_response.error,
                 "elapsed": hand_response.elapsed,
             },
+            "design_path": str(design_path),
+            "breakdown_path": str(breakdown_path),
+            "active_mode": active_mode,
         }
         append_jsonl(hand_log, log_record)
 

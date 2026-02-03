@@ -84,9 +84,13 @@ def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
     if not state_path.exists():
         write_json(state_path, {})
 
-    plan_path = run_dir / "plan.md"
-    if not plan_path.exists():
-        plan_path.write_text("", encoding="utf-8")
+    design_path = run_dir / "design.md"
+    if not design_path.exists():
+        design_path.write_text("", encoding="utf-8")
+
+    breakdown_path = run_dir / "breakdown.md"
+    if not breakdown_path.exists():
+        breakdown_path.write_text("", encoding="utf-8")
 
     return {
         "state_root": state_root(base),
@@ -95,7 +99,8 @@ def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
         "sessions_root": sessions_root(base, feature),
         "config_json": config_path,
         "state_json": state_path,
-        "plan_md": plan_path,
+        "design_md": design_path,
+        "breakdown_md": breakdown_path,
     }
 
 

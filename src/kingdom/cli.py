@@ -8,12 +8,14 @@ Usage example:
 
 from pathlib import Path
 import subprocess
+import sys
 from typing import Optional
 
 import typer
 
 from kingdom.council import Council
-from kingdom.plan import parse_plan_tickets
+from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
+from kingdom.design import build_design_template
 from kingdom.state import (
     ensure_run_layout,
     logs_root,
@@ -49,7 +51,7 @@ def not_implemented(command: str) -> None:
 
 
 def hand_command() -> str:
-    return "python -m kingdom.hand"
+    return f"{sys.executable} -m kingdom.hand"
 
 
 def ensure_feature_branch(feature: str) -> None:
@@ -163,43 +165,43 @@ def council(
         typer.echo("")
 
 
-@app.command(help="Draft or iterate the current plan.")
-def plan(
+@app.command(help="Draft or view the current design doc.")
+def design() -> None:
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    paths = ensure_run_layout(base, feature)
+    design_path = paths["design_md"]
+    if design_path.read_text(encoding="utf-8").strip() == "":
+        design_path.write_text(build_design_template(feature), encoding="utf-8")
+        typer.echo(f"Created design template at {design_path}")
+        return
+
+    typer.echo(f"Design already exists at {design_path}")
+
+
+@app.command(help="Draft or iterate the current breakdown.")
+def breakdown(
     apply: bool = typer.Option(
-        False, "--apply", help="Create tk tickets from plan.md."
+        False, "--apply", help="Create tk tickets from breakdown.md."
     ),
 ) -> None:
     base = Path.cwd()
     feature = resolve_current_run(base)
     paths = ensure_run_layout(base, feature)
-    plan_path = paths["plan_md"]
-    if plan_path.read_text(encoding="utf-8").strip() == "":
-        template = (
-            f"# Plan: {feature}\n\n"
-            "## Goal\n"
-            "<short goal>\n\n"
-            "## Tickets\n"
-            "- [ ] T1: <title>\n"
-            "  - Priority: 2\n"
-            "  - Depends on: <none|ticket ids>\n"
-            "  - Description: ...\n"
-            "  - Acceptance:\n"
-            "    - [ ] ...\n\n"
-            "## Revisions\n"
-            "(append-only after dev starts)\n"
-        )
-        plan_path.write_text(template, encoding="utf-8")
-        typer.echo(f"Created plan template at {plan_path}")
+    breakdown_path = paths["breakdown_md"]
+    if breakdown_path.read_text(encoding="utf-8").strip() == "":
+        breakdown_path.write_text(build_breakdown_template(feature), encoding="utf-8")
+        typer.echo(f"Created breakdown template at {breakdown_path}")
         return
 
     if not apply:
-        typer.echo(f"Plan already exists at {plan_path}")
-        typer.echo("Use --apply to create tk tickets from the plan.")
+        typer.echo(f"Breakdown already exists at {breakdown_path}")
+        typer.echo("Use --apply to create tk tickets from the breakdown.")
         return
 
-    tickets = parse_plan_tickets(plan_path.read_text(encoding="utf-8"))
+    tickets = parse_breakdown_tickets(breakdown_path.read_text(encoding="utf-8"))
     if not tickets:
-        raise RuntimeError("No tickets found in plan.md")
+        raise RuntimeError("No tickets found in breakdown.md")
 
     created: dict[str, str] = {}
     for ticket in tickets:
@@ -221,11 +223,11 @@ def plan(
             raise RuntimeError(result.stderr.strip() or "tk create failed")
 
         ticket_id = result.stdout.strip()
-        created[ticket["plan_id"]] = ticket_id
-        typer.echo(f"Created ticket {ticket_id} for {ticket['plan_id']}")
+        created[ticket["breakdown_id"]] = ticket_id
+        typer.echo(f"Created ticket {ticket_id} for {ticket['breakdown_id']}")
 
     for ticket in tickets:
-        ticket_id = created.get(ticket["plan_id"])
+        ticket_id = created.get(ticket["breakdown_id"])
         for dep in ticket["depends_on"]:
             dep_id = created.get(dep, dep)
             result = subprocess.run(["tk", "dep", ticket_id, dep_id], text=True)
