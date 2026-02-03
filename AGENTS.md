@@ -17,3 +17,9 @@ Rules
     - If it's hard to explain, it's a bad design.
     - Deliver a minimal, well-named module with docstrings, type hints, and a tiny usage example/test.
     - No functions beginning with underscores! Private functions are fake in python. Bad: `_send_to_agent()`: good: `send_to_agent()`.
+
+## Python execution
+
+Always run Python in the repo venv:
+- `source .venv/bin/activate && python my_script.py`
+- or `uv run my_script.py`
