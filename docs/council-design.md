@@ -352,7 +352,8 @@ Users can watch agents "think" in real-time, but the actual communication is sub
 └── runs/
     └── <feature>/
         ├── state.json          # run state, ticket mappings
-        ├── plan.md             # planning document
+        ├── design.md           # design document (intent/decisions)
+        ├── breakdown.md        # ticket breakdown (deps + acceptance)
         ├── sessions/           # NEW: session ID storage
         │   ├── claude.session  # session ID for claude
         │   ├── codex.session   # session ID for codex

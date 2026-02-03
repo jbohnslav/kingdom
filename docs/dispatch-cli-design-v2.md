@@ -1,13 +1,13 @@
 `# Kingdom CLI Design
 
-The `kd` command is your interface to the Kingdom workflow. You (the King) talk to a Hand who manages the entire process - design, planning, development, review, and merge.
+The `kd` command is your interface to the Kingdom workflow. You (the King) talk to a Hand who manages the entire process - design, breakdown, development, review, and merge.
 
 ## Core Philosophy
 
 - **One point of contact:** You (the King) talk to the Hand via `kd chat`. The Hand manages the workflow, coordinates Peasants, handles blockers, and asks you questions when decisions are needed.
-- **Council when it matters:** Council (multi-model consensus) is automatic for design, plan, and code review phases. For mid-work conversations, you just talk to the Hand - it can invoke the Council as a tool if needed.
-- **Autopilot with oversight:** After plan approval, tickets flow through dev → test → review → merge automatically. The Hand handles blockers and escalates to you when needed.
-- **Transparent commands:** Phase commands (`kd design`, `kd plan`, etc.) exist and are visible. The Hand calls them; you can too if you want direct control.
+- **Council when it matters:** Council (multi-model consensus) is automatic for design, breakdown, and code review phases. For mid-work conversations, you just talk to the Hand - it can invoke the Council as a tool if needed.
+- **Autopilot with oversight:** After breakdown approval, tickets flow through dev → test → review → merge automatically. The Hand handles blockers and escalates to you when needed.
+- **Transparent commands:** Phase commands (`kd design`, `kd breakdown`, etc.) exist and are visible. The Hand calls them; you can too if you want direct control.
 
 ## Commands
 
@@ -27,7 +27,7 @@ The `kd` command is your interface to the Kingdom workflow. You (the King) talk 
 | Command | Description |
 |---------|-------------|
 | `kd design` | Enter or return to design phase (uses Council). |
-| `kd plan` | Enter planning phase (uses Council). |
+| `kd breakdown` | Enter breakdown phase (uses Council). |
 | `kd dev` | Start development Peasants. |
 | `kd test <ticket>` | Run test phase on a ticket (fresh agent). |
 | `kd review <ticket>` | Run review phase on a ticket (uses Council). |
@@ -67,11 +67,11 @@ Hand: Got it. I'm routing this to the Council for design.
       refresh token rotation. Gemini raised a good point about
       offline scenarios. I've incorporated all three.
 
-      Want to adjust anything, or should we move to planning?
+      Want to adjust anything, or should we move to breakdown?
 
-You: Looks good, let's plan it out.
+You: Looks good, let's break it down.
 
-Hand: [runs kd plan - Council generates tickets]
+Hand: [runs kd breakdown - Council generates tickets]
       I've broken this into 4 tickets:
       - nw-5c46: Add refresh token storage
       - nw-7b89: Implement auto-refresh logic (depends on nw-5c46)
@@ -98,7 +98,7 @@ The council is multi-model consensus mode:
 
 **When Council is automatic:**
 - Design phase - always uses Council
-- Plan phase - always uses Council
+- Breakdown phase - always uses Council
 - Code review - always uses Council (per-ticket)
 
 **When Council is optional:**
@@ -127,7 +127,7 @@ The council is multi-model consensus mode:
 The Hand and Peasants use the `tk` CLI for all ticket operations:
 
 ```bash
-# Hand creates tickets during planning
+# Hand creates tickets during breakdown
 tk create "Add refresh token storage" -p 1 -d "Description..."
 tk dep nw-7b89 nw-5c46  # 7b89 depends on 5c46
 
@@ -160,12 +160,12 @@ Ticket files live in `.tickets/` with YAML frontmatter:
 - You (the King) describe what you want to build
 - Hand routes to Council (3 models + synthesis)
 - You iterate until satisfied
-- Hand saves design and runs `kd plan` when you approve
+- Hand saves design and runs `kd breakdown` when you approve
 
 **Artifacts:**
 - `.kd/runs/<feature>/design.md`
 
-### Plan
+### Breakdown
 
 **What happens:**
 - Hand presents design to Council
@@ -267,7 +267,7 @@ When these occur:
     └── oauth-refresh/
         ├── state.json          # Phase, Peasant count, tmux sessions
         ├── design.md           # Design document
-        ├── plan.json           # Plan metadata
+        ├── breakdown.md        # Ticket breakdown (deps + acceptance)
         └── logs/               # Agent logs, escalations
 
 .kd/worktrees/
@@ -318,9 +318,9 @@ You: We need to implement OAuth token refresh. Users should stay
 Hand: Got it. Let me route this to the Council for design...
       [Council runs, shows 3 responses + synthesis]
 
-      Here's the consolidated design. Ready to plan?
+      Here's the consolidated design. Ready to break it down?
 
-You: Yes, let's plan.
+You: Yes, let's break it down.
 
 Hand: [Council generates tickets, Hand creates via tk]
       4 tickets, dependencies mapped. How many Peasants?

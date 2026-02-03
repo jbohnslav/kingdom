@@ -1,7 +1,7 @@
-# Plan: Kingdom MVP (Implementation Tickets)
+# Breakdown: Kingdom MVP (Implementation Tickets)
 
 ## Goal
-Deliver the minimum useful workflow: start a feature run, talk to the Hand in a persistent tmux window, generate an editable `plan.md` via the Council, convert approved plan items into `tk` markdown tickets, and hand off a single ticket to a Peasant worktree.
+Deliver the minimum useful workflow: start a feature run, talk to the Hand in a persistent tmux window, draft a `design.md`, break it down into an editable `breakdown.md`, convert approved breakdown items into `tk` markdown tickets, and hand off a single ticket to a Peasant worktree.
 
 ## Tickets
 - [x] T1: Add `kd` CLI skeleton + command routing
@@ -9,7 +9,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
   - Depends on: none
   - Description:
     - Create the Python package layout and `typer` CLI entrypoint for `kd`.
-    - Wire subcommands for the MVP surface area: `start`, `chat`, `council`, `plan`, `peasant`, `dev`, `status`, `attach`.
+    - Wire subcommands for the MVP surface area: `start`, `chat`, `council`, `design`, `breakdown`, `plan` (alias), `peasant`, `dev`, `status`, `attach`.
   - Acceptance:
     - [ ] `kd --help` works and lists MVP commands.
     - [ ] Each MVP command has a help/usage string and returns a non-zero exit code on bad input.
@@ -19,7 +19,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
   - Depends on: T1
   - Description:
     - Implement the MVP state layout from `docs/MVP.md`:
-      - `.kd/config.json`, `.kd/current`, `.kd/runs/<feature>/state.json`, `.kd/runs/<feature>/plan.md`, `.kd/runs/<feature>/logs/*.jsonl`
+      - `.kd/config.json`, `.kd/current`, `.kd/runs/<feature>/state.json`, `.kd/runs/<feature>/design.md`, `.kd/runs/<feature>/breakdown.md`, `.kd/runs/<feature>/logs/*.jsonl`
     - Add small helpers to:
       - Create directories idempotently
       - Read/write JSON state files
@@ -81,32 +81,31 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - [ ] `kd council` opens a `council` window with the expected panes.
     - [ ] Each pane runs its configured CLI command (or clearly errors with actionable guidance if the CLI is missing).
 
-- [x] T7: Implement `kd plan` (Council-backed plan drafting into `plan.md`)
+- [x] T7: Implement Design + Breakdown docs (`design.md` + `breakdown.md`)
   - Priority: 0
   - Depends on: T2, T6
   - Description:
-    - Follow `docs/MVP.md` workflow step 3 and "Plan File Format":
-      - Create/update `.kd/runs/<feature>/plan.md` as the single source of truth
-      - Use the suggested structure: `Goal`, `Tickets`, `Revisions`
-      - While planning is active, update `plan.md` in place; after work begins, append under `## Revisions`
+    - Follow `docs/MVP.md` workflow steps for Design and Breakdown:
+      - Create/update `.kd/runs/<feature>/design.md` for intent/decisions
+      - Create/update `.kd/runs/<feature>/breakdown.md` for tickets/deps/acceptance
+      - While breakdown is active, update `breakdown.md` in place; after work begins, append under `## Revisions`
     - Decide MVP ergonomics:
-      - How the Council output is gathered into `plan.md` (copy/paste flow vs. capture pane outputs)
-      - How "plan approved" is represented (e.g., explicit prompt, a marker in state.json, or a `kd plan --approve`)
+      - How "design approved" and "breakdown approved" are represented (explicit prompt vs marker in state.json)
   - Acceptance:
-    - [ ] `kd plan` produces `.kd/runs/<feature>/plan.md` in the documented format.
-    - [ ] Re-running `kd plan` updates the existing plan (and uses `## Revisions` after dev starts, per MVP policy).
+    - [ ] `kd design` produces `.kd/runs/<feature>/design.md` in the documented format.
+    - [ ] `kd breakdown` produces `.kd/runs/<feature>/breakdown.md` in the documented format.
 
-- [x] T8: Implement ticket creation from `plan.md` via `tk` (markdown tickets only)
+- [x] T8: Implement ticket creation from `breakdown.md` via `tk` (markdown tickets only)
   - Priority: 0
   - Depends on: T7
   - Description:
     - Follow `docs/MVP.md` "Ticket Creation" mapping:
-      - Parse `plan.md` `## Tickets` into `tk create ...` commands
+      - Parse `breakdown.md` `## Tickets` into `tk create ...` commands
       - Apply priority, acceptance, and dependencies (`tk dep`)
       - Ask for approval before applying changes
-    - Define where tickets live (expected `.tickets/` repo directory) and how the plan stores the created ticket ids.
+    - Define where tickets live (expected `.tickets/` repo directory) and how the breakdown stores the created ticket ids.
   - Acceptance:
-    - [ ] With a sample `plan.md`, the system can generate a dry-run list of `tk` commands.
+    - [ ] With a sample `breakdown.md`, the system can generate a dry-run list of `tk` commands.
     - [ ] With approval, tickets are created as markdown files and dependencies are applied.
 
 - [x] T9: Implement `kd peasant <ticket>` (single-ticket worktree + tmux window)
@@ -160,7 +159,7 @@ Deliver the minimum useful workflow: start a feature run, talk to the Hand in a 
     - Update docs to reflect actual CLI behavior (especially any deviations from `docs/MVP.md`).
     - Add smoke tests (or a `make smoke` script) covering:
       - `kd start` creates expected state layout
-      - `kd plan` creates/updates `plan.md`
+      - `kd breakdown` creates/updates `breakdown.md`
       - `kd peasant` creates a worktree path deterministically (can be stubbed if tmux/agents absent in CI)
   - Acceptance:
-    - [ ] A new developer can follow docs to run through: `kd start` -> `kd chat` -> `kd plan` -> `tk` tickets -> `kd peasant`.
+    - [ ] A new developer can follow docs to run through: `kd start` -> `kd chat` -> `kd design` -> `kd breakdown` -> `tk` tickets -> `kd peasant`.

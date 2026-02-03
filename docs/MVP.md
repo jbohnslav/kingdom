@@ -1,11 +1,12 @@
-# Kingdom MVP Plan
+# Kingdom MVP
 
-This MVP delivers the minimum useful workflow: talk to the Hand, plan with the Council, and hand off work to a Peasant. It deliberately avoids full auto-review or merge-queue behavior while establishing the framework for later expansion.
+This MVP delivers the minimum useful workflow: talk to the Hand, draft a design doc, break it down into tickets, and hand off work to a Peasant. It deliberately avoids full auto-review or merge-queue behavior while establishing the framework for later expansion.
 
 ## Scope
 
 - Persistent Hand chat via `kd chat`
-- Council-backed planning via `kd plan` using `claude`, `codex`, and `agent`
+- Council-backed design via `kd chat` + `/design` using `claude`, `codex`, and `agent`
+- Council-backed breakdown via `kd chat` + `/breakdown` using `claude`, `codex`, and `agent`
 - Ticket creation via `tk` (markdown tickets only)
 - Single Peasant handoff via `kd peasant <ticket>`
 - `kd dev` reserved to start the broader develop phase later (MVP can delegate to `kd peasant`)
@@ -13,25 +14,58 @@ This MVP delivers the minimum useful workflow: talk to the Hand, plan with the C
 Not in scope:
 - Parallelized Peasants
 - Auto-review / auto-merge queue
-- `plan.json` or other non-markdown plan artifacts
+- Any non-markdown artifacts (e.g., JSON plan formats)
 
 ## Workflow
 
 1. `kd start <feature>` initializes state, branches, and tmux session.
 2. `kd chat` starts the Hand in a persistent window.
-3. `kd plan` runs Council to draft a ticket plan into `plan.md`.
-4. Hand iterates in-place with the user until the plan is approved.
-5. Hand offers to apply the plan, creating `tk` tickets.
-6. `kd peasant <ticket>` starts a Peasant to execute a ticket.
+3. `kd design` initializes `design.md` (template).
+4. In `kd chat`, use `/design` to iterate on `design.md` with Council input until approved.
+5. `kd breakdown` initializes `breakdown.md` (template).
+6. In `kd chat`, use `/breakdown` to iterate on `breakdown.md` with Council input until approved.
+7. `kd breakdown --apply` creates `tk` tickets from `breakdown.md`.
+8. `kd peasant <ticket>` starts a Peasant to execute a ticket.
 
-## Plan File Format
+## Design File Format
 
-`plan.md` is the single source of truth for the planning phase. It is updated in-place while planning is active. If the plan changes after work begins, new changes are appended under a revision section.
+`design.md` is the single source of truth for intent/decisions during the Design phase. It is updated in-place while designing is active.
 
 Suggested format:
 
 ```markdown
-# Plan: <feature>
+# Design: <feature>
+
+## Goal
+<what outcome are we trying to achieve?>
+
+## Context
+<what exists today / why this matters>
+
+## Requirements
+- <requirement>
+
+## Non-Goals
+- <explicitly out of scope>
+
+## Decisions
+- <decision>: <rationale>
+
+## Open Questions
+- <question>
+```
+
+## Breakdown File Format
+
+`breakdown.md` is the single source of truth for the Breakdown phase: tickets, dependencies, and acceptance criteria derived from `design.md`. It is updated in-place while breakdown is active. If the breakdown changes after work begins, new changes are appended under a revision section.
+
+Suggested format:
+
+```markdown
+# Breakdown: <feature>
+
+## Design Summary
+<1-3 sentences or a link to design.md>
 
 ## Goal
 <short goal>
@@ -50,7 +84,7 @@ Suggested format:
 
 ## Ticket Creation
 
-The Hand converts `plan.md` tickets into `tk` commands and asks for approval before applying. Mapping:
+The Hand converts `breakdown.md` tickets into `tk` commands and asks for approval before applying. Mapping:
 
 - Title -> `tk create "Title"`
 - Description -> `-d "..."`
@@ -77,7 +111,8 @@ Synthesis defaults to `claude` unless configured otherwise.
 └── runs/
     └── <feature>/
         ├── state.json
-        ├── plan.md
+        ├── design.md
+        ├── breakdown.md
         └── logs/
             ├── hand.jsonl
             └── council.jsonl
@@ -88,7 +123,8 @@ Synthesis defaults to `claude` unless configured otherwise.
 - `kd start <feature>`: initialize run, tmux server/session, and state
 - `kd chat`: talk to the Hand
 - `kd council`: open council panes (claude/codex/agent + synthesis)
-- `kd plan`: run/iterate the plan and update `plan.md`
+- `kd design`: create `design.md` template (Design phase artifact)
+- `kd breakdown`: create `breakdown.md` template (Breakdown phase artifact)
 - `kd peasant <ticket>`: start a Peasant in a worktree for a ticket
 - `kd dev`: start the broader develop phase later (MVP may delegate to `kd peasant`)
 - `kd status`: show current phase and tickets
@@ -96,6 +132,7 @@ Synthesis defaults to `claude` unless configured otherwise.
 
 ## Notes
 
-- Plan edits are in-place until dev starts. After dev starts, plan changes append to `## Revisions`.
+- Design edits are in-place until dev starts.
+- Breakdown edits are in-place until dev starts. After dev starts, breakdown changes append to `## Revisions`.
 - Tickets are always markdown via `tk` in `.tickets/`.
 - This MVP is intentionally minimal; review/merge automation can be layered on later.

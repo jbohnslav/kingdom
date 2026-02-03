@@ -140,7 +140,7 @@ State paths include project and feature to match tmux namespacing.
 │   ├── oauth-refresh/
 │   │   ├── state.json          # Phase, Peasant count, tmux session info
 │   │   ├── design.md           # Design document
-│   │   ├── plan.json           # Plan metadata
+│   │   ├── breakdown.md        # Ticket breakdown (deps + acceptance)
 │   │   └── logs/
 │   │       ├── hand.jsonl
 │   │       ├── peasant-1.jsonl

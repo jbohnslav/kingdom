@@ -15,5 +15,6 @@ uv sync >/dev/null
 
 feature="smoke-$(date +%s)"
 uv run kd start "$feature"
-uv run kd plan
+uv run kd design
+uv run kd breakdown
 uv run kd status

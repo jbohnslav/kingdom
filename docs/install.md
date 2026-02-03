@@ -24,8 +24,9 @@
 uv run kd start example-feature
 uv run kd chat
 uv run kd council
-uv run kd plan
-uv run kd plan --apply
+uv run kd design
+uv run kd breakdown
+uv run kd breakdown --apply
 uv run kd peasant <ticket-id>
 ```
 
