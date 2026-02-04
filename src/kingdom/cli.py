@@ -25,12 +25,14 @@ from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
 from kingdom.design import build_design_template
 from kingdom.state import (
     council_logs_root,
+    ensure_base_layout,
     ensure_run_layout,
     logs_root,
     read_json,
     resolve_current_run,
     sessions_root,
     set_current_run,
+    state_root,
     write_json,
 )
 from kingdom.tmux import (
@@ -56,6 +58,17 @@ app = typer.Typer(
 def not_implemented(command: str) -> None:
     typer.echo(f"{command}: not implemented yet.")
     raise typer.Exit(code=1)
+
+
+def is_git_repo(base: Path) -> bool:
+    """Check if base is inside a git repository."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        cwd=base,
+    )
+    return result.returncode == 0
 
 
 def hand_command() -> str:
@@ -87,9 +100,40 @@ def ensure_feature_branch(feature: str) -> None:
     )
 
 
+@app.command(help="Initialize .kd/ directory structure.")
+def init(
+    no_git: Annotated[
+        bool, typer.Option("--no-git", help="Skip git repository check.")
+    ] = False,
+    no_gitignore: Annotated[
+        bool, typer.Option("--no-gitignore", help="Skip .gitignore creation.")
+    ] = False,
+) -> None:
+    """Initialize the .kd/ directory structure for Kingdom.
+
+    Idempotent: creates missing pieces, skips existing.
+    """
+    base = Path.cwd()
+
+    if not no_git and not is_git_repo(base):
+        typer.echo("Error: Not a git repository. Use --no-git to initialize anyway.")
+        raise typer.Exit(code=1)
+
+    paths = ensure_base_layout(base, create_gitignore=not no_gitignore)
+    typer.echo(f"Initialized: {paths['state_root']}")
+
+
 @app.command(help="Initialize a run, state, and tmux session.")
 def start(feature: str = typer.Argument(..., help="Feature name for the run.")) -> None:
     base = Path.cwd()
+
+    # Auto-init if .kd/ doesn't exist (with git check)
+    if not state_root(base).exists():
+        if not is_git_repo(base):
+            typer.echo("Error: Not a git repository. Run `kd init --no-git` first.")
+            raise typer.Exit(code=1)
+        typer.echo("Auto-initializing .kd/ directory...")
+
     paths = ensure_run_layout(base, feature)
     set_current_run(base, feature)
     ensure_feature_branch(feature)
