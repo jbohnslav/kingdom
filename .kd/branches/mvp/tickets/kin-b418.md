@@ -1,6 +1,6 @@
 ---
 id: kin-b418
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-04T22:22:50Z
