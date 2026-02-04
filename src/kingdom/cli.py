@@ -690,6 +690,7 @@ def doctor(
 # Ticket subcommand group
 ticket_app = typer.Typer(name="ticket", help="Manage tickets.")
 app.add_typer(ticket_app, name="ticket")
+app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
 
 
 def _get_tickets_dir(base: Path, backlog: bool = False) -> Path:
