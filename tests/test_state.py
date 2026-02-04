@@ -9,6 +9,8 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     branches_root,
+    ensure_base_layout,
+    ensure_branch_layout,
     normalize_branch_name,
     state_root,
 )
@@ -138,3 +140,144 @@ class TestArchiveRoot:
         """archive_root is a child of state_root."""
         result = archive_root(tmp_path)
         assert result.parent == state_root(tmp_path)
+
+
+class TestEnsureBaseLayout:
+    """Tests for ensure_base_layout function."""
+
+    def test_creates_state_root(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates the .kd/ directory."""
+        ensure_base_layout(tmp_path)
+        assert (tmp_path / ".kd").is_dir()
+
+    def test_creates_branches_directory(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates .kd/branches/ directory."""
+        ensure_base_layout(tmp_path)
+        assert (tmp_path / ".kd" / "branches").is_dir()
+
+    def test_creates_backlog_directory(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates .kd/backlog/ directory."""
+        ensure_base_layout(tmp_path)
+        assert (tmp_path / ".kd" / "backlog").is_dir()
+
+    def test_creates_backlog_tickets_directory(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates .kd/backlog/tickets/ directory."""
+        ensure_base_layout(tmp_path)
+        assert (tmp_path / ".kd" / "backlog" / "tickets").is_dir()
+
+    def test_creates_archive_directory(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates .kd/archive/ directory."""
+        ensure_base_layout(tmp_path)
+        assert (tmp_path / ".kd" / "archive").is_dir()
+
+    def test_creates_worktrees_directory(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates .kd/worktrees/ directory."""
+        ensure_base_layout(tmp_path)
+        assert (tmp_path / ".kd" / "worktrees").is_dir()
+
+    def test_creates_runs_directory_for_backwards_compat(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates .kd/runs/ for backwards compatibility."""
+        ensure_base_layout(tmp_path)
+        assert (tmp_path / ".kd" / "runs").is_dir()
+
+    def test_returns_all_paths(self, tmp_path: Path) -> None:
+        """ensure_base_layout returns dict with all created paths."""
+        result = ensure_base_layout(tmp_path)
+        assert "state_root" in result
+        assert "branches_root" in result
+        assert "backlog_root" in result
+        assert "archive_root" in result
+        assert "worktrees_root" in result
+        assert "runs_root" in result
+        assert "config_json" in result
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        """ensure_base_layout can be called multiple times safely."""
+        ensure_base_layout(tmp_path)
+        ensure_base_layout(tmp_path)
+        assert (tmp_path / ".kd" / "branches").is_dir()
+
+    def test_creates_gitignore_with_branches_pattern(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates .gitignore with branches/**/logs/ pattern."""
+        ensure_base_layout(tmp_path)
+        gitignore_path = tmp_path / ".kd" / ".gitignore"
+        assert gitignore_path.exists()
+        content = gitignore_path.read_text()
+        assert "branches/**/logs/" in content
+
+
+class TestEnsureBranchLayout:
+    """Tests for ensure_branch_layout function."""
+
+    def test_creates_branch_directory(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates the branch directory."""
+        result = ensure_branch_layout(tmp_path, "feature/test")
+        assert result.is_dir()
+        assert result == tmp_path / ".kd" / "branches" / "feature-test"
+
+    def test_creates_design_md(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates design.md file."""
+        branch_dir = ensure_branch_layout(tmp_path, "main")
+        assert (branch_dir / "design.md").is_file()
+
+    def test_creates_breakdown_md(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates breakdown.md file."""
+        branch_dir = ensure_branch_layout(tmp_path, "main")
+        assert (branch_dir / "breakdown.md").is_file()
+
+    def test_creates_learnings_md(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates learnings.md file."""
+        branch_dir = ensure_branch_layout(tmp_path, "main")
+        assert (branch_dir / "learnings.md").is_file()
+
+    def test_creates_tickets_directory(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates tickets/ subdirectory."""
+        branch_dir = ensure_branch_layout(tmp_path, "main")
+        assert (branch_dir / "tickets").is_dir()
+
+    def test_creates_logs_directory(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates logs/ subdirectory."""
+        branch_dir = ensure_branch_layout(tmp_path, "main")
+        assert (branch_dir / "logs").is_dir()
+
+    def test_creates_sessions_directory(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates sessions/ subdirectory."""
+        branch_dir = ensure_branch_layout(tmp_path, "main")
+        assert (branch_dir / "sessions").is_dir()
+
+    def test_creates_state_json(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates state.json with empty object."""
+        branch_dir = ensure_branch_layout(tmp_path, "main")
+        state_path = branch_dir / "state.json"
+        assert state_path.is_file()
+        import json
+        content = json.loads(state_path.read_text())
+        assert content == {}
+
+    def test_normalizes_branch_name(self, tmp_path: Path) -> None:
+        """ensure_branch_layout normalizes branch names."""
+        result = ensure_branch_layout(tmp_path, "Feature/OAuth-Refresh")
+        assert result.name == "feature-oauth-refresh"
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        """ensure_branch_layout can be called multiple times safely."""
+        branch_dir = ensure_branch_layout(tmp_path, "main")
+        # Write some content to design.md
+        (branch_dir / "design.md").write_text("# Design", encoding="utf-8")
+        # Call again
+        ensure_branch_layout(tmp_path, "main")
+        # Content should be preserved
+        assert (branch_dir / "design.md").read_text() == "# Design"
+
+    def test_returns_branch_path(self, tmp_path: Path) -> None:
+        """ensure_branch_layout returns the branch directory path."""
+        result = ensure_branch_layout(tmp_path, "develop")
+        assert result == tmp_path / ".kd" / "branches" / "develop"
+
+    def test_ensures_base_layout(self, tmp_path: Path) -> None:
+        """ensure_branch_layout creates base layout if not exists."""
+        ensure_branch_layout(tmp_path, "main")
+        # Base layout directories should exist
+        assert (tmp_path / ".kd" / "branches").is_dir()
+        assert (tmp_path / ".kd" / "backlog").is_dir()
+        assert (tmp_path / ".kd" / "archive").is_dir()

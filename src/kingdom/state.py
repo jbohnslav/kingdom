@@ -130,10 +130,19 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 
 def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, Path]:
-    """Create base .kd/ structure. Idempotent."""
+    """Create base .kd/ structure. Idempotent.
+
+    Creates both old structure (runs/) and new structure (branches/, backlog/, archive/).
+    """
     ensure_dir(state_root(base))
+    # Old structure (kept for backwards compatibility)
     ensure_dir(runs_root(base))
     ensure_dir(worktrees_root(base))
+    # New branch-centric structure
+    ensure_dir(branches_root(base))
+    ensure_dir(backlog_root(base))
+    ensure_dir(backlog_root(base) / "tickets")
+    ensure_dir(archive_root(base))
 
     gitignore_path = state_root(base) / ".gitignore"
     if create_gitignore and not gitignore_path.exists():
@@ -141,6 +150,7 @@ def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, P
 *.json
 *.jsonl
 runs/**/logs/
+branches/**/logs/
 worktrees/
 """
         gitignore_path.write_text(gitignore_content, encoding="utf-8")
@@ -153,9 +163,63 @@ worktrees/
         "state_root": state_root(base),
         "runs_root": runs_root(base),
         "worktrees_root": worktrees_root(base),
+        "branches_root": branches_root(base),
+        "backlog_root": backlog_root(base),
+        "archive_root": archive_root(base),
         "config_json": config_path,
         "gitignore": gitignore_path if create_gitignore else None,
     }
+
+
+def ensure_branch_layout(base: Path, branch: str) -> Path:
+    """Create branch-specific structure under .kd/branches/<normalized-branch>/. Idempotent.
+
+    Creates:
+        - .kd/branches/<normalized-branch>/design.md (empty file)
+        - .kd/branches/<normalized-branch>/breakdown.md (empty file)
+        - .kd/branches/<normalized-branch>/learnings.md (empty file)
+        - .kd/branches/<normalized-branch>/tickets/
+        - .kd/branches/<normalized-branch>/logs/
+        - .kd/branches/<normalized-branch>/sessions/
+        - .kd/branches/<normalized-branch>/state.json (empty {} if not exists)
+
+    Args:
+        base: The project root directory.
+        branch: The branch name (will be normalized).
+
+    Returns:
+        Path to the branch directory (.kd/branches/<normalized-branch>/).
+    """
+    # Ensure base layout exists first
+    ensure_base_layout(base)
+
+    branch_dir = branch_root(base, branch)
+    ensure_dir(branch_dir)
+
+    # Create subdirectories
+    ensure_dir(branch_dir / "tickets")
+    ensure_dir(branch_dir / "logs")
+    ensure_dir(branch_dir / "sessions")
+
+    # Create state.json if not exists
+    state_path = branch_dir / "state.json"
+    if not state_path.exists():
+        write_json(state_path, {})
+
+    # Create markdown files if not exist (touch)
+    design_path = branch_dir / "design.md"
+    if not design_path.exists():
+        design_path.write_text("", encoding="utf-8")
+
+    breakdown_path = branch_dir / "breakdown.md"
+    if not breakdown_path.exists():
+        breakdown_path.write_text("", encoding="utf-8")
+
+    learnings_path = branch_dir / "learnings.md"
+    if not learnings_path.exists():
+        learnings_path.write_text("", encoding="utf-8")
+
+    return branch_dir
 
 
 def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
