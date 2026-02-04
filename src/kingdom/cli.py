@@ -350,6 +350,97 @@ def council_reset() -> None:
     typer.echo("Sessions cleared.")
 
 
+@council_app.command("last", help="Show the most recent council run.")
+def council_last() -> None:
+    """Print the most recent council run_id and paths."""
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    council_logs_dir = council_logs_root(base, feature)
+
+    if not council_logs_dir.exists():
+        typer.echo("No council runs found.")
+        raise typer.Exit(code=1)
+
+    # Find most recent run by directory mtime
+    runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
+    if not runs:
+        typer.echo("No council runs found.")
+        raise typer.Exit(code=1)
+
+    latest = max(runs, key=lambda d: d.stat().st_mtime)
+    run_id = latest.name
+
+    typer.echo(f"Run: {run_id}")
+    typer.echo(f"Path: {latest}")
+    typer.echo()
+    typer.echo("Files:")
+    for f in sorted(latest.iterdir()):
+        typer.echo(f"  {f.name}")
+
+
+@council_app.command("show", help="Display a council run.")
+def council_show(
+    run_id: Annotated[str, typer.Argument(help="Run ID (e.g., run-4f3a) or 'last'.")],
+) -> None:
+    """Display a saved council run with responses and metadata."""
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    council_logs_dir = council_logs_root(base, feature)
+
+    if not council_logs_dir.exists():
+        typer.echo("No council runs found.")
+        raise typer.Exit(code=1)
+
+    # Handle 'last' as special case
+    if run_id == "last":
+        runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
+        if not runs:
+            typer.echo("No council runs found.")
+            raise typer.Exit(code=1)
+        run_dir = max(runs, key=lambda d: d.stat().st_mtime)
+    else:
+        run_dir = council_logs_dir / run_id
+        if not run_dir.exists():
+            typer.echo(f"Run not found: {run_id}")
+            raise typer.Exit(code=1)
+
+    console = Console()
+
+    # Read metadata
+    metadata_path = run_dir / "metadata.json"
+    if metadata_path.exists():
+        metadata = read_json(metadata_path)
+        typer.echo(f"Run: {run_dir.name}")
+        typer.echo(f"Timestamp: {metadata.get('timestamp', 'unknown')}")
+        typer.echo(f"Prompt: {metadata.get('prompt', 'unknown')[:100]}...")
+        typer.echo()
+
+    # Show errors if any
+    errors_path = run_dir / "errors.json"
+    if errors_path.exists():
+        errors = read_json(errors_path)
+        typer.echo("Errors:")
+        for member, error in errors.items():
+            typer.echo(f"  {member}: {error}")
+        typer.echo()
+
+    # Show response files
+    typer.echo("Responses:")
+    for md_file in sorted(run_dir.glob("*.md")):
+        member = md_file.stem
+        content = md_file.read_text(encoding="utf-8")
+        # Show first few lines as preview
+        lines = content.split("\n")[:5]
+        preview = "\n".join(lines)
+        if len(content.split("\n")) > 5:
+            preview += "\n..."
+
+        console.print(Panel(preview, title=member, border_style="blue"))
+
+    typer.echo()
+    typer.echo(f"Full responses: {run_dir}")
+
+
 def _query_with_progress(council, prompt, json_output, console):
     """Query with spinner showing member progress."""
     if json_output:
