@@ -428,9 +428,11 @@ def design() -> None:
 @app.command(help="Draft or iterate the current breakdown.")
 def breakdown(
     apply: bool = typer.Option(
-        False, "--apply", help="Create tk tickets from breakdown.md."
+        False, "--apply", help="Create tickets from breakdown.md."
     ),
 ) -> None:
+    from datetime import datetime, timezone
+
     base = Path.cwd()
     feature = resolve_current_run(base)
     paths = ensure_run_layout(base, feature)
@@ -442,43 +444,63 @@ def breakdown(
 
     if not apply:
         typer.echo(f"Breakdown already exists at {breakdown_path}")
-        typer.echo("Use --apply to create tk tickets from the breakdown.")
+        typer.echo("Use --apply to create tickets from the breakdown.")
         return
 
-    tickets = parse_breakdown_tickets(breakdown_path.read_text(encoding="utf-8"))
-    if not tickets:
+    parsed_tickets = parse_breakdown_tickets(breakdown_path.read_text(encoding="utf-8"))
+    if not parsed_tickets:
         raise RuntimeError("No tickets found in breakdown.md")
 
+    # Get tickets directory for current branch
+    tickets_dir = _get_tickets_dir(base)
+    tickets_dir.mkdir(parents=True, exist_ok=True)
+
     created: dict[str, str] = {}
-    for ticket in tickets:
-        args = [
-            "tk",
-            "create",
-            ticket["title"],
-            "-p",
-            str(ticket["priority"]),
-        ]
-        if ticket["description"]:
-            args.extend(["-d", ticket["description"]])
-        acceptance = "\n".join(ticket["acceptance"]).strip()
-        if acceptance:
-            args.extend(["--acceptance", acceptance])
+    for parsed in parsed_tickets:
+        # Build ticket body from description and acceptance criteria
+        body_parts = []
+        if parsed["description"]:
+            body_parts.append(parsed["description"])
+        if parsed["acceptance"]:
+            body_parts.append("\n## Acceptance Criteria\n")
+            for item in parsed["acceptance"]:
+                body_parts.append(f"- [ ] {item}")
+        body = "\n".join(body_parts) if body_parts else ""
 
-        result = subprocess.run(args, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "tk create failed")
+        # Create ticket using internal module
+        ticket_id = generate_ticket_id(tickets_dir)
+        ticket = Ticket(
+            id=ticket_id,
+            status="open",
+            deps=[],  # Dependencies added in second pass
+            links=[],
+            created=datetime.now(timezone.utc),
+            type="task",
+            priority=parsed["priority"],
+            title=parsed["title"],
+            body=body,
+        )
 
-        ticket_id = result.stdout.strip()
-        created[ticket["breakdown_id"]] = ticket_id
-        typer.echo(f"Created ticket {ticket_id} for {ticket['breakdown_id']}")
+        ticket_path = tickets_dir / f"{ticket_id}.md"
+        write_ticket(ticket, ticket_path)
+        created[parsed["breakdown_id"]] = ticket_id
+        typer.echo(f"Created ticket {ticket_id} for {parsed['breakdown_id']}")
 
-    for ticket in tickets:
-        ticket_id = created.get(ticket["breakdown_id"])
-        for dep in ticket["depends_on"]:
-            dep_id = created.get(dep, dep)
-            result = subprocess.run(["tk", "dep", ticket_id, dep_id], text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"tk dep failed for {ticket_id} -> {dep_id}")
+    # Second pass: add dependencies
+    for parsed in parsed_tickets:
+        ticket_id = created.get(parsed["breakdown_id"])
+        if not ticket_id:
+            continue
+        deps_to_add = []
+        for dep in parsed["depends_on"]:
+            dep_id = created.get(dep, dep)  # Use mapped ID or original if external
+            deps_to_add.append(dep_id)
+
+        if deps_to_add:
+            ticket_path = tickets_dir / f"{ticket_id}.md"
+            ticket = read_ticket(ticket_path)
+            ticket.deps = deps_to_add
+            write_ticket(ticket, ticket_path)
 
     state = read_json(paths["state_json"])
     state["tickets"] = {**state.get("tickets", {}), **created}
