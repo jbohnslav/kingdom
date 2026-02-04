@@ -1,0 +1,22 @@
+---
+id: kin-55a3
+status: closed
+deps: [kin-ace6]
+links: []
+created: 2026-02-04T21:22:26Z
+type: task
+priority: 1
+assignee: Jim Robinson-Bohnslav
+---
+# Add new layout functions
+
+Add ensure_base_layout() for .kd/branches/, backlog/, archive/, worktrees/. Add ensure_branch_layout() for branch folders with design.md, breakdown.md, learnings.md, tickets/, logs/, sessions/, state.json.
+
+## Acceptance Criteria
+
+- [ ] ensure_base_layout() creates new directory structure
+- [ ] ensure_branch_layout() creates branch folder with all subdirs
+- [ ] logs/ and sessions/ directories created for council
+- [ ] config.json preserved
+- [ ] Old functions still work (not removed yet)
+
