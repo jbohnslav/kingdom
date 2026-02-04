@@ -310,3 +310,162 @@ def write_ticket(ticket: Ticket, path: Path) -> None:
     content = serialize_ticket(ticket)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def list_tickets(directory: Path) -> list[Ticket]:
+    """List all tickets in a directory, sorted by priority then created date.
+
+    Args:
+        directory: Path to the directory containing ticket files.
+
+    Returns:
+        List of Ticket objects sorted by priority (ascending, 0 is highest)
+        then by created date (ascending, oldest first).
+    """
+    if not directory.exists():
+        return []
+
+    tickets: list[Ticket] = []
+    for ticket_file in directory.glob("*.md"):
+        try:
+            ticket = read_ticket(ticket_file)
+            tickets.append(ticket)
+        except (ValueError, FileNotFoundError):
+            # Skip invalid ticket files
+            continue
+
+    # Sort by priority (ascending) then created date (ascending)
+    tickets.sort(key=lambda t: (t.priority, t.created))
+    return tickets
+
+
+class AmbiguousTicketMatch(Exception):
+    """Raised when a partial ID matches multiple tickets."""
+
+    def __init__(self, partial_id: str, matches: list[tuple[Ticket, Path]]) -> None:
+        self.partial_id = partial_id
+        self.matches = matches
+        match_ids = [t.id for t, _ in matches]
+        super().__init__(
+            f"Partial ID '{partial_id}' matches multiple tickets: {', '.join(match_ids)}"
+        )
+
+
+def find_ticket(base: Path, partial_id: str) -> tuple[Ticket, Path] | None:
+    """Find a ticket by partial ID matching.
+
+    Searches across branches/*/tickets/, backlog/tickets/, and archive/*/tickets/.
+    Partial IDs can be specified with or without the 'kin-' prefix.
+
+    Args:
+        base: Project root directory.
+        partial_id: Full or partial ticket ID (e.g., "a1b2" or "kin-a1b2").
+
+    Returns:
+        Tuple of (Ticket, Path) if found, None if not found.
+
+    Raises:
+        AmbiguousTicketMatch: If multiple tickets match the partial ID.
+    """
+    # Import here to avoid circular imports
+    from kingdom.state import archive_root, backlog_root, branches_root
+
+    # Normalize partial_id: remove 'kin-' prefix if present for matching
+    search_id = partial_id.lower()
+    if search_id.startswith("kin-"):
+        search_id = search_id[4:]
+
+    matches: list[tuple[Ticket, Path]] = []
+
+    # Build list of directories to search
+    search_dirs: list[Path] = []
+
+    # branches/*/tickets/
+    branches_dir = branches_root(base)
+    if branches_dir.exists():
+        for branch_dir in branches_dir.iterdir():
+            if branch_dir.is_dir():
+                tickets_dir = branch_dir / "tickets"
+                if tickets_dir.exists():
+                    search_dirs.append(tickets_dir)
+
+    # backlog/tickets/
+    backlog_tickets = backlog_root(base) / "tickets"
+    if backlog_tickets.exists():
+        search_dirs.append(backlog_tickets)
+
+    # archive/*/tickets/
+    archive_dir = archive_root(base)
+    if archive_dir.exists():
+        for archive_item in archive_dir.iterdir():
+            if archive_item.is_dir():
+                tickets_dir = archive_item / "tickets"
+                if tickets_dir.exists():
+                    search_dirs.append(tickets_dir)
+
+    # Search all directories
+    for search_dir in search_dirs:
+        for ticket_file in search_dir.glob("*.md"):
+            # Check if filename matches (kin-XXXX.md)
+            file_id = ticket_file.stem.lower()
+            if file_id.startswith("kin-"):
+                file_id_suffix = file_id[4:]
+            else:
+                file_id_suffix = file_id
+
+            # Match if partial_id is a prefix of or equals the file ID suffix
+            if file_id_suffix.startswith(search_id) or file_id.startswith(f"kin-{search_id}"):
+                try:
+                    ticket = read_ticket(ticket_file)
+                    matches.append((ticket, ticket_file))
+                except (ValueError, FileNotFoundError):
+                    continue
+
+    if not matches:
+        return None
+
+    if len(matches) > 1:
+        raise AmbiguousTicketMatch(partial_id, matches)
+
+    return matches[0]
+
+
+def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
+    """Move a ticket file to a new directory.
+
+    Args:
+        ticket_path: Path to the ticket file to move.
+        dest_dir: Destination directory.
+
+    Returns:
+        New path to the moved ticket file.
+
+    Raises:
+        FileNotFoundError: If the ticket file doesn't exist.
+    """
+    if not ticket_path.exists():
+        raise FileNotFoundError(f"Ticket file not found: {ticket_path}")
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    new_path = dest_dir / ticket_path.name
+    ticket_path.rename(new_path)
+    return new_path
+
+
+def get_ticket_location(base: Path, ticket_id: str) -> Path | None:
+    """Find where a ticket file is located.
+
+    Args:
+        base: Project root directory.
+        ticket_id: Full or partial ticket ID.
+
+    Returns:
+        Full path to the ticket file, or None if not found.
+
+    Raises:
+        AmbiguousTicketMatch: If multiple tickets match the ID.
+    """
+    result = find_ticket(base, ticket_id)
+    if result is None:
+        return None
+    return result[1]

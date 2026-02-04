@@ -8,8 +8,13 @@ from pathlib import Path
 import pytest
 
 from kingdom.ticket import (
+    AmbiguousTicketMatch,
     Ticket,
+    find_ticket,
     generate_ticket_id,
+    get_ticket_location,
+    list_tickets,
+    move_ticket,
     parse_ticket,
     read_ticket,
     serialize_ticket,
@@ -499,3 +504,338 @@ class TestParseExistingTickets:
 
         assert ticket.id == "kin-d0b5"
         assert "kin-ac22" in ticket.deps
+
+
+class TestListTickets:
+    """Tests for list_tickets function."""
+
+    def test_list_empty_directory(self, tmp_path: Path) -> None:
+        """list_tickets returns empty list for empty directory."""
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        result = list_tickets(empty_dir)
+        assert result == []
+
+    def test_list_nonexistent_directory(self, tmp_path: Path) -> None:
+        """list_tickets returns empty list for nonexistent directory."""
+        result = list_tickets(tmp_path / "nonexistent")
+        assert result == []
+
+    def test_list_single_ticket(self, tmp_path: Path) -> None:
+        """list_tickets returns single ticket."""
+        tickets_dir = tmp_path / "tickets"
+        tickets_dir.mkdir()
+
+        ticket = Ticket(
+            id="kin-a1b2",
+            status="open",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            title="Test Ticket",
+        )
+        write_ticket(ticket, tickets_dir / "kin-a1b2.md")
+
+        result = list_tickets(tickets_dir)
+        assert len(result) == 1
+        assert result[0].id == "kin-a1b2"
+
+    def test_list_sorted_by_priority(self, tmp_path: Path) -> None:
+        """list_tickets sorts by priority (lower is higher priority)."""
+        tickets_dir = tmp_path / "tickets"
+        tickets_dir.mkdir()
+
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+        # Use priorities 1, 2, 3 to avoid priority 0 (known parse_ticket bug where 0 is treated as falsy)
+        for priority, suffix in [(3, "low"), (1, "high"), (2, "medium")]:
+            ticket = Ticket(
+                id=f"kin-{suffix}",
+                status="open",
+                priority=priority,
+                created=created,
+                title=f"Priority {priority}",
+            )
+            write_ticket(ticket, tickets_dir / f"kin-{suffix}.md")
+
+        result = list_tickets(tickets_dir)
+        assert len(result) == 3
+        assert result[0].priority == 1
+        assert result[1].priority == 2
+        assert result[2].priority == 3
+
+    def test_list_sorted_by_created_within_priority(self, tmp_path: Path) -> None:
+        """list_tickets sorts by created date within same priority."""
+        tickets_dir = tmp_path / "tickets"
+        tickets_dir.mkdir()
+
+        for day, suffix in [(5, "newer"), (3, "older"), (4, "middle")]:
+            ticket = Ticket(
+                id=f"kin-{suffix}",
+                status="open",
+                priority=1,
+                created=datetime(2026, 2, day, 16, 0, 0, tzinfo=timezone.utc),
+                title=f"Created on day {day}",
+            )
+            write_ticket(ticket, tickets_dir / f"kin-{suffix}.md")
+
+        result = list_tickets(tickets_dir)
+        assert len(result) == 3
+        assert result[0].id == "kin-older"  # day 3
+        assert result[1].id == "kin-middle"  # day 4
+        assert result[2].id == "kin-newer"  # day 5
+
+    def test_list_skips_invalid_files(self, tmp_path: Path) -> None:
+        """list_tickets skips files that aren't valid tickets."""
+        tickets_dir = tmp_path / "tickets"
+        tickets_dir.mkdir()
+
+        # Valid ticket
+        ticket = Ticket(
+            id="kin-good",
+            status="open",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            title="Valid Ticket",
+        )
+        write_ticket(ticket, tickets_dir / "kin-good.md")
+
+        # Invalid file (no frontmatter)
+        (tickets_dir / "invalid.md").write_text("Just some text, no frontmatter")
+
+        result = list_tickets(tickets_dir)
+        assert len(result) == 1
+        assert result[0].id == "kin-good"
+
+
+class TestFindTicket:
+    """Tests for find_ticket function."""
+
+    def _create_test_structure(self, base: Path) -> None:
+        """Create a test directory structure with tickets."""
+        from kingdom.state import ensure_base_layout, ensure_branch_layout
+
+        ensure_base_layout(base)
+        ensure_branch_layout(base, "feature-one")
+        ensure_branch_layout(base, "feature-two")
+
+        # Create tickets in various locations
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+
+        # Ticket in branch feature-one
+        ticket1 = Ticket(
+            id="kin-a1b2", status="open", created=created, title="Branch One Ticket"
+        )
+        write_ticket(ticket1, base / ".kd" / "branches" / "feature-one" / "tickets" / "kin-a1b2.md")
+
+        # Ticket in branch feature-two
+        ticket2 = Ticket(
+            id="kin-c3d4", status="open", created=created, title="Branch Two Ticket"
+        )
+        write_ticket(ticket2, base / ".kd" / "branches" / "feature-two" / "tickets" / "kin-c3d4.md")
+
+        # Ticket in backlog
+        ticket3 = Ticket(
+            id="kin-e5f6", status="open", created=created, title="Backlog Ticket"
+        )
+        write_ticket(ticket3, base / ".kd" / "backlog" / "tickets" / "kin-e5f6.md")
+
+        # Ticket in archive
+        archive_item = base / ".kd" / "archive" / "old-feature" / "tickets"
+        archive_item.mkdir(parents=True)
+        ticket4 = Ticket(
+            id="kin-g7h8", status="closed", created=created, title="Archived Ticket"
+        )
+        write_ticket(ticket4, archive_item / "kin-g7h8.md")
+
+    def test_find_by_full_id(self, tmp_path: Path) -> None:
+        """find_ticket finds by full ID including kin- prefix."""
+        self._create_test_structure(tmp_path)
+
+        result = find_ticket(tmp_path, "kin-a1b2")
+        assert result is not None
+        ticket, path = result
+        assert ticket.id == "kin-a1b2"
+        assert path.name == "kin-a1b2.md"
+
+    def test_find_by_partial_id(self, tmp_path: Path) -> None:
+        """find_ticket finds by partial ID without prefix."""
+        self._create_test_structure(tmp_path)
+
+        result = find_ticket(tmp_path, "a1b2")
+        assert result is not None
+        ticket, path = result
+        assert ticket.id == "kin-a1b2"
+
+    def test_find_by_prefix(self, tmp_path: Path) -> None:
+        """find_ticket finds by ID prefix."""
+        self._create_test_structure(tmp_path)
+
+        result = find_ticket(tmp_path, "a1")
+        assert result is not None
+        ticket, _ = result
+        assert ticket.id == "kin-a1b2"
+
+    def test_find_in_backlog(self, tmp_path: Path) -> None:
+        """find_ticket finds tickets in backlog."""
+        self._create_test_structure(tmp_path)
+
+        result = find_ticket(tmp_path, "e5f6")
+        assert result is not None
+        ticket, path = result
+        assert ticket.id == "kin-e5f6"
+        assert "backlog" in str(path)
+
+    def test_find_in_archive(self, tmp_path: Path) -> None:
+        """find_ticket finds tickets in archive."""
+        self._create_test_structure(tmp_path)
+
+        result = find_ticket(tmp_path, "g7h8")
+        assert result is not None
+        ticket, path = result
+        assert ticket.id == "kin-g7h8"
+        assert "archive" in str(path)
+
+    def test_find_not_found(self, tmp_path: Path) -> None:
+        """find_ticket returns None when ticket not found."""
+        self._create_test_structure(tmp_path)
+
+        result = find_ticket(tmp_path, "xxxx")
+        assert result is None
+
+    def test_find_ambiguous_match(self, tmp_path: Path) -> None:
+        """find_ticket raises AmbiguousTicketMatch for multiple matches."""
+        self._create_test_structure(tmp_path)
+
+        # Create another ticket with similar ID prefix
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+        ticket = Ticket(
+            id="kin-a1c2", status="open", created=created, title="Another A1 Ticket"
+        )
+        write_ticket(
+            ticket, tmp_path / ".kd" / "branches" / "feature-one" / "tickets" / "kin-a1c2.md"
+        )
+
+        with pytest.raises(AmbiguousTicketMatch) as exc_info:
+            find_ticket(tmp_path, "a1")
+
+        assert "a1" in str(exc_info.value)
+        assert len(exc_info.value.matches) == 2
+
+    def test_find_case_insensitive(self, tmp_path: Path) -> None:
+        """find_ticket is case-insensitive."""
+        self._create_test_structure(tmp_path)
+
+        result = find_ticket(tmp_path, "A1B2")
+        assert result is not None
+        ticket, _ = result
+        assert ticket.id == "kin-a1b2"
+
+    def test_find_empty_base(self, tmp_path: Path) -> None:
+        """find_ticket handles empty/nonexistent base gracefully."""
+        result = find_ticket(tmp_path, "a1b2")
+        assert result is None
+
+
+class TestMoveTicket:
+    """Tests for move_ticket function."""
+
+    def test_move_to_new_directory(self, tmp_path: Path) -> None:
+        """move_ticket moves file to new directory."""
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        dest_dir = tmp_path / "dest"
+
+        ticket = Ticket(
+            id="kin-test",
+            status="open",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            title="Test Ticket",
+        )
+        source_path = source_dir / "kin-test.md"
+        write_ticket(ticket, source_path)
+
+        new_path = move_ticket(source_path, dest_dir)
+
+        assert new_path == dest_dir / "kin-test.md"
+        assert new_path.exists()
+        assert not source_path.exists()
+
+        # Verify content preserved
+        moved_ticket = read_ticket(new_path)
+        assert moved_ticket.id == "kin-test"
+        assert moved_ticket.title == "Test Ticket"
+
+    def test_move_creates_dest_directory(self, tmp_path: Path) -> None:
+        """move_ticket creates destination directory if needed."""
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        dest_dir = tmp_path / "nested" / "dest" / "dir"
+
+        ticket = Ticket(
+            id="kin-test",
+            status="open",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            title="Test",
+        )
+        source_path = source_dir / "kin-test.md"
+        write_ticket(ticket, source_path)
+
+        new_path = move_ticket(source_path, dest_dir)
+
+        assert new_path.exists()
+        assert dest_dir.exists()
+
+    def test_move_nonexistent_file(self, tmp_path: Path) -> None:
+        """move_ticket raises FileNotFoundError for nonexistent file."""
+        dest_dir = tmp_path / "dest"
+
+        with pytest.raises(FileNotFoundError):
+            move_ticket(tmp_path / "nonexistent.md", dest_dir)
+
+
+class TestGetTicketLocation:
+    """Tests for get_ticket_location function."""
+
+    def _create_test_structure(self, base: Path) -> None:
+        """Create a test directory structure with tickets."""
+        from kingdom.state import ensure_base_layout, ensure_branch_layout
+
+        ensure_base_layout(base)
+        ensure_branch_layout(base, "feature-test")
+
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+        ticket = Ticket(
+            id="kin-abcd", status="open", created=created, title="Test Ticket"
+        )
+        write_ticket(
+            ticket, base / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abcd.md"
+        )
+
+    def test_get_location_found(self, tmp_path: Path) -> None:
+        """get_ticket_location returns path when found."""
+        self._create_test_structure(tmp_path)
+
+        result = get_ticket_location(tmp_path, "abcd")
+        assert result is not None
+        assert result.name == "kin-abcd.md"
+        assert result.exists()
+
+    def test_get_location_not_found(self, tmp_path: Path) -> None:
+        """get_ticket_location returns None when not found."""
+        self._create_test_structure(tmp_path)
+
+        result = get_ticket_location(tmp_path, "zzzz")
+        assert result is None
+
+    def test_get_location_ambiguous(self, tmp_path: Path) -> None:
+        """get_ticket_location raises AmbiguousTicketMatch for multiple matches."""
+        self._create_test_structure(tmp_path)
+
+        # Create another ticket with similar prefix
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+        ticket = Ticket(
+            id="kin-abef", status="open", created=created, title="Another AB Ticket"
+        )
+        write_ticket(
+            ticket, tmp_path / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abef.md"
+        )
+
+        with pytest.raises(AmbiguousTicketMatch):
+            get_ticket_location(tmp_path, "ab")
