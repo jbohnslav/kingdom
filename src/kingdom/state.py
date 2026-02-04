@@ -87,7 +87,8 @@ def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
         gitignore_content = """# Kingdom operational state (not tracked)
 *.json
 *.jsonl
-runs/**/logs/
+*.log
+*.session
 worktrees/
 """
         gitignore_path.write_text(gitignore_content, encoding="utf-8")
