@@ -378,6 +378,122 @@ def council_last() -> None:
         typer.echo(f"  {f.name}")
 
 
+@council_app.command("followup", help="Follow up with a specific council member.")
+def council_followup(
+    member: Annotated[str, typer.Argument(help="Member name (claude, codex, agent).")],
+    prompt: Annotated[str, typer.Argument(help="Follow-up prompt.")],
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Output JSON format.")
+    ] = False,
+) -> None:
+    """Send a follow-up prompt to a specific council member."""
+    from datetime import datetime, timezone
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+
+    logs_dir = logs_root(base, feature)
+    sessions_dir = sessions_root(base, feature)
+    council_logs_dir = council_logs_root(base, feature)
+
+    # Ensure directories exist
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    council_logs_dir.mkdir(parents=True, exist_ok=True)
+
+    console = Console()
+
+    c = Council.create(logs_dir=logs_dir)
+    c.load_sessions(sessions_dir)
+
+    # Find the member
+    council_member = c.get_member(member)
+    if council_member is None:
+        available = [m.name for m in c.members]
+        typer.echo(f"Unknown member: {member}")
+        typer.echo(f"Available members: {', '.join(available)}")
+        raise typer.Exit(code=1)
+
+    # Query just this member
+    if not json_output:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task(f"Querying {member}...", total=None)
+            response = council_member.query(prompt, c.timeout)
+            progress.update(task, description="Done")
+    else:
+        response = council_member.query(prompt, c.timeout)
+
+    c.save_sessions(sessions_dir)
+
+    # Find the most recent run to append to, or create a new one
+    runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
+    if runs:
+        run_dir = max(runs, key=lambda d: d.stat().st_mtime)
+    else:
+        # Create a new run bundle
+        from kingdom.council import create_run_bundle
+        bundle = create_run_bundle(council_logs_dir, prompt, {member: response})
+        run_dir = bundle["run_dir"]
+
+    # Append to member's response file
+    md_path = run_dir / f"{member}.md"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # Build follow-up content
+    followup_content = f"\n\n---\n\n## Follow-up ({timestamp})\n\n**Prompt:** {prompt}\n\n"
+    if response.error:
+        followup_content += f"> **Error:** {response.error}\n\n"
+    followup_content += response.text if response.text else "*No response*"
+    followup_content += f"\n\n*Elapsed: {response.elapsed:.1f}s*"
+
+    # Append or create the file
+    if md_path.exists():
+        existing = md_path.read_text(encoding="utf-8")
+        md_path.write_text(existing + followup_content, encoding="utf-8")
+    else:
+        # Create new file for this member
+        content = f"# {member}\n{followup_content}"
+        md_path.write_text(content, encoding="utf-8")
+
+    if json_output:
+        output = {
+            "member": member,
+            "response": {
+                "text": response.text,
+                "error": response.error,
+                "elapsed": response.elapsed,
+            },
+            "run_dir": str(run_dir),
+            "response_path": str(md_path),
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        # Display the response
+        if response.error:
+            content = f"> **Error:** {response.error}\n\n"
+            if response.text:
+                content += response.text
+            else:
+                content += "*No response*"
+        else:
+            content = response.text if response.text else "*No response*"
+
+        panel = Panel(
+            Markdown(content),
+            title=member,
+            border_style="blue",
+        )
+        console.print(panel)
+        console.print(f"[dim]{response.elapsed:.1f}s[/dim]", justify="right")
+        console.print()
+        console.print(f"[dim]Appended to: {md_path}[/dim]")
+
+
 @council_app.command("show", help="Display a council run.")
 def council_show(
     run_id: Annotated[str, typer.Argument(help="Run ID (e.g., run-4f3a) or 'last'.")],
