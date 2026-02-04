@@ -132,7 +132,7 @@ def test_gitignore_content_matches_spec() -> None:
         gitignore = (base / ".kd" / ".gitignore").read_text()
         assert "*.json" in gitignore
         assert "*.jsonl" in gitignore
-        assert "runs/**/logs/" in gitignore
+        assert "**/logs/" in gitignore
         assert "worktrees/" in gitignore
 
 

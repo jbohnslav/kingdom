@@ -197,13 +197,13 @@ class TestEnsureBaseLayout:
         ensure_base_layout(tmp_path)
         assert (tmp_path / ".kd" / "branches").is_dir()
 
-    def test_creates_gitignore_with_branches_pattern(self, tmp_path: Path) -> None:
-        """ensure_base_layout creates .gitignore with branches/**/logs/ pattern."""
+    def test_creates_gitignore_with_logs_pattern(self, tmp_path: Path) -> None:
+        """ensure_base_layout creates .gitignore with **/logs/ pattern."""
         ensure_base_layout(tmp_path)
         gitignore_path = tmp_path / ".kd" / ".gitignore"
         assert gitignore_path.exists()
         content = gitignore_path.read_text()
-        assert "branches/**/logs/" in content
+        assert "**/logs/" in content
 
 
 class TestEnsureBranchLayout:
