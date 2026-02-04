@@ -22,11 +22,14 @@ from kingdom.council import Council, create_run_bundle
 from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
 from kingdom.design import build_design_template
 from kingdom.state import (
+    branch_root,
     clear_current_run,
     council_logs_root,
     ensure_base_layout,
+    ensure_branch_layout,
     ensure_run_layout,
     logs_root,
+    normalize_branch_name,
     read_json,
     resolve_current_run,
     sessions_root,
@@ -106,8 +109,31 @@ def init(
     typer.echo(f"Initialized: {paths['state_root']}")
 
 
-@app.command(help="Initialize a run and state.")
-def start(feature: str = typer.Argument(..., help="Feature name for the run.")) -> None:
+def get_current_git_branch() -> str | None:
+    """Get the current git branch name, or None if detached HEAD."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    # "HEAD" means detached HEAD state
+    if branch == "HEAD":
+        return None
+    return branch
+
+
+@app.command(help="Initialize a branch-based run and state.")
+def start(
+    branch: Annotated[
+        Optional[str], typer.Argument(help="Branch name (defaults to current git branch).")
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Force start even if a run is already active.")
+    ] = False,
+) -> None:
     base = Path.cwd()
 
     # Auto-init if .kd/ doesn't exist (with git check)
@@ -116,12 +142,41 @@ def start(feature: str = typer.Argument(..., help="Feature name for the run.")) 
             typer.echo("Error: Not a git repository. Run `kd init --no-git` first.")
             raise typer.Exit(code=1)
         typer.echo("Auto-initializing .kd/ directory...")
+        ensure_base_layout(base)
 
-    paths = ensure_run_layout(base, feature)
-    set_current_run(base, feature)
-    ensure_feature_branch(feature)
-    typer.echo(f"Initialized feature: {feature}")
-    typer.echo(f"Location: {paths['run_root']}")
+    # Check for existing current run
+    current_path = state_root(base) / "current"
+    if current_path.exists() and not force:
+        existing = current_path.read_text(encoding="utf-8").strip()
+        typer.echo(f"Error: A run is already active: {existing}")
+        typer.echo("Use --force to override, or run `kd done` first.")
+        raise typer.Exit(code=1)
+
+    # Determine branch name
+    if branch is None:
+        branch = get_current_git_branch()
+        if branch is None:
+            typer.echo("Error: Detached HEAD state. Please provide a branch name:")
+            typer.echo("  kd start <branch-name>")
+            raise typer.Exit(code=1)
+
+    # Normalize branch name for directory
+    normalized = normalize_branch_name(branch)
+
+    # Create branch layout
+    branch_dir = ensure_branch_layout(base, branch)
+
+    # Write .kd/current with normalized name
+    set_current_run(base, normalized)
+
+    # Update state.json with original branch name
+    state_path = branch_dir / "state.json"
+    state = read_json(state_path)
+    state["branch"] = branch
+    write_json(state_path, state)
+
+    typer.echo(f"Started run for branch: {branch}")
+    typer.echo(f"Location: {branch_dir}")
 
 
 @app.command(help="Mark the current run as done and clear it.")
