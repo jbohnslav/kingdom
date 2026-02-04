@@ -416,8 +416,12 @@ def dev(ticket: str | None = typer.Argument(None, help="Optional ticket id.")) -
     typer.echo("`kd dev` is reserved. Use `kd peasant <ticket>` in the MVP.")
 
 
-@app.command(help="Show current phase, run, and ticket status.")
-def status() -> None:
+@app.command(help="Show current branch, design doc, assignment, and ready tickets.")
+def status(
+    output_json: Annotated[
+        bool, typer.Option("--json", help="Output as JSON for machine consumption.")
+    ] = False,
+) -> None:
     base = Path.cwd()
     try:
         feature = resolve_current_run(base)
@@ -427,22 +431,68 @@ def status() -> None:
 
     paths = ensure_run_layout(base, feature)
     state = read_json(paths["state_json"])
-    typer.echo(f"Run: {feature}")
-    if state:
-        typer.echo(f"State: {state}")
 
-    server = derive_server_name(base)
-    try:
-        windows = list_windows(server, feature)
-        typer.echo(f"Tmux windows: {', '.join(windows) if windows else 'none'}")
-    except RuntimeError as exc:
-        typer.echo(f"Tmux: {exc}")
+    # Get git branch
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    branch = result.stdout.strip() if result.returncode == 0 else None
 
-    tickets = state.get("tickets", {})
-    if tickets:
-        typer.echo("Tickets:")
-        for plan_id, ticket_id in tickets.items():
-            typer.echo(f"  {plan_id} -> {ticket_id}")
+    # Get design doc path (relative to base)
+    design_path = paths["design_md"]
+    design_path_str = str(design_path.relative_to(base)) if design_path.exists() else None
+
+    # Get current assignment from state
+    assignment = None
+    assigned_ticket_id = state.get("peasant", {}).get("ticket")
+    if assigned_ticket_id:
+        # Try to get ticket title via tk show
+        result = subprocess.run(
+            ["tk", "show", assigned_ticket_id],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            # Parse first heading line for title
+            for line in result.stdout.splitlines():
+                if line.startswith("# "):
+                    assignment = {"id": assigned_ticket_id, "title": line[2:].strip()}
+                    break
+            if not assignment:
+                assignment = {"id": assigned_ticket_id, "title": None}
+        else:
+            assignment = {"id": assigned_ticket_id, "title": None}
+
+    # Get ready ticket count via tk ready
+    ready_count = 0
+    result = subprocess.run(["tk", "ready"], capture_output=True, text=True)
+    if result.returncode == 0:
+        ready_count = len([line for line in result.stdout.strip().splitlines() if line])
+
+    # Build output structure
+    output = {
+        "branch": branch,
+        "design_path": design_path_str,
+        "assignment": assignment,
+        "ready_count": ready_count,
+    }
+
+    if output_json:
+        typer.echo(json.dumps(output, indent=2))
+    else:
+        # Human-readable output
+        if branch:
+            typer.echo(f"Branch: {branch}")
+        if design_path_str:
+            typer.echo(f"Design: {design_path_str}")
+        typer.echo()
+        if assignment:
+            title_part = f" - {assignment['title']}" if assignment.get("title") else ""
+            typer.echo(f"Current assignment: {assignment['id']}{title_part}")
+            typer.echo()
+        typer.echo(f"Ready tickets: {ready_count} (run `tk ready` to list)")
 
 
 @app.command(help="Attach to hand/council/peasant windows.")
