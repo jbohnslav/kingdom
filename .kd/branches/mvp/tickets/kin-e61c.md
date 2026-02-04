@@ -1,6 +1,6 @@
 ---
 id: kin-e61c
-status: open
+status: closed
 deps: [kin-9758]
 links: []
 created: 2026-02-04T02:47:44Z
@@ -17,4 +17,3 @@ Render saved council run showing summary, errors, and transcript paths
 - kd council show <run_id> displays human-readable summary
 - Shows which members failed
 - Shows paths to full transcripts
-
