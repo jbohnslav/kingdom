@@ -1,0 +1,12 @@
+---
+id: kin-b418
+status: open
+deps: []
+links: []
+created: 2026-02-04T22:22:50Z
+type: task
+priority: 1
+---
+# Update smoke.sh to use kd ticket instead of tk
+
+Replace tk command checks with kd ticket commands in scripts/smoke.sh
