@@ -21,7 +21,7 @@ Not in scope:
 1. `kd start <feature>` initializes state, branches, and tmux session.
 2. `kd chat` starts the Hand in a persistent window.
 3. `kd design` initializes `design.md` (template).
-4. In `kd chat`, use `/design` to iterate on `design.md` with Council input until approved.
+4. In `kd chat`, use `/design` to iterate on `design.md` with Council input until approved. When approved, use `/design approve` to switch directly into Breakdown mode.
 5. `kd breakdown` initializes `breakdown.md` (template).
 6. In `kd chat`, use `/breakdown` to iterate on `breakdown.md` with Council input until approved.
 7. `kd breakdown --apply` creates `tk` tickets from `breakdown.md`.

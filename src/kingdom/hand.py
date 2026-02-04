@@ -275,8 +275,16 @@ def main() -> None:
                 continue
 
             if cmd == "/design approve":
-                active_mode = None
-                print("Design marked approved. Design mode disabled.")
+                active_mode = "breakdown"
+                ensure_design_initialized(design_path, feature=feature)
+                current = ensure_breakdown_initialized(breakdown_path, feature=feature)
+                print("Design marked approved. Switching to Breakdown mode.")
+                print(f"Breakdown mode enabled. Editing: {breakdown_path}")
+                print(f"Design source: {design_path}")
+                print("Commands: /breakdown show, /breakdown off, /breakdown approve")
+                print()
+                print(current.rstrip())
+                print()
                 continue
 
             print(f"Unknown design command: {prompt}")
