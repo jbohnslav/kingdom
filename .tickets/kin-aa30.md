@@ -1,6 +1,6 @@
 ---
 id: kin-aa30
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-04T02:47:46Z

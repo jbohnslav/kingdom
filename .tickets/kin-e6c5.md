@@ -1,6 +1,6 @@
 ---
 id: kin-e6c5
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-26T21:13:08Z
