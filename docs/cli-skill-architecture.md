@@ -37,6 +37,33 @@ Insights from third-party analysis:
 
 **The reframe:** The "Hand" isn't a chat interface. The Hand is **your preferred coding agent + a Kingdom skill + the kd CLI**.
 
+## Roles: King, Hand, and Council
+
+Understanding the metaphor is critical to understanding the workflow:
+
+- **King** = You (the human). Final decision-maker. Reads council advice directly.
+- **Hand** = Your primary coding agent (Claude Code, Cursor, etc.). Always at your side. Executes your decisions.
+- **Council** = Other models (GPT, Gemini, etc.). Advisors you consult for outside perspectives your Hand might miss.
+
+**Why this matters:** The point of the Council is to get perspectives *different from your Hand*. If the Hand auto-synthesizes council responses, you're filtering outside perspectives through the same agent you always use—defeating the purpose.
+
+**The flow:**
+```
+King works with Hand (normal coding workflow)
+    ↓
+King wants outside perspectives
+    ↓
+King runs: kd council ask "..."
+    ↓
+Council members respond DIRECTLY to King (not filtered by Hand)
+    ↓
+King reads all responses, decides what to adopt
+    ↓
+King tells Hand what to do
+```
+
+The Council provides perspectives. The King decides. The Hand executes.
+
 ## Proposed Architecture
 
 ```
@@ -91,53 +118,111 @@ The Python REPL is no longer the primary interface. Users interact through their
 
 ```bash
 $ kd council ask "What's the best approach for OAuth refresh?"
-
-# Returns JSON (for agent consumption):
-{
-  "run_id": "council-2026-02-04T18:12:09Z-4f3a",
-  "synthesis": "The recommended approach combines...",
-  "responses": {
-    "claude": { "text": "...", "elapsed": 2.1 },
-    "codex": { "text": "...", "elapsed": 1.8 },
-    "agent": { "text": "...", "elapsed": 2.4 }
-  },
-  "paths": {
-    "run_dir": ".kd/runs/oauth-refresh/logs/council/council-2026-02-04T18:12:09Z-4f3a/",
-    "summary_md": ".kd/runs/oauth-refresh/logs/council/council-2026-02-04T18:12:09Z-4f3a/summary.md"
-  }
-}
 ```
 
-The synthesis happens inside Kingdom — that's the value prop. The host agent gets one synthesized answer plus raw responses if needed, and a **run_id** that points to the saved transcripts for later inspection.
+**No auto-synthesis.** The King reads council responses directly and decides what to adopt. This is the core value prop: getting perspectives *outside* your Hand's viewpoint.
 
-### 3. Design Iteration Moves to the Host Agent
+#### Terminal Output (Rich-based)
 
-Instead of `/design` mode in a Kingdom REPL:
+Council responses are displayed using [Rich](https://rich.readthedocs.io/) for readable terminal output:
 
 ```
-User: "Help me design OAuth refresh handling"
+╭─────────────────────── claude ───────────────────────╮
+│ For OAuth refresh, I recommend JWT with sliding      │
+│ expiration. The key insight is that you want to      │
+│ refresh proactively, not reactively...               │
+│                                                      │
+│ ```python                                            │
+│ def refresh_token(self):                             │
+│     if self.expires_at < now() + BUFFER:             │
+│         return self.client.refresh()                 │
+│ ```                                                  │
+╰──────────────────────────────────────────────────────╯
 
-Agent (with Kingdom skill):
-1. Reads current .kd/runs/oauth/design.md
-2. Calls: kd council ask "Given this design context: ... What should we add?"
-3. Reviews synthesis and advisor outputs (via run_id if needed), updates design.md directly
-4. Shows user the changes and references the council run_id
+╭─────────────────────── gemini ───────────────────────╮
+│ Token rotation is the critical pattern here. The     │
+│ upstream API supports refresh token rotation, which  │
+│ means each refresh returns a new refresh token...    │
+╰──────────────────────────────────────────────────────╯
+
+╭──────────────────────── gpt ─────────────────────────╮
+│ I found the `backoff` library which handles retry    │
+│ with exponential backoff elegantly. Combined with    │
+│ refresh-ahead pattern...                             │
+╰──────────────────────────────────────────────────────╯
+
+Saved to: .kd/runs/oauth/council/run-4f3a/
 ```
 
-The skill teaches the agent when to consult council and how to structure updates. The CLI makes council outputs **findable and debuggable** even when a member fails.
+**Why top-to-bottom panels (not side-by-side):**
+- Full terminal width for each response
+- Long responses and code blocks stay readable
+- Hand can still parse output if needed (clear panel headers)
+- Side-by-side falls apart with 3+ models and real content
+
+**Rich features used:**
+- `Panel` with model name as title
+- `Markdown` rendering inside panels (syntax highlighting for free)
+- `Progress` / `Spinner` showing which models are still running
+
+#### File Output (Always)
+
+Every council call saves responses to disk:
+
+```
+.kd/runs/<feature>/logs/council/<run_id>/
+├── claude.md      # Full response
+├── gemini.md      # Full response
+├── gpt.md         # Full response
+├── metadata.json  # Timing, errors, model versions
+└── errors.json    # If any member failed
+```
+
+The King reads in terminal for quick review. Files persist for:
+- Re-reading longer responses
+- Hand referencing when King says "use Gemini's approach from the council output"
+- Debugging when something goes wrong
+
+### 3. Design Iteration: King Reads Council Directly
+
+Instead of `/design` mode in a Kingdom REPL, and instead of Hand filtering council responses:
+
+```
+King: "I want to design OAuth refresh handling"
+
+King: kd council ask "What's the best approach for OAuth token refresh?"
+      # Reads all three responses in Rich panels
+      # Thinks: "I like Gemini's token rotation, GPT's backoff library,
+      #          but Claude's refresh-ahead timing logic is cleanest"
+
+King (to Hand): "Write the design using Claude's refresh-ahead approach
+                 with Gemini's token rotation pattern. Add the backoff
+                 library GPT found for retry logic."
+
+Hand: Updates design.md with the combined approach
+```
+
+**Key insight:** The King does the synthesis mentally, then directs the Hand. This preserves the value of outside perspectives—they're not filtered through the same agent that would have answered anyway.
+
+The CLI makes council outputs **findable and debuggable**. The files at `.kd/runs/.../council/<run_id>/` let Hand reference exactly what each council member said.
 
 ### 4. Breakdown → Tickets Becomes Cleaner
 
 ```
-User: "Break this down into tickets"
+King: "I want to break this design into tickets"
 
-Agent (with Kingdom skill):
-1. Reads design.md
-2. Calls: kd council ask "Break this design into tickets with dependencies: ..."
-3. Updates breakdown.md
-4. Calls: kd breakdown --apply (with user approval)
-5. Shows user the created tickets
+King: kd council ask "Break this design into tickets with dependencies: [design.md context]"
+      # Reads council responses showing different breakdown approaches
+      # Decides: "Gemini's 4-ticket structure makes sense, but GPT caught
+      #           a dependency Claude missed"
+
+King (to Hand): "Create the breakdown using Gemini's structure but add
+                 the dependency GPT identified between auth and storage"
+
+Hand: Updates breakdown.md, runs kd breakdown --apply
 ```
+
+The King sees multiple perspectives on how to structure the work, then directs the Hand.
 
 ### 5. The Skill Carries the Workflow Knowledge
 
@@ -158,13 +243,15 @@ description: Multi-model design and development workflow
 4. **Merge** — Human review of feature branch
 
 ## When to Use Council
-- Any design decision
-- Breaking down work
-- Code review
-- When uncertain and want multiple perspectives
+- Any design decision where you want outside perspectives
+- Breaking down work (multiple viewpoints on ticket structure)
+- Code review (catch things your Hand might miss)
+- When uncertain and want to see how different models approach the problem
 
 ## Commands
-- `kd council ask "prompt"` — Get multi-model synthesis
+- `kd council ask "prompt"` — Get perspectives from multiple models (you read and decide)
+- `kd council <member> "prompt"` — Follow up with specific council member
+- `kd council critique` — Have members evaluate each other's responses
 - `kd design show` — View current design
 - `kd breakdown show` — View current breakdown
 - `kd breakdown --apply` — Create tickets from breakdown
@@ -186,7 +273,7 @@ When iterating on design:
 
 3. **State is always external** — design.md, breakdown.md, tickets are the source of truth. No conversation state to lose.
 
-4. **Council remains Kingdom's value** — Multi-model orchestration and synthesis is what Kingdom adds, not a chat interface.
+4. **Council remains Kingdom's value** — Multi-model orchestration and direct access to outside perspectives is what Kingdom adds, not a chat interface or auto-synthesis.
 
 5. **Simpler codebase** — Remove REPL logic, focus on CLI commands and skill documentation.
 
@@ -194,13 +281,16 @@ When iterating on design:
 
 ### Council runs must be inspectable
 
-Every council call writes a bundle to disk keyed by `run_id`. These live under `.kd/runs/<feature>/logs/` and are **gitignored** (operational state), but provide visibility during the session:
+Every council call writes a bundle to disk keyed by `run_id`. These live under `.kd/runs/<feature>/logs/council/` and are **gitignored** (operational state), but provide visibility during the session:
 
-- `summary.md` (human-readable synthesis)
-- `claude.json` / `codex.jsonl` / `agent.json` (raw responses)
-- `errors.json` (if any member failed)
+- `claude.md` / `gemini.md` / `gpt.md` — Full responses in Markdown (readable, Hand can reference)
+- `metadata.json` — Timing, model versions, token counts
+- `errors.json` — If any member failed
+- `critiques/` — If `kd council critique` was run
 
-The durable record is the **result** of council consultation (updates to `design.md`, `breakdown.md`), not the raw council output. If you need to preserve a council run, copy the summary into `learnings.md` or reference it in the design doc.
+No `summary.md` or synthesis file—the King reads responses directly and synthesizes mentally.
+
+The durable record is the **result** of council consultation (updates to `design.md`, `breakdown.md`), not the raw council output. If you need to preserve insights from a council run, incorporate them into `design.md` or `learnings.md`.
 
 ### Session Continuity for Council Members
 
@@ -232,40 +322,84 @@ The incident where "write this to markdown" got routed to council is an interact
 
 ### `kd council ask "prompt"`
 
-Query all council members and return synthesized response.
+Query all council members. **No auto-synthesis**—King reads responses directly.
 
 ```bash
-kd council ask "prompt" [--json] [--no-synthesis] [--timeout SECONDS]
+kd council ask "prompt" [--json] [--timeout SECONDS] [--open]
 ```
+
+**Default output:** Rich panels to terminal (see above) + files saved to disk.
+
+**Flags:**
+- `--json` — Machine-readable output for scripting
+- `--timeout SECONDS` — Per-model timeout (default: 120)
+- `--open` — After saving, open response directory in `$EDITOR`
 
 Output (JSON mode):
 ```json
 {
   "run_id": "council-2026-02-04T18:12:09Z-4f3a",
-  "synthesis": "Combined recommendation...",
   "responses": {
     "claude": { "text": "...", "error": null, "elapsed": 2.1 },
-    "codex": { "text": "...", "error": null, "elapsed": 1.8 },
-    "agent": { "text": "...", "error": "Timeout", "elapsed": 30.0 }
+    "gemini": { "text": "...", "error": null, "elapsed": 1.8 },
+    "gpt": { "text": "...", "error": "Timeout", "elapsed": 30.0 }
   },
   "paths": {
     "run_dir": ".kd/runs/oauth-refresh/logs/council/council-2026-02-04T18:12:09Z-4f3a/",
-    "summary_md": ".kd/runs/oauth-refresh/logs/council/council-2026-02-04T18:12:09Z-4f3a/summary.md"
+    "responses": {
+      "claude": ".kd/runs/.../claude.md",
+      "gemini": ".kd/runs/.../gemini.md",
+      "gpt": ".kd/runs/.../gpt.md"
+    }
   }
 }
 ```
 
+Note: No `synthesis` field. King synthesizes by reading and deciding.
+
+### `kd council <member> "prompt"`
+
+Follow up with a specific council member within the session.
+
+```bash
+kd council gemini "What about offline scenarios?"
+kd council gpt "Show me how to use that backoff library"
+```
+
+Useful for iterating with one advisor before deciding. Each follow-up appends to that member's response file.
+
+### `kd council critique`
+
+Have council members anonymously evaluate each other's responses (inspired by LLM Council's Stage 2).
+
+```bash
+kd council critique [--run-id <id>]
+```
+
+Each member receives all responses anonymized ("Response A", "Response B") and identifies strengths/weaknesses. Useful for high-stakes decisions where you want models to check each other.
+
+Output: Rich panels showing each member's critique, saved to `<run_id>/critiques/`.
+
 ### `kd council last`
 
-Print the most recent council `run_id` and where the transcripts were written.
+Print the most recent council `run_id` and paths to response files.
+
+```bash
+$ kd council last
+run-4f3a (2026-02-04 18:12:09)
+  .kd/runs/oauth/council/run-4f3a/
+  ├── claude.md
+  ├── gemini.md
+  └── gpt.md
+```
 
 ### `kd council show <run_id>`
 
-Render a saved council run (summary + which members failed + where to read full transcripts).
+Re-render a saved council run in Rich panels. Useful for re-reading previous consultations.
 
 ### `kd council reset`
 
-Clear all council sessions to start fresh conversation.
+Clear all council sessions to start fresh conversation (new context for all members).
 
 ### `kd doctor` (or `kd council doctor`)
 
@@ -319,29 +453,36 @@ Show active peasant status.
 
 2. **Add `--json` output to existing commands** — Make CLI machine-readable.
 
-3. **Implement `kd council ask` with synthesis + run bundles** — Core multi-model primitive, plus deterministic logs keyed by `run_id`.
+3. **Implement `kd council ask` with Rich output + run bundles** — Core multi-model primitive with Rich panels for terminal display, Markdown files for persistence.
 
-4. **Write the Kingdom skill** — SKILL.md teaching agents the workflow.
+4. **Add `kd council <member>` for follow-ups** — Individual member iteration within session.
 
-5. **Test with Claude Code** — Install skill, run through workflow, identify gaps.
+5. **Add `kd council critique`** — Optional peer evaluation command.
 
-6. **Deprecate or simplify `kd chat`** — Keep as optional fallback, not primary path.
+6. **Write the Kingdom skill** — SKILL.md teaching agents the workflow (including when to suggest council consultation).
+
+7. **Test with Claude Code** — Install skill, run through workflow, identify gaps.
+
+8. **Deprecate or simplify `kd chat`** — Keep as optional fallback, not primary path.
 
 ## Open Questions
 
-1. **Where does synthesis happen?** Inside `kd council ask` (consistent) or host agent does it (flexible)?
+1. ~~**Where does synthesis happen?**~~ **Resolved:** The King synthesizes mentally by reading council responses, then directs the Hand. No auto-synthesis—that would filter outside perspectives through your primary agent, defeating the purpose.
 
 2. **How does the skill get installed?** Claude Code skills directory? Manual CLAUDE.md inclusion?
 
-3. **Should `kd council ask` include design/breakdown context automatically?** Or require explicit `--context` flag?
+3. **Should `kd council ask` include design/breakdown context automatically?** Or require explicit `--context` flag? (Leaning toward: include current phase context by default, with `--no-context` to disable.)
 
 4. **How do we handle agents that don't support skills?** Fall back to CLAUDE.md instructions?
+
+5. **Should `kd council critique` be automatic or opt-in?** Current design: opt-in via explicit command. Auto-critique would add latency and cost for every council call.
 
 ## Relationship to Existing Docs
 
 - **MVP.md** — Still valid. This changes *how* the workflow is driven, not *what* the workflow is.
-- **council-design.md** — Subprocess architecture remains. This adds JSON output and synthesis.
+- **council-design.md** — Subprocess architecture remains. This adds Rich terminal output and removes auto-synthesis (King reads directly).
 - **dispatch-design.md** — The "Hand" concept evolves from "chat interface" to "skill + CLI".
+- **third_party/llm-council.md** — Analysis of LLM Council project. Adopted: transparent deliberation, graceful degradation, inspectable outputs. Skipped: auto-synthesis (King is the chairman).
 
 ## Why Not MCP?
 
@@ -379,12 +520,16 @@ This keeps the repo clean while preserving an audit trail of what was decided an
         │
         ├── logs/                  # gitignored — operational logs + transcripts
         │   └── council/
-        │       └── <run_id>/      # e.g., council-...-4f3a
-        │           ├── summary.md
-        │           ├── claude.json
-        │           ├── codex.jsonl
-        │           ├── agent.json
-        │           └── errors.json
+        │       └── <run_id>/      # e.g., run-4f3a
+        │           ├── claude.md      # Full response (Markdown)
+        │           ├── gemini.md      # Full response (Markdown)
+        │           ├── gpt.md         # Full response (Markdown)
+        │           ├── metadata.json  # Timing, model versions
+        │           ├── errors.json    # If any member failed
+        │           └── critiques/     # If critique was run
+        │               ├── claude.md
+        │               ├── gemini.md
+        │               └── gpt.md
         │
         └── tickets/
             └── <ticket-id>/       # e.g., kin-a1b2
