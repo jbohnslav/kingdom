@@ -411,18 +411,68 @@ def _output_json(responses, run_id, run_dir, response_paths):
     print(json.dumps(output, indent=2))
 
 
-@app.command(help="Draft or view the current design doc.")
-def design() -> None:
+design_app = typer.Typer(name="design", help="Manage design documents.")
+app.add_typer(design_app, name="design")
+
+
+def _get_design_paths(base: Path, feature: str) -> tuple[Path, Path]:
+    """Get design.md and state.json paths, preferring branch structure."""
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return branch_dir / "design.md", branch_dir / "state.json"
+    # Fall back to legacy runs structure
+    legacy_dir = state_root(base) / "runs" / feature
+    return legacy_dir / "design.md", legacy_dir / "state.json"
+
+
+@design_app.callback(invoke_without_command=True)
+def design_default(ctx: typer.Context) -> None:
+    """Draft the design doc (creates template if empty)."""
+    if ctx.invoked_subcommand is not None:
+        return
     base = Path.cwd()
     feature = resolve_current_run(base)
-    paths = ensure_run_layout(base, feature)
-    design_path = paths["design_md"]
-    if design_path.read_text(encoding="utf-8").strip() == "":
+    design_path, _ = _get_design_paths(base, feature)
+
+    if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
+        design_path.parent.mkdir(parents=True, exist_ok=True)
         design_path.write_text(build_design_template(feature), encoding="utf-8")
         typer.echo(f"Created design template at {design_path}")
         return
 
     typer.echo(f"Design already exists at {design_path}")
+
+
+@design_app.command("show", help="Print the design document.")
+def design_show() -> None:
+    """Print the design.md contents."""
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    design_path, _ = _get_design_paths(base, feature)
+
+    if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
+        typer.echo("No design document found. Run `kd design` to create one.")
+        raise typer.Exit(code=1)
+
+    console = Console()
+    console.print(Markdown(design_path.read_text(encoding="utf-8")))
+
+
+@design_app.command("approve", help="Mark the design as approved.")
+def design_approve() -> None:
+    """Set design_approved=true in state.json."""
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    design_path, state_path = _get_design_paths(base, feature)
+
+    if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
+        typer.echo("No design document found. Run `kd design` to create one.")
+        raise typer.Exit(code=1)
+
+    state = read_json(state_path) if state_path.exists() else {}
+    state["design_approved"] = True
+    write_json(state_path, state)
+    typer.echo("Design approved.")
 
 
 @app.command(help="Draft or iterate the current breakdown.")
