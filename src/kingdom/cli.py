@@ -24,6 +24,7 @@ from kingdom.council import Council, create_run_bundle
 from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
 from kingdom.design import build_design_template
 from kingdom.state import (
+    clear_current_run,
     council_logs_root,
     ensure_base_layout,
     ensure_run_layout,
@@ -142,6 +143,44 @@ def start(feature: str = typer.Argument(..., help="Feature name for the run.")) 
     ensure_window(server, feature, "hand")
     typer.echo(f"Initialized run: {paths['run_root']}")
     typer.echo(f"Tmux: server={server} session={feature} window=hand")
+
+
+@app.command(help="Mark the current run as done and clear it.")
+def done(
+    feature: Annotated[
+        Optional[str], typer.Argument(help="Feature name (defaults to current run).")
+    ] = None,
+) -> None:
+    """Mark a run as complete and clear the current run pointer."""
+    from datetime import datetime, timezone
+
+    base = Path.cwd()
+
+    # Resolve feature: use argument or fall back to current run
+    if feature is None:
+        try:
+            feature = resolve_current_run(base)
+        except RuntimeError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(code=1)
+
+    # Verify run exists
+    paths = ensure_run_layout(base, feature)
+
+    # Update state.json with status and timestamp
+    state = read_json(paths["state_json"])
+    state["status"] = "done"
+    state["done_at"] = datetime.now(timezone.utc).isoformat()
+    write_json(paths["state_json"], state)
+
+    # Clear current run pointer (only if this was the current run)
+    current_path = state_root(base) / "current"
+    if current_path.exists():
+        current_feature = current_path.read_text(encoding="utf-8").strip()
+        if current_feature == feature:
+            clear_current_run(base)
+
+    typer.echo(f"Marked run '{feature}' as done.")
 
 
 @app.command(help="Attach to the Hand (persistent chat window).")
