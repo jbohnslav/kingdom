@@ -251,18 +251,20 @@ def done(
     worktree_dir = state_root(base) / "worktrees" / normalized
     if worktree_dir.exists():
         # Remove git worktree first
-        import subprocess
         for worktree in worktree_dir.iterdir():
             if worktree.is_dir():
-                subprocess.run(
+                result = subprocess.run(
                     ["git", "worktree", "remove", "--force", str(worktree)],
                     capture_output=True,
+                    text=True,
                 )
+                if result.returncode != 0:
+                    typer.echo(f"Warning: Failed to remove worktree {worktree.name}: {result.stderr.strip()}")
         # Remove the parent worktree directory if empty
         try:
             worktree_dir.rmdir()
-        except OSError:
-            pass  # Not empty, that's fine
+        except OSError as e:
+            typer.echo(f"Warning: Could not remove worktree directory: {e}")
 
     # Clear current run pointer (only if this was the current run)
     current_path = state_root(base) / "current"
@@ -730,10 +732,8 @@ def _query_with_progress(council, prompt, json_output, console):
 
 def _display_rich_panels(responses, run_dir, console):
     """Display responses as Rich panels with Markdown."""
-    for name in ["claude", "codex", "agent"]:
-        response = responses.get(name)
-        if not response:
-            continue
+    for name in sorted(responses.keys()):
+        response = responses[name]
 
         if response.error:
             content = f"> **Error:** {response.error}\n\n"
@@ -1288,6 +1288,11 @@ def ticket_create(
     from datetime import datetime, timezone
 
     base = Path.cwd()
+
+    # Validate priority range (1-3)
+    if priority < 1 or priority > 3:
+        typer.echo(f"Warning: Priority {priority} outside valid range (1-3), clamping.")
+        priority = max(1, min(3, priority))
 
     # Ensure base layout exists
     ensure_base_layout(base)
