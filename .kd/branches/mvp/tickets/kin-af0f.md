@@ -1,6 +1,6 @@
 ---
 id: kin-af0f
-status: open
+status: closed
 deps: [kin-c039, kin-cbeb]
 links: []
 created: 2026-02-04T21:23:56Z
@@ -19,4 +19,3 @@ Update README with branch-centric workflow, kd ticket commands, quick start guid
 - [ ] cli-skill-architecture.md reflects implementation
 - [ ] Includes example workflow
 - [ ] All docs consistent with each other
-
