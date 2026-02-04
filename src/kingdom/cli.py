@@ -494,6 +494,158 @@ def council_followup(
         console.print(f"[dim]Appended to: {md_path}[/dim]")
 
 
+@council_app.command("critique", help="Have council members evaluate each other's responses.")
+def council_critique(
+    run_id: Annotated[
+        Optional[str], typer.Argument(help="Run ID to critique (defaults to most recent).")
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Output JSON format.")
+    ] = False,
+) -> None:
+    """Trigger peer evaluation of council responses (Stage 2 pattern)."""
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+
+    logs_dir = logs_root(base, feature)
+    sessions_dir = sessions_root(base, feature)
+    council_logs_dir = council_logs_root(base, feature)
+
+    if not council_logs_dir.exists():
+        typer.echo("No council runs found.")
+        raise typer.Exit(code=1)
+
+    # Find the run to critique
+    if run_id is None:
+        runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
+        if not runs:
+            typer.echo("No council runs found.")
+            raise typer.Exit(code=1)
+        run_dir = max(runs, key=lambda d: d.stat().st_mtime)
+    else:
+        run_dir = council_logs_dir / run_id
+        if not run_dir.exists():
+            typer.echo(f"Run not found: {run_id}")
+            raise typer.Exit(code=1)
+
+    console = Console()
+
+    # Load responses from the run
+    responses: dict[str, str] = {}
+    for md_file in run_dir.glob("*.md"):
+        member_name = md_file.stem
+        content = md_file.read_text(encoding="utf-8")
+        responses[member_name] = content
+
+    if not responses:
+        typer.echo("No responses found in run.")
+        raise typer.Exit(code=1)
+
+    # Create anonymized versions
+    member_names = sorted(responses.keys())
+    labels = ["A", "B", "C", "D", "E"][:len(member_names)]
+    anonymized: dict[str, tuple[str, str]] = {}  # label -> (member_name, content)
+    for i, name in enumerate(member_names):
+        anonymized[labels[i]] = (name, responses[name])
+
+    # Build critique prompt
+    critique_prompt = _build_critique_prompt(anonymized)
+
+    # Create council and query each member
+    c = Council.create(logs_dir=logs_dir)
+    c.load_sessions(sessions_dir)
+
+    critiques: dict[str, str] = {}
+
+    if not json_output:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            for member in c.members:
+                task = progress.add_task(f"Getting critique from {member.name}...", total=None)
+                response = member.query(critique_prompt, c.timeout)
+                critiques[member.name] = response.text if response.text else f"*Error: {response.error}*"
+                progress.remove_task(task)
+    else:
+        for member in c.members:
+            response = member.query(critique_prompt, c.timeout)
+            critiques[member.name] = response.text if response.text else f"*Error: {response.error}*"
+
+    c.save_sessions(sessions_dir)
+
+    # Save critiques to run directory
+    critiques_dir = run_dir / "critiques"
+    critiques_dir.mkdir(exist_ok=True)
+    for name, critique in critiques.items():
+        critique_path = critiques_dir / f"{name}.md"
+        content = f"# Critique by {name}\n\n{critique}"
+        critique_path.write_text(content, encoding="utf-8")
+
+    # Save mapping for reference
+    mapping = {label: name for label, (name, _) in anonymized.items()}
+    write_json(critiques_dir / "mapping.json", mapping)
+
+    if json_output:
+        output = {
+            "run_id": run_dir.name,
+            "mapping": mapping,
+            "critiques": critiques,
+            "critiques_dir": str(critiques_dir),
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        console.print(f"\n[bold]Critiques for {run_dir.name}[/bold]")
+        console.print(f"Response mapping: {', '.join(f'{k}={v}' for k, v in mapping.items())}\n")
+
+        for name, critique in critiques.items():
+            panel = Panel(
+                Markdown(critique),
+                title=f"Critique by {name}",
+                border_style="green",
+            )
+            console.print(panel)
+            console.print()
+
+        console.print(f"[dim]Saved to: {critiques_dir}[/dim]")
+
+
+def _build_critique_prompt(anonymized: dict[str, tuple[str, str]]) -> str:
+    """Build the critique prompt with anonymized responses."""
+    parts = [
+        "You are evaluating responses from different AI assistants. "
+        "Each response is labeled anonymously. Please provide a brief critique "
+        "of each response, identifying:\n"
+        "1. Key strengths\n"
+        "2. Potential weaknesses or blind spots\n"
+        "3. Which response (if any) you would recommend and why\n\n"
+        "Be concise and focus on substantive differences.\n\n"
+        "---\n\n"
+    ]
+
+    for label, (_, content) in sorted(anonymized.items()):
+        # Extract just the response text, not the header/footer
+        lines = content.split("\n")
+        # Skip the title line and any metadata
+        text_lines = []
+        in_content = False
+        for line in lines:
+            if line.startswith("# "):
+                in_content = True
+                continue
+            if line.startswith("---") and "*Elapsed:" in lines[-1]:
+                break
+            if in_content:
+                text_lines.append(line)
+
+        cleaned_content = "\n".join(text_lines).strip()
+        parts.append(f"## Response {label}\n\n{cleaned_content}\n\n---\n\n")
+
+    return "".join(parts)
+
+
 @council_app.command("show", help="Display a council run.")
 def council_show(
     run_id: Annotated[str, typer.Argument(help="Run ID (e.g., run-4f3a) or 'last'.")],
