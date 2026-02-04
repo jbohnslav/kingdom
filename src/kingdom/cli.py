@@ -495,6 +495,75 @@ def status(
         typer.echo(f"Ready tickets: {ready_count} (run `tk ready` to list)")
 
 
+DOCTOR_CHECKS = [
+    {
+        "name": "claude",
+        "command": ["claude", "--version"],
+        "install_hint": "Install Claude Code: https://docs.anthropic.com/en/docs/claude-code",
+    },
+    {
+        "name": "codex",
+        "command": ["codex", "--version"],
+        "install_hint": "Install Codex CLI: npm install -g @openai/codex",
+    },
+    {
+        "name": "cursor",
+        "command": ["cursor", "--version"],
+        "install_hint": "Install Cursor: https://cursor.com",
+    },
+]
+
+
+def _check_cli(command: list[str]) -> tuple[bool, str | None]:
+    """Check if a CLI command is available."""
+    try:
+        subprocess.run(command, capture_output=True, timeout=5)
+        return (True, None)
+    except FileNotFoundError:
+        return (False, "Command not found")
+    except subprocess.TimeoutExpired:
+        return (False, "Command timed out")
+
+
+@app.command(help="Check if council member CLIs are installed.")
+def doctor(
+    output_json: Annotated[
+        bool, typer.Option("--json", help="Output as JSON.")
+    ] = False,
+) -> None:
+    """Verify council member CLIs are installed and provide guidance."""
+    results: dict[str, dict[str, bool | str | None]] = {}
+    issues: list[dict[str, str]] = []
+
+    for check in DOCTOR_CHECKS:
+        installed, error = _check_cli(check["command"])
+        results[check["name"]] = {"installed": installed, "error": error}
+        if not installed:
+            issues.append({"name": check["name"], "hint": check["install_hint"]})
+
+    if output_json:
+        print(json.dumps(results, indent=2))
+    else:
+        console = Console()
+        console.print("\nCouncil member CLIs:")
+        for check in DOCTOR_CHECKS:
+            name = check["name"]
+            result = results[name]
+            if result["installed"]:
+                console.print(f"  [green]✓[/green] {name:12} (installed)")
+            else:
+                console.print(f"  [red]✗[/red] {name:12} (not found)")
+
+        if issues:
+            console.print("\nIssues found:")
+            for issue in issues:
+                console.print(f"  {issue['name']}: {issue['hint']}")
+        console.print()
+
+    if issues:
+        raise typer.Exit(code=1)
+
+
 @app.command(help="Attach to hand/council/peasant windows.")
 def attach(target: str = typer.Argument(..., help="Target window name.")) -> None:
     base = Path.cwd()
