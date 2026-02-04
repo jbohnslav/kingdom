@@ -36,18 +36,6 @@ from kingdom.state import (
     state_root,
     write_json,
 )
-from kingdom.tmux import (
-    attach_window,
-    derive_server_name,
-    ensure_council_layout,
-    ensure_session,
-    ensure_window,
-    get_pane_command,
-    list_panes,
-    list_windows,
-    send_keys,
-    should_send_command,
-)
 
 app = typer.Typer(
     name="kd",
@@ -138,11 +126,8 @@ def start(feature: str = typer.Argument(..., help="Feature name for the run.")) 
     paths = ensure_run_layout(base, feature)
     set_current_run(base, feature)
     ensure_feature_branch(feature)
-    server = derive_server_name(base)
-    ensure_session(server, feature)
-    ensure_window(server, feature, "hand")
-    typer.echo(f"Initialized run: {paths['run_root']}")
-    typer.echo(f"Tmux: server={server} session={feature} window=hand")
+    typer.echo(f"Initialized feature: {feature}")
+    typer.echo(f"Location: {paths['run_root']}")
 
 
 @app.command(help="Mark the current run as done and clear it.")
