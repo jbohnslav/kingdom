@@ -282,6 +282,11 @@ def clear_current_run(base: Path) -> None:
 
 
 def resolve_current_run(base: Path) -> str:
+    """Resolve the current active run/branch.
+
+    First checks for branch-based structure (.kd/branches/), then falls back
+    to legacy run structure (.kd/runs/) for backwards compatibility.
+    """
     current_path = state_root(base) / "current"
     if not current_path.exists():
         raise RuntimeError("No active run. Use `kd start <feature>` first.")
@@ -290,8 +295,14 @@ def resolve_current_run(base: Path) -> str:
     if not feature:
         raise RuntimeError("Current run is empty. Use `kd start <feature>` again.")
 
-    run_dir = run_root(base, feature)
-    if not run_dir.exists():
-        raise RuntimeError(f"Current run '{feature}' not found at {run_dir}.")
+    # Check new branch-based structure first
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return feature
 
-    return feature
+    # Fall back to legacy runs structure
+    legacy_run_dir = run_root(base, feature)
+    if legacy_run_dir.exists():
+        return feature
+
+    raise RuntimeError(f"Current run '{feature}' not found at {branch_dir} or {legacy_run_dir}.")
