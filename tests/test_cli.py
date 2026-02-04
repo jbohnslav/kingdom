@@ -8,11 +8,6 @@ from kingdom import cli
 runner = CliRunner()
 
 
-def test_hand_command_runs_hand_module() -> None:
-    tokens = cli.hand_command().lower().split()
-    assert tokens[-2:] == ["-m", "kingdom.hand"]
-
-
 def test_doctor_all_installed() -> None:
     """Test doctor command when all CLIs are installed."""
     with patch.object(cli, "_check_cli", return_value=(True, None)):

@@ -9,8 +9,6 @@ Usage example:
 import json
 import os
 import subprocess
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -58,10 +56,6 @@ def is_git_repo(base: Path) -> bool:
         cwd=base,
     )
     return result.returncode == 0
-
-
-def hand_command() -> str:
-    return f"{sys.executable} -m kingdom.hand"
 
 
 def ensure_feature_branch(feature: str) -> None:
@@ -112,7 +106,7 @@ def init(
     typer.echo(f"Initialized: {paths['state_root']}")
 
 
-@app.command(help="Initialize a run, state, and tmux session.")
+@app.command(help="Initialize a run and state.")
 def start(feature: str = typer.Argument(..., help="Feature name for the run.")) -> None:
     base = Path.cwd()
 
@@ -166,30 +160,6 @@ def done(
             clear_current_run(base)
 
     typer.echo(f"Marked run '{feature}' as done.")
-
-
-@app.command(help="Attach to the Hand (persistent chat window).")
-def chat() -> None:
-    base = Path.cwd()
-    feature = resolve_current_run(base)
-    ensure_run_layout(base, feature)
-
-    log_path = logs_root(base, feature) / "hand.jsonl"
-    if not log_path.exists():
-        log_path.write_text("", encoding="utf-8")
-
-    server = derive_server_name(base)
-    ensure_session(server, feature)
-    ensure_window(server, feature, "hand")
-    hand_target = f"{feature}:hand"
-    panes = sorted(list_panes(server, hand_target), key=int)
-    if not panes:
-        raise RuntimeError("Hand window has no panes")
-    pane_target = f"{hand_target}.{panes[0]}"
-    current = get_pane_command(server, pane_target)
-    if should_send_command(current):
-        send_keys(server, pane_target, hand_command())
-    attach_window(server, feature, "hand")
 
 
 council_app = typer.Typer(name="council", help="Query council members.")
@@ -422,14 +392,12 @@ def peasant(ticket: str = typer.Argument(..., help="Ticket id to execute.")) -> 
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "git worktree add failed")
 
-    server = derive_server_name(base)
-    ensure_session(server, feature)
-    ensure_window(server, feature, "peasant-1", cwd=worktree_path)
-    send_keys(server, f"{feature}:peasant-1", "codex")
-
     state = read_json(paths["state_json"])
     state["peasant"] = {"ticket": ticket, "worktree": str(worktree_path)}
     write_json(paths["state_json"], state)
+
+    typer.echo(f"Peasant worktree ready at: {worktree_path}")
+    typer.echo(f"Assigned ticket: {ticket}")
 
 
 @app.command(help="Reserved for broader develop phase (MVP stub).")
@@ -586,45 +554,6 @@ def doctor(
 
     if issues:
         raise typer.Exit(code=1)
-
-
-@app.command(help="Attach to hand/council/peasant windows.")
-def attach(target: str = typer.Argument(..., help="Target window name.")) -> None:
-    base = Path.cwd()
-    feature = resolve_current_run(base)
-    server = derive_server_name(base)
-    ensure_session(server, feature)
-
-    # Special handling for council: set up log tailing panes
-    if target == "council":
-        logs_dir = logs_root(base, feature)
-        ensure_council_layout(server, feature)
-        window_target = f"{feature}:council"
-        panes = sorted(list_panes(server, window_target), key=int)
-
-        agent_names = ["claude", "codex", "agent"]
-        for pane, agent in zip(panes[:3], agent_names):
-            pane_target = f"{window_target}.{pane}"
-            log_file = logs_dir / f"council-{agent}.log"
-            # Ensure log file exists
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            log_file.touch()
-
-            current = get_pane_command(server, pane_target)
-            if should_send_command(current):
-                send_keys(server, pane_target, f"tail -f {log_file}")
-
-        attach_window(server, feature, "council")
-        return
-
-    windows = list_windows(server, feature)
-    if target not in windows:
-        typer.echo(
-            f"Window '{target}' not found in session '{feature}'. Available: {', '.join(windows)}"
-        )
-        raise typer.Exit(code=1)
-
-    attach_window(server, feature, target)
 
 
 def main() -> None:
