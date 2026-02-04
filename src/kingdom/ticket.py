@@ -40,7 +40,7 @@ class Ticket:
     links: list[str] = field(default_factory=list)
     created: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     type: str = "task"  # task, bug, feature
-    priority: int = 2  # 0-3, 0 is highest
+    priority: int = 2  # 1-3, 1 is highest
     assignee: str | None = None
     title: str = ""
     body: str = ""
@@ -48,6 +48,24 @@ class Ticket:
     tags: list[str] = field(default_factory=list)
     parent: str | None = None
     external_ref: str | None = None
+
+
+def _clamp_priority(value: int | str | None) -> int:
+    """Clamp priority to valid range (1-3).
+
+    Args:
+        value: Priority value (may be int, str, or None).
+
+    Returns:
+        Integer priority clamped to 1-3 range. Defaults to 2 if None or invalid.
+    """
+    if value is None:
+        return 2
+    try:
+        p = int(value)
+    except (ValueError, TypeError):
+        return 2
+    return max(1, min(3, p))
 
 
 def generate_ticket_id(tickets_dir: Path | None = None) -> str:
@@ -220,7 +238,7 @@ def parse_ticket(content: str) -> Ticket:
         links=links if isinstance(links, list) else [],
         created=created,
         type=str(frontmatter_dict.get("type", "task")),
-        priority=int(frontmatter_dict.get("priority", 2)) if frontmatter_dict.get("priority") else 2,
+        priority=_clamp_priority(frontmatter_dict.get("priority", 2)),
         assignee=str(frontmatter_dict.get("assignee")) if frontmatter_dict.get("assignee") else None,
         title=title,
         body=body,
@@ -319,7 +337,7 @@ def list_tickets(directory: Path) -> list[Ticket]:
         directory: Path to the directory containing ticket files.
 
     Returns:
-        List of Ticket objects sorted by priority (ascending, 0 is highest)
+        List of Ticket objects sorted by priority (ascending, 1 is highest)
         then by created date (ascending, oldest first).
     """
     if not directory.exists():

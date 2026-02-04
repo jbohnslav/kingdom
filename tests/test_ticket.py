@@ -286,6 +286,60 @@ priority: 2
         assert ticket.title == "Test Title"
         assert ticket.body == ""
 
+    def test_priority_clamped_high(self) -> None:
+        """Priority above 3 is clamped to 3."""
+        content = """---
+id: kin-test
+status: open
+deps: []
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 10
+---
+# Test
+
+Body
+"""
+        ticket = parse_ticket(content)
+        assert ticket.priority == 3
+
+    def test_priority_clamped_low(self) -> None:
+        """Priority below 1 is clamped to 1."""
+        content = """---
+id: kin-test
+status: open
+deps: []
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 0
+---
+# Test
+
+Body
+"""
+        ticket = parse_ticket(content)
+        assert ticket.priority == 1
+
+    def test_priority_clamped_negative(self) -> None:
+        """Negative priority is clamped to 1."""
+        content = """---
+id: kin-test
+status: open
+deps: []
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: -5
+---
+# Test
+
+Body
+"""
+        ticket = parse_ticket(content)
+        assert ticket.priority == 1
+
 
 class TestSerializeTicket:
     """Tests for serialize_ticket function."""
