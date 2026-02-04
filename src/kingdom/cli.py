@@ -597,6 +597,28 @@ def status(
     # Get design doc path relative to base for display
     design_path_str = str(design_path.relative_to(base)) if design_path.exists() else None
 
+    # Get ticket counts
+    tickets_dir = _get_tickets_dir(base)
+    tickets = list_tickets(tickets_dir) if tickets_dir.exists() else []
+
+    # Count by status
+    status_counts = {"open": 0, "in_progress": 0, "closed": 0}
+    for ticket in tickets:
+        if ticket.status in status_counts:
+            status_counts[ticket.status] += 1
+
+    # Count ready tickets (open/in_progress with all deps closed)
+    status_by_id = {t.id: t.status for t in tickets}
+    ready_count = 0
+    for ticket in tickets:
+        if ticket.status not in ("open", "in_progress"):
+            continue
+        all_deps_closed = all(
+            status_by_id.get(dep, "unknown") == "closed" for dep in ticket.deps
+        )
+        if all_deps_closed:
+            ready_count += 1
+
     # Build output structure
     output = {
         "branch": original_branch,
@@ -604,6 +626,8 @@ def status(
         "design_path": design_path_str,
         "design_status": design_status,
         "breakdown_status": breakdown_status,
+        "tickets": status_counts,
+        "ready_count": ready_count,
     }
 
     if output_json:
@@ -616,6 +640,10 @@ def status(
         typer.echo()
         typer.echo(f"Design: {design_status}")
         typer.echo(f"Breakdown: {breakdown_status}")
+        typer.echo()
+        total = sum(status_counts.values())
+        typer.echo(f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, {status_counts['closed']} closed ({total} total)")
+        typer.echo(f"Ready: {ready_count}")
 
 
 DOCTOR_CHECKS = [
