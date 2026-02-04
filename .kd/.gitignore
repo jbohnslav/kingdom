@@ -2,5 +2,6 @@
 *.json
 *.jsonl
 *.log
-*.session
+features/**/logs/
 worktrees/
+current
