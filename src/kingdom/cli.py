@@ -30,7 +30,6 @@ from kingdom.state import (
     council_logs_root,
     ensure_base_layout,
     ensure_branch_layout,
-    ensure_run_layout,
     logs_root,
     normalize_branch_name,
     read_json,
@@ -295,11 +294,15 @@ def council_ask(
     """Query all council members and display with Rich panels."""
     base = Path.cwd()
     feature = resolve_current_run(base)
-    paths = ensure_run_layout(base, feature)
 
     logs_dir = logs_root(base, feature)
     sessions_dir = sessions_root(base, feature)
-    council_logs_dir = paths["council_logs_root"]
+    council_logs_dir = council_logs_root(base, feature)
+
+    # Ensure directories exist
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    council_logs_dir.mkdir(parents=True, exist_ok=True)
 
     console = Console()
 
@@ -332,10 +335,13 @@ def council_reset() -> None:
     """Clear all council member sessions."""
     base = Path.cwd()
     feature = resolve_current_run(base)
-    ensure_run_layout(base, feature)
 
     logs_dir = logs_root(base, feature)
     sessions_dir = sessions_root(base, feature)
+
+    # Ensure directories exist
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    sessions_dir.mkdir(parents=True, exist_ok=True)
 
     c = Council.create(logs_dir=logs_dir)
     c.load_sessions(sessions_dir)
@@ -415,14 +421,33 @@ design_app = typer.Typer(name="design", help="Manage design documents.")
 app.add_typer(design_app, name="design")
 
 
-def _get_design_paths(base: Path, feature: str) -> tuple[Path, Path]:
-    """Get design.md and state.json paths, preferring branch structure."""
+def _get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path, Path]:
+    """Get design.md, breakdown.md, state.json paths, preferring branch structure.
+
+    Returns: (branch_dir, design_path, breakdown_path, state_path)
+    """
     branch_dir = branch_root(base, feature)
     if branch_dir.exists():
-        return branch_dir / "design.md", branch_dir / "state.json"
+        return (
+            branch_dir,
+            branch_dir / "design.md",
+            branch_dir / "breakdown.md",
+            branch_dir / "state.json",
+        )
     # Fall back to legacy runs structure
     legacy_dir = state_root(base) / "runs" / feature
-    return legacy_dir / "design.md", legacy_dir / "state.json"
+    return (
+        legacy_dir,
+        legacy_dir / "design.md",
+        legacy_dir / "breakdown.md",
+        legacy_dir / "state.json",
+    )
+
+
+def _get_design_paths(base: Path, feature: str) -> tuple[Path, Path]:
+    """Get design.md and state.json paths, preferring branch structure."""
+    _, design_path, _, state_path = _get_branch_paths(base, feature)
+    return design_path, state_path
 
 
 @design_app.callback(invoke_without_command=True)
@@ -485,9 +510,10 @@ def breakdown(
 
     base = Path.cwd()
     feature = resolve_current_run(base)
-    paths = ensure_run_layout(base, feature)
-    breakdown_path = paths["breakdown_md"]
-    if breakdown_path.read_text(encoding="utf-8").strip() == "":
+    _, _, breakdown_path, state_path = _get_branch_paths(base, feature)
+
+    if not breakdown_path.exists() or not breakdown_path.read_text(encoding="utf-8").strip():
+        breakdown_path.parent.mkdir(parents=True, exist_ok=True)
         breakdown_path.write_text(build_breakdown_template(feature), encoding="utf-8")
         typer.echo(f"Created breakdown template at {breakdown_path}")
         return
@@ -552,9 +578,9 @@ def breakdown(
             ticket.deps = deps_to_add
             write_ticket(ticket, ticket_path)
 
-    state = read_json(paths["state_json"])
+    state = read_json(state_path) if state_path.exists() else {}
     state["tickets"] = {**state.get("tickets", {}), **created}
-    write_json(paths["state_json"], state)
+    write_json(state_path, state)
 
 
 @app.command(help="Create a worktree for working on a ticket.")

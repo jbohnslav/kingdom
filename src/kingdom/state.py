@@ -71,6 +71,7 @@ def state_root(base: Path) -> Path:
 
 
 def runs_root(base: Path) -> Path:
+    """DEPRECATED: Use branches_root() instead."""
     return state_root(base) / "runs"
 
 
@@ -79,23 +80,36 @@ def worktrees_root(base: Path) -> Path:
 
 
 def run_root(base: Path, feature: str) -> Path:
+    """DEPRECATED: Use branch_root() instead."""
     return runs_root(base) / feature
 
 
 def logs_root(base: Path, feature: str) -> Path:
+    """Path to logs directory, preferring branch structure."""
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return branch_dir / "logs"
     return run_root(base, feature) / "logs"
 
 
 def sessions_root(base: Path, feature: str) -> Path:
+    """Path to sessions directory, preferring branch structure."""
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return branch_dir / "sessions"
     return run_root(base, feature) / "sessions"
 
 
 def tickets_root(base: Path, feature: str) -> Path:
+    """Path to tickets directory, preferring branch structure."""
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return branch_dir / "tickets"
     return run_root(base, feature) / "tickets"
 
 
 def council_logs_root(base: Path, feature: str) -> Path:
-    """Path to council run bundles."""
+    """Path to council run bundles, preferring branch structure."""
     return logs_root(base, feature) / "council"
 
 
@@ -226,7 +240,10 @@ def ensure_branch_layout(base: Path, branch: str) -> Path:
 
 
 def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
-    """Create run-specific structure under .kd/runs/<feature>/. Idempotent."""
+    """DEPRECATED: Use ensure_branch_layout() instead.
+
+    Create run-specific structure under .kd/runs/<feature>/. Idempotent.
+    """
     # Ensure base layout exists first
     base_paths = ensure_base_layout(base)
 
