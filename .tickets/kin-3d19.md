@@ -1,6 +1,6 @@
 ---
 id: kin-3d19
-status: open
+status: closed
 deps: [kin-0bb1]
 links: []
 created: 2026-02-04T02:47:38Z
