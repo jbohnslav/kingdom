@@ -13,8 +13,57 @@ Example:
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
+
+
+def normalize_branch_name(branch: str) -> str:
+    """Normalize a branch name for use as a directory name.
+
+    Converts slashes to dashes, lowercases, removes non-ASCII characters,
+    and collapses multiple dashes into single dashes.
+
+    Examples:
+        - 'feature/oauth-refresh' -> 'feature-oauth-refresh'
+        - 'JRB/Fix-Bug' -> 'jrb-fix-bug'
+        - 'my--branch' -> 'my-branch'
+    """
+    # Normalize unicode to ASCII equivalents where possible (e.g., é -> e)
+    normalized = unicodedata.normalize("NFKD", branch)
+    # Remove non-ASCII characters
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    # Convert to lowercase
+    lowercased = ascii_only.lower()
+    # Replace slashes with dashes
+    with_dashes = lowercased.replace("/", "-")
+    # Replace any non-alphanumeric characters (except dash) with dash
+    cleaned = re.sub(r"[^a-z0-9-]", "-", with_dashes)
+    # Collapse multiple dashes into single dash
+    no_double_dashes = re.sub(r"-+", "-", cleaned)
+    # Strip leading/trailing dashes
+    return no_double_dashes.strip("-")
+
+
+def branches_root(base: Path) -> Path:
+    """Return path to .kd/branches/."""
+    return state_root(base) / "branches"
+
+
+def branch_root(base: Path, branch: str) -> Path:
+    """Return path to .kd/branches/<normalized-branch>/."""
+    return branches_root(base) / normalize_branch_name(branch)
+
+
+def backlog_root(base: Path) -> Path:
+    """Return path to .kd/backlog/."""
+    return state_root(base) / "backlog"
+
+
+def archive_root(base: Path) -> Path:
+    """Return path to .kd/archive/."""
+    return state_root(base) / "archive"
 
 
 def state_root(base: Path) -> Path:
