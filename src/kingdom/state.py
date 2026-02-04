@@ -158,6 +158,13 @@ def set_current_run(base: Path, feature: str) -> None:
     current_path.write_text(f"{feature}\n", encoding="utf-8")
 
 
+def clear_current_run(base: Path) -> None:
+    """Remove the current run pointer."""
+    current_path = state_root(base) / "current"
+    if current_path.exists():
+        current_path.unlink()
+
+
 def resolve_current_run(base: Path) -> str:
     current_path = state_root(base) / "current"
     if not current_path.exists():
