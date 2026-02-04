@@ -22,7 +22,10 @@ from kingdom.council import Council, create_run_bundle
 from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
 from kingdom.design import build_design_template
 from kingdom.state import (
+    archive_root,
+    backlog_root,
     branch_root,
+    branches_root,
     clear_current_run,
     council_logs_root,
     ensure_base_layout,
@@ -36,6 +39,15 @@ from kingdom.state import (
     set_current_run,
     state_root,
     write_json,
+)
+from kingdom.ticket import (
+    AmbiguousTicketMatch,
+    Ticket,
+    find_ticket,
+    generate_ticket_id,
+    list_tickets,
+    read_ticket,
+    write_ticket,
 )
 
 app = typer.Typer(
@@ -179,13 +191,14 @@ def start(
     typer.echo(f"Location: {branch_dir}")
 
 
-@app.command(help="Mark the current run as done and clear it.")
+@app.command(help="Mark the current run as done and archive it.")
 def done(
     feature: Annotated[
-        Optional[str], typer.Argument(help="Feature name (defaults to current run).")
+        Optional[str], typer.Argument(help="Branch name (defaults to current run).")
     ] = None,
 ) -> None:
-    """Mark a run as complete and clear the current run pointer."""
+    """Mark a run as complete, archive it, and clear the current run pointer."""
+    import shutil
     from datetime import datetime, timezone
 
     base = Path.cwd()
@@ -198,23 +211,68 @@ def done(
             typer.echo(str(exc))
             raise typer.Exit(code=1)
 
-    # Verify run exists
-    paths = ensure_run_layout(base, feature)
+    # Get the branch directory (normalized name)
+    normalized = normalize_branch_name(feature)
+    source_dir = branch_root(base, feature)
 
-    # Update state.json with status and timestamp
-    state = read_json(paths["state_json"])
+    # Check if it exists in new structure
+    if not source_dir.exists():
+        # Fall back to legacy runs structure
+        legacy_dir = state_root(base) / "runs" / feature
+        if legacy_dir.exists():
+            source_dir = legacy_dir
+        else:
+            typer.echo(f"Error: Branch '{feature}' not found.")
+            raise typer.Exit(code=1)
+
+    # Update state.json with status and timestamp before moving
+    state_path = source_dir / "state.json"
+    if state_path.exists():
+        state = read_json(state_path)
+    else:
+        state = {}
     state["status"] = "done"
     state["done_at"] = datetime.now(timezone.utc).isoformat()
-    write_json(paths["state_json"], state)
+    write_json(state_path, state)
+
+    # Determine archive destination
+    archive_base = state_root(base) / "archive"
+    archive_base.mkdir(parents=True, exist_ok=True)
+    archive_dest = archive_base / normalized
+
+    # Handle collision: add timestamp suffix if destination exists
+    if archive_dest.exists():
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        archive_dest = archive_base / f"{normalized}-{timestamp}"
+
+    # Move branch folder to archive
+    shutil.move(str(source_dir), str(archive_dest))
+
+    # Clean up associated worktrees
+    worktree_dir = state_root(base) / "worktrees" / normalized
+    if worktree_dir.exists():
+        # Remove git worktree first
+        import subprocess
+        for worktree in worktree_dir.iterdir():
+            if worktree.is_dir():
+                subprocess.run(
+                    ["git", "worktree", "remove", "--force", str(worktree)],
+                    capture_output=True,
+                )
+        # Remove the parent worktree directory if empty
+        try:
+            worktree_dir.rmdir()
+        except OSError:
+            pass  # Not empty, that's fine
 
     # Clear current run pointer (only if this was the current run)
     current_path = state_root(base) / "current"
     if current_path.exists():
         current_feature = current_path.read_text(encoding="utf-8").strip()
-        if current_feature == feature:
+        if current_feature == normalized:
             clear_current_run(base)
 
-    typer.echo(f"Marked run '{feature}' as done.")
+    typer.echo(f"Archived '{feature}' to {archive_dest.relative_to(base)}")
 
 
 council_app = typer.Typer(name="council", help="Query council members.")
@@ -463,7 +521,17 @@ def dev(ticket: str | None = typer.Argument(None, help="Optional ticket id.")) -
     typer.echo("`kd dev` is reserved. Use `kd peasant <ticket>` in the MVP.")
 
 
-@app.command(help="Show current branch, design doc, assignment, and ready tickets.")
+def _get_doc_status(path: Path) -> str:
+    """Get status of a markdown doc: 'empty', 'draft', or path."""
+    if not path.exists():
+        return "missing"
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        return "empty"
+    return "present"
+
+
+@app.command(help="Show current branch, design doc status, and breakdown status.")
 def status(
     output_json: Annotated[
         bool, typer.Option("--json", help="Output as JSON for machine consumption.")
@@ -476,70 +544,56 @@ def status(
         typer.echo(str(exc))
         raise typer.Exit(code=1)
 
-    paths = ensure_run_layout(base, feature)
-    state = read_json(paths["state_json"])
+    # Try new branch-based structure first, fall back to legacy
+    normalized = normalize_branch_name(feature)
+    branch_dir = branch_root(base, feature)
 
-    # Get git branch
-    result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    branch = result.stdout.strip() if result.returncode == 0 else None
+    if branch_dir.exists():
+        state_path = branch_dir / "state.json"
+        design_path = branch_dir / "design.md"
+        breakdown_path = branch_dir / "breakdown.md"
+    else:
+        # Fall back to legacy runs structure
+        legacy_dir = state_root(base) / "runs" / feature
+        state_path = legacy_dir / "state.json"
+        design_path = legacy_dir / "design.md"
+        breakdown_path = legacy_dir / "breakdown.md"
 
-    # Get design doc path (relative to base)
-    design_path = paths["design_md"]
+    # Read state to get original branch name
+    if state_path.exists():
+        state = read_json(state_path)
+    else:
+        state = {}
+
+    # Original branch name (stored in state.json) vs normalized directory name
+    original_branch = state.get("branch", feature)
+
+    # Get design and breakdown status
+    design_status = _get_doc_status(design_path)
+    breakdown_status = _get_doc_status(breakdown_path)
+
+    # Get design doc path relative to base for display
     design_path_str = str(design_path.relative_to(base)) if design_path.exists() else None
-
-    # Get current assignment from state
-    assignment = None
-    assigned_ticket_id = state.get("peasant", {}).get("ticket")
-    if assigned_ticket_id:
-        # Try to get ticket title via tk show
-        result = subprocess.run(
-            ["tk", "show", assigned_ticket_id],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            # Parse first heading line for title
-            for line in result.stdout.splitlines():
-                if line.startswith("# "):
-                    assignment = {"id": assigned_ticket_id, "title": line[2:].strip()}
-                    break
-            if not assignment:
-                assignment = {"id": assigned_ticket_id, "title": None}
-        else:
-            assignment = {"id": assigned_ticket_id, "title": None}
-
-    # Get ready ticket count via tk ready
-    ready_count = 0
-    result = subprocess.run(["tk", "ready"], capture_output=True, text=True)
-    if result.returncode == 0:
-        ready_count = len([line for line in result.stdout.strip().splitlines() if line])
 
     # Build output structure
     output = {
-        "branch": branch,
+        "branch": original_branch,
+        "normalized_branch": normalized,
         "design_path": design_path_str,
-        "assignment": assignment,
-        "ready_count": ready_count,
+        "design_status": design_status,
+        "breakdown_status": breakdown_status,
     }
 
     if output_json:
         typer.echo(json.dumps(output, indent=2))
     else:
         # Human-readable output
-        if branch:
-            typer.echo(f"Branch: {branch}")
+        typer.echo(f"Branch: {original_branch}")
         if design_path_str:
             typer.echo(f"Design: {design_path_str}")
         typer.echo()
-        if assignment:
-            title_part = f" - {assignment['title']}" if assignment.get("title") else ""
-            typer.echo(f"Current assignment: {assignment['id']}{title_part}")
-            typer.echo()
-        typer.echo(f"Ready tickets: {ready_count} (run `tk ready` to list)")
+        typer.echo(f"Design: {design_status}")
+        typer.echo(f"Breakdown: {breakdown_status}")
 
 
 DOCTOR_CHECKS = [
@@ -609,6 +663,444 @@ def doctor(
 
     if issues:
         raise typer.Exit(code=1)
+
+
+# Ticket subcommand group
+ticket_app = typer.Typer(name="ticket", help="Manage tickets.")
+app.add_typer(ticket_app, name="ticket")
+
+
+def _get_tickets_dir(base: Path, backlog: bool = False) -> Path:
+    """Get the tickets directory for the current context."""
+    if backlog:
+        return backlog_root(base) / "tickets"
+
+    # Try to get current branch's tickets directory
+    try:
+        feature = resolve_current_run(base)
+        normalized = normalize_branch_name(feature)
+        branch_dir = branch_root(base, feature)
+        if branch_dir.exists():
+            return branch_dir / "tickets"
+        # Fall back to legacy runs structure
+        return state_root(base) / "runs" / feature / "tickets"
+    except RuntimeError:
+        # No active branch, use backlog
+        return backlog_root(base) / "tickets"
+
+
+@ticket_app.command("create", help="Create a new ticket.")
+def ticket_create(
+    title: Annotated[str, typer.Argument(help="Ticket title.")],
+    description: Annotated[
+        Optional[str], typer.Option("-d", "--description", help="Ticket description.")
+    ] = None,
+    priority: Annotated[
+        int, typer.Option("-p", "--priority", help="Priority (1-3, 1 is highest).")
+    ] = 2,
+    ticket_type: Annotated[
+        str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")
+    ] = "task",
+    backlog: Annotated[
+        bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")
+    ] = False,
+) -> None:
+    """Create a new ticket in the current branch or backlog."""
+    from datetime import datetime, timezone
+
+    base = Path.cwd()
+
+    # Ensure base layout exists
+    ensure_base_layout(base)
+
+    tickets_dir = _get_tickets_dir(base, backlog=backlog)
+    tickets_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate unique ID
+    ticket_id = generate_ticket_id(tickets_dir)
+
+    # Build body with acceptance criteria section
+    body = description or ""
+    if not body:
+        body = "## Acceptance Criteria\n\n- [ ] "
+
+    # Create ticket
+    ticket = Ticket(
+        id=ticket_id,
+        status="open",
+        deps=[],
+        links=[],
+        created=datetime.now(timezone.utc),
+        type=ticket_type,
+        priority=priority,
+        title=title,
+        body=body,
+    )
+
+    ticket_path = tickets_dir / f"{ticket_id}.md"
+    write_ticket(ticket, ticket_path)
+
+    typer.echo(ticket_id)
+
+
+@ticket_app.command("list", help="List tickets.")
+def ticket_list(
+    all_tickets: Annotated[
+        bool, typer.Option("--all", "-a", help="List all tickets across all locations.")
+    ] = False,
+    output_json: Annotated[
+        bool, typer.Option("--json", help="Output as JSON.")
+    ] = False,
+) -> None:
+    """List tickets in the current branch or all locations."""
+    base = Path.cwd()
+
+    if all_tickets:
+        # Collect tickets from all locations
+        locations: list[tuple[str, Path]] = []
+
+        # branches/*/tickets/
+        branches_dir = branches_root(base)
+        if branches_dir.exists():
+            for branch_dir in branches_dir.iterdir():
+                if branch_dir.is_dir():
+                    tickets_dir = branch_dir / "tickets"
+                    if tickets_dir.exists():
+                        locations.append((f"branch:{branch_dir.name}", tickets_dir))
+
+        # backlog/tickets/
+        backlog_tickets = backlog_root(base) / "tickets"
+        if backlog_tickets.exists():
+            locations.append(("backlog", backlog_tickets))
+
+        # archive/*/tickets/
+        archive_dir = archive_root(base)
+        if archive_dir.exists():
+            for archive_item in archive_dir.iterdir():
+                if archive_item.is_dir():
+                    tickets_dir = archive_item / "tickets"
+                    if tickets_dir.exists():
+                        locations.append((f"archive:{archive_item.name}", tickets_dir))
+
+        all_results: list[dict] = []
+        for location_name, tickets_dir in locations:
+            tickets = list_tickets(tickets_dir)
+            for ticket in tickets:
+                all_results.append({
+                    "id": ticket.id,
+                    "priority": ticket.priority,
+                    "status": ticket.status,
+                    "title": ticket.title,
+                    "location": location_name,
+                })
+
+        if output_json:
+            typer.echo(json.dumps(all_results, indent=2))
+        else:
+            for item in all_results:
+                loc = item["location"]
+                typer.echo(f"{item['id']} [P{item['priority']}][{item['status']}] - {item['title']} ({loc})")
+    else:
+        # List tickets for current branch only
+        tickets_dir = _get_tickets_dir(base)
+        tickets = list_tickets(tickets_dir)
+
+        if output_json:
+            results = [
+                {
+                    "id": t.id,
+                    "priority": t.priority,
+                    "status": t.status,
+                    "title": t.title,
+                }
+                for t in tickets
+            ]
+            typer.echo(json.dumps(results, indent=2))
+        else:
+            if not tickets:
+                typer.echo("No tickets found.")
+                return
+            for ticket in tickets:
+                typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}] - {ticket.title}")
+
+
+@ticket_app.command("show", help="Show a ticket.")
+def ticket_show(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    output_json: Annotated[
+        bool, typer.Option("--json", help="Output as JSON.")
+    ] = False,
+) -> None:
+    """Display a ticket by ID (supports partial matching)."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+
+    if output_json:
+        output = {
+            "id": ticket.id,
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "type": ticket.type,
+            "title": ticket.title,
+            "body": ticket.body,
+            "deps": ticket.deps,
+            "links": ticket.links,
+            "created": ticket.created.isoformat(),
+            "assignee": ticket.assignee,
+            "path": str(ticket_path),
+        }
+        typer.echo(json.dumps(output, indent=2))
+    else:
+        # Read and display the raw file content for human-readable output
+        content = ticket_path.read_text(encoding="utf-8")
+        console = Console()
+        console.print(Markdown(content))
+
+
+def _update_ticket_status(ticket_id: str, new_status: str) -> None:
+    """Helper to update a ticket's status."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+    old_status = ticket.status
+    ticket.status = new_status
+    write_ticket(ticket, ticket_path)
+    typer.echo(f"{ticket.id}: {old_status} → {new_status}")
+
+
+@ticket_app.command("start", help="Mark a ticket as in_progress.")
+def ticket_start(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+) -> None:
+    """Set ticket status to in_progress."""
+    _update_ticket_status(ticket_id, "in_progress")
+
+
+@ticket_app.command("close", help="Mark a ticket as closed.")
+def ticket_close(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+) -> None:
+    """Set ticket status to closed."""
+    _update_ticket_status(ticket_id, "closed")
+
+
+@ticket_app.command("reopen", help="Reopen a closed ticket.")
+def ticket_reopen(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+) -> None:
+    """Set ticket status back to open."""
+    _update_ticket_status(ticket_id, "open")
+
+
+@ticket_app.command("dep", help="Add a dependency to a ticket.")
+def ticket_dep(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    depends_on: Annotated[str, typer.Argument(help="ID of ticket this depends on.")],
+) -> None:
+    """Add a dependency: ticket_id depends on depends_on."""
+    base = Path.cwd()
+
+    # Find both tickets
+    try:
+        result = find_ticket(base, ticket_id)
+        dep_result = find_ticket(base, depends_on)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+    if dep_result is None:
+        typer.echo(f"Dependency ticket not found: {depends_on}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+    dep_ticket, _ = dep_result
+
+    # Add dependency if not already present
+    if dep_ticket.id not in ticket.deps:
+        ticket.deps.append(dep_ticket.id)
+        write_ticket(ticket, ticket_path)
+        typer.echo(f"{ticket.id} now depends on {dep_ticket.id}")
+    else:
+        typer.echo(f"{ticket.id} already depends on {dep_ticket.id}")
+
+
+@ticket_app.command("undep", help="Remove a dependency from a ticket.")
+def ticket_undep(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    depends_on: Annotated[str, typer.Argument(help="ID of dependency to remove.")],
+) -> None:
+    """Remove a dependency from a ticket."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+
+    # Find the full ID of the dependency to remove
+    matching_deps = [d for d in ticket.deps if depends_on in d]
+    if not matching_deps:
+        typer.echo(f"{ticket.id} does not depend on {depends_on}")
+        raise typer.Exit(code=1)
+
+    for dep_id in matching_deps:
+        ticket.deps.remove(dep_id)
+        typer.echo(f"Removed dependency {ticket.id} → {dep_id}")
+
+    write_ticket(ticket, ticket_path)
+
+
+@ticket_app.command("move", help="Move a ticket to another branch.")
+def ticket_move(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    target: Annotated[str, typer.Argument(help="Target branch name or 'backlog'.")],
+) -> None:
+    """Move a ticket to a different branch or backlog."""
+    from kingdom.ticket import move_ticket
+
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+
+    # Determine destination
+    if target.lower() == "backlog":
+        dest_dir = backlog_root(base) / "tickets"
+    else:
+        normalized = normalize_branch_name(target)
+        dest_dir = branches_root(base) / normalized / "tickets"
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    new_path = move_ticket(ticket_path, dest_dir)
+    typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name}")
+
+
+@ticket_app.command("ready", help="List tickets ready to work on.")
+def ticket_ready(
+    output_json: Annotated[
+        bool, typer.Option("--json", help="Output as JSON.")
+    ] = False,
+) -> None:
+    """List open tickets with no open dependencies."""
+    base = Path.cwd()
+
+    # Collect all tickets to build status lookup
+    all_tickets: list[tuple[Ticket, str]] = []  # (ticket, location)
+
+    # branches/*/tickets/
+    branches_dir = branches_root(base)
+    if branches_dir.exists():
+        for branch_dir in branches_dir.iterdir():
+            if branch_dir.is_dir():
+                tickets_dir = branch_dir / "tickets"
+                if tickets_dir.exists():
+                    for t in list_tickets(tickets_dir):
+                        all_tickets.append((t, f"branch:{branch_dir.name}"))
+
+    # backlog/tickets/
+    backlog_tickets = backlog_root(base) / "tickets"
+    if backlog_tickets.exists():
+        for t in list_tickets(backlog_tickets):
+            all_tickets.append((t, "backlog"))
+
+    # Build status lookup for dependency checking
+    status_by_id = {t.id: t.status for t, _ in all_tickets}
+
+    # Filter: open tickets with no open dependencies
+    ready_tickets = []
+    for ticket, location in all_tickets:
+        if ticket.status not in ("open", "in_progress"):
+            continue
+        # Check if all dependencies are closed
+        has_open_dep = False
+        for dep_id in ticket.deps:
+            dep_status = status_by_id.get(dep_id, "unknown")
+            if dep_status != "closed":
+                has_open_dep = True
+                break
+        if not has_open_dep:
+            ready_tickets.append((ticket, location))
+
+    if output_json:
+        results = [
+            {
+                "id": t.id,
+                "priority": t.priority,
+                "status": t.status,
+                "title": t.title,
+                "location": loc,
+            }
+            for t, loc in ready_tickets
+        ]
+        typer.echo(json.dumps(results, indent=2))
+    else:
+        if not ready_tickets:
+            typer.echo("No ready tickets.")
+            return
+        for ticket, _ in ready_tickets:
+            typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}] - {ticket.title}")
+
+
+@ticket_app.command("edit", help="Open a ticket in $EDITOR.")
+def ticket_edit(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+) -> None:
+    """Open a ticket file in the default editor."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    _, ticket_path = result
+    editor = os.environ.get("EDITOR", "vim")
+    subprocess.run([editor, str(ticket_path)])
 
 
 def main() -> None:
