@@ -1,6 +1,6 @@
 ---
 id: kin-cf39
-status: open
+status: closed
 deps: [kin-9758]
 links: []
 created: 2026-02-04T13:57:19Z
@@ -20,4 +20,3 @@ Add command for council members to anonymously evaluate each other's responses (
 - Output displayed in Rich panels
 - Critiques saved to <run_id>/critiques/ directory
 - Optional --run-id flag to critique a previous run
-
