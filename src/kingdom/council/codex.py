@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import time
 from dataclasses import dataclass, field
 
-from .base import AgentResponse, CouncilMember
+from .base import CouncilMember
 
 
 @dataclass
@@ -67,62 +65,3 @@ class CodexMember(CouncilMember):
                 continue
 
         return "\n".join(text_parts), thread_id, raw
-
-    def query(self, prompt: str, timeout: int = 300) -> AgentResponse:
-        """Execute a query and return the response."""
-        start = time.monotonic()
-        command = self.build_command(prompt)
-
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            text, new_session_id, raw = self.parse_response(
-                result.stdout, result.stderr, result.returncode
-            )
-            if new_session_id:
-                self.session_id = new_session_id
-
-            elapsed = time.monotonic() - start
-            error = None
-            if result.returncode != 0 and not text:
-                error = result.stderr.strip() or f"Exit code {result.returncode}"
-
-            response = AgentResponse(
-                name=self.name,
-                text=text,
-                error=error,
-                elapsed=elapsed,
-                raw=raw,
-            )
-            self._log(prompt, text, error, elapsed)
-            return response
-
-        except subprocess.TimeoutExpired:
-            elapsed = time.monotonic() - start
-            error = f"Timeout after {timeout}s"
-            response = AgentResponse(
-                name=self.name,
-                text="",
-                error=error,
-                elapsed=elapsed,
-                raw="",
-            )
-            self._log(prompt, "", error, elapsed)
-            return response
-
-        except FileNotFoundError:
-            elapsed = time.monotonic() - start
-            error = f"Command not found: {command[0]}"
-            response = AgentResponse(
-                name=self.name,
-                text="",
-                error=error,
-                elapsed=elapsed,
-                raw="",
-            )
-            self._log(prompt, "", error, elapsed)
-            return response
