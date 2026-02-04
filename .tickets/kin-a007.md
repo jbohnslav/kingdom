@@ -1,6 +1,6 @@
 ---
 id: kin-a007
-status: open
+status: closed
 deps: [kin-9758]
 links: []
 created: 2026-02-04T02:47:41Z
