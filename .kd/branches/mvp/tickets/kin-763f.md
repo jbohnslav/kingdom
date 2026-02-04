@@ -1,6 +1,6 @@
 ---
 id: kin-763f
-status: open
+status: closed
 deps: [kin-ce7d]
 links: []
 created: 2026-02-04T21:23:24Z
@@ -17,4 +17,3 @@ Enhance kd status with ticket counts (open, in_progress, closed), ready count, a
 - [ ] Ticket counts displayed
 - [ ] Ready count displayed
 - [ ] Works with --json flag
-

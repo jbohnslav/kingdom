@@ -1,6 +1,6 @@
 ---
 id: kin-f524
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-04T22:04:52Z
