@@ -101,10 +101,8 @@ The Council provides perspectives. The King decides. The Hand executes.
               │  ├── breakdown.md   (tracked)  │
               │  ├── learnings.md   (tracked)  │
               │  ├── state.json    (ignored)   │
-              │  └── tickets/<id>/             │
-              │      └── work-log.md (tracked) │
-              │                                │
-              │  .tickets/          (tracked)  │
+              │  └── tickets/                   │
+              │      └── kin-*.md   (tracked)  │
               └────────────────────────────────┘
 ```
 
@@ -532,20 +530,18 @@ This keeps the repo clean while preserving an audit trail of what was decided an
         │               └── gpt.md
         │
         └── tickets/
-            └── <ticket-id>/       # e.g., kin-a1b2
-                ├── work-log.md    # tracked — what the peasant did
-                ├── session.json   # gitignored — session state
-                └── council.jsonl  # gitignored — raw council output (optional)
-
-.tickets/                          # tracked — ticket specs (via `tk`)
+            └── tickets/
+                └── kin-*.md       # tracked — ticket specs (via `kd ticket`)
 ```
 
 `.kd/.gitignore`:
 ```
 *.json
 *.jsonl
-runs/**/logs/
+**/logs/
+**/sessions/
 worktrees/
+current
 ```
 
 ### What Gets Committed
@@ -555,8 +551,7 @@ worktrees/
 | `design.md` | Design decisions, rationale | During design phase |
 | `breakdown.md` | Ticket structure, dependencies | During breakdown phase |
 | `learnings.md` | Codebase patterns discovered | Append-only during dev |
-| `tickets/<id>/work-log.md` | What the peasant did | During ticket execution |
-| `.tickets/*.md` | Ticket specs, acceptance, deps | During breakdown + execution |
+| `tickets/*.md` | Ticket specs, acceptance, deps | During breakdown + execution |
 
 ### What Stays Local
 
