@@ -53,10 +53,12 @@ def main(argv: list[str]) -> int:
     if target_dir.exists():
         raise FileExistsError(f"target already exists: {target_dir}")
 
+    target_dir_relative = target_dir.relative_to(repo_root)
+
     command = ["git", "submodule", "add"]
     if args.branch:
         command.extend(["-b", args.branch])
-    command.extend([args.url, str(target_dir)])
+    command.extend([args.url, str(target_dir_relative)])
     run(command)
 
     print("Submodule added.")

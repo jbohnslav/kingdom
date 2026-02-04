@@ -13,3 +13,6 @@
 [submodule "third-party/gastown"]
 	path = third-party/gastown
 	url = https://github.com/steveyegge/gastown.git
+[submodule "third-party/llm-council"]
+	path = third-party/llm-council
+	url = https://github.com/karpathy/llm-council.git
