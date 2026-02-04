@@ -1,5 +1,7 @@
 # Design: Kingdom as CLI + Agent Skill
 
+> **Status**: Implemented. The hand.py REPL and tmux orchestration have been removed. Kingdom is now a CLI toolkit that works alongside your coding agent.
+
 ## Problem Statement
 
 The current Hand implementation (`src/kingdom/hand.py`) is a Python REPL that tries to be a chat interface. But chat interfaces are hard — Claude Code, Cursor, and Codex have invested massive effort into streaming, tool visualization, progress tracking, and error handling. Kingdom's ~450 line REPL with a basic `input()` loop and spinner can't compete.

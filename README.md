@@ -1,7 +1,117 @@
 # Kingdom
 
-## Third-Party Tools
+A CLI toolkit for AI-assisted software development. Kingdom helps you manage the design→breakdown→tickets→development workflow alongside your coding agent (Claude Code, Cursor, etc.).
 
-This project includes [ticket](https://github.com/wedow/ticket), a git-native ticket tracking CLI (MIT licensed). See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for details.
+## Quick Start
 
-Third-party source dependencies (when used) live as git submodules under `third-party/`.
+```bash
+# Install
+pip install -e .
+
+# Start a feature (uses current git branch)
+kd start
+
+# Or start with a specific branch name
+kd start feature/oauth-refresh
+
+# Check status
+kd status
+```
+
+## Core Workflow
+
+### 1. Design Phase
+
+```bash
+kd design           # Create design.md template
+kd design show      # View design document
+kd design approve   # Mark design as approved
+```
+
+### 2. Breakdown Phase
+
+```bash
+kd breakdown        # Create breakdown.md template
+kd breakdown --apply  # Convert breakdown to tickets
+```
+
+### 3. Ticket Management
+
+```bash
+kd ticket list              # List tickets for current branch
+kd ticket list --all        # List all tickets across branches
+kd ticket ready             # Show tickets ready to work on
+kd ticket show <id>         # View ticket details
+kd ticket start <id>        # Mark in_progress
+kd ticket close <id>        # Mark closed
+kd ticket create "Title"    # Create new ticket
+kd ticket move <id> backlog # Move to backlog
+```
+
+### 4. Multi-Model Council
+
+Query multiple AI models simultaneously for design decisions:
+
+```bash
+kd council ask "How should we implement OAuth refresh tokens?"
+```
+
+### 5. Complete Feature
+
+```bash
+kd done   # Archive branch folder, clear current
+```
+
+## Directory Structure
+
+```
+.kd/
+├── branches/                    # Active branch work
+│   └── feature-oauth-refresh/   # Normalized from feature/oauth-refresh
+│       ├── design.md            # Design document (tracked)
+│       ├── breakdown.md         # Ticket breakdown (tracked)
+│       ├── learnings.md         # Notes and patterns (tracked)
+│       ├── tickets/             # Branch-specific tickets (tracked)
+│       │   ├── kin-a1b2.md
+│       │   └── kin-c3d4.md
+│       └── state.json           # Operational state (ignored)
+├── backlog/                     # Unassigned tickets
+│   └── tickets/
+├── archive/                     # Completed branches
+├── worktrees/                   # Git worktrees (ignored)
+└── current                      # Pointer to active branch (ignored)
+```
+
+## Commands Reference
+
+| Command | Description |
+|---------|-------------|
+| `kd start [branch]` | Start working on a branch |
+| `kd status` | Show current branch and ticket counts |
+| `kd done` | Archive current branch |
+| `kd design` | Create/view design document |
+| `kd design show` | Print design.md |
+| `kd design approve` | Mark design approved |
+| `kd breakdown` | Create/view breakdown |
+| `kd breakdown --apply` | Create tickets from breakdown |
+| `kd ticket <cmd>` | Ticket management (list, show, create, etc.) |
+| `kd council ask` | Query AI council |
+| `kd doctor` | Check CLI dependencies |
+
+## Development
+
+```bash
+# Setup
+uv sync
+source .venv/bin/activate
+
+# Run tests
+pytest tests/
+
+# Smoke test
+./scripts/smoke.sh
+```
+
+## License
+
+MIT
