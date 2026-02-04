@@ -1,6 +1,6 @@
 ---
 id: kin-6fc1
-status: open
+status: closed
 deps: [kin-55a3]
 links: []
 created: 2026-02-04T21:23:10Z

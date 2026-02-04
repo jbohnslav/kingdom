@@ -1,6 +1,6 @@
 ---
 id: kin-ace6
-status: open
+status: closed
 deps: [kin-62bc]
 links: []
 created: 2026-02-04T21:22:24Z

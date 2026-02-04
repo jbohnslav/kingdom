@@ -1,6 +1,6 @@
 ---
 id: kin-c039
-status: open
+status: closed
 deps: [kin-55a3, kin-af68]
 links: []
 created: 2026-02-04T21:22:44Z

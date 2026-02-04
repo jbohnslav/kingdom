@@ -1,6 +1,6 @@
 ---
 id: kin-55a3
-status: open
+status: closed
 deps: [kin-ace6]
 links: []
 created: 2026-02-04T21:22:26Z

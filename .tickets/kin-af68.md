@@ -1,6 +1,6 @@
 ---
 id: kin-af68
-status: open
+status: closed
 deps: [kin-55a3]
 links: []
 created: 2026-02-04T21:22:29Z

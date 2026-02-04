@@ -1,6 +1,6 @@
 ---
 id: kin-aa3d
-status: open
+status: closed
 deps: [kin-6fc1]
 links: []
 created: 2026-02-04T21:23:12Z

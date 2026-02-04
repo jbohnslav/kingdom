@@ -1,6 +1,6 @@
 ---
 id: kin-62bc
-status: open
+status: closed
 deps: [kin-8472]
 links: []
 created: 2026-02-04T21:22:10Z
