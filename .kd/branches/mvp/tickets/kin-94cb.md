@@ -1,6 +1,6 @@
 ---
 id: kin-94cb
-status: open
+status: closed
 deps: [kin-8613]
 links: []
 created: 2026-02-04T02:47:50Z
@@ -17,4 +17,3 @@ Update help text and docs to recommend skill-based workflow, keep chat as option
 - kd chat --help indicates it's optional
 - Docs updated to recommend skill + CLI
 - Chat still works for users who prefer it
-
