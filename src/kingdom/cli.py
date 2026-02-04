@@ -557,32 +557,125 @@ def breakdown(
     write_json(paths["state_json"], state)
 
 
-@app.command(help="Start a Peasant for the given ticket.")
-def peasant(ticket: str = typer.Argument(..., help="Ticket id to execute.")) -> None:
+@app.command(help="Create a worktree for working on a ticket.")
+def peasant(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
+    clean: Annotated[
+        bool, typer.Option("--clean", help="Remove the worktree instead of creating.")
+    ] = False,
+) -> None:
+    """Create or remove a git worktree for ticket development."""
     base = Path.cwd()
-    feature = resolve_current_run(base)
-    paths = ensure_run_layout(base, feature)
-    ensure_feature_branch(feature)
 
-    worktrees_root = paths["state_root"] / "worktrees" / feature
-    worktree_path = worktrees_root / "peasant-1"
-    worktrees_root.mkdir(parents=True, exist_ok=True)
+    # Find the ticket
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
 
-    if not worktree_path.exists():
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, _ = result
+    full_ticket_id = ticket.id
+
+    # Worktree location
+    worktrees_dir = state_root(base) / "worktrees"
+    worktree_path = worktrees_dir / full_ticket_id
+
+    if clean:
+        # Remove worktree
+        if not worktree_path.exists():
+            typer.echo(f"No worktree found for {full_ticket_id}")
+            raise typer.Exit(code=1)
+
         result = subprocess.run(
-            ["git", "worktree", "add", str(worktree_path), feature],
+            ["git", "worktree", "remove", "--force", str(worktree_path)],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "git worktree add failed")
+            typer.echo(f"Error removing worktree: {result.stderr.strip()}")
+            raise typer.Exit(code=1)
 
-    state = read_json(paths["state_json"])
-    state["peasant"] = {"ticket": ticket, "worktree": str(worktree_path)}
-    write_json(paths["state_json"], state)
+        # Update state
+        try:
+            feature = resolve_current_run(base)
+            _, state_path = _get_design_paths(base, feature)
+            state = read_json(state_path) if state_path.exists() else {}
+            worktrees = state.get("worktrees", {})
+            worktrees.pop(full_ticket_id, None)
+            state["worktrees"] = worktrees
+            write_json(state_path, state)
+        except RuntimeError:
+            pass  # No active run, skip state update
 
-    typer.echo(f"Peasant worktree ready at: {worktree_path}")
-    typer.echo(f"Assigned ticket: {ticket}")
+        typer.echo(f"Removed worktree for {full_ticket_id}")
+        return
+
+    # Create worktree
+    if worktree_path.exists():
+        typer.echo(f"Worktree already exists: {worktree_path}")
+        typer.echo(f"  cd {worktree_path}")
+        return
+
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create a branch for this ticket
+    branch_name = f"ticket/{full_ticket_id}"
+
+    # Check if branch exists
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    branch_exists = result.returncode == 0
+
+    if branch_exists:
+        # Use existing branch
+        result = subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), branch_name],
+            capture_output=True,
+            text=True,
+        )
+    else:
+        # Create new branch from current HEAD
+        result = subprocess.run(
+            ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
+            capture_output=True,
+            text=True,
+        )
+
+    if result.returncode != 0:
+        typer.echo(f"Error creating worktree: {result.stderr.strip()}")
+        raise typer.Exit(code=1)
+
+    # Track in state.json
+    try:
+        feature = resolve_current_run(base)
+        _, state_path = _get_design_paths(base, feature)
+        state = read_json(state_path) if state_path.exists() else {}
+        worktrees = state.get("worktrees", {})
+        worktrees[full_ticket_id] = str(worktree_path)
+        state["worktrees"] = worktrees
+        write_json(state_path, state)
+    except RuntimeError:
+        pass  # No active run, skip state update
+
+    typer.echo(f"Created worktree for {full_ticket_id}")
+    typer.echo(f"  Branch: {branch_name}")
+    typer.echo(f"  Path: {worktree_path}")
+    typer.echo()
+    typer.echo("To work on this ticket:")
+    typer.echo(f"  cd {worktree_path}")
+    typer.echo(f"  kd ticket start {full_ticket_id}")
+    typer.echo()
+    typer.echo("When done:")
+    typer.echo(f"  kd ticket close {full_ticket_id}")
+    typer.echo(f"  kd peasant {full_ticket_id} --clean")
 
 
 @app.command(help="Reserved for broader develop phase (MVP stub).")
