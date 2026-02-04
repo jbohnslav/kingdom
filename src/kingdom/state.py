@@ -37,6 +37,11 @@ def sessions_root(base: Path, feature: str) -> Path:
     return run_root(base, feature) / "sessions"
 
 
+def council_logs_root(base: Path, feature: str) -> Path:
+    """Path to council run bundles."""
+    return logs_root(base, feature) / "council"
+
+
 def hand_session_path(base: Path, feature: str) -> Path:
     """Path to the Hand's session file."""
     return sessions_root(base, feature) / "hand.session"
@@ -74,7 +79,18 @@ def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
     run_dir = run_root(base, feature)
     ensure_dir(run_dir)
     ensure_dir(logs_root(base, feature))
+    ensure_dir(council_logs_root(base, feature))
     ensure_dir(sessions_root(base, feature))
+
+    gitignore_path = state_root(base) / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_content = """# Kingdom operational state (not tracked)
+*.json
+*.jsonl
+runs/**/logs/
+worktrees/
+"""
+        gitignore_path.write_text(gitignore_content, encoding="utf-8")
 
     config_path = state_root(base) / "config.json"
     if not config_path.exists():
@@ -96,6 +112,7 @@ def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
         "state_root": state_root(base),
         "run_root": run_dir,
         "logs_root": logs_root(base, feature),
+        "council_logs_root": council_logs_root(base, feature),
         "sessions_root": sessions_root(base, feature),
         "config_json": config_path,
         "state_json": state_path,

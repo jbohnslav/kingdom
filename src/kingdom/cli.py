@@ -6,17 +6,25 @@ Usage example:
     kd --help
 """
 
-from pathlib import Path
+import json
+import os
 import subprocess
 import sys
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Annotated, Optional
 
 import typer
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from kingdom.council import Council
+from kingdom.council import Council, create_run_bundle
 from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
 from kingdom.design import build_design_template
 from kingdom.state import (
+    council_logs_root,
     ensure_run_layout,
     logs_root,
     read_json,
@@ -116,11 +124,61 @@ def chat() -> None:
     attach_window(server, feature, "hand")
 
 
-@app.command(help="Query council or manage sessions.")
-def council(
-    prompt: Optional[str] = typer.Argument(None, help="One-shot prompt to query."),
-    reset: bool = typer.Option(False, "--reset", help="Clear all sessions."),
+council_app = typer.Typer(name="council", help="Query council members.")
+app.add_typer(council_app, name="council")
+
+
+@council_app.command("ask", help="Query all council members and display responses.")
+def council_ask(
+    prompt: Annotated[str, typer.Argument(help="Prompt to send to council members.")],
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Output JSON format.")
+    ] = False,
+    open_dir: Annotated[
+        bool, typer.Option("--open", help="Open response directory in $EDITOR.")
+    ] = False,
+    timeout: Annotated[
+        int, typer.Option("--timeout", help="Per-model timeout in seconds.")
+    ] = 120,
 ) -> None:
+    """Query all council members and display with Rich panels."""
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    paths = ensure_run_layout(base, feature)
+
+    logs_dir = logs_root(base, feature)
+    sessions_dir = sessions_root(base, feature)
+    council_logs_dir = paths["council_logs_root"]
+
+    console = Console()
+
+    c = Council.create(logs_dir=logs_dir)
+    c.timeout = timeout
+    c.load_sessions(sessions_dir)
+
+    # Query with progress
+    responses = _query_with_progress(c, prompt, json_output, console)
+    c.save_sessions(sessions_dir)
+
+    # Create run bundle
+    bundle = create_run_bundle(council_logs_dir, prompt, responses)
+    run_id = bundle["run_id"]
+    run_dir = bundle["run_dir"]
+    response_paths = bundle["paths"]
+
+    if json_output:
+        _output_json(responses, run_id, run_dir, response_paths)
+    else:
+        _display_rich_panels(responses, run_dir, console)
+
+    if open_dir:
+        editor = os.environ.get("EDITOR", "open")
+        subprocess.run([editor, str(run_dir)])
+
+
+@council_app.command("reset", help="Clear all council sessions.")
+def council_reset() -> None:
+    """Clear all council member sessions."""
     base = Path.cwd()
     feature = resolve_current_run(base)
     ensure_run_layout(base, feature)
@@ -130,39 +188,76 @@ def council(
 
     c = Council.create(logs_dir=logs_dir)
     c.load_sessions(sessions_dir)
-
-    if reset:
-        c.reset_sessions()
-        c.save_sessions(sessions_dir)
-        typer.echo("Sessions cleared.")
-        return
-
-    if not prompt:
-        typer.echo("Usage: kd council \"your prompt here\"")
-        typer.echo("       kd council --reset")
-        typer.echo("")
-        typer.echo("For interactive mode, use: kd chat")
-        return
-
-    # One-shot query
-    typer.echo(f"Querying council: {prompt[:50]}{'...' if len(prompt) > 50 else ''}")
-    typer.echo("")
-
-    responses = c.query(prompt)
+    c.reset_sessions()
     c.save_sessions(sessions_dir)
+    typer.echo("Sessions cleared.")
 
+
+def _query_with_progress(council, prompt, json_output, console):
+    """Query with spinner showing member progress."""
+    if json_output:
+        # No spinner for JSON output
+        return council.query(prompt)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Querying council members...", total=None)
+        responses = council.query(prompt)
+        progress.update(task, description="Done")
+
+    return responses
+
+
+def _display_rich_panels(responses, run_dir, console):
+    """Display responses as Rich panels with Markdown."""
     for name in ["claude", "codex", "agent"]:
         response = responses.get(name)
-        if response:
-            typer.echo(f"[{response.name}] ({response.elapsed:.1f}s)")
-            if response.error:
-                typer.echo(f"ERROR: {response.error}")
+        if not response:
+            continue
+
+        if response.error:
+            content = f"> **Error:** {response.error}\n\n"
             if response.text:
-                typer.echo(response.text)
+                content += response.text
+            else:
+                content += "*No response*"
         else:
-            typer.echo(f"[{name}]")
-            typer.echo("No response")
-        typer.echo("")
+            content = response.text if response.text else "*No response*"
+
+        panel = Panel(
+            Markdown(content),
+            title=response.name,
+            border_style="blue",
+        )
+        console.print(panel)
+        console.print(f"[dim]{response.elapsed:.1f}s[/dim]", justify="right")
+        console.print()
+
+    console.print(f"[dim]Saved to: {run_dir}[/dim]")
+
+
+def _output_json(responses, run_id, run_dir, response_paths):
+    """Output JSON format for --json flag."""
+    output = {
+        "run_id": run_id,
+        "responses": {
+            name: {
+                "text": r.text,
+                "error": r.error,
+                "elapsed": r.elapsed,
+            }
+            for name, r in responses.items()
+        },
+        "paths": {
+            "run_dir": str(run_dir),
+            "responses": {name: str(path) for name, path in response_paths.items()},
+        },
+    }
+    print(json.dumps(output, indent=2))
 
 
 @app.command(help="Draft or view the current design doc.")
