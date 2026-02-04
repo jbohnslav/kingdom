@@ -25,6 +25,10 @@ def runs_root(base: Path) -> Path:
     return state_root(base) / "runs"
 
 
+def worktrees_root(base: Path) -> Path:
+    return state_root(base) / "worktrees"
+
+
 def run_root(base: Path, feature: str) -> Path:
     return runs_root(base) / feature
 
@@ -35,6 +39,10 @@ def logs_root(base: Path, feature: str) -> Path:
 
 def sessions_root(base: Path, feature: str) -> Path:
     return run_root(base, feature) / "sessions"
+
+
+def tickets_root(base: Path, feature: str) -> Path:
+    return run_root(base, feature) / "tickets"
 
 
 def council_logs_root(base: Path, feature: str) -> Path:
@@ -72,23 +80,18 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
         handle.write(f"{serialized}\n")
 
 
-def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
+def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, Path]:
+    """Create base .kd/ structure. Idempotent."""
     ensure_dir(state_root(base))
     ensure_dir(runs_root(base))
-
-    run_dir = run_root(base, feature)
-    ensure_dir(run_dir)
-    ensure_dir(logs_root(base, feature))
-    ensure_dir(council_logs_root(base, feature))
-    ensure_dir(sessions_root(base, feature))
+    ensure_dir(worktrees_root(base))
 
     gitignore_path = state_root(base) / ".gitignore"
-    if not gitignore_path.exists():
+    if create_gitignore and not gitignore_path.exists():
         gitignore_content = """# Kingdom operational state (not tracked)
 *.json
 *.jsonl
-*.log
-*.session
+runs/**/logs/
 worktrees/
 """
         gitignore_path.write_text(gitignore_content, encoding="utf-8")
@@ -96,6 +99,27 @@ worktrees/
     config_path = state_root(base) / "config.json"
     if not config_path.exists():
         write_json(config_path, {})
+
+    return {
+        "state_root": state_root(base),
+        "runs_root": runs_root(base),
+        "worktrees_root": worktrees_root(base),
+        "config_json": config_path,
+        "gitignore": gitignore_path if create_gitignore else None,
+    }
+
+
+def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
+    """Create run-specific structure under .kd/runs/<feature>/. Idempotent."""
+    # Ensure base layout exists first
+    base_paths = ensure_base_layout(base)
+
+    run_dir = run_root(base, feature)
+    ensure_dir(run_dir)
+    ensure_dir(logs_root(base, feature))
+    ensure_dir(council_logs_root(base, feature))
+    ensure_dir(sessions_root(base, feature))
+    ensure_dir(tickets_root(base, feature))
 
     state_path = run_dir / "state.json"
     if not state_path.exists():
@@ -109,16 +133,22 @@ worktrees/
     if not breakdown_path.exists():
         breakdown_path.write_text("", encoding="utf-8")
 
+    learnings_path = run_dir / "learnings.md"
+    if not learnings_path.exists():
+        learnings_path.write_text("", encoding="utf-8")
+
     return {
-        "state_root": state_root(base),
+        "state_root": base_paths["state_root"],
         "run_root": run_dir,
         "logs_root": logs_root(base, feature),
         "council_logs_root": council_logs_root(base, feature),
         "sessions_root": sessions_root(base, feature),
-        "config_json": config_path,
+        "tickets_root": tickets_root(base, feature),
+        "config_json": base_paths["config_json"],
         "state_json": state_path,
         "design_md": design_path,
         "breakdown_md": breakdown_path,
+        "learnings_md": learnings_path,
     }
 
 
