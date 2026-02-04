@@ -146,12 +146,15 @@ def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, P
 
     gitignore_path = state_root(base) / ".gitignore"
     if create_gitignore and not gitignore_path.exists():
-        gitignore_content = """# Kingdom operational state (not tracked)
+        gitignore_content = """# Operational state (not tracked)
 *.json
 *.jsonl
-runs/**/logs/
-branches/**/logs/
+*.log
+*.session
+**/logs/
+**/sessions/
 worktrees/
+current
 """
         gitignore_path.write_text(gitignore_content, encoding="utf-8")
 
