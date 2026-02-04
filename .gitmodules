@@ -1,0 +1,15 @@
+[submodule "third-party/skills"]
+	path = third-party/skills
+	url = https://github.com/anthropics/skills.git
+[submodule "third-party/ralph"]
+	path = third-party/ralph
+	url = https://github.com/snarktank/ralph.git
+[submodule "third-party/openclaw"]
+	path = third-party/openclaw
+	url = https://github.com/openclaw/openclaw.git
+[submodule "third-party/beads"]
+	path = third-party/beads
+	url = https://github.com/steveyegge/beads.git
+[submodule "third-party/gastown"]
+	path = third-party/gastown
+	url = https://github.com/steveyegge/gastown.git
