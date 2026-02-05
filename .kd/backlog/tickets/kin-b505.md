@@ -1,6 +1,6 @@
 ---
 id: kin-b505
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-05T00:30:48Z
