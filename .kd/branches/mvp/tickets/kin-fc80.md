@@ -1,0 +1,26 @@
+---
+id: kin-fc80
+status: closed
+deps: [kin-a007]
+links: []
+created: 2026-02-04T02:47:45Z
+type: task
+priority: 1
+assignee: Jim Robinson-Bohnslav
+---
+# Council synthesis step
+
+Add synthesis step calling claude to combine responses, include in bundle and JSON output
+
+## Acceptance Criteria
+
+- Synthesis included in summary.md
+- Synthesis included in --json output
+- Works even when some members fail
+
+
+## Notes
+
+**2026-02-04T13:54:45Z**
+
+Closed: Design changed to remove auto-synthesis. King reads council responses directly and synthesizes mentally.

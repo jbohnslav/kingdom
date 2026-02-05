@@ -1,0 +1,20 @@
+---
+id: kin-af68
+status: closed
+deps: [kin-55a3]
+links: []
+created: 2026-02-04T21:22:29Z
+type: task
+priority: 1
+assignee: Jim Robinson-Bohnslav
+---
+# Update gitignore patterns
+
+Update .kd/.gitignore template: *.json, *.jsonl, *.log, *.session, **/logs/, **/sessions/, worktrees/, current
+
+## Acceptance Criteria
+
+- [ ] New gitignore template in ensure_base_layout()
+- [ ] Correctly ignores state.json but tracks design.md, tickets/*.md
+- [ ] git status is clean after operations
+

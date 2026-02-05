@@ -8,3 +8,5 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Kingdom operational state (json/logs ignored via .kd/.gitignore)

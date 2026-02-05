@@ -62,7 +62,7 @@ The council provides multi-model consensus for important decisions:
 **Council is mandatory for:**
 
 - Design phase
-- Plan phase
+- Breakdown phase
 - Code review (within each ticket's loop)
 
 **Council is optional for:**
@@ -125,9 +125,9 @@ main
 
 - `design.md` - The final design document
 
-**King Checkpoint:** Review and approve the design before proceeding to planning.
+**King Checkpoint:** Review and approve the design before proceeding to breakdown.
 
-## Stage 2: Plan (Council)
+## Stage 2: Breakdown (Council)
 
 **Goal:** Break the design into executable tickets with dependency relationships.
 
@@ -429,7 +429,7 @@ Full-featured project management with web UI, MCP integration.
 
 - Implement mayor as persistent agent session
 - Build council multi-model consensus flow
-- Design and plan phases working
+- Design and breakdown phases working
 
 ### Phase 3: Worker orchestration
 

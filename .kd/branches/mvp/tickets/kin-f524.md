@@ -1,0 +1,12 @@
+---
+id: kin-f524
+status: closed
+deps: []
+links: []
+created: 2026-02-04T22:04:52Z
+type: task
+priority: 2
+---
+# Add tk alias for ticket subcommand
+
+Add 'tk' as an alias for the 'ticket' subcommand so users can use 'kd tk list' instead of 'kd ticket list'.

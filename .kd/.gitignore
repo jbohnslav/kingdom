@@ -1,0 +1,8 @@
+# Kingdom operational state (not tracked)
+*.json
+*.jsonl
+*.log
+**/logs/
+**/sessions/
+worktrees/
+current

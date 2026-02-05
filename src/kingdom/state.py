@@ -1,0 +1,325 @@
+"""State layout helpers for Kingdom runs.
+
+Example:
+    from pathlib import Path
+    from kingdom.state import ensure_run_layout, set_current_run, resolve_current_run
+
+    root = Path(".")
+    ensure_run_layout(root, "example")
+    set_current_run(root, "example")
+    resolve_current_run(root)
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+
+def normalize_branch_name(branch: str) -> str:
+    """Normalize a branch name for use as a directory name.
+
+    Converts slashes to dashes, lowercases, removes non-ASCII characters,
+    and collapses multiple dashes into single dashes.
+
+    Examples:
+        - 'feature/oauth-refresh' -> 'feature-oauth-refresh'
+        - 'JRB/Fix-Bug' -> 'jrb-fix-bug'
+        - 'my--branch' -> 'my-branch'
+    """
+    # Normalize unicode to ASCII equivalents where possible (e.g., é -> e)
+    normalized = unicodedata.normalize("NFKD", branch)
+    # Remove non-ASCII characters
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    # Convert to lowercase
+    lowercased = ascii_only.lower()
+    # Replace slashes with dashes
+    with_dashes = lowercased.replace("/", "-")
+    # Replace any non-alphanumeric characters (except dash) with dash
+    cleaned = re.sub(r"[^a-z0-9-]", "-", with_dashes)
+    # Collapse multiple dashes into single dash
+    no_double_dashes = re.sub(r"-+", "-", cleaned)
+    # Strip leading/trailing dashes
+    return no_double_dashes.strip("-")
+
+
+def branches_root(base: Path) -> Path:
+    """Return path to .kd/branches/."""
+    return state_root(base) / "branches"
+
+
+def branch_root(base: Path, branch: str) -> Path:
+    """Return path to .kd/branches/<normalized-branch>/."""
+    return branches_root(base) / normalize_branch_name(branch)
+
+
+def backlog_root(base: Path) -> Path:
+    """Return path to .kd/backlog/."""
+    return state_root(base) / "backlog"
+
+
+def archive_root(base: Path) -> Path:
+    """Return path to .kd/archive/."""
+    return state_root(base) / "archive"
+
+
+def state_root(base: Path) -> Path:
+    return base / ".kd"
+
+
+def runs_root(base: Path) -> Path:
+    """DEPRECATED: Use branches_root() instead."""
+    return state_root(base) / "runs"
+
+
+def worktrees_root(base: Path) -> Path:
+    return state_root(base) / "worktrees"
+
+
+def run_root(base: Path, feature: str) -> Path:
+    """DEPRECATED: Use branch_root() instead."""
+    return runs_root(base) / feature
+
+
+def logs_root(base: Path, feature: str) -> Path:
+    """Path to logs directory, preferring branch structure."""
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return branch_dir / "logs"
+    return run_root(base, feature) / "logs"
+
+
+def sessions_root(base: Path, feature: str) -> Path:
+    """Path to sessions directory, preferring branch structure."""
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return branch_dir / "sessions"
+    return run_root(base, feature) / "sessions"
+
+
+def tickets_root(base: Path, feature: str) -> Path:
+    """Path to tickets directory, preferring branch structure."""
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return branch_dir / "tickets"
+    return run_root(base, feature) / "tickets"
+
+
+def council_logs_root(base: Path, feature: str) -> Path:
+    """Path to council run bundles, preferring branch structure."""
+    return logs_root(base, feature) / "council"
+
+
+def hand_session_path(base: Path, feature: str) -> Path:
+    """Path to the Hand's session file."""
+    return sessions_root(base, feature) / "hand.session"
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing JSON file: {path}")
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        return {}
+    return json.loads(content)
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    serialized = json.dumps(data, indent=2, sort_keys=True)
+    path.write_text(f"{serialized}\n", encoding="utf-8")
+
+
+def append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    serialized = json.dumps(record, sort_keys=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{serialized}\n")
+
+
+def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, Path]:
+    """Create base .kd/ structure. Idempotent.
+
+    Creates both old structure (runs/) and new structure (branches/, backlog/, archive/).
+    """
+    ensure_dir(state_root(base))
+    # Old structure (kept for backwards compatibility)
+    ensure_dir(runs_root(base))
+    ensure_dir(worktrees_root(base))
+    # New branch-centric structure
+    ensure_dir(branches_root(base))
+    ensure_dir(backlog_root(base))
+    ensure_dir(backlog_root(base) / "tickets")
+    ensure_dir(archive_root(base))
+
+    gitignore_path = state_root(base) / ".gitignore"
+    if create_gitignore and not gitignore_path.exists():
+        gitignore_content = """# Operational state (not tracked)
+*.json
+*.jsonl
+*.log
+*.session
+**/logs/
+**/sessions/
+worktrees/
+current
+"""
+        gitignore_path.write_text(gitignore_content, encoding="utf-8")
+
+    config_path = state_root(base) / "config.json"
+    if not config_path.exists():
+        write_json(config_path, {})
+
+    return {
+        "state_root": state_root(base),
+        "runs_root": runs_root(base),
+        "worktrees_root": worktrees_root(base),
+        "branches_root": branches_root(base),
+        "backlog_root": backlog_root(base),
+        "archive_root": archive_root(base),
+        "config_json": config_path,
+        "gitignore": gitignore_path if create_gitignore else None,
+    }
+
+
+def ensure_branch_layout(base: Path, branch: str) -> Path:
+    """Create branch-specific structure under .kd/branches/<normalized-branch>/. Idempotent.
+
+    Creates:
+        - .kd/branches/<normalized-branch>/design.md (empty file)
+        - .kd/branches/<normalized-branch>/breakdown.md (empty file)
+        - .kd/branches/<normalized-branch>/learnings.md (empty file)
+        - .kd/branches/<normalized-branch>/tickets/
+        - .kd/branches/<normalized-branch>/logs/
+        - .kd/branches/<normalized-branch>/sessions/
+        - .kd/branches/<normalized-branch>/state.json (empty {} if not exists)
+
+    Args:
+        base: The project root directory.
+        branch: The branch name (will be normalized).
+
+    Returns:
+        Path to the branch directory (.kd/branches/<normalized-branch>/).
+    """
+    # Ensure base layout exists first
+    ensure_base_layout(base)
+
+    branch_dir = branch_root(base, branch)
+    ensure_dir(branch_dir)
+
+    # Create subdirectories
+    ensure_dir(branch_dir / "tickets")
+    ensure_dir(branch_dir / "logs")
+    ensure_dir(branch_dir / "sessions")
+
+    # Create state.json if not exists
+    state_path = branch_dir / "state.json"
+    if not state_path.exists():
+        write_json(state_path, {})
+
+    # Create markdown files if not exist (touch)
+    design_path = branch_dir / "design.md"
+    if not design_path.exists():
+        design_path.write_text("", encoding="utf-8")
+
+    breakdown_path = branch_dir / "breakdown.md"
+    if not breakdown_path.exists():
+        breakdown_path.write_text("", encoding="utf-8")
+
+    learnings_path = branch_dir / "learnings.md"
+    if not learnings_path.exists():
+        learnings_path.write_text("", encoding="utf-8")
+
+    return branch_dir
+
+
+def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
+    """DEPRECATED: Use ensure_branch_layout() instead.
+
+    Create run-specific structure under .kd/runs/<feature>/. Idempotent.
+    """
+    # Ensure base layout exists first
+    base_paths = ensure_base_layout(base)
+
+    run_dir = run_root(base, feature)
+    ensure_dir(run_dir)
+    ensure_dir(logs_root(base, feature))
+    ensure_dir(council_logs_root(base, feature))
+    ensure_dir(sessions_root(base, feature))
+    ensure_dir(tickets_root(base, feature))
+
+    state_path = run_dir / "state.json"
+    if not state_path.exists():
+        write_json(state_path, {})
+
+    design_path = run_dir / "design.md"
+    if not design_path.exists():
+        design_path.write_text("", encoding="utf-8")
+
+    breakdown_path = run_dir / "breakdown.md"
+    if not breakdown_path.exists():
+        breakdown_path.write_text("", encoding="utf-8")
+
+    learnings_path = run_dir / "learnings.md"
+    if not learnings_path.exists():
+        learnings_path.write_text("", encoding="utf-8")
+
+    return {
+        "state_root": base_paths["state_root"],
+        "run_root": run_dir,
+        "logs_root": logs_root(base, feature),
+        "council_logs_root": council_logs_root(base, feature),
+        "sessions_root": sessions_root(base, feature),
+        "tickets_root": tickets_root(base, feature),
+        "config_json": base_paths["config_json"],
+        "state_json": state_path,
+        "design_md": design_path,
+        "breakdown_md": breakdown_path,
+        "learnings_md": learnings_path,
+    }
+
+
+def set_current_run(base: Path, feature: str) -> None:
+    ensure_dir(state_root(base))
+    current_path = state_root(base) / "current"
+    current_path.write_text(f"{feature}\n", encoding="utf-8")
+
+
+def clear_current_run(base: Path) -> None:
+    """Remove the current run pointer."""
+    current_path = state_root(base) / "current"
+    if current_path.exists():
+        current_path.unlink()
+
+
+def resolve_current_run(base: Path) -> str:
+    """Resolve the current active run/branch.
+
+    First checks for branch-based structure (.kd/branches/), then falls back
+    to legacy run structure (.kd/runs/) for backwards compatibility.
+    """
+    current_path = state_root(base) / "current"
+    if not current_path.exists():
+        raise RuntimeError("No active run. Use `kd start <feature>` first.")
+
+    feature = current_path.read_text(encoding="utf-8").strip()
+    if not feature:
+        raise RuntimeError("Current run is empty. Use `kd start <feature>` again.")
+
+    # Check new branch-based structure first
+    branch_dir = branch_root(base, feature)
+    if branch_dir.exists():
+        return feature
+
+    # Fall back to legacy runs structure
+    legacy_run_dir = run_root(base, feature)
+    if legacy_run_dir.exists():
+        return feature
+
+    raise RuntimeError(f"Current run '{feature}' not found at {branch_dir} or {legacy_run_dir}.")
