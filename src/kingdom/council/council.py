@@ -39,10 +39,7 @@ class Council:
         responses: dict[str, AgentResponse] = {}
 
         with ThreadPoolExecutor(max_workers=len(self.members)) as executor:
-            futures = {
-                executor.submit(member.query, prompt, self.timeout): member
-                for member in self.members
-            }
+            futures = {executor.submit(member.query, prompt, self.timeout): member for member in self.members}
 
             for future in as_completed(futures):
                 member = futures[future]

@@ -27,4 +27,3 @@ def test_cli_design_and_breakdown_create_templates() -> None:
         breakdown_path = base / ".kd" / "runs" / feature / "breakdown.md"
         assert breakdown_path.exists()
         assert "Breakdown: example-feature" in breakdown_path.read_text(encoding="utf-8")
-

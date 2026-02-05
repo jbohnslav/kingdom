@@ -39,14 +39,14 @@ class TestCodexMember:
             '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}\n'
             '{"type":"turn.completed"}\n'
         )
-        text, session_id, raw = member.parse_response(stdout, "", 0)
+        text, session_id, _raw = member.parse_response(stdout, "", 0)
         assert text == "OK"
         assert session_id == "abc-123"
 
     def test_parse_response_non_jsonl_returns_empty(self) -> None:
         """Non-JSONL input returns empty text (graceful handling)."""
         member = CodexMember()
-        text, session_id, raw = member.parse_response("plain text", "", 0)
+        text, session_id, _raw = member.parse_response("plain text", "", 0)
         assert text == ""
         assert session_id is None
 
@@ -75,6 +75,6 @@ class TestCursorAgentMember:
         """Cursor returns result in 'result' key, session in 'session_id'."""
         member = CursorAgentMember()
         stdout = '{"type":"result","subtype":"success","is_error":false,"result":"OK","session_id":"abc123"}'
-        text, session_id, raw = member.parse_response(stdout, "", 0)
+        text, session_id, _raw = member.parse_response(stdout, "", 0)
         assert text == "OK"
         assert session_id == "abc123"

@@ -24,9 +24,7 @@ class CursorAgentMember(CouncilMember):
             cmd.extend(["--resume", self.session_id])
         return cmd
 
-    def parse_response(
-        self, stdout: str, stderr: str, code: int
-    ) -> tuple[str, str | None, str]:
+    def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse cursor agent CLI JSON output.
 
         Expected format varies, handle multiple possibilities:

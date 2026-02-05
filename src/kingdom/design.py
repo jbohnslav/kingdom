@@ -18,13 +18,12 @@ Usage example:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 
 from kingdom.council.base import AgentResponse
-
 
 DESIGN_TAG = "DESIGN_MD"
 SUMMARY_TAG = "SUMMARY"
@@ -152,7 +151,7 @@ def build_design_update_prompt(
             "- Output the full updated design.md content (not a diff).",
             "- Prefer minimal changes; preserve any existing good content.",
             "",
-            f"Return exactly two tagged blocks (any extra text is ignored):",
+            "Return exactly two tagged blocks (any extra text is ignored):",
             f"<{DESIGN_TAG}> ... </{DESIGN_TAG}>",
             f"<{SUMMARY_TAG}> ... </{SUMMARY_TAG}>",
         ]
@@ -176,4 +175,3 @@ def parse_design_update_response(response_text: str) -> DesignUpdate:
     design_md = extract_tagged_block(response_text, DESIGN_TAG)
     summary = extract_tagged_block(response_text, SUMMARY_TAG)
     return DesignUpdate(markdown=design_md, summary=summary)
-

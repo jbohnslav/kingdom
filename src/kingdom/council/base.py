@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -35,9 +34,7 @@ class CouncilMember(ABC):
         ...
 
     @abstractmethod
-    def parse_response(
-        self, stdout: str, stderr: str, code: int
-    ) -> tuple[str, str | None, str]:
+    def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse response from CLI output.
 
         Returns:
@@ -57,9 +54,7 @@ class CouncilMember(ABC):
                 text=True,
                 timeout=timeout,
             )
-            text, new_session_id, raw = self.parse_response(
-                result.stdout, result.stderr, result.returncode
-            )
+            text, new_session_id, raw = self.parse_response(result.stdout, result.stderr, result.returncode)
             if new_session_id:
                 self.session_id = new_session_id
 
@@ -108,9 +103,7 @@ class CouncilMember(ABC):
         """Clear the session ID."""
         self.session_id = None
 
-    def _log(
-        self, prompt: str, text: str, error: str | None, elapsed: float
-    ) -> None:
+    def _log(self, prompt: str, text: str, error: str | None, elapsed: float) -> None:
         """Log the interaction to the log file."""
         if not self.log_path:
             return
@@ -118,9 +111,9 @@ class CouncilMember(ABC):
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with self.log_path.open("a", encoding="utf-8") as f:
-            f.write(f"\n{'='*60}\n")
+            f.write(f"\n{'=' * 60}\n")
             f.write(f"[{timestamp}] Query ({elapsed:.1f}s)\n")
-            f.write(f"{'='*60}\n")
+            f.write(f"{'=' * 60}\n")
             f.write(f"PROMPT:\n{prompt}\n\n")
             if error:
                 f.write(f"ERROR: {error}\n\n")

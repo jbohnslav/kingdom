@@ -122,4 +122,3 @@ polish is to either:
   `--confirm` is provided, or should it prompt by default?
 - Should “checked” tickets be treated as “already applied”, or strictly ignored
   (recommended: ignore)?
-

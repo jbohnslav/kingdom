@@ -251,6 +251,7 @@ class TestEnsureBranchLayout:
         state_path = branch_dir / "state.json"
         assert state_path.is_file()
         import json
+
         content = json.loads(state_path.read_text())
         assert content == {}
 

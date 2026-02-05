@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -125,9 +125,9 @@ def test_done_timestamp_format() -> None:
         ensure_branch_layout(base, "test-feature")
         set_current_run(base, "test-feature")
 
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         result = runner.invoke(cli.app, ["done"])
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         assert result.exit_code == 0
 
@@ -187,7 +187,7 @@ def test_done_handles_archive_collision() -> None:
         # New archive should have timestamp suffix
         archive_dirs = list(archive_root(base).iterdir())
         assert len(archive_dirs) == 2
-        new_archive = [d for d in archive_dirs if d.name.startswith("test-feature-")][0]
+        new_archive = next(d for d in archive_dirs if d.name.startswith("test-feature-"))
         state = read_json(new_archive / "state.json")
         assert state["status"] == "done"
 

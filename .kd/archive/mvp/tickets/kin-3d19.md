@@ -1,0 +1,17 @@
+---
+id: kin-3d19
+status: closed
+deps: [kin-0bb1]
+links: []
+created: 2026-02-04T02:47:38Z
+type: task
+priority: 2
+assignee: Jim Robinson-Bohnslav
+---
+# Add --json flag to kd status
+
+Output JSON with feature, phase, design_approved, tickets counts
+
+## Acceptance Criteria
+
+- kd status --json outputs valid JSON matching cli-skill-architecture.md schema
