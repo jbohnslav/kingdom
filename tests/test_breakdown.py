@@ -73,4 +73,3 @@ def test_parse_breakdown_tickets_extracts_ids_and_fields() -> None:
     assert tickets[0]["description"] == "Hello"
     assert tickets[0]["acceptance"] == ["A"]
     assert tickets[1]["depends_on"] == ["T1"]
-

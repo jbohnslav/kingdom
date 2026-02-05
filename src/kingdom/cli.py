@@ -1,16 +1,17 @@
-from __future__ import annotations
-
 """Command-line interface for Kingdom.
 
 Usage example:
     kd --help
 """
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
+from datetime import UTC
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -18,8 +19,8 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from kingdom.council import Council, create_run_bundle
 from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
+from kingdom.council import Council, create_run_bundle
 from kingdom.design import build_design_template
 from kingdom.state import (
     archive_root,
@@ -92,19 +93,13 @@ def ensure_feature_branch(feature: str) -> None:
         typer.echo(f"Created branch: {feature}")
         return
 
-    typer.echo(
-        f"Warning: current branch '{current}' does not match feature '{feature}'."
-    )
+    typer.echo(f"Warning: current branch '{current}' does not match feature '{feature}'.")
 
 
 @app.command(help="Initialize .kd/ directory structure.")
 def init(
-    no_git: Annotated[
-        bool, typer.Option("--no-git", help="Skip git repository check.")
-    ] = False,
-    no_gitignore: Annotated[
-        bool, typer.Option("--no-gitignore", help="Skip .gitignore creation.")
-    ] = False,
+    no_git: Annotated[bool, typer.Option("--no-git", help="Skip git repository check.")] = False,
+    no_gitignore: Annotated[bool, typer.Option("--no-gitignore", help="Skip .gitignore creation.")] = False,
 ) -> None:
     """Initialize the .kd/ directory structure for Kingdom.
 
@@ -138,12 +133,8 @@ def get_current_git_branch() -> str | None:
 
 @app.command(help="Initialize a branch-based run and state.")
 def start(
-    branch: Annotated[
-        Optional[str], typer.Argument(help="Branch name (defaults to current git branch).")
-    ] = None,
-    force: Annotated[
-        bool, typer.Option("--force", "-f", help="Force start even if a run is already active.")
-    ] = False,
+    branch: Annotated[str | None, typer.Argument(help="Branch name (defaults to current git branch).")] = None,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Force start even if a run is already active.")] = False,
 ) -> None:
     base = Path.cwd()
 
@@ -192,13 +183,11 @@ def start(
 
 @app.command(help="Mark the current run as done and archive it.")
 def done(
-    feature: Annotated[
-        Optional[str], typer.Argument(help="Branch name (defaults to current run).")
-    ] = None,
+    feature: Annotated[str | None, typer.Argument(help="Branch name (defaults to current run).")] = None,
 ) -> None:
     """Mark a run as complete, archive it, and clear the current run pointer."""
     import shutil
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     base = Path.cwd()
 
@@ -208,7 +197,7 @@ def done(
             feature = resolve_current_run(base)
         except RuntimeError as exc:
             typer.echo(str(exc))
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
 
     # Get the branch directory (normalized name)
     normalized = normalize_branch_name(feature)
@@ -231,7 +220,7 @@ def done(
     else:
         state = {}
     state["status"] = "done"
-    state["done_at"] = datetime.now(timezone.utc).isoformat()
+    state["done_at"] = datetime.now(UTC).isoformat()
     write_json(state_path, state)
 
     # Determine archive destination
@@ -241,7 +230,7 @@ def done(
 
     # Handle collision: add timestamp suffix if destination exists
     if archive_dest.exists():
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         archive_dest = archive_base / f"{normalized}-{timestamp}"
 
     # Move branch folder to archive
@@ -283,15 +272,9 @@ app.add_typer(council_app, name="council")
 @council_app.command("ask", help="Query all council members and display responses.")
 def council_ask(
     prompt: Annotated[str, typer.Argument(help="Prompt to send to council members.")],
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Output JSON format.")
-    ] = False,
-    open_dir: Annotated[
-        bool, typer.Option("--open", help="Open response directory in $EDITOR.")
-    ] = False,
-    timeout: Annotated[
-        int, typer.Option("--timeout", help="Per-model timeout in seconds.")
-    ] = 120,
+    json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
+    open_dir: Annotated[bool, typer.Option("--open", help="Open response directory in $EDITOR.")] = False,
+    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
 ) -> None:
     """Query all council members and display with Rich panels."""
     base = Path.cwd()
@@ -384,12 +367,10 @@ def council_last() -> None:
 def council_followup(
     member: Annotated[str, typer.Argument(help="Member name (claude, codex, agent).")],
     prompt: Annotated[str, typer.Argument(help="Follow-up prompt.")],
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Output JSON format.")
-    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
 ) -> None:
     """Send a follow-up prompt to a specific council member."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     base = Path.cwd()
     feature = resolve_current_run(base)
@@ -439,12 +420,13 @@ def council_followup(
     else:
         # Create a new run bundle
         from kingdom.council import create_run_bundle
+
         bundle = create_run_bundle(council_logs_dir, prompt, {member: response})
         run_dir = bundle["run_dir"]
 
     # Append to member's response file
     md_path = run_dir / f"{member}.md"
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # Build follow-up content
     followup_content = f"\n\n---\n\n## Follow-up ({timestamp})\n\n**Prompt:** {prompt}\n\n"
@@ -498,12 +480,8 @@ def council_followup(
 
 @council_app.command("critique", help="Have council members evaluate each other's responses.")
 def council_critique(
-    run_id: Annotated[
-        Optional[str], typer.Argument(help="Run ID to critique (defaults to most recent).")
-    ] = None,
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Output JSON format.")
-    ] = False,
+    run_id: Annotated[str | None, typer.Argument(help="Run ID to critique (defaults to most recent).")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
 ) -> None:
     """Trigger peer evaluation of council responses (Stage 2 pattern)."""
     base = Path.cwd()
@@ -545,7 +523,7 @@ def council_critique(
 
     # Create anonymized versions
     member_names = sorted(responses.keys())
-    labels = ["A", "B", "C", "D", "E"][:len(member_names)]
+    labels = ["A", "B", "C", "D", "E"][: len(member_names)]
     anonymized: dict[str, tuple[str, str]] = {}  # label -> (member_name, content)
     for i, name in enumerate(member_names):
         anonymized[labels[i]] = (name, responses[name])
@@ -861,11 +839,9 @@ def design_approve() -> None:
 
 @app.command(help="Draft or iterate the current breakdown.")
 def breakdown(
-    apply: bool = typer.Option(
-        False, "--apply", help="Create tickets from breakdown.md."
-    ),
+    apply: bool = typer.Option(False, "--apply", help="Create tickets from breakdown.md."),
 ) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     base = Path.cwd()
     feature = resolve_current_run(base)
@@ -909,7 +885,7 @@ def breakdown(
             status="open",
             deps=[],  # Dependencies added in second pass
             links=[],
-            created=datetime.now(timezone.utc),
+            created=datetime.now(UTC),
             type="task",
             priority=parsed["priority"],
             title=parsed["title"],
@@ -945,9 +921,7 @@ def breakdown(
 @app.command(help="Create a worktree for working on a ticket.")
 def peasant(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
-    clean: Annotated[
-        bool, typer.Option("--clean", help="Remove the worktree instead of creating.")
-    ] = False,
+    clean: Annotated[bool, typer.Option("--clean", help="Remove the worktree instead of creating.")] = False,
 ) -> None:
     """Create or remove a git worktree for ticket development."""
     base = Path.cwd()
@@ -957,7 +931,7 @@ def peasant(
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
         typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if result is None:
         typer.echo(f"Ticket not found: {ticket_id}")
@@ -1083,16 +1057,14 @@ def _get_doc_status(path: Path) -> str:
 
 @app.command(help="Show current branch, design doc status, and breakdown status.")
 def status(
-    output_json: Annotated[
-        bool, typer.Option("--json", help="Output as JSON for machine consumption.")
-    ] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
 ) -> None:
     base = Path.cwd()
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
         typer.echo(str(exc))
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     # Try new branch-based structure first, fall back to legacy
     normalized = normalize_branch_name(feature)
@@ -1141,9 +1113,7 @@ def status(
     for ticket in tickets:
         if ticket.status not in ("open", "in_progress"):
             continue
-        all_deps_closed = all(
-            status_by_id.get(dep, "unknown") == "closed" for dep in ticket.deps
-        )
+        all_deps_closed = all(status_by_id.get(dep, "unknown") == "closed" for dep in ticket.deps)
         if all_deps_closed:
             ready_count += 1
 
@@ -1170,7 +1140,9 @@ def status(
         typer.echo(f"Breakdown: {breakdown_status}")
         typer.echo()
         total = sum(status_counts.values())
-        typer.echo(f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, {status_counts['closed']} closed ({total} total)")
+        typer.echo(
+            f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, {status_counts['closed']} closed ({total} total)"
+        )
         typer.echo(f"Ready: {ready_count}")
 
 
@@ -1206,9 +1178,7 @@ def _check_cli(command: list[str]) -> tuple[bool, str | None]:
 
 @app.command(help="Check if council member CLIs are installed.")
 def doctor(
-    output_json: Annotated[
-        bool, typer.Option("--json", help="Output as JSON.")
-    ] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Verify council member CLIs are installed and provide guidance."""
     results: dict[str, dict[str, bool | str | None]] = {}
@@ -1257,7 +1227,7 @@ def _get_tickets_dir(base: Path, backlog: bool = False) -> Path:
     # Try to get current branch's tickets directory
     try:
         feature = resolve_current_run(base)
-        normalized = normalize_branch_name(feature)
+        normalize_branch_name(feature)
         branch_dir = branch_root(base, feature)
         if branch_dir.exists():
             return branch_dir / "tickets"
@@ -1271,21 +1241,13 @@ def _get_tickets_dir(base: Path, backlog: bool = False) -> Path:
 @ticket_app.command("create", help="Create a new ticket.")
 def ticket_create(
     title: Annotated[str, typer.Argument(help="Ticket title.")],
-    description: Annotated[
-        Optional[str], typer.Option("-d", "--description", help="Ticket description.")
-    ] = None,
-    priority: Annotated[
-        int, typer.Option("-p", "--priority", help="Priority (1-3, 1 is highest).")
-    ] = 2,
-    ticket_type: Annotated[
-        str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")
-    ] = "task",
-    backlog: Annotated[
-        bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")
-    ] = False,
+    description: Annotated[str | None, typer.Option("-d", "--description", help="Ticket description.")] = None,
+    priority: Annotated[int, typer.Option("-p", "--priority", help="Priority (1-3, 1 is highest).")] = 2,
+    ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")] = "task",
+    backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
 ) -> None:
     """Create a new ticket in the current branch or backlog."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     base = Path.cwd()
 
@@ -1314,7 +1276,7 @@ def ticket_create(
         status="open",
         deps=[],
         links=[],
-        created=datetime.now(timezone.utc),
+        created=datetime.now(UTC),
         type=ticket_type,
         priority=priority,
         title=title,
@@ -1329,12 +1291,8 @@ def ticket_create(
 
 @ticket_app.command("list", help="List tickets.")
 def ticket_list(
-    all_tickets: Annotated[
-        bool, typer.Option("--all", "-a", help="List all tickets across all locations.")
-    ] = False,
-    output_json: Annotated[
-        bool, typer.Option("--json", help="Output as JSON.")
-    ] = False,
+    all_tickets: Annotated[bool, typer.Option("--all", "-a", help="List all tickets across all locations.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List tickets in the current branch or all locations."""
     base = Path.cwd()
@@ -1370,13 +1328,15 @@ def ticket_list(
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
             for ticket in tickets:
-                all_results.append({
-                    "id": ticket.id,
-                    "priority": ticket.priority,
-                    "status": ticket.status,
-                    "title": ticket.title,
-                    "location": location_name,
-                })
+                all_results.append(
+                    {
+                        "id": ticket.id,
+                        "priority": ticket.priority,
+                        "status": ticket.status,
+                        "title": ticket.title,
+                        "location": location_name,
+                    }
+                )
 
         if output_json:
             typer.echo(json.dumps(all_results, indent=2))
@@ -1411,9 +1371,7 @@ def ticket_list(
 @ticket_app.command("show", help="Show a ticket.")
 def ticket_show(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
-    output_json: Annotated[
-        bool, typer.Option("--json", help="Output as JSON.")
-    ] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Display a ticket by ID (supports partial matching)."""
     base = Path.cwd()
@@ -1422,7 +1380,7 @@ def ticket_show(
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
         typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if result is None:
         typer.echo(f"Ticket not found: {ticket_id}")
@@ -1460,7 +1418,7 @@ def _update_ticket_status(ticket_id: str, new_status: str) -> None:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
         typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if result is None:
         typer.echo(f"Ticket not found: {ticket_id}")
@@ -1511,7 +1469,7 @@ def ticket_dep(
         dep_result = find_ticket(base, depends_on)
     except AmbiguousTicketMatch as e:
         typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if result is None:
         typer.echo(f"Ticket not found: {ticket_id}")
@@ -1544,7 +1502,7 @@ def ticket_undep(
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
         typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if result is None:
         typer.echo(f"Ticket not found: {ticket_id}")
@@ -1579,7 +1537,7 @@ def ticket_move(
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
         typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if result is None:
         typer.echo(f"Ticket not found: {ticket_id}")
@@ -1601,9 +1559,7 @@ def ticket_move(
 
 @ticket_app.command("ready", help="List tickets ready to work on.")
 def ticket_ready(
-    output_json: Annotated[
-        bool, typer.Option("--json", help="Output as JSON.")
-    ] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List open tickets with no open dependencies."""
     base = Path.cwd()
@@ -1676,7 +1632,7 @@ def ticket_edit(
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
         typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if result is None:
         typer.echo(f"Ticket not found: {ticket_id}")

@@ -27,9 +27,7 @@ class ClaudeMember(CouncilMember):
         cmd.extend(["-p", prompt])
         return cmd
 
-    def parse_response(
-        self, stdout: str, stderr: str, code: int
-    ) -> tuple[str, str | None, str]:
+    def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse claude CLI JSON output.
 
         Expected format:

@@ -18,14 +18,13 @@ Usage example:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from kingdom.council.base import AgentResponse
-
 
 BREAKDOWN_TAG = "BREAKDOWN_MD"
 SUMMARY_TAG = "SUMMARY"
@@ -195,7 +194,7 @@ def build_breakdown_update_prompt(
             "  - Acceptance:",
             "    - [ ] Criteria 1...",
             "",
-            f"Return exactly two tagged blocks (any extra text is ignored):",
+            "Return exactly two tagged blocks (any extra text is ignored):",
             f"<{BREAKDOWN_TAG}> ... </{BREAKDOWN_TAG}>",
             f"<{SUMMARY_TAG}> ... </{SUMMARY_TAG}>",
         ]

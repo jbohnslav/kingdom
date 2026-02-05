@@ -6,7 +6,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from kingdom import cli
-from kingdom.state import ensure_base_layout, ensure_run_layout, state_root
+from kingdom.state import ensure_base_layout, ensure_run_layout
 
 
 def test_ensure_base_layout_creates_structure(tmp_path: Path) -> None:

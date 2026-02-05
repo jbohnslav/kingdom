@@ -28,9 +28,7 @@ class CodexMember(CouncilMember):
             # New session
             return ["codex", "exec", "--json", prompt]
 
-    def parse_response(
-        self, stdout: str, stderr: str, code: int
-    ) -> tuple[str, str | None, str]:
+    def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse codex JSONL output.
 
         Extracts:

@@ -26,7 +26,7 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -38,7 +38,7 @@ class Ticket:
     status: str  # open, in_progress, closed
     deps: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
-    created: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created: datetime = field(default_factory=lambda: datetime.now(UTC))
     type: str = "task"  # task, bug, feature
     priority: int = 2  # 1-3, 1 is highest
     assignee: str | None = None
@@ -136,9 +136,7 @@ def _parse_yaml_value(value: str) -> str | int | list[str] | None:
         return int(value)
 
     # Handle quoted strings
-    if (value.startswith('"') and value.endswith('"')) or (
-        value.startswith("'") and value.endswith("'")
-    ):
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
         return value[1:-1]
 
     # Plain string
@@ -224,7 +222,7 @@ def parse_ticket(content: str) -> Ticket:
             created_str = created_str[:-1] + "+00:00"
         created = datetime.fromisoformat(created_str)
     else:
-        created = datetime.now(timezone.utc)
+        created = datetime.now(UTC)
 
     # Build Ticket
     deps = frontmatter_dict.get("deps", [])
@@ -244,11 +242,7 @@ def parse_ticket(content: str) -> Ticket:
         body=body,
         tags=tags if isinstance(tags, list) else [],
         parent=str(frontmatter_dict.get("parent")) if frontmatter_dict.get("parent") else None,
-        external_ref=(
-            str(frontmatter_dict.get("external-ref"))
-            if frontmatter_dict.get("external-ref")
-            else None
-        ),
+        external_ref=(str(frontmatter_dict.get("external-ref")) if frontmatter_dict.get("external-ref") else None),
     )
 
 
@@ -364,9 +358,7 @@ class AmbiguousTicketMatch(Exception):
         self.partial_id = partial_id
         self.matches = matches
         match_ids = [t.id for t, _ in matches]
-        super().__init__(
-            f"Partial ID '{partial_id}' matches multiple tickets: {', '.join(match_ids)}"
-        )
+        super().__init__(f"Partial ID '{partial_id}' matches multiple tickets: {', '.join(match_ids)}")
 
 
 def find_ticket(base: Path, partial_id: str) -> tuple[Ticket, Path] | None:

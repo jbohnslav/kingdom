@@ -1,0 +1,20 @@
+---
+id: kin-14d4
+status: open
+deps: [kin-8016]
+links: []
+created: 2026-02-05T00:32:41Z
+type: task
+priority: 1
+---
+# Add pre-commit to dev dependencies
+
+Update `pyproject.toml` to include pre-commit:
+- Add `pre-commit` to dev dependencies
+- Document setup in CLAUDE.md (run `pre-commit install` after cloning)
+
+## Acceptance Criteria
+
+- [ ] `pre-commit` in dev dependencies
+- [ ] `uv sync` installs pre-commit
+- [ ] Developer setup instructions documented in CLAUDE.md

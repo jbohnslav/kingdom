@@ -1,11 +1,12 @@
 """Council run bundle management."""
 
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from kingdom.state import write_json
+
 from .base import AgentResponse
 
 
@@ -59,7 +60,7 @@ def _format_response_markdown(response: AgentResponse) -> str:
 
 def _build_metadata(prompt: str, responses: dict[str, AgentResponse]) -> dict:
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "prompt": prompt,
         "members": {
             name: {"elapsed": r.elapsed, "error": r.error, "has_response": bool(r.text)}

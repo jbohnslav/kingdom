@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -40,7 +40,7 @@ class TestTicketDataclass:
 
     def test_all_fields(self) -> None:
         """Ticket can be created with all fields."""
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
         ticket = Ticket(
             id="kin-a1b2",
             status="in_progress",
@@ -130,7 +130,7 @@ Body content here.
         assert ticket.status == "open"
         assert ticket.deps == []
         assert ticket.links == []
-        assert ticket.created == datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+        assert ticket.created == datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
         assert ticket.type == "task"
         assert ticket.priority == 2
         assert ticket.assignee == "Test User"
@@ -351,7 +351,7 @@ class TestSerializeTicket:
             status="open",
             deps=[],
             links=[],
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             type="task",
             priority=2,
             assignee="Test User",
@@ -377,7 +377,7 @@ class TestSerializeTicket:
             id="kin-test",
             status="open",
             deps=["kin-1234", "kin-5678"],
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
         )
         content = serialize_ticket(ticket)
@@ -389,7 +389,7 @@ class TestSerializeTicket:
             id="kin-test",
             status="open",
             tags=["mvp", "urgent"],
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
         )
         content = serialize_ticket(ticket)
@@ -400,7 +400,7 @@ class TestSerializeTicket:
         ticket = Ticket(
             id="kin-test",
             status="open",
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
         )
         content = serialize_ticket(ticket)
@@ -486,7 +486,7 @@ class TestReadWriteTicket:
         ticket = Ticket(
             id="kin-test",
             status="open",
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test Ticket",
             body="Test body",
         )
@@ -505,7 +505,7 @@ class TestReadWriteTicket:
         ticket = Ticket(
             id="kin-test",
             status="open",
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
         )
         path = tmp_path / "tickets" / "subdir" / "kin-test.md"
@@ -583,7 +583,7 @@ class TestListTickets:
         ticket = Ticket(
             id="kin-a1b2",
             status="open",
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test Ticket",
         )
         write_ticket(ticket, tickets_dir / "kin-a1b2.md")
@@ -597,7 +597,7 @@ class TestListTickets:
         tickets_dir = tmp_path / "tickets"
         tickets_dir.mkdir()
 
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
         # Use priorities 1, 2, 3 to avoid priority 0 (known parse_ticket bug where 0 is treated as falsy)
         for priority, suffix in [(3, "low"), (1, "high"), (2, "medium")]:
             ticket = Ticket(
@@ -625,7 +625,7 @@ class TestListTickets:
                 id=f"kin-{suffix}",
                 status="open",
                 priority=1,
-                created=datetime(2026, 2, day, 16, 0, 0, tzinfo=timezone.utc),
+                created=datetime(2026, 2, day, 16, 0, 0, tzinfo=UTC),
                 title=f"Created on day {day}",
             )
             write_ticket(ticket, tickets_dir / f"kin-{suffix}.md")
@@ -645,7 +645,7 @@ class TestListTickets:
         ticket = Ticket(
             id="kin-good",
             status="open",
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Valid Ticket",
         )
         write_ticket(ticket, tickets_dir / "kin-good.md")
@@ -670,32 +670,24 @@ class TestFindTicket:
         ensure_branch_layout(base, "feature-two")
 
         # Create tickets in various locations
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
 
         # Ticket in branch feature-one
-        ticket1 = Ticket(
-            id="kin-a1b2", status="open", created=created, title="Branch One Ticket"
-        )
+        ticket1 = Ticket(id="kin-a1b2", status="open", created=created, title="Branch One Ticket")
         write_ticket(ticket1, base / ".kd" / "branches" / "feature-one" / "tickets" / "kin-a1b2.md")
 
         # Ticket in branch feature-two
-        ticket2 = Ticket(
-            id="kin-c3d4", status="open", created=created, title="Branch Two Ticket"
-        )
+        ticket2 = Ticket(id="kin-c3d4", status="open", created=created, title="Branch Two Ticket")
         write_ticket(ticket2, base / ".kd" / "branches" / "feature-two" / "tickets" / "kin-c3d4.md")
 
         # Ticket in backlog
-        ticket3 = Ticket(
-            id="kin-e5f6", status="open", created=created, title="Backlog Ticket"
-        )
+        ticket3 = Ticket(id="kin-e5f6", status="open", created=created, title="Backlog Ticket")
         write_ticket(ticket3, base / ".kd" / "backlog" / "tickets" / "kin-e5f6.md")
 
         # Ticket in archive
         archive_item = base / ".kd" / "archive" / "old-feature" / "tickets"
         archive_item.mkdir(parents=True)
-        ticket4 = Ticket(
-            id="kin-g7h8", status="closed", created=created, title="Archived Ticket"
-        )
+        ticket4 = Ticket(id="kin-g7h8", status="closed", created=created, title="Archived Ticket")
         write_ticket(ticket4, archive_item / "kin-g7h8.md")
 
     def test_find_by_full_id(self, tmp_path: Path) -> None:
@@ -714,7 +706,7 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "a1b2")
         assert result is not None
-        ticket, path = result
+        ticket, _path = result
         assert ticket.id == "kin-a1b2"
 
     def test_find_by_prefix(self, tmp_path: Path) -> None:
@@ -758,13 +750,9 @@ class TestFindTicket:
         self._create_test_structure(tmp_path)
 
         # Create another ticket with similar ID prefix
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
-        ticket = Ticket(
-            id="kin-a1c2", status="open", created=created, title="Another A1 Ticket"
-        )
-        write_ticket(
-            ticket, tmp_path / ".kd" / "branches" / "feature-one" / "tickets" / "kin-a1c2.md"
-        )
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="kin-a1c2", status="open", created=created, title="Another A1 Ticket")
+        write_ticket(ticket, tmp_path / ".kd" / "branches" / "feature-one" / "tickets" / "kin-a1c2.md")
 
         with pytest.raises(AmbiguousTicketMatch) as exc_info:
             find_ticket(tmp_path, "a1")
@@ -799,7 +787,7 @@ class TestMoveTicket:
         ticket = Ticket(
             id="kin-test",
             status="open",
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test Ticket",
         )
         source_path = source_dir / "kin-test.md"
@@ -825,7 +813,7 @@ class TestMoveTicket:
         ticket = Ticket(
             id="kin-test",
             status="open",
-            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc),
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
         )
         source_path = source_dir / "kin-test.md"
@@ -854,13 +842,9 @@ class TestGetTicketLocation:
         ensure_base_layout(base)
         ensure_branch_layout(base, "feature-test")
 
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
-        ticket = Ticket(
-            id="kin-abcd", status="open", created=created, title="Test Ticket"
-        )
-        write_ticket(
-            ticket, base / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abcd.md"
-        )
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="kin-abcd", status="open", created=created, title="Test Ticket")
+        write_ticket(ticket, base / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abcd.md")
 
     def test_get_location_found(self, tmp_path: Path) -> None:
         """get_ticket_location returns path when found."""
@@ -883,13 +867,9 @@ class TestGetTicketLocation:
         self._create_test_structure(tmp_path)
 
         # Create another ticket with similar prefix
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=timezone.utc)
-        ticket = Ticket(
-            id="kin-abef", status="open", created=created, title="Another AB Ticket"
-        )
-        write_ticket(
-            ticket, tmp_path / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abef.md"
-        )
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="kin-abef", status="open", created=created, title="Another AB Ticket")
+        write_ticket(ticket, tmp_path / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abef.md")
 
         with pytest.raises(AmbiguousTicketMatch):
             get_ticket_location(tmp_path, "ab")

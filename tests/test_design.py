@@ -47,4 +47,3 @@ def test_parse_design_update_response_extracts_blocks() -> None:
 def test_parse_design_update_response_missing_block_raises() -> None:
     with pytest.raises(ValueError, match="Missing <DESIGN_MD>"):
         parse_design_update_response("<SUMMARY>ok</SUMMARY>")
-

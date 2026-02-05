@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from kingdom.council.base import AgentResponse
 
-
 COUNCIL_ORDER = ["claude", "codex", "agent"]
 
 
