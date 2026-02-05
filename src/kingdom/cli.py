@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from datetime import UTC
 from pathlib import Path
@@ -273,7 +274,9 @@ def council_ask(
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
     open_dir: Annotated[bool, typer.Option("--open", help="Open response directory in $EDITOR.")] = False,
     timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
-    agent: Annotated[str | None, typer.Option("--agent", "-a", help="Query a single member (claude, codex, agent).")] = None,
+    agent: Annotated[
+        str | None, typer.Option("--agent", "-a", help="Query a single member (claude, codex, agent).")
+    ] = None,
 ) -> None:
     """Query council members and display with Rich panels."""
     base = Path.cwd()
@@ -863,18 +866,23 @@ def _extract_breakdown_section(design_text: str) -> str | None:
     """Extract the Breakdown section from a design document.
 
     Returns the content of the ## Breakdown section, or None if not found.
+    Returns None if the section only contains HTML comments (template placeholders).
     """
-    import re
-
     # Match ## Breakdown header and capture content until the next ## header or end
     pattern = re.compile(
         r"^## Breakdown\s*\n(.*?)(?=^## |\Z)",
         re.MULTILINE | re.DOTALL,
     )
     match = pattern.search(design_text)
-    if match:
-        return match.group(1).strip()
-    return None
+    if not match:
+        return None
+
+    content = match.group(1)
+    # Strip HTML comments (template placeholders)
+    content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
+    content = content.strip()
+
+    return content if content else None
 
 
 def _build_breakdown_prompt(design_text: str, breakdown_section: str, dry_run: bool = False) -> str:
@@ -931,7 +939,12 @@ def breakdown(
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
     agent: Annotated[str, typer.Option("--agent", "-a", help="Council member to use.")] = "claude",
 ) -> None:
-    """Invoke an agent to create tickets from the design document's Breakdown section."""
+    """Invoke an agent to create tickets from the design document's Breakdown section.
+
+    Note: --dry-run is advisory. The agent is prompted to only output commands without
+    executing them, but there is no enforcement. The agent has shell access and could
+    execute commands if it ignores the prompt instruction.
+    """
     base = Path.cwd()
     feature = resolve_current_run(base)
     _branch_dir, design_path, _ = _get_branch_paths(base, feature)
@@ -996,19 +1009,23 @@ def breakdown(
         raise typer.Exit(code=1)
 
     if dry_run:
-        console.print(Panel(
-            Markdown(agent_response.text or "*No response*"),
-            title=f"Planned Commands ({agent})",
-            border_style="yellow",
-        ))
+        console.print(
+            Panel(
+                Markdown(agent_response.text or "*No response*"),
+                title=f"Planned Commands ({agent})",
+                border_style="yellow",
+            )
+        )
         console.print()
         console.print("[dim]Run without --dry-run to execute these commands.[/dim]")
     else:
-        console.print(Panel(
-            Markdown(agent_response.text or "*No response*"),
-            title=f"Agent Output ({agent})",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                Markdown(agent_response.text or "*No response*"),
+                title=f"Agent Output ({agent})",
+                border_style="green",
+            )
+        )
 
     console.print(f"\n[dim]Logged to: {run_dir}[/dim]")
 
