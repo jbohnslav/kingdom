@@ -57,6 +57,35 @@ class Council:
 
         return responses
 
+    def query_single(self, member_name: str, prompt: str) -> AgentResponse:
+        """Query a single member by name and return the response.
+
+        Args:
+            member_name: Name of the member to query (claude, codex, agent).
+            prompt: The prompt to send.
+
+        Returns:
+            AgentResponse from the specified member.
+
+        Raises:
+            ValueError: If the member name is not found.
+        """
+        member = self.get_member(member_name)
+        if member is None:
+            available = [m.name for m in self.members]
+            raise ValueError(f"Unknown member: {member_name}. Available: {', '.join(available)}")
+
+        try:
+            return member.query(prompt, self.timeout)
+        except Exception as e:
+            return AgentResponse(
+                name=member_name,
+                text="",
+                error=str(e),
+                elapsed=0.0,
+                raw="",
+            )
+
     def reset_sessions(self) -> None:
         """Reset all member sessions."""
         for member in self.members:

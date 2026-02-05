@@ -269,14 +269,15 @@ council_app = typer.Typer(name="council", help="Query council members.")
 app.add_typer(council_app, name="council")
 
 
-@council_app.command("ask", help="Query all council members and display responses.")
+@council_app.command("ask", help="Query council members and display responses.")
 def council_ask(
     prompt: Annotated[str, typer.Argument(help="Prompt to send to council members.")],
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
     open_dir: Annotated[bool, typer.Option("--open", help="Open response directory in $EDITOR.")] = False,
     timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
+    agent: Annotated[str | None, typer.Option("--agent", "-a", help="Query a single member (claude, codex, agent).")] = None,
 ) -> None:
-    """Query all council members and display with Rich panels."""
+    """Query council members and display with Rich panels."""
     base = Path.cwd()
     feature = resolve_current_run(base)
 
@@ -295,8 +296,11 @@ def council_ask(
     c.timeout = timeout
     c.load_sessions(sessions_dir)
 
-    # Query with progress
-    responses = _query_with_progress(c, prompt, json_output, console)
+    # Query single member or all members
+    if agent:
+        responses = _query_single_with_progress(c, agent, prompt, json_output, console)
+    else:
+        responses = _query_with_progress(c, prompt, json_output, console)
     c.save_sessions(sessions_dir)
 
     # Create run bundle
@@ -706,6 +710,28 @@ def _query_with_progress(council, prompt, json_output, console):
         progress.update(task, description="Done")
 
     return responses
+
+
+def _query_single_with_progress(council, member_name, prompt, json_output, console):
+    """Query a single member with spinner progress."""
+    try:
+        if json_output:
+            response = council.query_single(member_name, prompt)
+        else:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task(f"Querying {member_name}...", total=None)
+                response = council.query_single(member_name, prompt)
+                progress.update(task, description="Done")
+
+        return {member_name: response}
+    except ValueError as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
 
 
 def _display_rich_panels(responses, run_dir, console):
