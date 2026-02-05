@@ -49,7 +49,14 @@ def build_design_template(feature: str) -> str:
         "## Decisions\n"
         "- <decision>: <rationale>\n\n"
         "## Open Questions\n"
-        "- <question>\n"
+        "- <question>\n\n"
+        "## Breakdown\n"
+        "<!--\n"
+        "Add this section when the design is solidified.\n"
+        "Describe how to break the work into tickets - rough groupings,\n"
+        "key phases, dependencies. This doesn't need rigid formatting;\n"
+        "the agent will interpret it when creating tickets via `kd breakdown`.\n"
+        "-->\n"
     )
 
 

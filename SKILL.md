@@ -53,17 +53,17 @@ kd design approve
 
 ### 3. Breakdown Phase
 
-Help the King write `breakdown.md`:
+Add a `## Breakdown` section to the design document describing how to break the work into tickets. This can be freeform - rough groupings, key phases, dependencies.
+
+When the design is ready with a Breakdown section, create tickets:
 ```bash
-kd breakdown     # Create/view breakdown template
+kd breakdown              # Invoke agent to create tickets (with confirmation)
+kd breakdown --dry-run    # Preview what commands would run
+kd breakdown --yes        # Skip confirmation prompt
+kd breakdown --agent codex  # Use a specific council member (default: claude)
 ```
 
-The breakdown should contain a `## Tickets` section with structured tasks.
-
-When breakdown is ready, create tickets:
-```bash
-kd breakdown --apply
-```
+The agent reads the design doc and creates tickets using `kd ticket create` and `kd ticket dep` commands.
 
 ### 4. Ticket Management
 

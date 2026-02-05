@@ -19,7 +19,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
 from kingdom.council import Council, create_run_bundle
 from kingdom.design import build_design_template
 from kingdom.state import (
@@ -46,7 +45,6 @@ from kingdom.ticket import (
     find_ticket,
     generate_ticket_id,
     list_tickets,
-    read_ticket,
     write_ticket,
 )
 
@@ -863,85 +861,158 @@ def design_approve() -> None:
     typer.echo("Design approved.")
 
 
-@app.command(help="Draft or iterate the current breakdown.")
-def breakdown(
-    apply: bool = typer.Option(False, "--apply", help="Create tickets from breakdown.md."),
-) -> None:
-    from datetime import datetime
+def _extract_breakdown_section(design_text: str) -> str | None:
+    """Extract the Breakdown section from a design document.
 
+    Returns the content of the ## Breakdown section, or None if not found.
+    """
+    import re
+
+    # Match ## Breakdown header and capture content until the next ## header or end
+    pattern = re.compile(
+        r"^## Breakdown\s*\n(.*?)(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(design_text)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _build_breakdown_prompt(design_text: str, breakdown_section: str, dry_run: bool = False) -> str:
+    """Build the prompt for the breakdown agent to create tickets."""
+    action_instruction = (
+        "Output the shell commands you would run, but DO NOT execute them."
+        if dry_run
+        else "Execute the shell commands to create tickets."
+    )
+
+    return f"""You are creating tickets from a design document's Breakdown section.
+
+## Design Document
+
+{design_text}
+
+## Your Task
+
+{action_instruction}
+
+Use only these Kingdom CLI commands:
+
+1. `kd ticket create "<title>" -d "<description>" -p <priority>`
+   - Creates a new ticket
+   - Priority: 1 (high), 2 (medium), 3 (low)
+   - Returns the ticket ID (e.g., kin-a1b2)
+
+2. `kd ticket dep <ticket-id> <depends-on-id>`
+   - Makes ticket-id depend on depends-on-id
+   - Run this AFTER creating both tickets
+
+## Instructions
+
+1. Read the Breakdown section carefully
+2. Create one ticket for each task/item described
+3. Use descriptive titles and descriptions
+4. Set appropriate priorities based on the breakdown
+5. Wire up dependencies AFTER creating all tickets
+6. Only use `kd ticket create` and `kd ticket dep` commands
+
+## Breakdown Section
+
+{breakdown_section}
+
+## Output Format
+
+{"Output the commands you would run, one per line. Do not execute them." if dry_run else "Execute each command and report results. Stop on first error."}
+"""
+
+
+@app.command(help="Create tickets from design doc's Breakdown section via agent.")
+def breakdown(
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show planned commands without executing.")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt.")] = False,
+    agent: Annotated[str, typer.Option("--agent", "-a", help="Council member to use.")] = "claude",
+) -> None:
+    """Invoke an agent to create tickets from the design document's Breakdown section."""
     base = Path.cwd()
     feature = resolve_current_run(base)
-    _, _, breakdown_path, state_path = _get_branch_paths(base, feature)
+    _branch_dir, design_path, _, _ = _get_branch_paths(base, feature)
 
-    if not breakdown_path.exists() or not breakdown_path.read_text(encoding="utf-8").strip():
-        breakdown_path.parent.mkdir(parents=True, exist_ok=True)
-        breakdown_path.write_text(build_breakdown_template(feature), encoding="utf-8")
-        typer.echo(f"Created breakdown template at {breakdown_path}")
-        return
+    console = Console()
 
-    if not apply:
-        typer.echo(f"Breakdown already exists at {breakdown_path}")
-        typer.echo("Use --apply to create tickets from the breakdown.")
-        return
+    # Validate design doc exists
+    if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
+        typer.echo("Error: No design document found. Run `kd design` first.")
+        raise typer.Exit(code=1)
 
-    parsed_tickets = parse_breakdown_tickets(breakdown_path.read_text(encoding="utf-8"))
-    if not parsed_tickets:
-        raise RuntimeError("No tickets found in breakdown.md")
+    design_text = design_path.read_text(encoding="utf-8")
 
-    # Get tickets directory for current branch
-    tickets_dir = _get_tickets_dir(base)
-    tickets_dir.mkdir(parents=True, exist_ok=True)
+    # Validate design has Breakdown section
+    breakdown_section = _extract_breakdown_section(design_text)
+    if not breakdown_section:
+        typer.echo("Error: Design document has no '## Breakdown' section.")
+        typer.echo("Add a Breakdown section to design.md describing the tickets to create.")
+        raise typer.Exit(code=1)
 
-    created: dict[str, str] = {}
-    for parsed in parsed_tickets:
-        # Build ticket body from description and acceptance criteria
-        body_parts = []
-        if parsed["description"]:
-            body_parts.append(parsed["description"])
-        if parsed["acceptance"]:
-            body_parts.append("\n## Acceptance Criteria\n")
-            for item in parsed["acceptance"]:
-                body_parts.append(f"- [ ] {item}")
-        body = "\n".join(body_parts) if body_parts else ""
+    # Build prompt
+    prompt = _build_breakdown_prompt(design_text, breakdown_section, dry_run=dry_run)
 
-        # Create ticket using internal module
-        ticket_id = generate_ticket_id(tickets_dir)
-        ticket = Ticket(
-            id=ticket_id,
-            status="open",
-            deps=[],  # Dependencies added in second pass
-            links=[],
-            created=datetime.now(UTC),
-            type="task",
-            priority=parsed["priority"],
-            title=parsed["title"],
-            body=body,
-        )
+    # Show what we're about to do
+    if not yes and not dry_run:
+        console.print(Panel(breakdown_section, title="Breakdown Section", border_style="blue"))
+        console.print()
+        confirm = typer.confirm(f"Create tickets using {agent}?")
+        if not confirm:
+            typer.echo("Aborted.")
+            raise typer.Exit(code=0)
 
-        ticket_path = tickets_dir / f"{ticket_id}.md"
-        write_ticket(ticket, ticket_path)
-        created[parsed["breakdown_id"]] = ticket_id
-        typer.echo(f"Created ticket {ticket_id} for {parsed['breakdown_id']}")
+    # Set up council infrastructure
+    logs_dir = logs_root(base, feature)
+    sessions_dir = sessions_root(base, feature)
+    council_logs_dir = council_logs_root(base, feature)
 
-    # Second pass: add dependencies
-    for parsed in parsed_tickets:
-        ticket_id = created.get(parsed["breakdown_id"])
-        if not ticket_id:
-            continue
-        deps_to_add = []
-        for dep in parsed["depends_on"]:
-            dep_id = created.get(dep, dep)  # Use mapped ID or original if external
-            deps_to_add.append(dep_id)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    council_logs_dir.mkdir(parents=True, exist_ok=True)
 
-        if deps_to_add:
-            ticket_path = tickets_dir / f"{ticket_id}.md"
-            ticket = read_ticket(ticket_path)
-            ticket.deps = deps_to_add
-            write_ticket(ticket, ticket_path)
+    # Create council and query single member
+    c = Council.create(logs_dir=logs_dir)
+    c.timeout = 300  # 5 minute timeout for ticket creation
+    c.load_sessions(sessions_dir)
 
-    state = read_json(state_path) if state_path.exists() else {}
-    state["tickets"] = {**state.get("tickets", {}), **created}
-    write_json(state_path, state)
+    # Query the agent
+    try:
+        response = _query_single_with_progress(c, agent, prompt, False, console)
+    except typer.Exit:
+        raise
+    c.save_sessions(sessions_dir)
+
+    # Create run bundle for logging
+    bundle = create_run_bundle(council_logs_dir, f"breakdown: {feature}", response)
+    run_dir = bundle["run_dir"]
+
+    # Display response
+    agent_response = response[agent]
+    if agent_response.error:
+        console.print(f"[red]Error from {agent}:[/red] {agent_response.error}")
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        console.print(Panel(
+            Markdown(agent_response.text or "*No response*"),
+            title=f"Planned Commands ({agent})",
+            border_style="yellow",
+        ))
+        console.print()
+        console.print("[dim]Run without --dry-run to execute these commands.[/dim]")
+    else:
+        console.print(Panel(
+            Markdown(agent_response.text or "*No response*"),
+            title=f"Agent Output ({agent})",
+            border_style="green",
+        ))
+
+    console.print(f"\n[dim]Logged to: {run_dir}[/dim]")
 
 
 @app.command(help="Create a worktree for working on a ticket.")
