@@ -33,4 +33,3 @@ Move .kd/branches/<name>/ to .kd/archive/<name>/. Clear .kd/current. Update stat
 - Updated all tests in `test_done.py` to use new branch-based structure
 - Added tests for archive collision handling and legacy runs compatibility
 - All 8 tests passing
-

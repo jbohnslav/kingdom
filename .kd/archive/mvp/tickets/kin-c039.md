@@ -21,4 +21,3 @@ Update kd start for branch-based structure. Use current git branch if no arg. No
 - [ ] Works with current git branch if no arg
 - [ ] Handles detached HEAD gracefully
 - [ ] Handles existing current gracefully
-

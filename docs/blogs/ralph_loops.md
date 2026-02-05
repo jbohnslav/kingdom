@@ -47,9 +47,9 @@ The result is a machine-readable to-do list that your agent loop will execute st
 Running the loop can be done via a simple script. In [Carson’s implementation](https://github.com/snarktank/ralph), this is [literally like a Bash script](https://ghuntley.com/ralph/#:~:text=If%20you%27ve%20seen%20my%20socials,Ralph%20is%20a%20Bash%20loop) or Python script (e.g. ralph.sh) that repeatedly invokes the AI agent with a prompt template. With Amp or Claude Code, you might use their CLI commands or a plugin to achieve the same effect. For example, using Amp’s CLI, one could run a pseudo-code loop like:
 
 ```bash
-while :; do    
-   amp run \-s prompt.md \-o progress.txt  \# Run Amp with the prompt, save output    
-   if grep \-q "\<promise\>COMPLETE\</promise\>" progress.txt; then break; fi    
+while :; do
+   amp run \-s prompt.md \-o progress.txt  \# Run Amp with the prompt, save output
+   if grep \-q "\<promise\>COMPLETE\</promise\>" progress.txt; then break; fi
 done
 ```
 

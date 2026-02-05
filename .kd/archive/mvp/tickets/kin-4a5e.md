@@ -29,4 +29,3 @@ Detect .kd/runs/ on kd commands. Provide kd migrate to move .kd/runs/<name>/ to 
   - Updated `.kd/current` to point to "mvp"
   - Removed `.kd/runs/` directory
 - Decided not to build `kd migrate` command - one-time manual migration sufficient
-

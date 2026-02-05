@@ -15,4 +15,3 @@ Hardening items after MVP: handle ANSI/noisy tmux logs (strip or structured logs
 ## Acceptance Criteria
 
 - [ ] ANSI escape handling or structured logging is in place for council outputs\n- [ ] Config supports marking a model command as manual/unsupported
-

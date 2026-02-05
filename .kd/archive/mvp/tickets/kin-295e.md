@@ -16,4 +16,3 @@ Implement kd chat: attach to persistent hand window for current run, create if m
 ## Acceptance Criteria
 
 kd chat always attaches to same hand window; hand logging exists or behavior is documented.
-

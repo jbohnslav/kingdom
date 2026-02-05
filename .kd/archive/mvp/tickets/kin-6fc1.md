@@ -19,4 +19,3 @@ Create src/kingdom/ticket.py with Ticket dataclass, generate_ticket_id(), parse_
 - [ ] Can serialize back to same format
 - [ ] ID generation doesn't collide with existing
 - [ ] Unit tests for parsing edge cases
-

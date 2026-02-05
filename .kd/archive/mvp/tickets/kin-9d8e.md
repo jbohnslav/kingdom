@@ -17,4 +17,3 @@ Move outdated docs to docs/archive/: MVP.md, MVP-breakdown.md, mvp-next-step-des
 - [ ] All listed docs moved to docs/archive/
 - [ ] docs/archive/ directory created
 - [ ] Git history preserved (use git mv)
-

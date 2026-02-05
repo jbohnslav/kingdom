@@ -17,4 +17,3 @@ Add .kd/.gitignore, create logs/council/ in run layout, update ensure_run_layout
 - .kd/.gitignore ignores *.json, *.jsonl, runs/**/logs/, worktrees/
 - logs/council/ created by ensure_run_layout()
 - Existing commands still work
-

@@ -16,4 +16,3 @@ Implement kd peasant <ticket>: create git worktree for ticket (MVP: peasant-1 on
 ## Acceptance Criteria
 
 kd peasant <ticket-id> creates worktree and starts peasant-1 in correct cwd; state records assigned ticket.
-

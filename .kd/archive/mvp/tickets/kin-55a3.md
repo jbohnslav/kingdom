@@ -19,4 +19,3 @@ Add ensure_base_layout() for .kd/branches/, backlog/, archive/, worktrees/. Add 
 - [ ] logs/ and sessions/ directories created for council
 - [ ] config.json preserved
 - [ ] Old functions still work (not removed yet)
-

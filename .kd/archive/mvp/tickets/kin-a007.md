@@ -22,4 +22,3 @@ Refactor council command to 'council ask' with Rich terminal output. No auto-syn
 - --open flag opens response directory in $EDITOR after saving
 - --timeout flag sets per-model timeout (default 120s)
 - Responses saved to run bundle (see kin-9758)
-

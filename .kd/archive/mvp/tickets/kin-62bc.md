@@ -20,4 +20,3 @@ Remove all references to legacy modules from CLI before deleting them. Remove tm
 - [ ] kd attach not in --help output
 - [ ] kd --help works without errors
 - [ ] Existing tests pass (or are updated)
-

@@ -16,4 +16,3 @@ Implement kd council: create council tmux window with panes for claude/codex/age
 ## Acceptance Criteria
 
 kd council opens expected panes; missing CLIs fail with actionable error messages.
-

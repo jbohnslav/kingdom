@@ -16,4 +16,3 @@ Implement tmux server/session/window helpers per docs/tech-stack.md: server per 
 ## Acceptance Criteria
 
 kd start creates/reuses correct tmux session without clobbering others; attach targets resolve deterministically.
-

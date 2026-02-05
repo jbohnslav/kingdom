@@ -15,4 +15,3 @@ Implement MVP guardrails: add per-pane timeouts + partial-failure synthesis; use
 ## Acceptance Criteria
 
 - [ ] Hand dispatch times out per model and continues with available responses\n- [ ] Unique sentinel line used for completion detection\n- [ ] Prompts sent via temp file + stdin to avoid quoting issues
-

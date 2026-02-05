@@ -20,4 +20,3 @@ Enhance kd status to provide agents with all the context they need to understand
 - If a peasant is assigned to a ticket, show that specific ticket ID prominently as 'Your current assignment'
 - Support --json flag for machine-readable output
 - Reference the CLI design doc at docs/cli-skill-architecture.md
-

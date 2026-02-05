@@ -29,4 +29,3 @@ Add kd ticket dep, undep, move, ready, edit commands for dependency management a
 - Implemented `kd ticket edit <id>` - opens in $EDITOR
 - All commands support partial ID matching
 - All 143 tests passing
-

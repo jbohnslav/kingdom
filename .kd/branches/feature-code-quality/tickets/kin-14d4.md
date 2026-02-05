@@ -1,6 +1,6 @@
 ---
 id: kin-14d4
-status: open
+status: closed
 deps: [kin-8016]
 links: []
 created: 2026-02-05T00:32:41Z

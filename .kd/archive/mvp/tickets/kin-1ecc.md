@@ -16,4 +16,3 @@ Implement kd plan: use Council to draft/update .kd/runs/<feature>/plan.md as sin
 ## Acceptance Criteria
 
 kd plan creates/updates plan.md in documented format; re-running updates in-place (or appends to Revisions after dev).
-

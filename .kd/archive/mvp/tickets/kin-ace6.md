@@ -19,4 +19,3 @@ Add normalize_branch_name(), branches_root(), branch_root(), backlog_root(), arc
 - [ ] No double dashes in output
 - [ ] Collision detection works
 - [ ] Unit tests for edge cases
-

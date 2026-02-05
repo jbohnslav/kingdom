@@ -15,4 +15,3 @@ Output JSON with feature, phase, design_approved, tickets counts
 ## Acceptance Criteria
 
 - kd status --json outputs valid JSON matching cli-skill-architecture.md schema
-

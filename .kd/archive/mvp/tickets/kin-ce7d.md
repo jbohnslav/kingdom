@@ -40,4 +40,3 @@ Add kd ticket subcommand group: create, list, show commands with --backlog, --al
 - Added `_get_tickets_dir()` helper to resolve tickets directory based on context
 - All 146 tests passing
 - Note: Existing `.tickets/` directory tickets will be migrated in kin-4a5e
-

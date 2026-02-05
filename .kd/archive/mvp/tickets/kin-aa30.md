@@ -17,4 +17,3 @@ Verify claude/codex/cursor CLIs installed, print actionable guidance
 - kd doctor checks each CLI
 - Prints clear pass/fail per tool
 - Suggests installation steps for missing tools
-

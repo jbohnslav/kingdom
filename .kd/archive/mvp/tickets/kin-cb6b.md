@@ -16,4 +16,3 @@ Update docs to match actual behavior and add minimal smoke tests or scripts for 
 ## Acceptance Criteria
 
 New dev can follow docs: kd start -> kd chat -> kd plan -> tk tickets -> kd peasant.
-

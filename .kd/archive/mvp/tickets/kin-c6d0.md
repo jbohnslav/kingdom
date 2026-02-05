@@ -16,4 +16,3 @@ Implement kd start: initialize .kd/runs/<feature>/ state, set .kd/current, estab
 ## Acceptance Criteria
 
 kd start oauth-refresh creates run state + sets .kd/current; tmux session exists with hand window.
-

@@ -17,4 +17,3 @@ Update .kd/.gitignore template: *.json, *.jsonl, *.log, *.session, **/logs/, **/
 - [ ] New gitignore template in ensure_base_layout()
 - [ ] Correctly ignores state.json but tracks design.md, tickets/*.md
 - [ ] git status is clean after operations
-

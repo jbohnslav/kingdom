@@ -28,4 +28,3 @@ Add kd ticket start, close, reopen commands to change ticket status.
 - All commands support partial ID matching via find_ticket()
 - Output shows old → new status transition
 - All 143 tests passing
-

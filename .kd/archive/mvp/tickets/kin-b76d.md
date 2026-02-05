@@ -16,4 +16,3 @@ Implement kd attach <target>: attach to hand/council/peasant-1 for current run; 
 ## Acceptance Criteria
 
 kd attach hand|council|peasant-1 attaches reliably for current run.
-

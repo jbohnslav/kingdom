@@ -16,4 +16,3 @@ Create Python package layout + Typer entrypoint for kd; add MVP subcommand stubs
 ## Acceptance Criteria
 
 kd --help lists MVP commands; each command validates input and errors clearly.
-

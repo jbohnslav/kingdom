@@ -19,4 +19,3 @@ Add list_tickets(), find_ticket() with partial ID matching, move_ticket(), get_t
 - [ ] Can find tickets across branches, backlog, archive
 - [ ] Can move tickets between locations
 - [ ] Unit tests for all functions
-

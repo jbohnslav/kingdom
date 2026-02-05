@@ -26,4 +26,3 @@ Detect .tickets/ directory. kd migrate moves .tickets/*.md to .kd/backlog/ticket
 - Done as part of kin-4a5e migration
 - Moved .tickets/*.md to .kd/branches/mvp/tickets/
 - Removed .tickets/ directory
-

@@ -16,4 +16,3 @@ Delete src/kingdom/hand.py
 
 - [ ] src/kingdom/hand.py deleted
 - [ ] No import errors anywhere
-

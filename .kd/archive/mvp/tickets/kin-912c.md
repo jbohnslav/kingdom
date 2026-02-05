@@ -16,4 +16,3 @@ Implement kd dev as reserved/stub for MVP: do not start parallel peasants; print
 ## Acceptance Criteria
 
 kd dev stays MVP-safe and clearly guides user to kd peasant <ticket>.
-

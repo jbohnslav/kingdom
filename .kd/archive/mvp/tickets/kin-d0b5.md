@@ -16,4 +16,3 @@ Implement MVP .kd/ layout (.kd/config.json, .kd/current, .kd/runs/<feature>/{sta
 ## Acceptance Criteria
 
 kd start creates expected .kd paths; commands that require a run fail clearly when no current run.
-

@@ -16,4 +16,3 @@ Parse plan.md tickets into tk create/dep calls; support dry-run and require expl
 ## Acceptance Criteria
 
 Given a sample plan.md, can generate dry-run commands; with approval, creates markdown tickets and applies dependencies.
-

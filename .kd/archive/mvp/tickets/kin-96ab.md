@@ -16,4 +16,3 @@ Implement kd status: show current run/phase (from .kd/current + state.json), tic
 ## Acceptance Criteria
 
 kd status provides next action + what's running without needing to attach to tmux.
-

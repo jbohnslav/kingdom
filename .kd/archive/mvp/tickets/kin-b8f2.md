@@ -30,4 +30,3 @@ Show normalized branch name, original git branch name, design.md status, breakdo
 - Falls back to legacy runs/ structure for backwards compatibility
 - Fixed pre-existing test failures for gitignore pattern expectations
 - All 146 tests passing
-
