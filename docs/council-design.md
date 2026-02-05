@@ -351,17 +351,17 @@ Users can watch agents "think" in real-time, but the actual communication is sub
 .kd/
 ├── current                     # current feature name
 ├── config.json                 # global config
-└── runs/
+└── branches/
     └── <feature>/
         ├── state.json          # run state, ticket mappings
-        ├── design.md           # design document (intent/decisions)
-        ├── breakdown.md        # ticket breakdown (deps + acceptance)
-        ├── sessions/           # NEW: session ID storage
+        ├── design.md           # design document (includes Breakdown section)
+        ├── tickets/            # ticket specs
+        │   └── kin-*.md
+        ├── sessions/           # session ID storage
         │   ├── claude.session  # session ID for claude
         │   ├── codex.session   # session ID for codex
         │   └── agent.session   # session ID for agent
         └── logs/
-            ├── hand.jsonl      # Hand interaction log
             ├── council-claude.log
             ├── council-codex.log
             └── council-agent.log

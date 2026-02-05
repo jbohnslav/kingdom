@@ -108,9 +108,8 @@ kd council reset              # Clear sessions
 
 ```
 .kd/branches/<branch>/
-├── design.md       # Design document
-├── breakdown.md    # Ticket breakdown
-├── tickets/        # Ticket files
+├── design.md       # Design document (includes Breakdown section)
+├── tickets/        # Ticket files (created by kd breakdown)
 ├── logs/council/   # Council run bundles
 └── state.json      # Operational state
 ```

@@ -77,7 +77,7 @@ The Council provides perspectives. The King decides. The Hand executes.
 │  │                    Kingdom Skill                             │
 │  │  - When to consult council                                   │
 │  │  - How to iterate on design.md                               │
-│  │  - How to structure breakdown.md                             │
+│  │  - How to write Breakdown sections in design.md              │
 │  │  - Workflow phase transitions                                │
 │  │  - How to interpret council responses                        │
 │  └─────────────────────────────────────────────────────────────┘
@@ -88,7 +88,7 @@ The Council provides perspectives. The King decides. The Hand executes.
 │  │                                                              │
 │  │  kd council ask "prompt"     → multi-model + synthesis (+logs)│
 │  │  kd design show|approve      → manages design.md             │
-│  │  kd breakdown show|apply     → manages breakdown + tickets   │
+│  │  kd breakdown [--dry-run]    → agent creates tickets         │
 │  │  kd peasant start <ticket>   → spawns worker                 │
 │  │  kd status                   → current state                 │
 │  └─────────────────────────────────────────────────────────────┘
@@ -98,9 +98,8 @@ The Council provides perspectives. The King decides. The Hand executes.
               ┌────────────────────────────────┐
               │         Kingdom State          │
               │                                │
-              │  .kd/runs/<feature>/           │
+              │  .kd/branches/<feature>/       │
               │  ├── design.md      (tracked)  │
-              │  ├── breakdown.md   (tracked)  │
               │  ├── learnings.md   (tracked)  │
               │  ├── state.json    (ignored)   │
               │  └── tickets/                   │
@@ -216,13 +215,14 @@ King: kd council ask "Break this design into tickets with dependencies: [design.
       # Decides: "Gemini's 4-ticket structure makes sense, but GPT caught
       #           a dependency Claude missed"
 
-King (to Hand): "Create the breakdown using Gemini's structure but add
-                 the dependency GPT identified between auth and storage"
+King (to Hand): "Add a Breakdown section to design.md using Gemini's structure
+                 but add the dependency GPT identified between auth and storage"
 
-Hand: Updates breakdown.md, runs kd breakdown --apply
+Hand: Updates design.md with Breakdown section, runs kd breakdown
+      # Agent reads design, creates tickets via kd ticket create/dep
 ```
 
-The King sees multiple perspectives on how to structure the work, then directs the Hand.
+The King sees multiple perspectives on how to structure the work, then directs the Hand. The `kd breakdown` command invokes an agent that creates tickets directly from the Breakdown section in design.md.
 
 ### 5. The Skill Carries the Workflow Knowledge
 
@@ -238,7 +238,7 @@ description: Multi-model design and development workflow
 
 ## Phases
 1. **Design** — Iterate on design.md using council input
-2. **Breakdown** — Structure tickets with dependencies
+2. **Breakdown** — Add Breakdown section to design.md, then `kd breakdown` creates tickets
 3. **Develop** — Peasants execute tickets
 4. **Merge** — Human review of feature branch
 
@@ -253,8 +253,8 @@ description: Multi-model design and development workflow
 - `kd council <member> "prompt"` — Follow up with specific council member
 - `kd council critique` — Have members evaluate each other's responses
 - `kd design show` — View current design
-- `kd breakdown show` — View current breakdown
-- `kd breakdown --apply` — Create tickets from breakdown
+- `kd breakdown` — Invoke agent to create tickets from design's Breakdown section
+- `kd breakdown --dry-run` — Preview planned ticket creation commands
 - `kd status` — See current phase, tickets, state
 
 ## Design Mode
@@ -271,7 +271,7 @@ When iterating on design:
 
 2. **Portability** — Same skill works across Claude Code, Cursor, potentially Codex.
 
-3. **State is always external** — design.md, breakdown.md, tickets are the source of truth. No conversation state to lose.
+3. **State is always external** — design.md and tickets are the source of truth. No conversation state to lose.
 
 4. **Council remains Kingdom's value** — Multi-model orchestration and direct access to outside perspectives is what Kingdom adds, not a chat interface or auto-synthesis.
 
@@ -290,7 +290,7 @@ Every council call writes a bundle to disk keyed by `run_id`. These live under `
 
 No `summary.md` or synthesis file—the King reads responses directly and synthesizes mentally.
 
-The durable record is the **result** of council consultation (updates to `design.md`, `breakdown.md`), not the raw council output. If you need to preserve insights from a council run, incorporate them into `design.md` or `learnings.md`.
+The durable record is the **result** of council consultation (updates to `design.md`), not the raw council output. If you need to preserve insights from a council run, incorporate them into `design.md` or `learnings.md`.
 
 ### Session Continuity for Council Members
 
@@ -304,7 +304,7 @@ Recommendation: Keep session continuity inside `kd council` — it's an implemen
 
 ### Mode Awareness
 
-Currently `/design` and `/breakdown` are modes in the REPL. With skill-based approach:
+Currently `/design` was a mode in the REPL. With skill-based approach:
 
 - Agent checks `kd status` to know current phase
 - Skill encodes phase-appropriate behavior
@@ -315,7 +315,7 @@ Currently `/design` and `/breakdown` are modes in the REPL. With skill-based app
 The incident where "write this to markdown" got routed to council is an interaction design problem. With the skill approach, the simplest rule is:
 
 - Use `kd council ask` only to get multi-model opinions.
-- If the user asks to update `design.md` / `breakdown.md`, edit the file directly.
+- If the user asks to update `design.md`, edit the file directly.
 - After consulting council, reference the `run_id` so the user can inspect exactly what happened.
 
 ## CLI Contract (Draft)
@@ -413,13 +413,13 @@ Print current design.md contents.
 
 Mark design as approved, transition to breakdown phase.
 
-### `kd breakdown show`
+### `kd breakdown [--dry-run] [--yes] [--agent NAME]`
 
-Print current breakdown.md contents.
+Invoke an agent to create tickets from the design document's Breakdown section.
 
-### `kd breakdown --apply [--yes]`
-
-Create tickets from breakdown.md. Prompts for confirmation unless `--yes`.
+- `--dry-run` — Preview planned commands without executing
+- `--yes` — Skip confirmation prompt
+- `--agent NAME` — Use specific council member (default: claude)
 
 ### `kd status [--json]`
 
@@ -428,7 +428,6 @@ Show current feature, phase, ticket status.
 ```json
 {
   "feature": "oauth-refresh",
-  "phase": "breakdown",
   "design_approved": true,
   "tickets": {
     "total": 5,
@@ -511,12 +510,11 @@ This keeps the repo clean while preserving an audit trail of what was decided an
 ├── config.json                    # repo config (optional, tracked if shared)
 ├── worktrees/                     # gitignored — git worktrees live here
 │
-└── runs/
+└── branches/
     └── <feature>/                 # e.g., oauth-refresh
-        ├── design.md              # tracked — design decisions
-        ├── breakdown.md           # tracked — ticket breakdown
+        ├── design.md              # tracked — design decisions (includes Breakdown section)
         ├── learnings.md           # tracked — patterns discovered (append-only)
-        ├── state.json             # gitignored — current phase, sessions
+        ├── state.json             # gitignored — operational state
         │
         ├── logs/                  # gitignored — operational logs + transcripts
         │   └── council/
@@ -550,10 +548,9 @@ current
 
 | File | Purpose | When Updated |
 |------|---------|--------------|
-| `design.md` | Design decisions, rationale | During design phase |
-| `breakdown.md` | Ticket structure, dependencies | During breakdown phase |
+| `design.md` | Design decisions, rationale, Breakdown section | During design phase |
 | `learnings.md` | Codebase patterns discovered | Append-only during dev |
-| `tickets/*.md` | Ticket specs, acceptance, deps | During breakdown + execution |
+| `tickets/*.md` | Ticket specs, acceptance, deps | Created by `kd breakdown`, updated during execution |
 
 ### What Stays Local
 
@@ -579,12 +576,11 @@ main
 ```
 ~/code/kingdom/                        ← main checkout (feature branch)
 ├── .git/
-├── .kd/runs/oauth-refresh/
+├── .kd/branches/oauth-refresh/
 │   ├── design.md
-│   ├── breakdown.md
 │   └── tickets/
-│       ├── kin-a1b2/
-│       └── kin-c3d4/
+│       ├── kin-a1b2.md
+│       └── kin-c3d4.md
 └── src/
 
 ~/code/kingdom/.kd/worktrees/oauth-refresh/
@@ -602,15 +598,15 @@ main
 - No conflicts because each ticket writes to its own directory
 
 **Feature branch → Main:**
-- Full `.kd/runs/<feature>/` history preserved
-- Design, breakdown, learnings, all ticket work logs come along
+- Full `.kd/branches/<feature>/` history preserved
+- Design, learnings, all ticket work logs come along
 - This is your audit trail
 
 ### Conflict Avoidance
 
 1. **Single writer per file:**
-   - `design.md`, `breakdown.md` — only edit on feature branch
-   - `tickets/<id>/work-log.md` — only edit on that ticket's branch
+   - `design.md` — only edit on feature branch
+   - `tickets/<id>.md` — only edit on feature branch or ticket's branch
 
 2. **Append-only where possible:**
    - `learnings.md` — append patterns, never rewrite
@@ -625,15 +621,12 @@ main
 When `feature/oauth-refresh` merges to main:
 
 ```
-main:.kd/runs/oauth-refresh/
-├── design.md                    # What we decided to build
-├── breakdown.md                 # How we broke it down
+main:.kd/branches/oauth-refresh/
+├── design.md                    # What we decided to build (includes Breakdown section)
 ├── learnings.md                 # What we learned
 └── tickets/
-    ├── kin-a1b2/
-    │   └── work-log.md          # What peasant did for this ticket
-    └── kin-c3d4/
-        └── work-log.md          # What peasant did for this ticket
+    ├── kin-a1b2.md              # Ticket spec and work log
+    └── kin-c3d4.md              # Ticket spec and work log
 ```
 
-Anyone reviewing the repo can see the full history: what was designed, how it was broken down, and what each ticket actually did.
+Anyone reviewing the repo can see the full history: what was designed, how it was broken down (in design.md's Breakdown section), and what each ticket actually did.
