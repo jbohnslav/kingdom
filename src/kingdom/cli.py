@@ -782,17 +782,16 @@ design_app = typer.Typer(name="design", help="Manage design documents.")
 app.add_typer(design_app, name="design")
 
 
-def _get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path, Path]:
-    """Get design.md, breakdown.md, state.json paths, preferring branch structure.
+def _get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path]:
+    """Get branch_dir, design.md, and state.json paths, preferring branch structure.
 
-    Returns: (branch_dir, design_path, breakdown_path, state_path)
+    Returns: (branch_dir, design_path, state_path)
     """
     branch_dir = branch_root(base, feature)
     if branch_dir.exists():
         return (
             branch_dir,
             branch_dir / "design.md",
-            branch_dir / "breakdown.md",
             branch_dir / "state.json",
         )
     # Fall back to legacy runs structure
@@ -800,14 +799,13 @@ def _get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path, Path]
     return (
         legacy_dir,
         legacy_dir / "design.md",
-        legacy_dir / "breakdown.md",
         legacy_dir / "state.json",
     )
 
 
 def _get_design_paths(base: Path, feature: str) -> tuple[Path, Path]:
     """Get design.md and state.json paths, preferring branch structure."""
-    _, design_path, _, state_path = _get_branch_paths(base, feature)
+    _, design_path, state_path = _get_branch_paths(base, feature)
     return design_path, state_path
 
 
@@ -936,7 +934,7 @@ def breakdown(
     """Invoke an agent to create tickets from the design document's Breakdown section."""
     base = Path.cwd()
     feature = resolve_current_run(base)
-    _branch_dir, design_path, _, _ = _get_branch_paths(base, feature)
+    _branch_dir, design_path, _ = _get_branch_paths(base, feature)
 
     console = Console()
 
@@ -1152,7 +1150,7 @@ def _get_doc_status(path: Path) -> str:
     return "present"
 
 
-@app.command(help="Show current branch, design doc status, and breakdown status.")
+@app.command(help="Show current branch, design doc status, and ticket counts.")
 def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
 ) -> None:
@@ -1170,13 +1168,11 @@ def status(
     if branch_dir.exists():
         state_path = branch_dir / "state.json"
         design_path = branch_dir / "design.md"
-        breakdown_path = branch_dir / "breakdown.md"
     else:
         # Fall back to legacy runs structure
         legacy_dir = state_root(base) / "runs" / feature
         state_path = legacy_dir / "state.json"
         design_path = legacy_dir / "design.md"
-        breakdown_path = legacy_dir / "breakdown.md"
 
     # Read state to get original branch name
     if state_path.exists():
@@ -1187,9 +1183,8 @@ def status(
     # Original branch name (stored in state.json) vs normalized directory name
     original_branch = state.get("branch", feature)
 
-    # Get design and breakdown status
+    # Get design status
     design_status = _get_doc_status(design_path)
-    breakdown_status = _get_doc_status(breakdown_path)
 
     # Get design doc path relative to base for display
     design_path_str = str(design_path.relative_to(base)) if design_path.exists() else None
@@ -1220,7 +1215,6 @@ def status(
         "normalized_branch": normalized,
         "design_path": design_path_str,
         "design_status": design_status,
-        "breakdown_status": breakdown_status,
         "tickets": status_counts,
         "ready_count": ready_count,
     }
@@ -1234,7 +1228,6 @@ def status(
             typer.echo(f"Design: {design_path_str}")
         typer.echo()
         typer.echo(f"Design: {design_status}")
-        typer.echo(f"Breakdown: {breakdown_status}")
         typer.echo()
         total = sum(status_counts.values())
         typer.echo(
