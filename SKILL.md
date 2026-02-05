@@ -107,12 +107,18 @@ kd council reset              # Clear sessions
 ## Key Directories
 
 ```
-.kd/branches/<branch>/
-├── design.md       # Design document (includes Breakdown section)
-├── tickets/        # Ticket files (created by kd breakdown)
-├── logs/council/   # Council run bundles
-└── state.json      # Operational state
+.kd/
+├── branches/<branch>/      # Active branches (tracked in git)
+│   ├── design.md           # Design document (includes Breakdown section)
+│   ├── tickets/            # Ticket files (created by kd breakdown)
+│   ├── learnings.md        # Patterns discovered
+│   ├── logs/               # Council logs (gitignored)
+│   └── state.json          # Operational state (gitignored)
+├── archive/                # Completed branches (tracked in git)
+└── backlog/tickets/        # Backlog tickets (tracked in git)
 ```
+
+**Git tracking:** Everything in `.kd/` is tracked except `state.json`, `sessions/`, and `logs/`. Commit ticket updates, work logs, and archived branches.
 
 ## Best Practices
 
@@ -121,6 +127,7 @@ kd council reset              # Clear sessions
 3. **Track ticket status** - update tickets as work progresses
 4. **Use worktrees** for isolated ticket work to avoid conflicts
 5. **Keep design.md updated** as decisions are made
+6. **Commit .kd/ changes** - ticket closures, work logs, and archives should be committed
 
 ## Installation
 
