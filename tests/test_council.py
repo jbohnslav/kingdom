@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kingdom.council import ClaudeMember, CodexMember, CursorAgentMember
-from kingdom.council.base import AgentResponse, CouncilMember
+from kingdom.council.base import AgentResponse
 
 
 class TestClaudeMember:
@@ -142,7 +142,9 @@ class TestCouncilMemberQuery:
         """Query should handle subprocess timeout gracefully."""
         member = ClaudeMember()
 
-        with patch("kingdom.council.base.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=30)):
+        with patch(
+            "kingdom.council.base.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=30)
+        ):
             response = member.query("test prompt", timeout=30)
 
             assert response.error == "Timeout after 30s"
@@ -176,11 +178,14 @@ class TestCouncilMemberQuery:
 class TestCouncilMemberQueryAllMembers:
     """Test that all member types pass stdin=DEVNULL."""
 
-    @pytest.mark.parametrize("member_class,expected_name", [
-        (ClaudeMember, "claude"),
-        (CodexMember, "codex"),
-        (CursorAgentMember, "agent"),
-    ])
+    @pytest.mark.parametrize(
+        "member_class,expected_name",
+        [
+            (ClaudeMember, "claude"),
+            (CodexMember, "codex"),
+            (CursorAgentMember, "agent"),
+        ],
+    )
     def test_all_members_use_stdin_devnull(self, member_class, expected_name) -> None:
         """All council member types must use stdin=DEVNULL."""
         member = member_class()
