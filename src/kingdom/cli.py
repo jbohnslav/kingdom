@@ -1292,10 +1292,36 @@ def ticket_create(
 @ticket_app.command("list", help="List tickets.")
 def ticket_list(
     all_tickets: Annotated[bool, typer.Option("--all", "-a", help="List all tickets across all locations.")] = False,
+    backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List tickets in the current branch or all locations."""
     base = Path.cwd()
+
+    if backlog:
+        backlog_tickets = backlog_root(base) / "tickets"
+        tickets = list_tickets(backlog_tickets) if backlog_tickets.exists() else []
+        tickets = [t for t in tickets if t.status != "closed"]
+
+        if output_json:
+            results = [
+                {
+                    "id": t.id,
+                    "priority": t.priority,
+                    "status": t.status,
+                    "title": t.title,
+                    "location": "backlog",
+                }
+                for t in tickets
+            ]
+            typer.echo(json.dumps(results, indent=2))
+        else:
+            if not tickets:
+                typer.echo("No backlog tickets.")
+                return
+            for ticket in tickets:
+                typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}] - {ticket.title}")
+        return
 
     if all_tickets:
         # Collect tickets from all locations
