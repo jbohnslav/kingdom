@@ -53,6 +53,7 @@ class CouncilMember(ABC):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                stdin=subprocess.DEVNULL,
             )
             text, new_session_id, raw = self.parse_response(result.stdout, result.stderr, result.returncode)
             if new_session_id:

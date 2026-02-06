@@ -47,7 +47,24 @@ The CLIs themselves work. Something about the execution context when Kingdom spa
 - Stdin not being properly closed?
 - Environment variable differences?
 
-## Next Steps
-1. Add verbose logging to council query to see subprocess args and environment
-2. Test with explicit stdin handling (`stdin=subprocess.DEVNULL`)
-3. Check if `--dangerously-skip-permissions` changes behavior
+## Solution Found
+
+**Root cause**: `subprocess.run()` without explicit `stdin` argument inherits from parent. The CLI agents (claude, cursor) were detecting/waiting on stdin, causing them to hang.
+
+**Fix**: Add `stdin=subprocess.DEVNULL` to the subprocess.run call in `base.py`:
+
+```python
+result = subprocess.run(
+    command,
+    capture_output=True,
+    text=True,
+    timeout=timeout,
+    stdin=subprocess.DEVNULL,  # <-- this fixes it
+)
+```
+
+**Results after fix**:
+- Simple prompt: claude 3.5s, codex 5.3s, agent 6.6s
+- Complex prompt (read file, give opinion): claude 8.7s, codex 4.6s, agent 38.3s
+
+All three council members now respond reliably.
