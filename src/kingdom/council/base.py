@@ -50,9 +50,9 @@ class CouncilMember:
     def query(self, prompt: str, timeout: int = 300) -> AgentResponse:
         """Execute a query and return the response."""
         start = time.monotonic()
-        command = self.build_command(prompt)
 
         try:
+            command = self.build_command(prompt)
             result = subprocess.run(
                 command,
                 capture_output=True,
@@ -94,7 +94,21 @@ class CouncilMember:
 
         except FileNotFoundError:
             elapsed = time.monotonic() - start
-            error = f"Command not found: {command[0]}"
+            cmd_name = self.config.cli.split()[0] if self.config.cli else "unknown"
+            error = f"Command not found: {cmd_name}"
+            response = AgentResponse(
+                name=self.name,
+                text="",
+                error=error,
+                elapsed=elapsed,
+                raw="",
+            )
+            self.log(prompt, "", error, elapsed)
+            return response
+
+        except ValueError as e:
+            elapsed = time.monotonic() - start
+            error = f"Invalid agent config: {e}"
             response = AgentResponse(
                 name=self.name,
                 text="",

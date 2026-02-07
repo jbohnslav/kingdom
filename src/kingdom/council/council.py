@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kingdom.agent import DEFAULT_AGENTS, AgentConfig, list_agents
+from kingdom.agent import DEFAULT_AGENTS, AgentConfig, agents_root, list_agents
 
 from .base import AgentResponse, CouncilMember
 
@@ -24,12 +24,20 @@ class Council:
 
         If ``base`` is provided and ``.kd/agents/`` contains agent files,
         those are used. Otherwise falls back to built-in defaults.
+
+        Raises:
+            ValueError: If agent files exist but none could be parsed.
         """
-        configs: list[AgentConfig]
+        configs: list[AgentConfig] = []
         if base is not None:
             configs = list_agents(base)
-        else:
-            configs = []
+            if not configs:
+                root = agents_root(base)
+                if root.exists() and any(root.glob("*.md")):
+                    raise ValueError(
+                        f"Agent files in {root} exist but none could be parsed. "
+                        "Check .kd/agents/*.md for syntax errors."
+                    )
 
         if not configs:
             configs = list(DEFAULT_AGENTS.values())

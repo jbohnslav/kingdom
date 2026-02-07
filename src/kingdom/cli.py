@@ -368,7 +368,7 @@ def council_last() -> None:
 
 @council_app.command("followup", help="Follow up with a specific council member.")
 def council_followup(
-    member: Annotated[str, typer.Argument(help="Member name (claude, codex, agent).")],
+    member: Annotated[str, typer.Argument(help="Member name (claude, codex, cursor).")],
     prompt: Annotated[str, typer.Argument(help="Follow-up prompt.")],
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
 ) -> None:

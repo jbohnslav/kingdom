@@ -1,12 +1,14 @@
 """Tests for council members and their CLI command building."""
 
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kingdom.agent import DEFAULT_AGENTS
+from kingdom.agent import DEFAULT_AGENTS, AgentConfig
 from kingdom.council.base import AgentResponse, CouncilMember
+from kingdom.council.council import Council
 
 
 def make_member(name: str) -> CouncilMember:
@@ -205,3 +207,68 @@ class TestCouncilMemberQueryAllMembers:
             member.query("test", timeout=10)
 
             assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+
+
+class TestCouncilMemberQueryConfigErrors:
+    """Test that config errors return structured AgentResponse instead of crashing."""
+
+    def test_query_handles_unknown_backend(self) -> None:
+        """Unknown backend should return AgentResponse with error, not raise."""
+        config = AgentConfig(name="bad", backend="unknown", cli="bad", resume_flag="")
+        member = CouncilMember(config=config)
+
+        response = member.query("test prompt", timeout=30)
+
+        assert response.error is not None
+        assert "Invalid agent config" in response.error
+        assert response.text == ""
+
+    def test_query_handles_codex_missing_exec(self) -> None:
+        """Codex config without 'exec' should return error, not raise."""
+        config = AgentConfig(name="codex", backend="codex", cli="codex --json", resume_flag="resume")
+        member = CouncilMember(config=config, session_id="thread-1")
+
+        response = member.query("test prompt", timeout=30)
+
+        assert response.error is not None
+        assert "Invalid agent config" in response.error
+
+
+class TestCouncilCreateValidation:
+    """Test that Council.create() validates agent configs."""
+
+    def test_create_uses_defaults_when_no_agents_dir(self, tmp_path: Path) -> None:
+        """No .kd/agents/ dir should use defaults without error."""
+        council = Council.create(base=tmp_path)
+        assert len(council.members) == 3
+        names = {m.name for m in council.members}
+        assert names == {"claude", "codex", "cursor"}
+
+    def test_create_uses_agent_files(self, tmp_path: Path) -> None:
+        """Valid agent files should be loaded."""
+        agents_dir = tmp_path / ".kd" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "myagent.md").write_text(
+            "---\nname: myagent\nbackend: claude_code\ncli: claude --print\nresume_flag: --resume\n---\n"
+        )
+
+        council = Council.create(base=tmp_path)
+        assert len(council.members) == 1
+        assert council.members[0].name == "myagent"
+
+    def test_create_raises_when_all_agent_files_broken(self, tmp_path: Path) -> None:
+        """If agent files exist but all fail to parse, raise ValueError."""
+        agents_dir = tmp_path / ".kd" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "broken.md").write_text("not valid frontmatter")
+
+        with pytest.raises(ValueError, match="none could be parsed"):
+            Council.create(base=tmp_path)
+
+    def test_create_uses_defaults_when_agents_dir_empty(self, tmp_path: Path) -> None:
+        """Empty .kd/agents/ dir should use defaults without error."""
+        agents_dir = tmp_path / ".kd" / "agents"
+        agents_dir.mkdir(parents=True)
+
+        council = Council.create(base=tmp_path)
+        assert len(council.members) == 3
