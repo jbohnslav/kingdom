@@ -167,6 +167,13 @@ class TestAddMessage:
         with pytest.raises(FileNotFoundError):
             add_message(project, BRANCH, "nonexistent", from_="king", to="all", body="Hi")
 
+    def test_sender_name_normalized_in_filename(self, project: Path) -> None:
+        create_thread(project, BRANCH, "test", ["King Claude"], "direct")
+        add_message(project, BRANCH, "test", from_="King Claude", to="all", body="Hello")
+
+        tdir = thread_dir(project, BRANCH, "test")
+        assert (tdir / "0001-king-claude.md").exists()
+
     def test_refs_optional(self, project: Path) -> None:
         create_thread(project, BRANCH, "test", ["king"], "direct")
         msg = add_message(project, BRANCH, "test", from_="king", to="all", body="No refs")
