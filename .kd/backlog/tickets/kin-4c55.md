@@ -1,6 +1,6 @@
 ---
 id: kin-4c55
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-07T22:42:28Z
