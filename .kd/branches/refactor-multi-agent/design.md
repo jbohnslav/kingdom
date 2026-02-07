@@ -287,37 +287,55 @@ kd status
 
 ### How Peasants Actually Work
 
-The agent process is a subprocess running the backend CLI. For Claude:
+`kd peasant start` launches a **background process** that runs an autonomous loop. The peasant works until the ticket is done or it needs help.
 
-```bash
-claude --print --output-format json \
-  --resume $SESSION_ID \
-  -p "$(cat ticket_prompt.md)" \
-  2>stderr.log
+The **harness** (`kd agent run`) is the loop:
+
+```
+while not done and not blocked:
+    1. Build prompt (ticket + acceptance criteria + worklog + any new directives)
+    2. Call backend CLI (claude --print --resume $SESSION_ID ...)
+    3. Parse response
+    4. Apply changes, commit
+    5. Append to worklog (decisions made, bugs hit, difficulties)
+    6. Update session file (status, resume_id, last_activity)
+    7. Write response as message to thread
+    8. Check: done? blocked? new directives in thread?
 ```
 
-The **harness** is a thin Python wrapper (`kd agent run`) that:
-1. Builds the prompt from ticket + acceptance criteria
-2. Launches the subprocess
-3. Captures output
-4. Parses the response
-5. Updates `sessions/<agent>.json` (status, resume_id, last_activity)
-6. Writes the response as a message to the thread
-7. Checks for escalations or completion signals
+The peasant runs tests when it makes sense — the agent decides, like an engineer would. Not on every iteration.
 
-For v1, the harness runs **one turn at a time**. The peasant does one chunk of work, reports back, and the King can review + send another directive. This is simpler than a fully autonomous loop and matches how the backends actually work (one-shot with `--print`).
+**Stop conditions:**
+- **Done** — ticket acceptance criteria met, tests pass. Status → `done`.
+- **Blocked** — needs a decision, hit something unexpected, can't proceed. Status → `blocked`. Writes escalation to thread.
+- **Stopped** — King/Hand sent `kd peasant stop`. Status → `stopped`.
+- **Failed** — unrecoverable error. Status → `failed`.
 
-Autonomous multi-turn loop is v2.
+**Auto-commit:** The peasant commits as it works, not just at the end. Each meaningful chunk of work gets a commit on the ticket branch. This gives the Hand/King visibility into progress via `git log`.
+
+**Worklog:** The ticket itself has a pre-formatted worklog section at the bottom. The peasant appends to it as it works — decisions made, bugs encountered, difficulties, test results. The worklog is part of the tracked ticket file, so it becomes part of the repo's history.
+
+```markdown
+## Worklog
+
+- Implemented TokenManager.refresh() using existing OAuth client
+- Decision: used exponential backoff for retry (3 attempts, 1s/2s/4s)
+- Bug: refresh token was being URL-encoded twice, fixed in oauth_client.py
+- Tests: 4/4 passing (refresh success, expired token, concurrent refresh, network error)
+```
+
+The peasant runs tests when it judges appropriate — not mechanically every turn. `kd peasant review` is for the Hand to do a final review after the peasant signals `done`.
 
 ### Quality Gates
 
-On `kd peasant review KIN-042` (Hand reviews completed work):
+On `kd peasant review KIN-042` (Hand reviews after peasant signals done):
 
-1. Run `pytest` in the worktree
+1. Run `pytest` in the worktree (verify peasant's claim)
 2. Run `ruff check`
-3. Check acceptance criteria (present in ticket)
+3. Review the diff and worklog
+4. Accept (merge ticket branch) or reject (send feedback, peasant resumes)
 
-If gates fail, the peasant gets a feedback message and stays `working`. This is the Teams-inspired pattern. Implement as a simple function call for v1; hook system with exit codes is v2.
+If the Hand rejects, the peasant gets a feedback message and status goes back to `working`.
 
 ## What We're NOT Building (v1)
 
@@ -335,9 +353,10 @@ If gates fail, the peasant gets a feedback message and stays `working`. This is 
 ### T1: Thread model
 - Priority: 1
 - Depends on: none
-- Description: Core data model for threads. Create/read/write thread directories under `.kd/branches/<branch>/threads/<thread-id>/`. Thread metadata in `thread.json` (members, pattern, created_at). Sequential message files (`0001-king.md`, `0002-claude.md`) with YAML frontmatter (from, to, timestamp, refs). Helpers: `create_thread()`, `add_message()`, `list_messages()`, `list_threads()`, `next_message_number()`.
+- Description: Core data model for threads. Create/read/write thread directories under `.kd/branches/<branch>/threads/<thread-id>/`. Thread metadata in `thread.json` (members, pattern, created_at). Sequential message files (`0001-king.md`, `0002-claude.md`) with YAML frontmatter (from, to, timestamp, refs). Thread IDs are sanitized using the existing `normalize_branch_name()` function. Helpers: `create_thread()`, `add_message()`, `list_messages()`, `list_threads()`, `next_message_number()`.
 - Acceptance:
   - [ ] `create_thread(branch, thread_id, members, pattern)` creates directory + thread.json
+  - [ ] Thread IDs are normalized via `normalize_branch_name()` (same sanitization as branch directories)
   - [ ] `add_message(branch, thread_id, from_, to, body, refs)` writes next sequential .md file
   - [ ] `list_messages(branch, thread_id)` returns messages in order
   - [ ] `list_threads(branch)` returns all thread IDs with metadata
@@ -359,18 +378,19 @@ If gates fail, the peasant gets a feedback message and stays `working`. This is 
 ### T3: Agent session state
 - Priority: 1
 - Depends on: none
-- Description: Per-agent runtime state in `sessions/<agent>.json`. Each agent writes only its own file (no locking needed). Helpers to get/set agent status, resume_id, pid, ticket, thread, timestamps. Agent status enum: idle, working, blocked, done, failed, stopped. Branch-level `current_thread` stays in `state.json`.
+- Description: Per-agent runtime state in `sessions/<agent>.json`. Each agent writes only its own file (no locking needed). Helpers to get/set agent status, resume_id, pid, ticket, thread, timestamps. Agent status enum: idle, working, blocked, done, failed, stopped. Branch-level `current_thread` stays in `state.json`. Migrate existing `.session` files (plain text resume IDs) to the new `.json` format on first access.
 - Acceptance:
   - [ ] `get_agent_state(branch, agent_name)` reads `sessions/<agent>.json`
   - [ ] `set_agent_state(branch, agent_name, **fields)` writes `sessions/<agent>.json`
   - [ ] `list_active_agents(branch)` scans sessions/ for agents with status != idle
   - [ ] `get_current_thread(branch)` / `set_current_thread(branch, thread_id)` manage current thread pointer in state.json
-  - [ ] Backwards compatible — existing state.json fields preserved
+  - [ ] Existing `.session` files migrated to `.json` on first read (read old format, write new format, remove old file)
+  - [ ] Existing state.json fields preserved
 
 ### T4: Council refactor
 - Priority: 2
 - Depends on: T1, T2, T3
-- Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--thread new` forces a new thread. Add `kd council show [thread-id]` and `kd council list`. Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor.
+- Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--thread new` forces a new thread. Add `kd council show [thread-id]` and `kd council list`. Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor. Existing council run bundles in `logs/council/run-*` remain readable but new queries go to threads.
 - Acceptance:
   - [ ] `kd council ask "prompt"` creates thread on first use, continues on subsequent
   - [ ] `kd council ask --to codex "prompt"` sends to one member only
@@ -378,33 +398,38 @@ If gates fail, the peasant gets a feedback message and stays `working`. This is 
   - [ ] All messages written to thread directory as sequential .md files
   - [ ] Resume tokens stored in `sessions/<agent>.json`, used on follow-up queries
   - [ ] `kd council show` displays thread history with Rich panels
+  - [ ] `kd council show` falls back to `logs/council/run-*` for pre-migration runs
   - [ ] `kd council list` shows all council threads
   - [ ] Old `followup` and `critique` commands removed
 
 ### T5: Peasant execution
 - Priority: 2
 - Depends on: T1, T2, T3
-- Description: Agent harness (`kd agent run`) that builds prompt from ticket, launches backend subprocess, captures output, updates session file, writes response to thread. `kd peasant start <ticket>` creates worktree + branch, creates session file, creates work thread, seeds with ticket_start message, launches harness. `kd peasant status` shows table of active peasants. `kd peasant logs <ticket> [--follow]` tails subprocess logs. `kd peasant stop <ticket>` kills process and updates state.
+- Description: Agent harness (`kd agent run`) that runs an autonomous loop: build prompt from ticket + worklog + directives, call backend, apply changes, commit, run tests, append to worklog, update session, write to thread. Loop continues until done (acceptance criteria met, tests pass), blocked (needs help), or stopped. `kd peasant start <ticket>` creates worktree + branch, creates session file, creates work thread, seeds with ticket_start message, launches harness as background process. `kd peasant status` shows table of active peasants. `kd peasant logs <ticket> [--follow]` tails subprocess logs. `kd peasant stop <ticket>` kills process. Ticket file has a pre-formatted worklog section that the peasant appends to as it works.
 - Acceptance:
-  - [ ] `kd agent run --agent <name> --ticket <id> --worktree <path>` executes one turn
-  - [ ] `kd peasant start KIN-042` creates worktree, creates session, creates thread, launches harness
+  - [ ] `kd agent run --agent <name> --ticket <id> --worktree <path>` runs autonomous loop
+  - [ ] Loop: prompt → backend → commit → worklog → repeat
+  - [ ] Loop stops on: done (tests pass, criteria met), blocked (needs help), stopped, or failed
+  - [ ] Peasant auto-commits as it works (each meaningful chunk)
+  - [ ] Peasant appends decisions, bugs, difficulties to worklog section in ticket
+  - [ ] `kd peasant start KIN-042` creates worktree, session, thread, launches harness in background
   - [ ] `kd peasant status` shows table: ticket, agent, status, elapsed, last activity
   - [ ] `kd peasant logs KIN-042` shows stdout/stderr
   - [ ] `kd peasant logs KIN-042 --follow` tails logs
   - [ ] `kd peasant stop KIN-042` sends SIGTERM, updates status to `stopped`
-  - [ ] Peasant output written as message to work thread
+  - [ ] Peasant output written as messages to work thread
   - [ ] Session file updated with pid, status, timestamps
 
 ### T6: Peasant messaging and supervision
 - Priority: 3
 - Depends on: T5
-- Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread and triggers the next harness turn with the directive as context. `kd peasant read <ticket>` shows recent messages from the peasant. `kd peasant manage` shows actionable summary: pending escalations, work ready for review, stale workers, ready tickets not yet started. `kd peasant review <ticket>` runs quality gates (pytest, ruff) in worktree and reports pass/fail. `kd status` extended to show active agents and unread escalations.
+- Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread (peasant picks it up on next loop iteration). `kd peasant read <ticket>` shows recent messages from the peasant (escalations, status updates). `kd peasant manage` shows actionable summary: pending escalations, work ready for review, stale workers, ready tickets not yet started. `kd peasant review <ticket>` is the Hand's final review after peasant signals done — verify tests, review diff and worklog, accept or reject. `kd status` extended to show active agents and unread escalations.
 - Acceptance:
-  - [ ] `kd peasant msg KIN-042 "focus on tests"` writes message to thread, triggers next turn
-  - [ ] `kd peasant read KIN-042` shows peasant's messages
-  - [ ] `kd peasant manage` shows escalations, reviews, stale workers, ready tickets
-  - [ ] `kd peasant review KIN-042` runs pytest + ruff in worktree, reports results
-  - [ ] Failed quality gates send feedback message to peasant, status stays working
+  - [ ] `kd peasant msg KIN-042 "focus on tests"` writes directive to thread, peasant picks up on next iteration
+  - [ ] `kd peasant read KIN-042` shows peasant's messages (escalations, worklog updates)
+  - [ ] `kd peasant manage` shows escalations, completed work for review, stale workers, ready tickets
+  - [ ] `kd peasant review KIN-042` runs pytest + ruff, shows diff + worklog for Hand review
+  - [ ] Hand can accept (ticket closed, branch ready to merge) or reject (feedback sent, peasant resumes)
   - [ ] `kd status` shows active agents count and pending escalations
 
 ## References
