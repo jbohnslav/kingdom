@@ -108,6 +108,11 @@ def tickets_root(base: Path, feature: str) -> Path:
     return run_root(base, feature) / "tickets"
 
 
+def threads_root(base: Path, feature: str) -> Path:
+    """Path to threads directory under branch structure."""
+    return branch_root(base, feature) / "threads"
+
+
 def council_logs_root(base: Path, feature: str) -> Path:
     """Path to council run bundles, preferring branch structure."""
     return logs_root(base, feature) / "council"
