@@ -68,8 +68,7 @@ class TestCursorAgentMember:
     def test_build_command_without_session(self) -> None:
         member = make_member("cursor")
         cmd = member.build_command("hello world")
-        assert cmd[0] == "cursor"
-        assert "agent" in cmd
+        assert cmd[0] == "agent"
         assert "--print" in cmd  # required for non-interactive use
         assert "--output-format" in cmd
         assert "json" in cmd

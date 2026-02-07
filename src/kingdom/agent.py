@@ -162,10 +162,10 @@ DEFAULT_AGENTS: dict[str, AgentConfig] = {
     "cursor": AgentConfig(
         name="cursor",
         backend="cursor",
-        cli="cursor agent --print --output-format json",
+        cli="agent --print --output-format json",
         resume_flag="--resume",
-        version_command="cursor --version",
-        install_hint="Install Cursor: https://cursor.com",
+        version_command="agent --version",
+        install_hint="Install Cursor Agent: https://docs.cursor.com/agent",
     ),
 }
 
@@ -302,7 +302,7 @@ def build_codex_command(config: AgentConfig, prompt: str, session_id: str | None
 def build_cursor_command(config: AgentConfig, prompt: str, session_id: str | None) -> list[str]:
     """Build cursor agent CLI command.
 
-    Format: ``cursor agent --print --output-format json PROMPT [--resume SESSION]``
+    Format: ``agent --print --output-format json PROMPT [--resume SESSION]``
     """
     cmd = shlex.split(config.cli)
     cmd.append(prompt)

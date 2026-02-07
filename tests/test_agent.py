@@ -195,7 +195,7 @@ class TestDefaultAgents:
     def test_cursor_defaults(self) -> None:
         c = DEFAULT_AGENTS["cursor"]
         assert c.backend == "cursor"
-        assert "cursor" in c.cli
+        assert "agent" in c.cli
         assert c.resume_flag == "--resume"
 
 
@@ -248,11 +248,11 @@ class TestBuildCommand:
 
     def test_cursor_without_session(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["cursor"], "hello world")
-        assert cmd == ["cursor", "agent", "--print", "--output-format", "json", "hello world"]
+        assert cmd == ["agent", "--print", "--output-format", "json", "hello world"]
 
     def test_cursor_with_session(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["cursor"], "hello", session_id="conv-456")
-        assert cmd == ["cursor", "agent", "--print", "--output-format", "json", "hello", "--resume", "conv-456"]
+        assert cmd == ["agent", "--print", "--output-format", "json", "hello", "--resume", "conv-456"]
 
     def test_unknown_backend_raises(self) -> None:
         config = AgentConfig(name="bad", backend="unknown", cli="bad", resume_flag="")
