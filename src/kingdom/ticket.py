@@ -50,7 +50,7 @@ class Ticket:
     external_ref: str | None = None
 
 
-def _clamp_priority(value: int | str | None) -> int:
+def clamp_priority(value: int | str | None) -> int:
     """Clamp priority to valid range (1-3).
 
     Args:
@@ -97,7 +97,7 @@ def generate_ticket_id(tickets_dir: Path | None = None) -> str:
     raise RuntimeError(f"Failed to generate unique ticket ID after {max_attempts} attempts")
 
 
-def _parse_yaml_value(value: str) -> str | int | list[str] | None:
+def parse_yaml_value(value: str) -> str | int | list[str] | None:
     """Parse a single YAML value (simple types only).
 
     Handles:
@@ -143,7 +143,7 @@ def _parse_yaml_value(value: str) -> str | int | list[str] | None:
     return value
 
 
-def _serialize_yaml_value(value: str | int | list[str] | None) -> str:
+def serialize_yaml_value(value: str | int | list[str] | None) -> str:
     """Serialize a Python value to YAML format.
 
     Args:
@@ -199,7 +199,7 @@ def parse_ticket(content: str) -> Ticket:
             continue
         key, value = line.split(":", 1)
         key = key.strip()
-        frontmatter_dict[key] = _parse_yaml_value(value)
+        frontmatter_dict[key] = parse_yaml_value(value)
 
     # Extract title from body (first # heading)
     title = ""
@@ -236,7 +236,7 @@ def parse_ticket(content: str) -> Ticket:
         links=links if isinstance(links, list) else [],
         created=created,
         type=str(frontmatter_dict.get("type", "task")),
-        priority=_clamp_priority(frontmatter_dict.get("priority", 2)),
+        priority=clamp_priority(frontmatter_dict.get("priority", 2)),
         assignee=str(frontmatter_dict.get("assignee")) if frontmatter_dict.get("assignee") else None,
         title=title,
         body=body,
@@ -260,8 +260,8 @@ def serialize_ticket(ticket: Ticket) -> str:
     # Required fields in standard order
     lines.append(f"id: {ticket.id}")
     lines.append(f"status: {ticket.status}")
-    lines.append(f"deps: {_serialize_yaml_value(ticket.deps)}")
-    lines.append(f"links: {_serialize_yaml_value(ticket.links)}")
+    lines.append(f"deps: {serialize_yaml_value(ticket.deps)}")
+    lines.append(f"links: {serialize_yaml_value(ticket.links)}")
 
     # Format datetime as ISO with Z suffix
     created_str = ticket.created.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -278,7 +278,7 @@ def serialize_ticket(ticket: Ticket) -> str:
     if ticket.parent:
         lines.append(f"parent: {ticket.parent}")
     if ticket.tags:
-        lines.append(f"tags: {_serialize_yaml_value(ticket.tags)}")
+        lines.append(f"tags: {serialize_yaml_value(ticket.tags)}")
 
     lines.append("---")
 

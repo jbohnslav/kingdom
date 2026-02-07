@@ -31,14 +31,14 @@ def create_run_bundle(
     # Write per-member markdown files
     for name, response in responses.items():
         md_path = run_dir / f"{name}.md"
-        content = _format_response_markdown(response)
+        content = format_response_markdown(response)
         md_path.write_text(content, encoding="utf-8")
         paths[name] = md_path
         if response.error:
             errors[name] = response.error
 
     # Write metadata.json
-    metadata = _build_metadata(prompt, responses)
+    metadata = build_metadata(prompt, responses)
     write_json(run_dir / "metadata.json", metadata)
 
     # Write errors.json if any failures
@@ -48,7 +48,7 @@ def create_run_bundle(
     return {"run_id": run_id, "run_dir": run_dir, "paths": paths}
 
 
-def _format_response_markdown(response: AgentResponse) -> str:
+def format_response_markdown(response: AgentResponse) -> str:
     """Format an AgentResponse as markdown."""
     lines = [f"# {response.name}", ""]
     if response.error:
@@ -58,7 +58,7 @@ def _format_response_markdown(response: AgentResponse) -> str:
     return "\n".join(lines)
 
 
-def _build_metadata(prompt: str, responses: dict[str, AgentResponse]) -> dict:
+def build_metadata(prompt: str, responses: dict[str, AgentResponse]) -> dict:
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "prompt": prompt,

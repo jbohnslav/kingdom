@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.state import branch_root, ensure_dir, normalize_branch_name, read_json, write_json
-from kingdom.ticket import _parse_yaml_value, _serialize_yaml_value
+from kingdom.ticket import parse_yaml_value, serialize_yaml_value
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -124,7 +124,7 @@ def create_thread(
     return meta
 
 
-def _read_thread_meta(tdir: Path) -> ThreadMeta:
+def read_thread_meta(tdir: Path) -> ThreadMeta:
     """Read thread.json from a thread directory."""
     meta_path = tdir / "thread.json"
     data = read_json(meta_path)
@@ -162,7 +162,7 @@ def get_thread(base: Path, branch: str, thread_id: str) -> ThreadMeta:
     tdir = thread_dir(base, branch, thread_id)
     if not tdir.exists():
         raise FileNotFoundError(f"Thread not found: {normalize_branch_name(thread_id)}")
-    return _read_thread_meta(tdir)
+    return read_thread_meta(tdir)
 
 
 def list_threads(base: Path, branch: str) -> list[ThreadMeta]:
@@ -185,7 +185,7 @@ def list_threads(base: Path, branch: str) -> list[ThreadMeta]:
             meta_path = entry / "thread.json"
             if meta_path.exists():
                 try:
-                    threads.append(_read_thread_meta(entry))
+                    threads.append(read_thread_meta(entry))
                 except (KeyError, FileNotFoundError):
                     continue
 
@@ -193,7 +193,7 @@ def list_threads(base: Path, branch: str) -> list[ThreadMeta]:
     return threads
 
 
-def _next_message_number(tdir: Path) -> int:
+def next_message_number(tdir: Path) -> int:
     """Return the next sequential message number for a thread directory.
 
     Scans existing NNNN-*.md files and returns max + 1, or 1 if empty.
@@ -240,7 +240,7 @@ def add_message(
         raise FileNotFoundError(f"Thread not found: {normalize_branch_name(thread_id)}")
 
     refs = refs or []
-    seq = _next_message_number(tdir)
+    seq = next_message_number(tdir)
     now = datetime.now(UTC)
 
     msg = Message(
@@ -258,7 +258,7 @@ def add_message(
     lines.append(f"to: {to}")
     lines.append(f"timestamp: {now.strftime('%Y-%m-%dT%H:%M:%SZ')}")
     if refs:
-        lines.append(f"refs: {_serialize_yaml_value(refs)}")
+        lines.append(f"refs: {serialize_yaml_value(refs)}")
     lines.append("---")
     lines.append("")
     lines.append(body)
@@ -273,7 +273,7 @@ def add_message(
     return msg
 
 
-def _parse_message(path: Path) -> Message:
+def parse_message(path: Path) -> Message:
     """Parse a message file (YAML frontmatter + markdown body)."""
     content = path.read_text(encoding="utf-8")
 
@@ -293,7 +293,7 @@ def _parse_message(path: Path) -> Message:
         if not line or ":" not in line:
             continue
         key, value = line.split(":", 1)
-        fm[key.strip()] = _parse_yaml_value(value)
+        fm[key.strip()] = parse_yaml_value(value)
 
     # Parse timestamp
     ts_str = fm.get("timestamp", "")
@@ -344,7 +344,7 @@ def list_messages(base: Path, branch: str, thread_id: str) -> list[Message]:
     messages: list[Message] = []
     for path in sorted(tdir.glob("[0-9][0-9][0-9][0-9]-*.md")):
         try:
-            messages.append(_parse_message(path))
+            messages.append(parse_message(path))
         except (ValueError, FileNotFoundError):
             continue
 

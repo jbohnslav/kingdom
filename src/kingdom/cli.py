@@ -296,7 +296,7 @@ def council_ask(
     c.load_sessions(sessions_dir)
 
     # Query with progress
-    responses = _query_with_progress(c, prompt, json_output, console)
+    responses = query_with_progress(c, prompt, json_output, console)
     c.save_sessions(sessions_dir)
 
     # Create run bundle
@@ -306,9 +306,9 @@ def council_ask(
     response_paths = bundle["paths"]
 
     if json_output:
-        _output_json(responses, run_id, run_dir, response_paths)
+        output_json(responses, run_id, run_dir, response_paths)
     else:
-        _display_rich_panels(responses, run_dir, console)
+        display_rich_panels(responses, run_dir, console)
 
     if open_dir:
         editor = os.environ.get("EDITOR", "open")
@@ -529,7 +529,7 @@ def council_critique(
         anonymized[labels[i]] = (name, responses[name])
 
     # Build critique prompt
-    critique_prompt = _build_critique_prompt(anonymized)
+    critique_prompt = build_critique_prompt(anonymized)
 
     # Create council and query each member
     c = Council.create(logs_dir=logs_dir)
@@ -592,7 +592,7 @@ def council_critique(
         console.print(f"[dim]Saved to: {critiques_dir}[/dim]")
 
 
-def _build_critique_prompt(anonymized: dict[str, tuple[str, str]]) -> str:
+def build_critique_prompt(anonymized: dict[str, tuple[str, str]]) -> str:
     """Build the critique prompt with anonymized responses."""
     parts = [
         "You are evaluating responses from different AI assistants. "
@@ -689,7 +689,7 @@ def council_show(
     typer.echo(f"Full responses: {run_dir}")
 
 
-def _query_with_progress(council, prompt, json_output, console):
+def query_with_progress(council, prompt, json_output, console):
     """Query with spinner showing member progress."""
     if json_output:
         # No spinner for JSON output
@@ -708,7 +708,7 @@ def _query_with_progress(council, prompt, json_output, console):
     return responses
 
 
-def _display_rich_panels(responses, run_dir, console):
+def display_rich_panels(responses, run_dir, console):
     """Display responses as Rich panels with Markdown."""
     for name in sorted(responses.keys()):
         response = responses[name]
@@ -734,7 +734,7 @@ def _display_rich_panels(responses, run_dir, console):
     console.print(f"[dim]Saved to: {run_dir}[/dim]")
 
 
-def _output_json(responses, run_id, run_dir, response_paths):
+def output_json(responses, run_id, run_dir, response_paths):
     """Output JSON format for --json flag."""
     output = {
         "run_id": run_id,
@@ -758,7 +758,7 @@ design_app = typer.Typer(name="design", help="Manage design documents.")
 app.add_typer(design_app, name="design")
 
 
-def _get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path, Path]:
+def get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path, Path]:
     """Get design.md, breakdown.md, state.json paths, preferring branch structure.
 
     Returns: (branch_dir, design_path, breakdown_path, state_path)
@@ -781,9 +781,9 @@ def _get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path, Path]
     )
 
 
-def _get_design_paths(base: Path, feature: str) -> tuple[Path, Path]:
+def get_design_paths(base: Path, feature: str) -> tuple[Path, Path]:
     """Get design.md and state.json paths, preferring branch structure."""
-    _, design_path, _, state_path = _get_branch_paths(base, feature)
+    _, design_path, _, state_path = get_branch_paths(base, feature)
     return design_path, state_path
 
 
@@ -794,7 +794,7 @@ def design_default(ctx: typer.Context) -> None:
         return
     base = Path.cwd()
     feature = resolve_current_run(base)
-    design_path, _ = _get_design_paths(base, feature)
+    design_path, _ = get_design_paths(base, feature)
 
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
         design_path.parent.mkdir(parents=True, exist_ok=True)
@@ -810,7 +810,7 @@ def design_show() -> None:
     """Print the design.md contents."""
     base = Path.cwd()
     feature = resolve_current_run(base)
-    design_path, _ = _get_design_paths(base, feature)
+    design_path, _ = get_design_paths(base, feature)
 
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
         typer.echo("No design document found. Run `kd design` to create one.")
@@ -825,7 +825,7 @@ def design_approve() -> None:
     """Set design_approved=true in state.json."""
     base = Path.cwd()
     feature = resolve_current_run(base)
-    design_path, state_path = _get_design_paths(base, feature)
+    design_path, state_path = get_design_paths(base, feature)
 
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
         typer.echo("No design document found. Run `kd design` to create one.")
@@ -845,7 +845,7 @@ def breakdown(
 
     base = Path.cwd()
     feature = resolve_current_run(base)
-    _, _, breakdown_path, state_path = _get_branch_paths(base, feature)
+    _, _, breakdown_path, state_path = get_branch_paths(base, feature)
 
     if not breakdown_path.exists() or not breakdown_path.read_text(encoding="utf-8").strip():
         breakdown_path.parent.mkdir(parents=True, exist_ok=True)
@@ -863,7 +863,7 @@ def breakdown(
         raise RuntimeError("No tickets found in breakdown.md")
 
     # Get tickets directory for current branch
-    tickets_dir = _get_tickets_dir(base)
+    tickets_dir = get_tickets_dir(base)
     tickets_dir.mkdir(parents=True, exist_ok=True)
 
     created: dict[str, str] = {}
@@ -962,7 +962,7 @@ def peasant(
         # Update state
         try:
             feature = resolve_current_run(base)
-            _, state_path = _get_design_paths(base, feature)
+            _, state_path = get_design_paths(base, feature)
             state = read_json(state_path) if state_path.exists() else {}
             worktrees = state.get("worktrees", {})
             worktrees.pop(full_ticket_id, None)
@@ -1015,7 +1015,7 @@ def peasant(
     # Track in state.json
     try:
         feature = resolve_current_run(base)
-        _, state_path = _get_design_paths(base, feature)
+        _, state_path = get_design_paths(base, feature)
         state = read_json(state_path) if state_path.exists() else {}
         worktrees = state.get("worktrees", {})
         worktrees[full_ticket_id] = str(worktree_path)
@@ -1045,7 +1045,7 @@ def dev(ticket: str | None = typer.Argument(None, help="Optional ticket id.")) -
     typer.echo("`kd dev` is reserved. Use `kd peasant <ticket>` in the MVP.")
 
 
-def _get_doc_status(path: Path) -> str:
+def get_doc_status(path: Path) -> str:
     """Get status of a markdown doc: 'empty', 'draft', or path."""
     if not path.exists():
         return "missing"
@@ -1091,14 +1091,14 @@ def status(
     original_branch = state.get("branch", feature)
 
     # Get design and breakdown status
-    design_status = _get_doc_status(design_path)
-    breakdown_status = _get_doc_status(breakdown_path)
+    design_status = get_doc_status(design_path)
+    breakdown_status = get_doc_status(breakdown_path)
 
     # Get design doc path relative to base for display
     design_path_str = str(design_path.relative_to(base)) if design_path.exists() else None
 
     # Get ticket counts
-    tickets_dir = _get_tickets_dir(base)
+    tickets_dir = get_tickets_dir(base)
     tickets = list_tickets(tickets_dir) if tickets_dir.exists() else []
 
     # Count by status
@@ -1165,7 +1165,7 @@ DOCTOR_CHECKS = [
 ]
 
 
-def _check_cli(command: list[str]) -> tuple[bool, str | None]:
+def check_cli(command: list[str]) -> tuple[bool, str | None]:
     """Check if a CLI command is available."""
     try:
         subprocess.run(command, capture_output=True, timeout=5)
@@ -1185,7 +1185,7 @@ def doctor(
     issues: list[dict[str, str]] = []
 
     for check in DOCTOR_CHECKS:
-        installed, error = _check_cli(check["command"])
+        installed, error = check_cli(check["command"])
         results[check["name"]] = {"installed": installed, "error": error}
         if not installed:
             issues.append({"name": check["name"], "hint": check["install_hint"]})
@@ -1219,7 +1219,7 @@ app.add_typer(ticket_app, name="ticket")
 app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
 
 
-def _get_tickets_dir(base: Path, backlog: bool = False) -> Path:
+def get_tickets_dir(base: Path, backlog: bool = False) -> Path:
     """Get the tickets directory for the current context."""
     if backlog:
         return backlog_root(base) / "tickets"
@@ -1259,7 +1259,7 @@ def ticket_create(
     # Ensure base layout exists
     ensure_base_layout(base)
 
-    tickets_dir = _get_tickets_dir(base, backlog=backlog)
+    tickets_dir = get_tickets_dir(base, backlog=backlog)
     tickets_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate unique ID
@@ -1372,7 +1372,7 @@ def ticket_list(
                 typer.echo(f"{item['id']} [P{item['priority']}][{item['status']}] - {item['title']} ({loc})")
     else:
         # List tickets for current branch only
-        tickets_dir = _get_tickets_dir(base)
+        tickets_dir = get_tickets_dir(base)
         tickets = list_tickets(tickets_dir)
 
         if output_json:
@@ -1436,7 +1436,7 @@ def ticket_show(
         console.print(Markdown(content))
 
 
-def _update_ticket_status(ticket_id: str, new_status: str) -> None:
+def update_ticket_status(ticket_id: str, new_status: str) -> None:
     """Helper to update a ticket's status."""
     base = Path.cwd()
 
@@ -1462,7 +1462,7 @@ def ticket_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Set ticket status to in_progress."""
-    _update_ticket_status(ticket_id, "in_progress")
+    update_ticket_status(ticket_id, "in_progress")
 
 
 @ticket_app.command("close", help="Mark a ticket as closed.")
@@ -1470,7 +1470,7 @@ def ticket_close(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Set ticket status to closed."""
-    _update_ticket_status(ticket_id, "closed")
+    update_ticket_status(ticket_id, "closed")
 
 
 @ticket_app.command("reopen", help="Reopen a closed ticket.")
@@ -1478,7 +1478,7 @@ def ticket_reopen(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Set ticket status back to open."""
-    _update_ticket_status(ticket_id, "open")
+    update_ticket_status(ticket_id, "open")
 
 
 @ticket_app.command("dep", help="Add a dependency to a ticket.")
