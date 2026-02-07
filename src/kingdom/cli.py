@@ -112,6 +112,9 @@ def init(
         raise typer.Exit(code=1)
 
     paths = ensure_base_layout(base, create_gitignore=not no_gitignore)
+    from kingdom.agent import create_default_agent_files
+
+    create_default_agent_files(base)
     typer.echo(f"Initialized: {paths['state_root']}")
 
 
@@ -291,7 +294,7 @@ def council_ask(
 
     console = Console()
 
-    c = Council.create(logs_dir=logs_dir)
+    c = Council.create(logs_dir=logs_dir, base=base)
     c.timeout = timeout
     c.load_sessions(sessions_dir)
 
@@ -328,7 +331,7 @@ def council_reset() -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    c = Council.create(logs_dir=logs_dir)
+    c = Council.create(logs_dir=logs_dir, base=base)
     c.load_sessions(sessions_dir)
     c.reset_sessions()
     c.save_sessions(sessions_dir)
@@ -386,7 +389,7 @@ def council_followup(
 
     console = Console()
 
-    c = Council.create(logs_dir=logs_dir)
+    c = Council.create(logs_dir=logs_dir, base=base)
     c.load_sessions(sessions_dir)
 
     # Find the member
@@ -532,7 +535,7 @@ def council_critique(
     critique_prompt = build_critique_prompt(anonymized)
 
     # Create council and query each member
-    c = Council.create(logs_dir=logs_dir)
+    c = Council.create(logs_dir=logs_dir, base=base)
     c.load_sessions(sessions_dir)
 
     critiques: dict[str, str] = {}
@@ -1146,25 +1149,6 @@ def status(
         typer.echo(f"Ready: {ready_count}")
 
 
-DOCTOR_CHECKS = [
-    {
-        "name": "claude",
-        "command": ["claude", "--version"],
-        "install_hint": "Install Claude Code: https://docs.anthropic.com/en/docs/claude-code",
-    },
-    {
-        "name": "codex",
-        "command": ["codex", "--version"],
-        "install_hint": "Install Codex CLI: npm install -g @openai/codex",
-    },
-    {
-        "name": "cursor",
-        "command": ["cursor", "--version"],
-        "install_hint": "Install Cursor: https://cursor.com",
-    },
-]
-
-
 def check_cli(command: list[str]) -> tuple[bool, str | None]:
     """Check if a CLI command is available."""
     try:
@@ -1176,15 +1160,36 @@ def check_cli(command: list[str]) -> tuple[bool, str | None]:
         return (False, "Command timed out")
 
 
-@app.command(help="Check if council member CLIs are installed.")
+def get_doctor_checks() -> list[dict[str, str | list[str]]]:
+    """Build doctor checks from agent configs."""
+    import shlex
+
+    from kingdom.agent import DEFAULT_AGENTS, list_agents
+
+    base = Path.cwd()
+    agents = list_agents(base) or list(DEFAULT_AGENTS.values())
+
+    checks: list[dict[str, str | list[str]]] = []
+    for agent in agents:
+        version_cmd = agent.version_command or f"{shlex.split(agent.cli)[0]} --version"
+        checks.append({
+            "name": agent.name,
+            "command": shlex.split(version_cmd),
+            "install_hint": agent.install_hint or f"Install {agent.name}",
+        })
+    return checks
+
+
+@app.command(help="Check if agent CLIs are installed.")
 def doctor(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
-    """Verify council member CLIs are installed and provide guidance."""
+    """Verify agent CLIs are installed and provide guidance."""
+    doctor_checks = get_doctor_checks()
     results: dict[str, dict[str, bool | str | None]] = {}
     issues: list[dict[str, str]] = []
 
-    for check in DOCTOR_CHECKS:
+    for check in doctor_checks:
         installed, error = check_cli(check["command"])
         results[check["name"]] = {"installed": installed, "error": error}
         if not installed:
@@ -1194,8 +1199,8 @@ def doctor(
         print(json.dumps(results, indent=2))
     else:
         console = Console()
-        console.print("\nCouncil member CLIs:")
-        for check in DOCTOR_CHECKS:
+        console.print("\nAgent CLIs:")
+        for check in doctor_checks:
             name = check["name"]
             result = results[name]
             if result["installed"]:

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import subprocess
 import time
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+
+from kingdom.agent import AgentConfig
+from kingdom.agent import build_command as agent_build_command
+from kingdom.agent import parse_response as agent_parse_response
 
 
 @dataclass
@@ -21,26 +24,28 @@ class AgentResponse:
 
 
 @dataclass
-class CouncilMember(ABC):
-    """Abstract base class for council members."""
+class CouncilMember:
+    """A council member backed by an agent config."""
 
-    name: str = field(init=False)
+    config: AgentConfig
     session_id: str | None = None
     log_path: Path | None = None
 
-    @abstractmethod
+    @property
+    def name(self) -> str:
+        return self.config.name
+
     def build_command(self, prompt: str) -> list[str]:
         """Build the CLI command to execute."""
-        ...
+        return agent_build_command(self.config, prompt, self.session_id)
 
-    @abstractmethod
     def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse response from CLI output.
 
         Returns:
             tuple of (text, session_id, raw_output)
         """
-        ...
+        return agent_parse_response(self.config, stdout, stderr, code)
 
     def query(self, prompt: str, timeout: int = 300) -> AgentResponse:
         """Execute a query and return the response."""

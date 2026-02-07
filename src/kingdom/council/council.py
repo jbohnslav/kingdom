@@ -6,10 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from kingdom.agent import DEFAULT_AGENTS, AgentConfig, list_agents
+
 from .base import AgentResponse, CouncilMember
-from .claude import ClaudeMember
-from .codex import CodexMember
-from .cursor import CursorAgentMember
 
 
 @dataclass
@@ -20,13 +19,22 @@ class Council:
     timeout: int = 300
 
     @classmethod
-    def create(cls, logs_dir: Path | None = None) -> Council:
-        """Create a council with default members."""
-        members: list[CouncilMember] = [
-            ClaudeMember(),
-            CodexMember(),
-            CursorAgentMember(),
-        ]
+    def create(cls, logs_dir: Path | None = None, base: Path | None = None) -> Council:
+        """Create a council with configured or default members.
+
+        If ``base`` is provided and ``.kd/agents/`` contains agent files,
+        those are used. Otherwise falls back to built-in defaults.
+        """
+        configs: list[AgentConfig]
+        if base is not None:
+            configs = list_agents(base)
+        else:
+            configs = []
+
+        if not configs:
+            configs = list(DEFAULT_AGENTS.values())
+
+        members: list[CouncilMember] = [CouncilMember(config=c) for c in configs]
 
         if logs_dir:
             for member in members:

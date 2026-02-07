@@ -5,18 +5,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kingdom.council import ClaudeMember, CodexMember, CursorAgentMember
-from kingdom.council.base import AgentResponse
+from kingdom.agent import DEFAULT_AGENTS
+from kingdom.council.base import AgentResponse, CouncilMember
+
+
+def make_member(name: str) -> CouncilMember:
+    """Create a CouncilMember from default agent config."""
+    return CouncilMember(config=DEFAULT_AGENTS[name])
 
 
 class TestClaudeMember:
     def test_build_command_without_session(self) -> None:
-        member = ClaudeMember()
+        member = make_member("claude")
         cmd = member.build_command("hello world")
         assert cmd == ["claude", "--print", "--output-format", "json", "-p", "hello world"]
 
     def test_build_command_with_session(self) -> None:
-        member = ClaudeMember()
+        member = make_member("claude")
         member.session_id = "abc123"
         cmd = member.build_command("hello")
         # --resume must come before -p
@@ -25,20 +30,20 @@ class TestClaudeMember:
 
 class TestCodexMember:
     def test_build_command_without_session(self) -> None:
-        member = CodexMember()
+        member = make_member("codex")
         cmd = member.build_command("hello world")
         assert cmd == ["codex", "exec", "--json", "hello world"]
 
     def test_build_command_with_session(self) -> None:
         """Codex uses 'exec resume <thread_id>' for continuation."""
-        member = CodexMember()
+        member = make_member("codex")
         member.session_id = "thread-123"
         cmd = member.build_command("hello")
         assert cmd == ["codex", "exec", "resume", "thread-123", "--json", "hello"]
 
     def test_parse_response_jsonl_extracts_thread_id(self) -> None:
         """Codex --json outputs JSONL; extract thread_id and agent message."""
-        member = CodexMember()
+        member = make_member("codex")
         stdout = (
             '{"type":"thread.started","thread_id":"abc-123"}\n'
             '{"type":"turn.started"}\n'
@@ -51,7 +56,7 @@ class TestCodexMember:
 
     def test_parse_response_non_jsonl_returns_empty(self) -> None:
         """Non-JSONL input returns empty text (graceful handling)."""
-        member = CodexMember()
+        member = make_member("codex")
         text, session_id, _raw = member.parse_response("plain text", "", 0)
         assert text == ""
         assert session_id is None
@@ -59,7 +64,7 @@ class TestCodexMember:
 
 class TestCursorAgentMember:
     def test_build_command_without_session(self) -> None:
-        member = CursorAgentMember()
+        member = make_member("cursor")
         cmd = member.build_command("hello world")
         assert cmd[0] == "cursor"
         assert "agent" in cmd
@@ -71,7 +76,7 @@ class TestCursorAgentMember:
         assert "-p" not in cmd
 
     def test_build_command_with_session(self) -> None:
-        member = CursorAgentMember()
+        member = make_member("cursor")
         member.session_id = "conv-456"
         cmd = member.build_command("hello")
         assert "--resume" in cmd
@@ -79,7 +84,7 @@ class TestCursorAgentMember:
 
     def test_parse_response_cursor_json_format(self) -> None:
         """Cursor returns result in 'result' key, session in 'session_id'."""
-        member = CursorAgentMember()
+        member = make_member("cursor")
         stdout = '{"type":"result","subtype":"success","is_error":false,"result":"OK","session_id":"abc123"}'
         text, session_id, _raw = member.parse_response(stdout, "", 0)
         assert text == "OK"
@@ -91,7 +96,7 @@ class TestCouncilMemberQuery:
 
     def test_query_passes_stdin_devnull(self) -> None:
         """Subprocess must use stdin=DEVNULL to prevent CLI hangs."""
-        member = ClaudeMember()
+        member = make_member("claude")
 
         mock_result = MagicMock()
         mock_result.stdout = '{"result": "hello", "session_id": "sess-123"}'
@@ -107,7 +112,7 @@ class TestCouncilMemberQuery:
 
     def test_query_returns_agent_response(self) -> None:
         """Query should return an AgentResponse with text and timing."""
-        member = ClaudeMember()
+        member = make_member("claude")
 
         mock_result = MagicMock()
         mock_result.stdout = '{"result": "test response", "session_id": "sess-456"}'
@@ -125,7 +130,7 @@ class TestCouncilMemberQuery:
 
     def test_query_updates_session_id(self) -> None:
         """Query should update member's session_id from response."""
-        member = ClaudeMember()
+        member = make_member("claude")
         assert member.session_id is None
 
         mock_result = MagicMock()
@@ -140,7 +145,7 @@ class TestCouncilMemberQuery:
 
     def test_query_handles_timeout(self) -> None:
         """Query should handle subprocess timeout gracefully."""
-        member = ClaudeMember()
+        member = make_member("claude")
 
         with patch(
             "kingdom.council.base.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=30)
@@ -152,7 +157,7 @@ class TestCouncilMemberQuery:
 
     def test_query_handles_command_not_found(self) -> None:
         """Query should handle missing CLI gracefully."""
-        member = ClaudeMember()
+        member = make_member("claude")
 
         with patch("kingdom.council.base.subprocess.run", side_effect=FileNotFoundError()):
             response = member.query("test prompt", timeout=30)
@@ -162,7 +167,7 @@ class TestCouncilMemberQuery:
 
     def test_query_captures_stderr_on_error(self) -> None:
         """Query should capture stderr when command fails."""
-        member = ClaudeMember()
+        member = make_member("claude")
 
         mock_result = MagicMock()
         mock_result.stdout = ""
@@ -179,16 +184,16 @@ class TestCouncilMemberQueryAllMembers:
     """Test that all member types pass stdin=DEVNULL."""
 
     @pytest.mark.parametrize(
-        "member_class,expected_name",
+        "agent_name,expected_name",
         [
-            (ClaudeMember, "claude"),
-            (CodexMember, "codex"),
-            (CursorAgentMember, "agent"),
+            ("claude", "claude"),
+            ("codex", "codex"),
+            ("cursor", "cursor"),
         ],
     )
-    def test_all_members_use_stdin_devnull(self, member_class, expected_name) -> None:
+    def test_all_members_use_stdin_devnull(self, agent_name, expected_name) -> None:
         """All council member types must use stdin=DEVNULL."""
-        member = member_class()
+        member = make_member(agent_name)
         assert member.name == expected_name
 
         mock_result = MagicMock()

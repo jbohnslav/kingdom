@@ -352,19 +352,21 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 
 ### T1: Thread model
 - Priority: 1
+- Ticket: kin-56a5
 - Depends on: none
 - Description: Core data model for threads. Create/read/write thread directories under `.kd/branches/<branch>/threads/<thread-id>/`. Thread metadata in `thread.json` (members, pattern, created_at). Sequential message files (`0001-king.md`, `0002-claude.md`) with YAML frontmatter (from, to, timestamp, refs). Thread IDs are sanitized using the existing `normalize_branch_name()` function. Helpers: `create_thread()`, `add_message()`, `list_messages()`, `list_threads()`, `next_message_number()`.
 - Acceptance:
-  - [ ] `create_thread(branch, thread_id, members, pattern)` creates directory + thread.json
-  - [ ] Thread IDs are normalized via `normalize_branch_name()` (same sanitization as branch directories)
-  - [ ] `add_message(branch, thread_id, from_, to, body, refs)` writes next sequential .md file
-  - [ ] `list_messages(branch, thread_id)` returns messages in order
-  - [ ] `list_threads(branch)` returns all thread IDs with metadata
-  - [ ] Messages use YAML frontmatter matching the design doc format
-  - [ ] Tests cover create, add, list, sequential numbering
+  - [x] `create_thread(branch, thread_id, members, pattern)` creates directory + thread.json
+  - [x] Thread IDs are normalized via `normalize_branch_name()` (same sanitization as branch directories)
+  - [x] `add_message(branch, thread_id, from_, to, body, refs)` writes next sequential .md file
+  - [x] `list_messages(branch, thread_id)` returns messages in order
+  - [x] `list_threads(branch)` returns all thread IDs with metadata
+  - [x] Messages use YAML frontmatter matching the design doc format
+  - [x] Tests cover create, add, list, sequential numbering
 
 ### T2: Agent config model
 - Priority: 1
+- Ticket: kin-304a
 - Depends on: none
 - Description: Parse agent definition `.md` files from `.kd/agents/`. Markdown with YAML frontmatter (name, backend, cli, resume_flag). Replace hardcoded `ClaudeMember`/`CodexMember`/`CursorAgentMember` classes with a single config-driven `Agent` class that builds commands from the config. Keep the existing `CouncilMember.parse_response()` logic as backend-specific parsers. Create default agent files on `kd init`.
 - Acceptance:
@@ -377,6 +379,7 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 
 ### T3: Agent session state
 - Priority: 1
+- Ticket: kin-2d8e
 - Depends on: none
 - Description: Per-agent runtime state in `sessions/<agent>.json`. Each agent writes only its own file (no locking needed). Helpers to get/set agent status, resume_id, pid, ticket, thread, timestamps. Agent status enum: idle, working, blocked, done, failed, stopped. Branch-level `current_thread` stays in `state.json`. Migrate existing `.session` files (plain text resume IDs) to the new `.json` format on first access.
 - Acceptance:
@@ -389,6 +392,7 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 
 ### T4: Council refactor
 - Priority: 2
+- Ticket: kin-111b
 - Depends on: T1, T2, T3
 - Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--thread new` forces a new thread. Add `kd council show [thread-id]` and `kd council list`. Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor. Existing council run bundles in `logs/council/run-*` remain readable but new queries go to threads.
 - Acceptance:
@@ -404,6 +408,7 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 
 ### T5: Peasant execution
 - Priority: 2
+- Ticket: kin-54d6
 - Depends on: T1, T2, T3
 - Description: Agent harness (`kd agent run`) that runs an autonomous loop: build prompt from ticket + worklog + directives, call backend, apply changes, commit, run tests, append to worklog, update session, write to thread. Loop continues until done (acceptance criteria met, tests pass), blocked (needs help), or stopped. `kd peasant start <ticket>` creates worktree + branch, creates session file, creates work thread, seeds with ticket_start message, launches harness as background process. `kd peasant status` shows table of active peasants. `kd peasant logs <ticket> [--follow]` tails subprocess logs. `kd peasant stop <ticket>` kills process. Ticket file has a pre-formatted worklog section that the peasant appends to as it works.
 - Acceptance:
@@ -422,6 +427,7 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 
 ### T6: Peasant messaging and supervision
 - Priority: 3
+- Ticket: kin-b369
 - Depends on: T5
 - Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread (peasant picks it up on next loop iteration). `kd peasant read <ticket>` shows recent messages from the peasant (escalations, status updates). `kd peasant manage` shows actionable summary: pending escalations, work ready for review, stale workers, ready tickets not yet started. `kd peasant review <ticket>` is the Hand's final review after peasant signals done — verify tests, review diff and worklog, accept or reject. `kd status` extended to show active agents and unread escalations.
 - Acceptance:
