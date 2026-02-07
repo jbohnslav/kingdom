@@ -33,7 +33,7 @@ The prior docs propose a lot of machinery that's premature for a 3,500-line code
 | events.jsonl event ledger | state.json per branch is enough |
 | Heartbeat files polled every 2-5s | Check process liveness directly (pid) |
 | Channel definitions with routing patterns | Hardcode the two patterns we need |
-| Atomic claim with file locking | One process per agent, no races to solve |
+| Atomic claim with file locking | Per-agent session files, no shared writes |
 | `kd watch` Rich Live dashboard | `kd status` with agent info is enough |
 | Separate foreman agent | The Hand fills this role; no separate agent needed |
 | Queue semantics (followup/collect/interrupt) | Just followup |
@@ -102,48 +102,51 @@ Peasant agents are **ephemeral** — created when `kd peasant start` runs, remov
 
 ### State (runtime)
 
-All agent runtime state lives in the existing `state.json` per branch (already gitignored). No separate session files.
+Per-agent runtime state lives in `sessions/` — one JSON file per agent. Each agent writes only its own file, so no locking is needed. Branch-level state (current thread pointer) stays in `state.json`.
 
+`sessions/claude.json`:
 ```json
 {
-  "agents": {
-    "claude": {
-      "resume_id": "abc123",
-      "status": "idle"
-    },
-    "codex": {
-      "resume_id": "def456",
-      "status": "idle"
-    },
-    "peasant-kin-042": {
-      "resume_id": "ghi789",
-      "status": "working",
-      "pid": 12345,
-      "ticket": "kin-042",
-      "thread": "kin-042-work",
-      "started_at": "2026-02-07T15:30:00Z",
-      "last_activity": "2026-02-07T15:44:00Z"
-    }
-  },
+  "resume_id": "abc123",
+  "status": "idle"
+}
+```
+
+`sessions/peasant-kin-042.json`:
+```json
+{
+  "resume_id": "ghi789",
+  "status": "working",
+  "pid": 12345,
+  "ticket": "kin-042",
+  "thread": "kin-042-work",
+  "started_at": "2026-02-07T15:30:00Z",
+  "last_activity": "2026-02-07T15:44:00Z"
+}
+```
+
+`state.json`:
+```json
+{
   "current_thread": "council-caching-debate"
 }
 ```
 
-Agent status is one of: `idle`, `working`, `blocked`, `done`, `failed`.
+Agent status is one of: `idle`, `working`, `blocked`, `done`, `failed`, `stopped`.
 
 ### Full File Layout
 
 ```
 .kd/
-  .gitignore                           # *.json, *.log, **/logs/, etc.
-  agents/                              # NEW — agent definitions (tracked, .md)
+  .gitignore                           # *.json, *.log, **/logs/, **/sessions/, etc.
+  agents/                              # who your agents are (tracked)
     claude.md
     codex.md
     cursor.md
   branches/<branch>/
-    design.md                          # existing (tracked)
-    tickets/                           # existing (tracked)
-    threads/                           # NEW — all conversations (tracked, .md)
+    design.md                          # the plan (tracked)
+    tickets/                           # work items (tracked)
+    threads/                           # conversations (tracked)
       council-caching-debate/
         thread.json                    #   metadata (gitignored)
         0001-king.md                   #   messages (tracked)
@@ -153,17 +156,23 @@ Agent status is one of: `idle`, `working`, `blocked`, `done`, `failed`.
         thread.json
         0001-king.md
         0002-peasant-kin-042.md
-    logs/                              # existing (gitignored)
-      peasant-kin-042/                 #   NEW — peasant subprocess output
+    sessions/                          # agent runtime state (gitignored)
+      claude.json
+      codex.json
+      peasant-kin-042.json
+    logs/                              # agent output (gitignored)
+      peasant-kin-042/
         stdout.log
         stderr.log
-    state.json                         # existing (gitignored) — agents, threads, all runtime
+    state.json                         # branch state (gitignored)
   backlog/tickets/                     # existing (tracked)
   archive/                             # existing
   worktrees/                           # existing (gitignored)
 ```
 
 Two file types: `.md` is tracked, `.json`/`.log` is gitignored. No new gitignore rules needed.
+
+- `agents/` is *who*, `tickets/` is *what*, `threads/` is *what they said*, `sessions/` is *what they're doing right now*.
 
 ### The Hand as Lead
 
@@ -263,7 +272,7 @@ kd peasant stop KIN-042                     # stop the agent process
 ```
 
 `kd peasant start` does what the current `kd peasant` does (worktree + branch) plus:
-1. Registers `peasant-KIN-042` in `state.json`
+1. Creates `sessions/peasant-KIN-042.json`
 2. Creates a `kin-042-work` thread with members `[peasant-kin-042, king]`
 3. Seeds the thread with a `ticket_start` message (ticket content, acceptance criteria, refs)
 4. Launches the backend agent as a subprocess in the worktree
@@ -292,7 +301,7 @@ The **harness** is a thin Python wrapper (`kd agent run`) that:
 2. Launches the subprocess
 3. Captures output
 4. Parses the response
-5. Updates `state.json` (status, resume_id, last_activity)
+5. Updates `sessions/<agent>.json` (status, resume_id, last_activity)
 6. Writes the response as a message to the thread
 7. Checks for escalations or completion signals
 
@@ -302,7 +311,7 @@ Autonomous multi-turn loop is v2.
 
 ### Quality Gates
 
-On `kd peasant done KIN-042` (or when the peasant signals completion):
+On `kd peasant review KIN-042` (Hand reviews completed work):
 
 1. Run `pytest` in the worktree
 2. Run `ruff check`
@@ -321,44 +330,82 @@ If gates fail, the peasant gets a feedback message and stays `working`. This is 
 - No channel abstraction
 - No complex permission system
 
-## Build Order
+## Breakdown
 
-### Phase 1: Threads + council UX
+### T1: Thread model
+- Priority: 1
+- Depends on: none
+- Description: Core data model for threads. Create/read/write thread directories under `.kd/branches/<branch>/threads/<thread-id>/`. Thread metadata in `thread.json` (members, pattern, created_at). Sequential message files (`0001-king.md`, `0002-claude.md`) with YAML frontmatter (from, to, timestamp, refs). Helpers: `create_thread()`, `add_message()`, `list_messages()`, `list_threads()`, `next_message_number()`.
+- Acceptance:
+  - [ ] `create_thread(branch, thread_id, members, pattern)` creates directory + thread.json
+  - [ ] `add_message(branch, thread_id, from_, to, body, refs)` writes next sequential .md file
+  - [ ] `list_messages(branch, thread_id)` returns messages in order
+  - [ ] `list_threads(branch)` returns all thread IDs with metadata
+  - [ ] Messages use YAML frontmatter matching the design doc format
+  - [ ] Tests cover create, add, list, sequential numbering
 
-- Add thread model (thread.json + messages/)
-- Refactor `kd council ask` to use threads
-- Merge `ask`/`followup`/`critique` into unified `ask` with `--to`
-- `kd council show` / `kd council list`
+### T2: Agent config model
+- Priority: 1
+- Depends on: none
+- Description: Parse agent definition `.md` files from `.kd/agents/`. Markdown with YAML frontmatter (name, backend, cli, resume_flag). Replace hardcoded `ClaudeMember`/`CodexMember`/`CursorAgentMember` classes with a single config-driven `Agent` class that builds commands from the config. Keep the existing `CouncilMember.parse_response()` logic as backend-specific parsers. Create default agent files on `kd init`.
+- Acceptance:
+  - [ ] `load_agent(name)` reads `.kd/agents/<name>.md` and returns config
+  - [ ] `list_agents()` returns all registered agents
+  - [ ] Agent config drives command building (replaces hardcoded CLI strings)
+  - [ ] Backend-specific response parsing preserved (claude JSON, codex JSONL, cursor JSON)
+  - [ ] `kd init` creates default agent files for claude, codex, cursor
+  - [ ] `kd doctor` checks agent CLIs based on config
 
-This immediately improves the council experience with minimal code.
+### T3: Agent session state
+- Priority: 1
+- Depends on: none
+- Description: Per-agent runtime state in `sessions/<agent>.json`. Each agent writes only its own file (no locking needed). Helpers to get/set agent status, resume_id, pid, ticket, thread, timestamps. Agent status enum: idle, working, blocked, done, failed, stopped. Branch-level `current_thread` stays in `state.json`.
+- Acceptance:
+  - [ ] `get_agent_state(branch, agent_name)` reads `sessions/<agent>.json`
+  - [ ] `set_agent_state(branch, agent_name, **fields)` writes `sessions/<agent>.json`
+  - [ ] `list_active_agents(branch)` scans sessions/ for agents with status != idle
+  - [ ] `get_current_thread(branch)` / `set_current_thread(branch, thread_id)` manage current thread pointer in state.json
+  - [ ] Backwards compatible — existing state.json fields preserved
 
-### Phase 2: Peasant execution
+### T4: Council refactor
+- Priority: 2
+- Depends on: T1, T2, T3
+- Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--thread new` forces a new thread. Add `kd council show [thread-id]` and `kd council list`. Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor.
+- Acceptance:
+  - [ ] `kd council ask "prompt"` creates thread on first use, continues on subsequent
+  - [ ] `kd council ask --to codex "prompt"` sends to one member only
+  - [ ] `kd council ask --thread new "prompt"` starts a fresh thread
+  - [ ] All messages written to thread directory as sequential .md files
+  - [ ] Resume tokens stored in `sessions/<agent>.json`, used on follow-up queries
+  - [ ] `kd council show` displays thread history with Rich panels
+  - [ ] `kd council list` shows all council threads
+  - [ ] Old `followup` and `critique` commands removed
 
-- Agent state in state.json + logs
-- `kd agent run` harness command
-- `kd peasant start` (worktree + launch agent)
-- `kd peasant status` / `kd peasant logs` / `kd peasant stop`
-- Simple quality gates on completion
+### T5: Peasant execution
+- Priority: 2
+- Depends on: T1, T2, T3
+- Description: Agent harness (`kd agent run`) that builds prompt from ticket, launches backend subprocess, captures output, updates session file, writes response to thread. `kd peasant start <ticket>` creates worktree + branch, creates session file, creates work thread, seeds with ticket_start message, launches harness. `kd peasant status` shows table of active peasants. `kd peasant logs <ticket> [--follow]` tails subprocess logs. `kd peasant stop <ticket>` kills process and updates state.
+- Acceptance:
+  - [ ] `kd agent run --agent <name> --ticket <id> --worktree <path>` executes one turn
+  - [ ] `kd peasant start KIN-042` creates worktree, creates session, creates thread, launches harness
+  - [ ] `kd peasant status` shows table: ticket, agent, status, elapsed, last activity
+  - [ ] `kd peasant logs KIN-042` shows stdout/stderr
+  - [ ] `kd peasant logs KIN-042 --follow` tails logs
+  - [ ] `kd peasant stop KIN-042` sends SIGTERM, updates status to `stopped`
+  - [ ] Peasant output written as message to work thread
+  - [ ] Session file updated with pid, status, timestamps
 
-This is the real unlock — actual parallel work.
-
-### Phase 3: Hand as Lead (messaging + supervision)
-
-- `kd peasant msg` / `kd peasant read` (Hand sends directives, reads escalations)
-- `kd peasant manage` (what needs attention — escalations, reviews, stale workers, ready tickets)
-- `kd peasant review` (Hand reviews work + runs quality gates)
-- Peasant escalation detection (agent writes a marker file, harness picks it up)
-- `kd status` integration (show active agents + unread messages)
-
-This is where the Hand becomes a real team lead, not just a command executor.
-
-### Phase 4: Polish + autonomy
-
-- Autonomous peasant loop (multi-turn without Hand intervention)
-- Hand-driven autonomous supervision (Hand runs manage loop without King prompting)
-- Better status display
-- `kd watch` if needed
-- tmux adapter if needed
+### T6: Peasant messaging and supervision
+- Priority: 3
+- Depends on: T5
+- Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread and triggers the next harness turn with the directive as context. `kd peasant read <ticket>` shows recent messages from the peasant. `kd peasant manage` shows actionable summary: pending escalations, work ready for review, stale workers, ready tickets not yet started. `kd peasant review <ticket>` runs quality gates (pytest, ruff) in worktree and reports pass/fail. `kd status` extended to show active agents and unread escalations.
+- Acceptance:
+  - [ ] `kd peasant msg KIN-042 "focus on tests"` writes message to thread, triggers next turn
+  - [ ] `kd peasant read KIN-042` shows peasant's messages
+  - [ ] `kd peasant manage` shows escalations, reviews, stale workers, ready tickets
+  - [ ] `kd peasant review KIN-042` runs pytest + ruff in worktree, reports results
+  - [ ] Failed quality gates send feedback message to peasant, status stays working
+  - [ ] `kd status` shows active agents count and pending escalations
 
 ## References
 
