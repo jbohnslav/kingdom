@@ -290,9 +290,9 @@ def build_codex_command(config: AgentConfig, prompt: str, session_id: str | None
     if session_id:
         try:
             exec_idx = parts.index("exec")
-            cmd = [*parts[:exec_idx + 1], config.resume_flag, session_id, *parts[exec_idx + 1:]]
         except ValueError:
-            cmd = [*list(parts), config.resume_flag, session_id]
+            raise ValueError(f"Codex cli must contain 'exec' for session resume, got: {config.cli}") from None
+        cmd = [*parts[:exec_idx + 1], config.resume_flag, session_id, *parts[exec_idx + 1:]]
     else:
         cmd = list(parts)
     cmd.append(prompt)

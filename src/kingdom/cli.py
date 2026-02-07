@@ -1160,13 +1160,12 @@ def check_cli(command: list[str]) -> tuple[bool, str | None]:
         return (False, "Command timed out")
 
 
-def get_doctor_checks() -> list[dict[str, str | list[str]]]:
+def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
     """Build doctor checks from agent configs."""
     import shlex
 
     from kingdom.agent import DEFAULT_AGENTS, list_agents
 
-    base = Path.cwd()
     agents = list_agents(base) or list(DEFAULT_AGENTS.values())
 
     checks: list[dict[str, str | list[str]]] = []
@@ -1185,7 +1184,8 @@ def doctor(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Verify agent CLIs are installed and provide guidance."""
-    doctor_checks = get_doctor_checks()
+    base = Path.cwd()
+    doctor_checks = get_doctor_checks(base)
     results: dict[str, dict[str, bool | str | None]] = {}
     issues: list[dict[str, str]] = []
 

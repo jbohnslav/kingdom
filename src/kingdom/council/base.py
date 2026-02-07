@@ -76,7 +76,7 @@ class CouncilMember:
                 elapsed=elapsed,
                 raw=raw,
             )
-            self._log(prompt, text, error, elapsed)
+            self.log(prompt, text, error, elapsed)
             return response
 
         except subprocess.TimeoutExpired:
@@ -89,7 +89,7 @@ class CouncilMember:
                 elapsed=elapsed,
                 raw="",
             )
-            self._log(prompt, "", error, elapsed)
+            self.log(prompt, "", error, elapsed)
             return response
 
         except FileNotFoundError:
@@ -102,14 +102,14 @@ class CouncilMember:
                 elapsed=elapsed,
                 raw="",
             )
-            self._log(prompt, "", error, elapsed)
+            self.log(prompt, "", error, elapsed)
             return response
 
     def reset_session(self) -> None:
         """Clear the session ID."""
         self.session_id = None
 
-    def _log(self, prompt: str, text: str, error: str | None, elapsed: float) -> None:
+    def log(self, prompt: str, text: str, error: str | None, elapsed: float) -> None:
         """Log the interaction to the log file."""
         if not self.log_path:
             return

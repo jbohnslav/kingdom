@@ -259,6 +259,11 @@ class TestBuildCommand:
         with pytest.raises(ValueError, match="Unknown backend"):
             build_command(config, "test")
 
+    def test_codex_missing_exec_raises(self) -> None:
+        config = AgentConfig(name="codex", backend="codex", cli="codex --json", resume_flag="resume")
+        with pytest.raises(ValueError, match="must contain 'exec'"):
+            build_command(config, "hello", session_id="thread-1")
+
 
 class TestParseClaudeResponse:
     def test_json_output(self) -> None:
