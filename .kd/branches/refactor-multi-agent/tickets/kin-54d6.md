@@ -15,7 +15,7 @@ Agent harness (kd agent run) that runs an autonomous loop: build prompt from tic
 - [x] kd agent run --agent <name> --ticket <id> --worktree <path> runs autonomous loop
 - [x] Loop: prompt -> backend -> commit -> worklog -> repeat
 - [x] Loop stops on: done (tests pass, criteria met), blocked (needs help), stopped, or failed
-- [x] Peasant auto-commits as it works (each meaningful chunk)
+- [x] Peasant commits as it works (agent prompted to commit with descriptive messages; pre-commit hooks run)
 - [x] Peasant appends decisions, bugs, difficulties to worklog section in ticket
 - [x] kd peasant start KIN-042 creates worktree, session, thread, launches harness in background
 - [x] kd peasant status shows table: ticket, agent, status, elapsed, last activity
@@ -50,3 +50,6 @@ Agent harness (kd agent run) that runs an autonomous loop: build prompt from tic
 - Fix: `peasant logs --follow` now tails both stdout.log and stderr.log
 - Fix: status table shows "dead" for working peasants whose PID is no longer alive
 - 38 harness tests + 15 CLI tests, all 329 tests passing
+- Removed `auto_commit()` — agent now commits its own changes with descriptive messages via prompt instruction, pre-commit hooks run normally (no more `--no-verify`)
+- Updated `build_prompt()` to instruct agent: "Commit your changes as you go with descriptive commit messages"
+- Removed auto-commit failure test, cleaned up all `auto_commit` mocking from test suite; 37 harness tests passing
