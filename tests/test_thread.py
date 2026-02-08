@@ -146,8 +146,11 @@ class TestAddMessage:
     def test_message_frontmatter_format(self, project: Path) -> None:
         create_thread(project, BRANCH, "test", ["king", "claude"], "direct")
         add_message(
-            project, BRANCH, "test",
-            from_="king", to="claude",
+            project,
+            BRANCH,
+            "test",
+            from_="king",
+            to="claude",
             body="Check this out",
             refs=["src/main.py", "tests/test_main.py"],
         )
@@ -207,8 +210,11 @@ class TestListMessages:
     def test_roundtrip_preserves_content(self, project: Path) -> None:
         create_thread(project, BRANCH, "test", ["king", "claude"], "direct")
         add_message(
-            project, BRANCH, "test",
-            from_="king", to="claude",
+            project,
+            BRANCH,
+            "test",
+            from_="king",
+            to="claude",
             body="Multi-line\n\nbody with **markdown**",
             refs=["file.py"],
         )
@@ -230,7 +236,9 @@ class TestEndToEnd:
         """Simulate a full council discussion thread."""
         # King starts a council thread
         meta = create_thread(
-            project, BRANCH, "council-caching-debate",
+            project,
+            BRANCH,
+            "council-caching-debate",
             members=["king", "claude", "codex", "cursor"],
             pattern="council",
         )
@@ -238,20 +246,36 @@ class TestEndToEnd:
 
         # King asks a question
         add_message(
-            project, BRANCH, "council-caching-debate",
-            from_="king", to="all",
+            project,
+            BRANCH,
+            "council-caching-debate",
+            from_="king",
+            to="all",
             body="Should we use Redis or Memcached?",
             refs=[".kd/branches/feature-test-branch/design.md"],
         )
 
         # Advisors respond
         add_message(project, BRANCH, "council-caching-debate", from_="claude", to="king", body="Redis for persistence.")
-        add_message(project, BRANCH, "council-caching-debate", from_="codex", to="king", body="Memcached for simplicity.")
-        add_message(project, BRANCH, "council-caching-debate", from_="cursor", to="king", body="Redis, it supports more data types.")
+        add_message(
+            project, BRANCH, "council-caching-debate", from_="codex", to="king", body="Memcached for simplicity."
+        )
+        add_message(
+            project,
+            BRANCH,
+            "council-caching-debate",
+            from_="cursor",
+            to="king",
+            body="Redis, it supports more data types.",
+        )
 
         # King follows up with one member
-        add_message(project, BRANCH, "council-caching-debate", from_="king", to="codex", body="Elaborate on simplicity?")
-        add_message(project, BRANCH, "council-caching-debate", from_="codex", to="king", body="Less config, no disk I/O.")
+        add_message(
+            project, BRANCH, "council-caching-debate", from_="king", to="codex", body="Elaborate on simplicity?"
+        )
+        add_message(
+            project, BRANCH, "council-caching-debate", from_="codex", to="king", body="Less config, no disk I/O."
+        )
 
         # Verify full history
         msgs = list_messages(project, BRANCH, "council-caching-debate")

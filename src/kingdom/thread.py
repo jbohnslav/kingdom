@@ -34,6 +34,7 @@ from kingdom.ticket import parse_yaml_value, serialize_yaml_value
 # Data models
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Message:
     """A single message in a thread."""
@@ -60,6 +61,7 @@ class ThreadMeta:
 # Path helpers
 # ---------------------------------------------------------------------------
 
+
 def threads_root(base: Path, branch: str) -> Path:
     """Return path to .kd/branches/<branch>/threads/."""
     return branch_root(base, branch) / "threads"
@@ -74,6 +76,7 @@ def thread_dir(base: Path, branch: str, thread_id: str) -> Path:
 # ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
+
 
 def create_thread(
     base: Path,
@@ -114,12 +117,15 @@ def create_thread(
     )
 
     meta_path = tdir / "thread.json"
-    write_json(meta_path, {
-        "id": normalized,
-        "members": members,
-        "pattern": pattern,
-        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-    })
+    write_json(
+        meta_path,
+        {
+            "id": normalized,
+            "members": members,
+            "pattern": pattern,
+            "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    )
 
     return meta
 

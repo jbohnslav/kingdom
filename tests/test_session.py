@@ -50,16 +50,22 @@ class TestGetAgentState:
 
     def test_reads_existing_json(self, project: Path) -> None:
         p = session_path(project, BRANCH, "claude")
-        p.write_text(json.dumps({
-            "name": "claude",
-            "status": "working",
-            "resume_id": "sess-abc",
-            "pid": 12345,
-            "ticket": "kin-042",
-            "thread": "kin-042-work",
-            "started_at": "2026-02-07T15:30:00Z",
-            "last_activity": "2026-02-07T15:44:00Z",
-        }) + "\n", encoding="utf-8")
+        p.write_text(
+            json.dumps(
+                {
+                    "name": "claude",
+                    "status": "working",
+                    "resume_id": "sess-abc",
+                    "pid": 12345,
+                    "ticket": "kin-042",
+                    "thread": "kin-042-work",
+                    "started_at": "2026-02-07T15:30:00Z",
+                    "last_activity": "2026-02-07T15:44:00Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
         state = get_agent_state(project, BRANCH, "claude")
         assert state.name == "claude"
@@ -127,7 +133,9 @@ class TestUpdateAgentState:
         set_agent_state(project, BRANCH, "claude", AgentState(name="claude"))
 
         updated = update_agent_state(
-            project, BRANCH, "claude",
+            project,
+            BRANCH,
+            "claude",
             status="working",
             pid=9999,
             ticket="kin-042",
