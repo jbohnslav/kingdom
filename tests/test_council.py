@@ -9,6 +9,8 @@ import pytest
 from kingdom.agent import DEFAULT_AGENTS, AgentConfig
 from kingdom.council.base import AgentResponse, CouncilMember
 from kingdom.council.council import Council
+from kingdom.session import AgentState, get_agent_state, session_path, set_agent_state
+from kingdom.state import ensure_branch_layout
 
 
 def make_member(name: str) -> CouncilMember:
@@ -271,3 +273,105 @@ class TestCouncilCreateValidation:
 
         council = Council.create(base=tmp_path)
         assert len(council.members) == 3
+
+
+BRANCH = "feature/test-council"
+
+
+@pytest.fixture()
+def project(tmp_path: Path) -> Path:
+    """Create a minimal project with branch layout."""
+    ensure_branch_layout(tmp_path, BRANCH)
+    return tmp_path
+
+
+class TestCouncilSessions:
+    """Tests for council load/save sessions using agent state."""
+
+    def test_load_sessions_reads_agent_state(self, project: Path) -> None:
+        set_agent_state(project, BRANCH, "claude", AgentState(name="claude", resume_id="sess-abc"))
+        set_agent_state(project, BRANCH, "codex", AgentState(name="codex", resume_id="thread-123"))
+
+        council = Council.create(base=project)
+        council.load_sessions(project, BRANCH)
+
+        claude = council.get_member("claude")
+        codex = council.get_member("codex")
+        assert claude.session_id == "sess-abc"
+        assert codex.session_id == "thread-123"
+
+    def test_load_sessions_no_state_leaves_none(self, project: Path) -> None:
+        council = Council.create(base=project)
+        council.load_sessions(project, BRANCH)
+
+        for member in council.members:
+            assert member.session_id is None
+
+    def test_save_sessions_writes_agent_state(self, project: Path) -> None:
+        council = Council.create(base=project)
+        council.get_member("claude").session_id = "sess-new"
+        council.get_member("codex").session_id = "thread-new"
+
+        council.save_sessions(project, BRANCH)
+
+        claude_state = get_agent_state(project, BRANCH, "claude")
+        codex_state = get_agent_state(project, BRANCH, "codex")
+        assert claude_state.resume_id == "sess-new"
+        assert codex_state.resume_id == "thread-new"
+
+    def test_save_sessions_clears_resume_id(self, project: Path) -> None:
+        set_agent_state(project, BRANCH, "claude", AgentState(name="claude", resume_id="old-sess"))
+
+        council = Council.create(base=project)
+        council.load_sessions(project, BRANCH)
+        council.reset_sessions()
+        council.save_sessions(project, BRANCH)
+
+        state = get_agent_state(project, BRANCH, "claude")
+        assert state.resume_id is None
+
+    def test_save_preserves_other_agent_state_fields(self, project: Path) -> None:
+        set_agent_state(
+            project,
+            BRANCH,
+            "claude",
+            AgentState(
+                name="claude",
+                status="working",
+                resume_id="old",
+                ticket="kin-042",
+            ),
+        )
+
+        council = Council.create(base=project)
+        council.load_sessions(project, BRANCH)
+        council.get_member("claude").session_id = "new-sess"
+        council.save_sessions(project, BRANCH)
+
+        state = get_agent_state(project, BRANCH, "claude")
+        assert state.resume_id == "new-sess"
+        assert state.status == "working"
+        assert state.ticket == "kin-042"
+
+    def test_roundtrip_load_save_load(self, project: Path) -> None:
+        council = Council.create(base=project)
+        council.get_member("claude").session_id = "sess-rt"
+        council.save_sessions(project, BRANCH)
+
+        council2 = Council.create(base=project)
+        council2.load_sessions(project, BRANCH)
+        assert council2.get_member("claude").session_id == "sess-rt"
+
+    def test_legacy_session_files_migrated_on_load(self, project: Path) -> None:
+        """Legacy .session files should be migrated via get_agent_state."""
+        from kingdom.session import legacy_session_path
+
+        old_path = legacy_session_path(project, BRANCH, "claude")
+        old_path.write_text("legacy-sess-id\n", encoding="utf-8")
+
+        council = Council.create(base=project)
+        council.load_sessions(project, BRANCH)
+
+        assert council.get_member("claude").session_id == "legacy-sess-id"
+        assert not old_path.exists()
+        assert session_path(project, BRANCH, "claude").exists()

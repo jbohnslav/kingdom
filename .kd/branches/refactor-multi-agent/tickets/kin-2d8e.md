@@ -13,7 +13,7 @@ Per-agent runtime state in sessions/<agent>.json. Each agent writes only its own
 
 ## Acceptance
 - [x] get_agent_state(branch, agent_name) reads sessions/<agent>.json
-- [x] set_agent_state(branch, agent_name, **fields) writes sessions/<agent>.json
+- [x] set_agent_state(branch, agent_name, state) writes sessions/<agent>.json; update_agent_state(branch, agent_name, **fields) for partial updates
 - [x] list_active_agents(branch) scans sessions/ for agents with status != idle
 - [x] get_current_thread(branch) / set_current_thread(branch, thread_id) manage current thread pointer in state.json
 - [x] Existing .session files migrated to .json on first read (read old format, write new format, remove old file)
@@ -28,3 +28,8 @@ Per-agent runtime state in sessions/<agent>.json. Each agent writes only its own
 - `set_current_thread` does read-modify-write on state.json to preserve existing fields (e.g. `branch`)
 - 24 tests in `tests/test_session.py` covering all acceptance criteria + edge cases
 - Design note: used `set_agent_state(base, branch, name, state)` taking a full AgentState object rather than `**fields` — added `update_agent_state` as convenience wrapper for partial updates
+- Wired council to use session module: `Council.load_sessions` and `save_sessions` now take `(base, branch)` and use `get_agent_state`/`update_agent_state` instead of raw `.session` file I/O
+- Updated all 4 CLI call sites (`ask`, `reset`, `followup`, `critique`) to pass `base, feature`
+- Removed orphaned `hand_session_path` from `state.py`
+- Removed unused `sessions_root` import from `cli.py`
+- Added 7 council session integration tests in `tests/test_council.py` (load, save, reset, field preservation, roundtrip, legacy migration)

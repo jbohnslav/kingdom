@@ -103,6 +103,7 @@ def set_agent_state(base: Path, branch: str, agent_name: str, state: AgentState)
     json_path = session_path(base, branch, agent_name)
     json_path.parent.mkdir(parents=True, exist_ok=True)
 
+    state.name = agent_name
     data: dict[str, Any] = {}
     for key, value in asdict(state).items():
         if value is not None:

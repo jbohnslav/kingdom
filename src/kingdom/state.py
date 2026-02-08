@@ -118,11 +118,6 @@ def council_logs_root(base: Path, feature: str) -> Path:
     return logs_root(base, feature) / "council"
 
 
-def hand_session_path(base: Path, feature: str) -> Path:
-    """Path to the Hand's session file."""
-    return sessions_root(base, feature) / "hand.session"
-
-
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 

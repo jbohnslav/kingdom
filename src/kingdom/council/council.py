@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kingdom.agent import DEFAULT_AGENTS, AgentConfig, agents_root, list_agents
+from kingdom.session import get_agent_state, update_agent_state
 
 from .base import AgentResponse, CouncilMember
 
@@ -85,25 +86,14 @@ class Council:
                 return member
         return None
 
-    def load_sessions(self, sessions_dir: Path) -> None:
-        """Load session IDs from files."""
-        if not sessions_dir.exists():
-            return
-
+    def load_sessions(self, base: Path, branch: str) -> None:
+        """Load session IDs from agent state files."""
         for member in self.members:
-            session_file = sessions_dir / f"{member.name}.session"
-            if session_file.exists():
-                content = session_file.read_text(encoding="utf-8").strip()
-                if content:
-                    member.session_id = content
+            state = get_agent_state(base, branch, member.name)
+            if state.resume_id:
+                member.session_id = state.resume_id
 
-    def save_sessions(self, sessions_dir: Path) -> None:
-        """Save session IDs to files."""
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-
+    def save_sessions(self, base: Path, branch: str) -> None:
+        """Save session IDs to agent state files."""
         for member in self.members:
-            session_file = sessions_dir / f"{member.name}.session"
-            if member.session_id:
-                session_file.write_text(f"{member.session_id}\n", encoding="utf-8")
-            elif session_file.exists():
-                session_file.unlink()
+            update_agent_state(base, branch, member.name, resume_id=member.session_id)

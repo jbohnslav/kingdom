@@ -35,7 +35,6 @@ from kingdom.state import (
     normalize_branch_name,
     read_json,
     resolve_current_run,
-    sessions_root,
     set_current_run,
     state_root,
     write_json,
@@ -284,23 +283,21 @@ def council_ask(
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
-    sessions_dir = sessions_root(base, feature)
     council_logs_dir = council_logs_root(base, feature)
 
     # Ensure directories exist
     logs_dir.mkdir(parents=True, exist_ok=True)
-    sessions_dir.mkdir(parents=True, exist_ok=True)
     council_logs_dir.mkdir(parents=True, exist_ok=True)
 
     console = Console()
 
     c = Council.create(logs_dir=logs_dir, base=base)
     c.timeout = timeout
-    c.load_sessions(sessions_dir)
+    c.load_sessions(base, feature)
 
     # Query with progress
     responses = query_with_progress(c, prompt, json_output, console)
-    c.save_sessions(sessions_dir)
+    c.save_sessions(base, feature)
 
     # Create run bundle
     bundle = create_run_bundle(council_logs_dir, prompt, responses)
@@ -325,16 +322,14 @@ def council_reset() -> None:
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
-    sessions_dir = sessions_root(base, feature)
 
     # Ensure directories exist
     logs_dir.mkdir(parents=True, exist_ok=True)
-    sessions_dir.mkdir(parents=True, exist_ok=True)
 
     c = Council.create(logs_dir=logs_dir, base=base)
-    c.load_sessions(sessions_dir)
+    c.load_sessions(base, feature)
     c.reset_sessions()
-    c.save_sessions(sessions_dir)
+    c.save_sessions(base, feature)
     typer.echo("Sessions cleared.")
 
 
@@ -379,18 +374,16 @@ def council_followup(
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
-    sessions_dir = sessions_root(base, feature)
     council_logs_dir = council_logs_root(base, feature)
 
     # Ensure directories exist
     logs_dir.mkdir(parents=True, exist_ok=True)
-    sessions_dir.mkdir(parents=True, exist_ok=True)
     council_logs_dir.mkdir(parents=True, exist_ok=True)
 
     console = Console()
 
     c = Council.create(logs_dir=logs_dir, base=base)
-    c.load_sessions(sessions_dir)
+    c.load_sessions(base, feature)
 
     # Find the member
     council_member = c.get_member(member)
@@ -414,7 +407,7 @@ def council_followup(
     else:
         response = council_member.query(prompt, c.timeout)
 
-    c.save_sessions(sessions_dir)
+    c.save_sessions(base, feature)
 
     # Find the most recent run to append to, or create a new one
     runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
@@ -491,7 +484,6 @@ def council_critique(
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
-    sessions_dir = sessions_root(base, feature)
     council_logs_dir = council_logs_root(base, feature)
 
     if not council_logs_dir.exists():
@@ -536,7 +528,7 @@ def council_critique(
 
     # Create council and query each member
     c = Council.create(logs_dir=logs_dir, base=base)
-    c.load_sessions(sessions_dir)
+    c.load_sessions(base, feature)
 
     critiques: dict[str, str] = {}
 
@@ -557,7 +549,7 @@ def council_critique(
             response = member.query(critique_prompt, c.timeout)
             critiques[member.name] = response.text if response.text else f"*Error: {response.error}*"
 
-    c.save_sessions(sessions_dir)
+    c.save_sessions(base, feature)
 
     # Save critiques to run directory
     critiques_dir = run_dir / "critiques"
@@ -1171,11 +1163,13 @@ def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
     checks: list[dict[str, str | list[str]]] = []
     for agent in agents:
         version_cmd = agent.version_command or f"{shlex.split(agent.cli)[0]} --version"
-        checks.append({
-            "name": agent.name,
-            "command": shlex.split(version_cmd),
-            "install_hint": agent.install_hint or f"Install {agent.name}",
-        })
+        checks.append(
+            {
+                "name": agent.name,
+                "command": shlex.split(version_cmd),
+                "install_hint": agent.install_hint or f"Install {agent.name}",
+            }
+        )
     return checks
 
 
