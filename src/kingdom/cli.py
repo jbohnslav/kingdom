@@ -1200,7 +1200,7 @@ def peasant_msg(
 @peasant_app.command("read", help="Show messages from a peasant.")
 def peasant_read(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
-    last: Annotated[int, typer.Option("--last", "-n", help="Number of messages to show.")] = 10,
+    last: Annotated[int, typer.Option("--last", "-n", help="Number of messages to show.", min=1)] = 10,
 ) -> None:
     """Show recent messages from the peasant (escalations, status updates)."""
     from kingdom.thread import list_messages
@@ -1288,6 +1288,10 @@ def peasant_review(
     console = Console()
 
     # --- Accept / Reject actions ---
+    if accept and reject is not None:
+        typer.echo("Error: --accept and --reject are mutually exclusive.")
+        raise typer.Exit(code=1)
+
     if accept:
         ticket.status = "closed"
         write_ticket(ticket, ticket_path)
@@ -1328,7 +1332,7 @@ def peasant_review(
 
     typer.echo("Running pytest...")
     test_result = subprocess.run(
-        ["python", "-m", "pytest", "-x", "-q", "--tb=short"],
+        [sys.executable, "-m", "pytest", "-x", "-q", "--tb=short"],
         capture_output=True,
         text=True,
         timeout=120,
@@ -1346,7 +1350,7 @@ def peasant_review(
     # 2. Run ruff
     typer.echo("Running ruff...")
     ruff_result = subprocess.run(
-        ["ruff", "check", "."],
+        [sys.executable, "-m", "ruff", "check", "."],
         capture_output=True,
         text=True,
         timeout=60,
@@ -1369,10 +1373,13 @@ def peasant_review(
         cwd=str(base),
     )
     diff_output = diff_result.stdout.strip()
-    if diff_output:
+    diff_err = diff_result.stderr.strip()
+    if diff_result.returncode != 0 and diff_err:
+        console.print(Panel(diff_err, title=f"diff error: HEAD...{branch_name}", border_style="red"))
+    elif diff_output:
         console.print(Panel(diff_output, title=f"diff: HEAD...{branch_name}", border_style="blue"))
     else:
-        typer.echo("(no diff available)")
+        typer.echo("(no diff — branch may not have diverged yet)")
 
     # 4. Show worklog
     worklog = extract_worklog(ticket_path)

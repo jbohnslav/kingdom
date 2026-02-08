@@ -421,6 +421,28 @@ class TestPeasantRead:
             assert "Message 4" in result.output
             assert "Message 0" not in result.output
 
+    def test_read_last_zero_rejected(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            setup_work_thread(base)
+
+            result = runner.invoke(cli.app, ["peasant", "read", "kin-test", "--last", "0"])
+
+            assert result.exit_code != 0
+
+    def test_read_last_negative_rejected(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            setup_work_thread(base)
+
+            result = runner.invoke(cli.app, ["peasant", "read", "kin-test", "--last", "-1"])
+
+            assert result.exit_code != 0
+
     def test_read_no_thread(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -480,6 +502,7 @@ class TestPeasantReview:
 
                 # git diff result
                 diff_result = MagicMock()
+                diff_result.returncode = 0
                 diff_result.stdout = " src/foo.py | 5 ++-\n 1 file changed"
                 diff_result.stderr = ""
 
@@ -579,6 +602,7 @@ class TestPeasantReview:
                 ruff_result.stderr = ""
 
                 diff_result = MagicMock()
+                diff_result.returncode = 0
                 diff_result.stdout = ""
                 diff_result.stderr = ""
 
@@ -590,6 +614,55 @@ class TestPeasantReview:
             assert "FAILED" in result.output
             assert "ISSUES" in result.output
             assert "--reject" in result.output
+
+    def test_review_accept_reject_mutually_exclusive(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept", "--reject", "nope"])
+
+            assert result.exit_code == 1
+            assert "mutually exclusive" in result.output
+
+    def test_review_diff_error_shown(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            with patch("subprocess.run") as mock_run:
+                pytest_result = MagicMock()
+                pytest_result.returncode = 0
+                pytest_result.stdout = "5 passed"
+                pytest_result.stderr = ""
+
+                ruff_result = MagicMock()
+                ruff_result.returncode = 0
+                ruff_result.stdout = ""
+                ruff_result.stderr = ""
+
+                diff_result = MagicMock()
+                diff_result.returncode = 128
+                diff_result.stdout = ""
+                diff_result.stderr = "fatal: bad revision 'HEAD...ticket/kin-test'"
+
+                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
+
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "diff error" in result.output
+            assert "fatal" in result.output
 
     def test_review_ticket_not_found(self) -> None:
         with runner.isolated_filesystem():
