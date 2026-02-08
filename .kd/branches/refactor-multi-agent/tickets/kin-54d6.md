@@ -1,6 +1,6 @@
 ---
 id: kin-54d6
-status: open
+status: closed
 deps: [kin-56a5, kin-304a, kin-2d8e]
 links: []
 created: 2026-02-07T22:34:21Z
