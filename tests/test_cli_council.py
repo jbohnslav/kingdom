@@ -12,7 +12,7 @@ from kingdom import cli
 from kingdom.council.base import AgentResponse
 from kingdom.session import get_current_thread, set_current_thread
 from kingdom.state import ensure_branch_layout, set_current_run
-from kingdom.thread import list_messages, list_threads, thread_dir
+from kingdom.thread import list_messages
 
 runner = CliRunner()
 

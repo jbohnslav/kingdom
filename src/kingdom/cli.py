@@ -6,11 +6,14 @@ Usage example:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
+import signal
 import subprocess
-from datetime import UTC
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -701,12 +704,98 @@ def breakdown(
     write_json(state_path, state)
 
 
-@app.command(help="Create a worktree for working on a ticket.")
-def peasant(
+peasant_app = typer.Typer(name="peasant", help="Manage peasant agents.")
+app.add_typer(peasant_app, name="peasant")
+
+
+def create_worktree(base: Path, full_ticket_id: str) -> Path:
+    """Create a git worktree for a ticket. Returns the worktree path."""
+    worktrees_dir = state_root(base) / "worktrees"
+    worktree_path = worktrees_dir / full_ticket_id
+
+    if worktree_path.exists():
+        return worktree_path
+
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+
+    branch_name = f"ticket/{full_ticket_id}"
+
+    # Check if branch exists
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    branch_exists = result.returncode == 0
+
+    if branch_exists:
+        result = subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), branch_name],
+            capture_output=True,
+            text=True,
+        )
+    else:
+        result = subprocess.run(
+            ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
+            capture_output=True,
+            text=True,
+        )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Error creating worktree: {result.stderr.strip()}")
+
+    # Track in state.json
+    try:
+        feature = resolve_current_run(base)
+        _, state_path = get_design_paths(base, feature)
+        state = read_json(state_path) if state_path.exists() else {}
+        worktrees = state.get("worktrees", {})
+        worktrees[full_ticket_id] = str(worktree_path)
+        state["worktrees"] = worktrees
+        write_json(state_path, state)
+    except RuntimeError:
+        pass
+
+    return worktree_path
+
+
+def remove_worktree(base: Path, full_ticket_id: str) -> None:
+    """Remove a git worktree for a ticket."""
+    worktrees_dir = state_root(base) / "worktrees"
+    worktree_path = worktrees_dir / full_ticket_id
+
+    if not worktree_path.exists():
+        raise FileNotFoundError(f"No worktree found for {full_ticket_id}")
+
+    result = subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Error removing worktree: {result.stderr.strip()}")
+
+    try:
+        feature = resolve_current_run(base)
+        _, state_path = get_design_paths(base, feature)
+        state = read_json(state_path) if state_path.exists() else {}
+        worktrees = state.get("worktrees", {})
+        worktrees.pop(full_ticket_id, None)
+        state["worktrees"] = worktrees
+        write_json(state_path, state)
+    except RuntimeError:
+        pass
+
+
+@peasant_app.command("start", help="Launch a peasant agent on a ticket.")
+def peasant_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
-    clean: Annotated[bool, typer.Option("--clean", help="Remove the worktree instead of creating.")] = False,
+    agent: Annotated[str, typer.Option("--agent", help="Agent to use.")] = "claude",
 ) -> None:
-    """Create or remove a git worktree for ticket development."""
+    """Create worktree, session, thread, and launch agent harness in background."""
+    from kingdom.session import update_agent_state
+    from kingdom.thread import create_thread
+
     base = Path.cwd()
 
     # Find the ticket
@@ -720,112 +809,387 @@ def peasant(
         typer.echo(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
+    ticket, _ticket_path = result
+    full_ticket_id = ticket.id
+
+    # Resolve current branch
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    session_name = f"peasant-{full_ticket_id}"
+    thread_id = f"{full_ticket_id}-work"
+
+    # Check if already running
+    from kingdom.session import get_agent_state
+
+    existing = get_agent_state(base, feature, session_name)
+    if existing.status == "working" and existing.pid:
+        # Check if process is actually alive
+        try:
+            os.kill(existing.pid, 0)
+            typer.echo(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
+            raise typer.Exit(code=1)
+        except OSError:
+            pass  # Process is dead, continue
+
+    # 1. Create worktree
+    try:
+        worktree_path = create_worktree(base, full_ticket_id)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    # 2. Create work thread (ignore if already exists)
+    with contextlib.suppress(FileExistsError):
+        create_thread(base, feature, thread_id, [session_name, "king"], "work")
+
+    # 3. Seed thread with ticket_start message
+    from kingdom.thread import add_message, thread_dir
+
+    tdir = thread_dir(base, feature, thread_id)
+    # Only seed if no messages yet
+    existing_msgs = list(tdir.glob("[0-9][0-9][0-9][0-9]-*.md"))
+    if not existing_msgs:
+        seed_body = f"# Starting work on {full_ticket_id}\n\n"
+        seed_body += f"**Title:** {ticket.title}\n\n"
+        seed_body += ticket.body
+        add_message(base, feature, thread_id, from_="king", to=session_name, body=seed_body)
+
+    # 4. Set up logs directory
+    peasant_logs_dir = logs_root(base, feature) / session_name
+    peasant_logs_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log = peasant_logs_dir / "stdout.log"
+    stderr_log = peasant_logs_dir / "stderr.log"
+
+    # 5. Launch harness as background process
+    harness_cmd = [
+        sys.executable, "-m", "kingdom.harness",
+        "--agent", agent,
+        "--ticket", full_ticket_id,
+        "--worktree", str(worktree_path),
+        "--thread", thread_id,
+        "--session", session_name,
+        "--base", str(base),
+    ]
+
+    stdout_fd = os.open(str(stdout_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    stderr_fd = os.open(str(stderr_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+
+    proc = subprocess.Popen(
+        harness_cmd,
+        stdout=stdout_fd,
+        stderr=stderr_fd,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    os.close(stdout_fd)
+    os.close(stderr_fd)
+
+    # 6. Update session with pid and status
+    now = datetime.now(UTC).isoformat()
+    update_agent_state(
+        base, feature, session_name,
+        status="working",
+        pid=proc.pid,
+        ticket=full_ticket_id,
+        thread=thread_id,
+        started_at=now,
+        last_activity=now,
+    )
+
+    typer.echo(f"Started {session_name} (pid {proc.pid})")
+    typer.echo(f"  Agent: {agent}")
+    typer.echo(f"  Ticket: {full_ticket_id}")
+    typer.echo(f"  Worktree: {worktree_path}")
+    typer.echo(f"  Thread: {thread_id}")
+    typer.echo(f"  Logs: {peasant_logs_dir}")
+
+
+@peasant_app.command("status", help="Show active peasants.")
+def peasant_status() -> None:
+    """Show table of active peasants: ticket, agent, status, elapsed, last activity."""
+    from rich.table import Table
+
+    from kingdom.session import list_active_agents
+
+    base = Path.cwd()
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    console = Console()
+    active = list_active_agents(base, feature)
+
+    # Filter to peasant sessions only
+    peasants = [a for a in active if a.name.startswith("peasant-")]
+
+    if not peasants:
+        typer.echo("No active peasants.")
+        return
+
+    table = Table(title="Active Peasants")
+    table.add_column("Ticket", style="cyan")
+    table.add_column("Status", style="bold")
+    table.add_column("PID")
+    table.add_column("Elapsed")
+    table.add_column("Last Activity")
+
+    now = datetime.now(UTC)
+    for p in peasants:
+        ticket = p.ticket or p.name.replace("peasant-", "")
+
+        # Calculate elapsed
+        elapsed = ""
+        if p.started_at:
+            try:
+                started = datetime.fromisoformat(p.started_at.replace("Z", "+00:00"))
+                delta = now - started
+                minutes = int(delta.total_seconds() / 60)
+                elapsed = f"{minutes}m"
+            except (ValueError, TypeError):
+                elapsed = "?"
+
+        # Format last activity
+        last = ""
+        if p.last_activity:
+            try:
+                last_dt = datetime.fromisoformat(p.last_activity.replace("Z", "+00:00"))
+                ago = int((now - last_dt).total_seconds() / 60)
+                last = f"{ago}m ago"
+            except (ValueError, TypeError):
+                last = "?"
+
+        # Check if process is still alive
+        pid_str = str(p.pid) if p.pid else "-"
+        if p.pid and p.status == "working":
+            try:
+                os.kill(p.pid, 0)
+            except OSError:
+                pid_str = f"{p.pid} (dead)"
+
+        # Color status
+        status_style = {
+            "working": "green",
+            "blocked": "yellow",
+            "done": "blue",
+            "failed": "red",
+            "stopped": "dim",
+        }.get(p.status, "")
+
+        table.add_row(
+            ticket,
+            f"[{status_style}]{p.status}[/{status_style}]" if status_style else p.status,
+            pid_str,
+            elapsed,
+            last,
+        )
+
+    console.print(table)
+
+
+@peasant_app.command("logs", help="Show peasant logs.")
+def peasant_logs(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    follow: Annotated[bool, typer.Option("--follow", "-f", help="Tail logs continuously.")] = False,
+) -> None:
+    """Show stdout/stderr logs for a peasant."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
     ticket, _ = result
     full_ticket_id = ticket.id
 
-    # Worktree location
-    worktrees_dir = state_root(base) / "worktrees"
-    worktree_path = worktrees_dir / full_ticket_id
-
-    if clean:
-        # Remove worktree
-        if not worktree_path.exists():
-            typer.echo(f"No worktree found for {full_ticket_id}")
-            raise typer.Exit(code=1)
-
-        result = subprocess.run(
-            ["git", "worktree", "remove", "--force", str(worktree_path)],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            typer.echo(f"Error removing worktree: {result.stderr.strip()}")
-            raise typer.Exit(code=1)
-
-        # Update state
-        try:
-            feature = resolve_current_run(base)
-            _, state_path = get_design_paths(base, feature)
-            state = read_json(state_path) if state_path.exists() else {}
-            worktrees = state.get("worktrees", {})
-            worktrees.pop(full_ticket_id, None)
-            state["worktrees"] = worktrees
-            write_json(state_path, state)
-        except RuntimeError:
-            pass  # No active run, skip state update
-
-        typer.echo(f"Removed worktree for {full_ticket_id}")
-        return
-
-    # Create worktree
-    if worktree_path.exists():
-        typer.echo(f"Worktree already exists: {worktree_path}")
-        typer.echo(f"  cd {worktree_path}")
-        return
-
-    worktrees_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create a branch for this ticket
-    branch_name = f"ticket/{full_ticket_id}"
-
-    # Check if branch exists
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    branch_exists = result.returncode == 0
-
-    if branch_exists:
-        # Use existing branch
-        result = subprocess.run(
-            ["git", "worktree", "add", str(worktree_path), branch_name],
-            capture_output=True,
-            text=True,
-        )
-    else:
-        # Create new branch from current HEAD
-        result = subprocess.run(
-            ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
-            capture_output=True,
-            text=True,
-        )
-
-    if result.returncode != 0:
-        typer.echo(f"Error creating worktree: {result.stderr.strip()}")
-        raise typer.Exit(code=1)
-
-    # Track in state.json
     try:
         feature = resolve_current_run(base)
-        _, state_path = get_design_paths(base, feature)
-        state = read_json(state_path) if state_path.exists() else {}
-        worktrees = state.get("worktrees", {})
-        worktrees[full_ticket_id] = str(worktree_path)
-        state["worktrees"] = worktrees
-        write_json(state_path, state)
-    except RuntimeError:
-        pass  # No active run, skip state update
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
 
-    typer.echo(f"Created worktree for {full_ticket_id}")
-    typer.echo(f"  Branch: {branch_name}")
-    typer.echo(f"  Path: {worktree_path}")
-    typer.echo()
-    typer.echo("To work on this ticket:")
-    typer.echo(f"  cd {worktree_path}")
-    typer.echo(f"  kd ticket start {full_ticket_id}")
-    typer.echo()
-    typer.echo("When done:")
-    typer.echo(f"  kd ticket close {full_ticket_id}")
-    typer.echo(f"  kd peasant {full_ticket_id} --clean")
+    session_name = f"peasant-{full_ticket_id}"
+    peasant_logs_dir = logs_root(base, feature) / session_name
+    stdout_log = peasant_logs_dir / "stdout.log"
+    stderr_log = peasant_logs_dir / "stderr.log"
+
+    if not peasant_logs_dir.exists():
+        typer.echo(f"No logs found for {full_ticket_id}")
+        raise typer.Exit(code=1)
+
+    if follow:
+        # Use tail -f on stdout log
+        with contextlib.suppress(KeyboardInterrupt):
+            subprocess.run(["tail", "-f", str(stdout_log)])
+        return
+
+    # Show both stdout and stderr
+    console = Console()
+
+    if stdout_log.exists() and stdout_log.stat().st_size > 0:
+        content = stdout_log.read_text(encoding="utf-8")
+        console.print(Panel(content, title="stdout", border_style="green"))
+
+    if stderr_log.exists() and stderr_log.stat().st_size > 0:
+        content = stderr_log.read_text(encoding="utf-8")
+        console.print(Panel(content, title="stderr", border_style="red"))
+
+    if not (stdout_log.exists() or stderr_log.exists()):
+        typer.echo("Log files are empty.")
+
+
+@peasant_app.command("stop", help="Stop a running peasant.")
+def peasant_stop(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+) -> None:
+    """Send SIGTERM to the peasant process and update status to stopped."""
+    from kingdom.session import get_agent_state, update_agent_state
+
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, _ = result
+    full_ticket_id = ticket.id
+
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    session_name = f"peasant-{full_ticket_id}"
+    state = get_agent_state(base, feature, session_name)
+
+    if state.status != "working":
+        typer.echo(f"Peasant {full_ticket_id} is not running (status: {state.status})")
+        raise typer.Exit(code=1)
+
+    if not state.pid:
+        typer.echo(f"No PID found for peasant {full_ticket_id}")
+        raise typer.Exit(code=1)
+
+    # Send SIGTERM
+    try:
+        os.kill(state.pid, signal.SIGTERM)
+        typer.echo(f"Sent SIGTERM to peasant {full_ticket_id} (pid {state.pid})")
+    except OSError as e:
+        typer.echo(f"Process {state.pid} not found: {e}")
+
+    # Update session status
+    now = datetime.now(UTC).isoformat()
+    update_agent_state(
+        base, feature, session_name,
+        status="stopped",
+        last_activity=now,
+    )
+    typer.echo("Status updated to stopped")
+
+
+@peasant_app.command("clean", help="Remove a peasant's worktree.")
+def peasant_clean(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+) -> None:
+    """Remove the git worktree for a ticket."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, _ = result
+    full_ticket_id = ticket.id
+
+    try:
+        remove_worktree(base, full_ticket_id)
+        typer.echo(f"Removed worktree for {full_ticket_id}")
+    except FileNotFoundError:
+        typer.echo(f"No worktree found for {full_ticket_id}")
+        raise typer.Exit(code=1) from None
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+
+agent_app = typer.Typer(name="agent", help="Agent harness commands.")
+app.add_typer(agent_app, name="agent")
+
+
+@agent_app.command("run", help="Run autonomous agent loop (internal).")
+def agent_run(
+    agent: Annotated[str, typer.Option("--agent", help="Agent name.")],
+    ticket: Annotated[str, typer.Option("--ticket", help="Ticket ID.")],
+    worktree: Annotated[str, typer.Option("--worktree", help="Worktree path.")],
+    thread: Annotated[str, typer.Option("--thread", help="Thread ID.")],
+    session: Annotated[str, typer.Option("--session", help="Session name.")],
+    base_dir: Annotated[str, typer.Option("--base", help="Project root.")] = ".",
+) -> None:
+    """Run the autonomous agent harness loop. Typically launched by `kd peasant start`."""
+    import logging
+
+    from kingdom.harness import run_agent_loop
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        stream=sys.stdout,
+    )
+
+    base = Path(base_dir).resolve()
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    worktree_path = Path(worktree).resolve()
+
+    status = run_agent_loop(
+        base=base,
+        branch=feature,
+        agent_name=agent,
+        ticket_id=ticket,
+        worktree=worktree_path,
+        thread_id=thread,
+        session_name=session,
+    )
+
+    if status != "done":
+        raise typer.Exit(code=1)
 
 
 @app.command(help="Reserved for broader develop phase (MVP stub).")
 def dev(ticket: str | None = typer.Argument(None, help="Optional ticket id.")) -> None:
     if ticket:
-        typer.echo("MVP uses `kd peasant <ticket>` for single-ticket execution.")
+        typer.echo("MVP uses `kd peasant start <ticket>` for single-ticket execution.")
         raise typer.Exit(code=1)
-    typer.echo("`kd dev` is reserved. Use `kd peasant <ticket>` in the MVP.")
+    typer.echo("`kd dev` is reserved. Use `kd peasant start <ticket>` in the MVP.")
 
 
 def get_doc_status(path: Path) -> str:
