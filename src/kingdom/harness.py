@@ -2,13 +2,12 @@
 
 The harness runs an autonomous loop:
   1. Build prompt (ticket + acceptance criteria + worklog + new directives)
-  2. Call backend CLI
+  2. Call backend CLI (agent commits its own changes)
   3. Parse response
-  4. Auto-commit changes in worktree
-  5. Append to worklog in ticket
-  6. Update session file (status, resume_id, last_activity)
-  7. Write response as message to work thread
-  8. Check stop conditions: done, blocked, stopped, failed
+  4. Append to worklog in ticket
+  5. Update session file (status, resume_id, last_activity)
+  6. Write response as message to work thread
+  7. Check stop conditions: done, blocked, stopped, failed
 
 Usage::
 
@@ -64,7 +63,8 @@ def build_prompt(ticket_body: str, worklog: str, directives: list[str], iteratio
     parts.append("")
     parts.append("## Instructions")
     parts.append(f"This is iteration {iteration} of your work loop.")
-    parts.append("Work on the ticket. When you respond, structure your output as:")
+    parts.append("Work on the ticket. Commit your changes as you go with descriptive commit messages.")
+    parts.append("When you respond, structure your output as:")
     parts.append("1. What you did this iteration")
     parts.append("2. Your status: DONE, BLOCKED, or CONTINUE")
     parts.append("3. If BLOCKED, explain what you need help with")
@@ -180,46 +180,6 @@ def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: i
     return directives, max_seq
 
 
-def auto_commit(worktree: Path, message: str) -> tuple[bool, str | None]:
-    """Stage and commit all changes in the worktree.
-
-    Returns (committed, error): committed is True if a commit was made,
-    error is a message string if something went wrong.
-    """
-    # Check for changes
-    result = subprocess.run(
-        ["git", "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-        cwd=worktree,
-    )
-    if result.returncode != 0:
-        return False, f"git status failed: {result.stderr.strip()}"
-    if not result.stdout.strip():
-        return False, None
-
-    # Stage all changes
-    result = subprocess.run(
-        ["git", "add", "-A"],
-        capture_output=True,
-        text=True,
-        cwd=worktree,
-    )
-    if result.returncode != 0:
-        return False, f"git add failed: {result.stderr.strip()}"
-
-    # Commit
-    result = subprocess.run(
-        ["git", "commit", "-m", message, "--no-verify"],
-        capture_output=True,
-        text=True,
-        cwd=worktree,
-    )
-    if result.returncode != 0:
-        return False, f"git commit failed: {result.stderr.strip()}"
-    return True, None
-
-
 def run_tests(worktree: Path) -> tuple[bool, str]:
     """Run pytest in the worktree to verify work.
 
@@ -323,7 +283,9 @@ def run_agent_loop(
         # Update session: working
         now = datetime.now(UTC).isoformat()
         update_agent_state(
-            base, branch, session_name,
+            base,
+            branch,
+            session_name,
             status="working",
             last_activity=now,
         )
@@ -386,15 +348,6 @@ def run_agent_loop(
         status = parse_status(text)
         logger.info("Agent status: %s", status)
 
-        # Auto-commit any changes
-        commit_msg = f"peasant: {ticket_id} iteration {iteration}"
-        committed, commit_error = auto_commit(worktree, commit_msg)
-        if committed:
-            logger.info("Auto-committed changes")
-        elif commit_error:
-            logger.error("Auto-commit failed: %s", commit_error)
-            append_worklog(ticket_path, f"Auto-commit failed: {commit_error}")
-
         # Append to worklog
         worklog_entry = extract_worklog_entry(text)
         if worklog_entry:
@@ -403,7 +356,9 @@ def run_agent_loop(
         # Write response to work thread
         try:
             add_message(
-                base, branch, thread_id,
+                base,
+                branch,
+                thread_id,
                 from_=session_name,
                 to="king",
                 body=text,
@@ -445,7 +400,9 @@ def run_agent_loop(
     # Final session update
     now = datetime.now(UTC).isoformat()
     update_agent_state(
-        base, branch, session_name,
+        base,
+        branch,
+        session_name,
         status=final_status,
         last_activity=now,
     )

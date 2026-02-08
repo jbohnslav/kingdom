@@ -866,13 +866,21 @@ def peasant_start(
 
     # 5. Launch harness as background process
     harness_cmd = [
-        sys.executable, "-m", "kingdom.harness",
-        "--agent", agent,
-        "--ticket", full_ticket_id,
-        "--worktree", str(worktree_path),
-        "--thread", thread_id,
-        "--session", session_name,
-        "--base", str(base),
+        sys.executable,
+        "-m",
+        "kingdom.harness",
+        "--agent",
+        agent,
+        "--ticket",
+        full_ticket_id,
+        "--worktree",
+        str(worktree_path),
+        "--thread",
+        thread_id,
+        "--session",
+        session_name,
+        "--base",
+        str(base),
     ]
 
     stdout_fd = os.open(str(stdout_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
@@ -892,7 +900,9 @@ def peasant_start(
     # 6. Update session with pid and status
     now = datetime.now(UTC).isoformat()
     update_agent_state(
-        base, feature, session_name,
+        base,
+        feature,
+        session_name,
         status="working",
         pid=proc.pid,
         ticket=full_ticket_id,
@@ -1107,7 +1117,9 @@ def peasant_stop(
     # Update session status
     now = datetime.now(UTC).isoformat()
     update_agent_state(
-        base, feature, session_name,
+        base,
+        feature,
+        session_name,
         status="stopped",
         last_activity=now,
     )

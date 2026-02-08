@@ -26,8 +26,6 @@ from kingdom.ticket import Ticket, read_ticket, write_ticket
 BRANCH = "feature/harness-test"
 
 # Common mock return values
-NO_COMMIT = (False, None)
-COMMITTED = (True, None)
 TESTS_PASS = (True, "4 passed")
 TESTS_FAIL = (False, "FAILED test_foo.py::test_bar - AssertionError")
 
@@ -243,13 +241,18 @@ class TestRunAgentLoop:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT), \
-             patch("kingdom.harness.run_tests", return_value=TESTS_PASS):
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+        ):
             status = run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         assert status == "done"
@@ -281,13 +284,18 @@ class TestRunAgentLoop:
                 return TESTS_PASS
             return TESTS_FAIL
 
-        with patch("kingdom.harness.subprocess.run", side_effect=mock_run), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT), \
-             patch("kingdom.harness.run_tests", side_effect=mock_tests):
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_tests", side_effect=mock_tests),
+        ):
             status = run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         assert status == "done"
@@ -305,12 +313,15 @@ class TestRunAgentLoop:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT):
+        with patch("kingdom.harness.subprocess.run", return_value=mock_result):
             status = run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         assert status == "blocked"
@@ -325,12 +336,15 @@ class TestRunAgentLoop:
         mock_result.stderr = "Connection refused"
         mock_result.returncode = 1
 
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT):
+        with patch("kingdom.harness.subprocess.run", return_value=mock_result):
             status = run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         assert status == "failed"
@@ -345,13 +359,18 @@ class TestRunAgentLoop:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT), \
-             patch("kingdom.harness.run_tests", return_value=TESTS_PASS):
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+        ):
             run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         messages = list_messages(project, BRANCH, thread_id)
@@ -367,13 +386,18 @@ class TestRunAgentLoop:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT), \
-             patch("kingdom.harness.run_tests", return_value=TESTS_PASS):
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+        ):
             run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         ticket = read_ticket(ticket_path)
@@ -388,13 +412,18 @@ class TestRunAgentLoop:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT), \
-             patch("kingdom.harness.run_tests", return_value=TESTS_PASS):
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+        ):
             run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         state = get_agent_state(project, BRANCH, session_name)
@@ -417,13 +446,18 @@ class TestRunAgentLoop:
             result.returncode = 0
             return result
 
-        with patch("kingdom.harness.subprocess.run", side_effect=mock_run), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT), \
-             patch("kingdom.harness.run_tests", return_value=TESTS_PASS):
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+        ):
             status = run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         assert status == "done"
@@ -433,9 +467,13 @@ class TestRunAgentLoop:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
         status = run_agent_loop(
-            base=project, branch=BRANCH, agent_name="nonexistent-agent",
-            ticket_id="kin-test", worktree=project,
-            thread_id=thread_id, session_name=session_name,
+            base=project,
+            branch=BRANCH,
+            agent_name="nonexistent-agent",
+            ticket_id="kin-test",
+            worktree=project,
+            thread_id=thread_id,
+            session_name=session_name,
         )
 
         assert status == "failed"
@@ -447,9 +485,13 @@ class TestRunAgentLoop:
         set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
 
         status = run_agent_loop(
-            base=project, branch=BRANCH, agent_name="claude",
-            ticket_id="kin-nonexistent", worktree=project,
-            thread_id=thread_id, session_name=session_name,
+            base=project,
+            branch=BRANCH,
+            agent_name="claude",
+            ticket_id="kin-nonexistent",
+            worktree=project,
+            thread_id=thread_id,
+            session_name=session_name,
         )
 
         assert status == "failed"
@@ -459,12 +501,15 @@ class TestRunAgentLoop:
 
         import subprocess as sp
 
-        with patch("kingdom.harness.subprocess.run", side_effect=sp.TimeoutExpired(cmd="test", timeout=300)), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT):
+        with patch("kingdom.harness.subprocess.run", side_effect=sp.TimeoutExpired(cmd="test", timeout=300)):
             status = run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         assert status == "failed"
@@ -484,37 +529,17 @@ class TestRunAgentLoop:
             result.returncode = 0
             return result
 
-        with patch("kingdom.harness.subprocess.run", side_effect=mock_run_with_signal), \
-             patch("kingdom.harness.auto_commit", return_value=NO_COMMIT):
+        with patch("kingdom.harness.subprocess.run", side_effect=mock_run_with_signal):
             status = run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
             )
 
         assert status == "stopped"
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "stopped"
-
-    def test_auto_commit_failure_logged_in_worklog(self, project: Path, ticket_path: Path) -> None:
-        """Auto-commit failures should be surfaced in worklog."""
-        thread_id, session_name = self.setup_for_loop(project, ticket_path)
-
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "Did work.\\n\\nSTATUS: BLOCKED", "session_id": "s1"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        commit_error = (False, "git commit failed: lock file exists")
-
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result), \
-             patch("kingdom.harness.auto_commit", return_value=commit_error):
-            run_agent_loop(
-                base=project, branch=BRANCH, agent_name="claude",
-                ticket_id="kin-test", worktree=project,
-                thread_id=thread_id, session_name=session_name,
-            )
-
-        ticket = read_ticket(ticket_path)
-        assert "Auto-commit failed" in ticket.body
-        assert "lock file exists" in ticket.body

@@ -55,10 +55,12 @@ class TestPeasantStart:
             mock_proc.pid = 12345
 
             # Mock worktree creation
-            with patch("kingdom.cli.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"), \
-                 patch("subprocess.Popen", return_value=mock_proc), \
-                 patch("os.open", return_value=3), \
-                 patch("os.close"):
+            with (
+                patch("kingdom.cli.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+            ):
                 result = runner.invoke(cli.app, ["peasant", "start", "kin-test"])
 
             assert result.exit_code == 0, result.output
@@ -84,7 +86,9 @@ class TestPeasantStart:
 
             # Set up a "running" session with a live PID
             set_agent_state(
-                base, BRANCH, "peasant-kin-test",
+                base,
+                BRANCH,
+                "peasant-kin-test",
                 AgentState(name="peasant-kin-test", status="working", pid=os.getpid()),
             )
 
@@ -122,7 +126,9 @@ class TestPeasantStatus:
 
             now = datetime.now(UTC).isoformat()
             set_agent_state(
-                base, BRANCH, "peasant-kin-042",
+                base,
+                BRANCH,
+                "peasant-kin-042",
                 AgentState(
                     name="peasant-kin-042",
                     status="working",
@@ -149,7 +155,9 @@ class TestPeasantStatus:
 
             # A regular agent session (not a peasant)
             set_agent_state(
-                base, BRANCH, "claude",
+                base,
+                BRANCH,
+                "claude",
                 AgentState(name="claude", status="working"),
             )
 
@@ -223,7 +231,9 @@ class TestPeasantStop:
             create_test_ticket(base)
 
             set_agent_state(
-                base, BRANCH, "peasant-kin-test",
+                base,
+                BRANCH,
+                "peasant-kin-test",
                 AgentState(name="peasant-kin-test", status="working", pid=99999),
             )
 
@@ -245,7 +255,9 @@ class TestPeasantStop:
             create_test_ticket(base)
 
             set_agent_state(
-                base, BRANCH, "peasant-kin-test",
+                base,
+                BRANCH,
+                "peasant-kin-test",
                 AgentState(name="peasant-kin-test", status="done"),
             )
 

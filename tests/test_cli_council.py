@@ -36,10 +36,7 @@ def mock_council_query(responses: dict[str, AgentResponse]):
 
 def make_responses(*names: str) -> dict[str, AgentResponse]:
     """Build mock responses for given agent names."""
-    return {
-        name: AgentResponse(name=name, text=f"Response from {name}", elapsed=1.0)
-        for name in names
-    }
+    return {name: AgentResponse(name=name, text=f"Response from {name}", elapsed=1.0) for name in names}
 
 
 class TestCouncilAsk:
