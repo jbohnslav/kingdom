@@ -183,6 +183,7 @@ The Hand is the King's primary coding agent — Claude Code, Cursor, etc. The Ki
 - Monitors their progress (`kd peasant status`)
 - Reads escalations and responds (`kd peasant read`, `kd peasant msg`)
 - Reviews completed work and runs quality gates (`kd peasant review`)
+- Uses `kd peasant status` to see what needs attention
 - Sends feedback when work isn't done ("tests are failing, fix X")
 - Approves completion or bounces back with reasons
 
@@ -224,22 +225,7 @@ The King watches this happen in their terminal. They can interject ("actually us
 
 **The key distinction from Claude Teams:** In Teams, the lead synthesizes results from all teammates. In Kingdom, the Hand leads *peasants* (workers) but does not mediate *council* (advisors). The King reads council output directly. This preserves the "multiple independent perspectives" value of the council.
 
-`kd peasant manage` is the Hand's main entry point for supervision — it shows what needs attention:
-
-```bash
-kd peasant manage
-# Pending escalations:
-#   KIN-043  "need clarification on token format"      3m ago
-#
-# Ready for review:
-#   KIN-042  4 commits, tests passing                  1m ago
-#
-# Stale (no activity >10m):
-#   (none)
-#
-# Ready tickets (not yet started):
-#   KIN-044  user settings page
-```
+`kd peasant status` is the Hand's main entry point for supervision — it shows active peasants, their status (working/blocked/done/dead), and elapsed time.
 
 ### Command Surface
 
@@ -263,7 +249,6 @@ The current `kd council ask` / `kd council followup` / `kd council critique` col
 ```bash
 kd peasant start KIN-042 [--agent claude]  # create worktree + launch agent
 kd peasant status                           # table of active peasants
-kd peasant manage                           # what needs attention (Hand's main loop)
 kd peasant logs KIN-042 [--follow]          # tail logs
 kd peasant msg KIN-042 "Focus on tests"     # send directive
 kd peasant read KIN-042                     # read escalations
@@ -296,7 +281,7 @@ while not done and not blocked:
     1. Build prompt (ticket + acceptance criteria + worklog + any new directives)
     2. Call backend CLI (claude --print --resume $SESSION_ID ...)
     3. Parse response
-    4. Apply changes, commit
+    4. Agent commits its own changes
     5. Append to worklog (decisions made, bugs hit, difficulties)
     6. Update session file (status, resume_id, last_activity)
     7. Write response as message to thread
@@ -311,7 +296,7 @@ The peasant runs tests when it makes sense — the agent decides, like an engine
 - **Stopped** — King/Hand sent `kd peasant stop`. Status → `stopped`.
 - **Failed** — unrecoverable error. Status → `failed`.
 
-**Auto-commit:** The peasant commits as it works, not just at the end. Each meaningful chunk of work gets a commit on the ticket branch. This gives the Hand/King visibility into progress via `git log`.
+**Commits:** The agent is prompted to commit as it works with descriptive messages. Pre-commit hooks run normally. This gives the Hand/King visibility into progress via `git log`.
 
 **Worklog:** The ticket itself has a pre-formatted worklog section at the bottom. The peasant appends to it as it works — decisions made, bugs encountered, difficulties, test results. The worklog is part of the tracked ticket file, so it becomes part of the repo's history.
 
@@ -340,7 +325,8 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 ## What We're NOT Building (v1)
 
 - No daemon/server process
-- No `kd watch` live dashboard (use `kd status` + `kd peasant status` + `kd peasant manage`)
+- No `kd watch` live dashboard (use `kd status` + `kd peasant status`)
+- No `kd peasant manage` dashboard (use `kd peasant status` to see what needs attention)
 - No tmux automation (launch agents in background; user can tmux manually)
 - No autonomous agent-to-agent messaging (peasants talk to King/Hand, not to each other)
 - No separate foreman agent (the Hand fills this role)
@@ -412,31 +398,29 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 - Depends on: T1, T2, T3
 - Description: Agent harness (`kd agent run`) that runs an autonomous loop: build prompt from ticket + worklog + directives, call backend, apply changes, commit, run tests, append to worklog, update session, write to thread. Loop continues until done (acceptance criteria met, tests pass), blocked (needs help), or stopped. `kd peasant start <ticket>` creates worktree + branch, creates session file, creates work thread, seeds with ticket_start message, launches harness as background process. `kd peasant status` shows table of active peasants. `kd peasant logs <ticket> [--follow]` tails subprocess logs. `kd peasant stop <ticket>` kills process. Ticket file has a pre-formatted worklog section that the peasant appends to as it works.
 - Acceptance:
-  - [ ] `kd agent run --agent <name> --ticket <id> --worktree <path>` runs autonomous loop
-  - [ ] Loop: prompt → backend → commit → worklog → repeat
-  - [ ] Loop stops on: done (tests pass, criteria met), blocked (needs help), stopped, or failed
-  - [ ] Peasant auto-commits as it works (each meaningful chunk)
-  - [ ] Peasant appends decisions, bugs, difficulties to worklog section in ticket
-  - [ ] `kd peasant start KIN-042` creates worktree, session, thread, launches harness in background
-  - [ ] `kd peasant status` shows table: ticket, agent, status, elapsed, last activity
-  - [ ] `kd peasant logs KIN-042` shows stdout/stderr
-  - [ ] `kd peasant logs KIN-042 --follow` tails logs
-  - [ ] `kd peasant stop KIN-042` sends SIGTERM, updates status to `stopped`
-  - [ ] Peasant output written as messages to work thread
-  - [ ] Session file updated with pid, status, timestamps
+  - [x] `kd agent run --agent <name> --ticket <id> --worktree <path>` runs autonomous loop
+  - [x] Loop: prompt → backend → agent commits → worklog → repeat
+  - [x] Loop stops on: done (tests pass, criteria met), blocked (needs help), stopped, or failed
+  - [x] Agent commits as it works with descriptive messages (pre-commit hooks run)
+  - [x] Peasant appends decisions, bugs, difficulties to worklog section in ticket
+  - [x] `kd peasant start KIN-042` creates worktree, session, thread, launches harness in background
+  - [x] `kd peasant status` shows table: ticket, agent, status, elapsed, last activity
+  - [x] `kd peasant logs KIN-042` shows stdout/stderr
+  - [x] `kd peasant logs KIN-042 --follow` tails logs
+  - [x] `kd peasant stop KIN-042` sends SIGTERM, updates status to `stopped`
+  - [x] Peasant output written as messages to work thread
+  - [x] Session file updated with pid, status, timestamps
 
 ### T6: Peasant messaging and supervision
 - Priority: 3
 - Ticket: kin-b369
 - Depends on: T5
-- Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread (peasant picks it up on next loop iteration). `kd peasant read <ticket>` shows recent messages from the peasant (escalations, status updates). `kd peasant manage` shows actionable summary: pending escalations, work ready for review, stale workers, ready tickets not yet started. `kd peasant review <ticket>` is the Hand's final review after peasant signals done — verify tests, review diff and worklog, accept or reject. `kd status` extended to show active agents and unread escalations.
+- Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread (peasant picks it up on next loop iteration). `kd peasant read <ticket>` shows recent messages from the peasant (escalations, status updates). `kd peasant review <ticket>` is the Hand's final review after peasant signals done — verify tests, review diff and worklog, accept or reject.
 - Acceptance:
   - [ ] `kd peasant msg KIN-042 "focus on tests"` writes directive to thread, peasant picks up on next iteration
   - [ ] `kd peasant read KIN-042` shows peasant's messages (escalations, worklog updates)
-  - [ ] `kd peasant manage` shows escalations, completed work for review, stale workers, ready tickets
   - [ ] `kd peasant review KIN-042` runs pytest + ruff, shows diff + worklog for Hand review
   - [ ] Hand can accept (ticket closed, branch ready to merge) or reject (feedback sent, peasant resumes)
-  - [ ] `kd status` shows active agents count and pending escalations
 
 ## References
 
