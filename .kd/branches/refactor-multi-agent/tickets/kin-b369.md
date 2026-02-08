@@ -23,3 +23,5 @@ kd peasant msg <ticket> "message" writes a directive to the work thread (peasant
 - Added `kd peasant read` — filters thread messages to peasant-only, displays with Rich panels, supports `--last/-n` for pagination
 - Added `kd peasant review` — runs pytest + ruff in worktree (or base), shows git diff --stat and worklog; `--accept` closes ticket and sets session to done, `--reject "feedback"` sends directive and sets session back to working
 - 14 new tests (29 total in test_cli_peasant.py), 342/342 suite passing, ruff clean
+- Review fixes: --accept/--reject mutual exclusivity error, --last min=1 via typer, git diff stderr surfaced on failure, sys.executable for pytest/ruff quality gates
+- 4 more tests (33 total), 346/346 suite passing, ruff clean
