@@ -1157,6 +1157,242 @@ def peasant_clean(
         raise typer.Exit(code=1) from None
 
 
+@peasant_app.command("msg", help="Send a directive to a working peasant.")
+def peasant_msg(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    message: Annotated[str, typer.Argument(help="Directive message for the peasant.")],
+) -> None:
+    """Write a directive to the work thread; the peasant picks it up on next loop iteration."""
+    from kingdom.thread import add_message
+
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, _ = result
+    full_ticket_id = ticket.id
+
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    thread_id = f"{full_ticket_id}-work"
+
+    try:
+        add_message(base, feature, thread_id, from_="king", to=f"peasant-{full_ticket_id}", body=message)
+    except FileNotFoundError:
+        typer.echo(f"No work thread found for {full_ticket_id}. Has the peasant been started?")
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"Directive sent to {full_ticket_id}")
+
+
+@peasant_app.command("read", help="Show messages from a peasant.")
+def peasant_read(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    last: Annotated[int, typer.Option("--last", "-n", help="Number of messages to show.")] = 10,
+) -> None:
+    """Show recent messages from the peasant (escalations, status updates)."""
+    from kingdom.thread import list_messages
+
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, _ = result
+    full_ticket_id = ticket.id
+
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    thread_id = f"{full_ticket_id}-work"
+    session_name = f"peasant-{full_ticket_id}"
+
+    try:
+        messages = list_messages(base, feature, thread_id)
+    except FileNotFoundError:
+        typer.echo(f"No work thread found for {full_ticket_id}. Has the peasant been started?")
+        raise typer.Exit(code=1) from None
+
+    # Filter to messages from the peasant
+    peasant_msgs = [m for m in messages if m.from_ == session_name]
+
+    if not peasant_msgs:
+        typer.echo(f"No messages from {session_name} yet.")
+        return
+
+    # Show last N messages
+    console = Console()
+    for msg in peasant_msgs[-last:]:
+        ts = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        console.print(Panel(Markdown(msg.body), title=f"[{ts}] {msg.from_} → {msg.to}", border_style="cyan"))
+
+
+@peasant_app.command("review", help="Review a peasant's completed work.")
+def peasant_review(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    accept: Annotated[bool, typer.Option("--accept", help="Accept the work (close ticket).")] = False,
+    reject: Annotated[str | None, typer.Option("--reject", help="Reject with feedback message.")] = None,
+) -> None:
+    """Run pytest + ruff, show diff and worklog. Accept or reject the work."""
+    from kingdom.harness import extract_worklog
+    from kingdom.session import get_agent_state, update_agent_state
+    from kingdom.thread import add_message
+
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+    full_ticket_id = ticket.id
+
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    session_name = f"peasant-{full_ticket_id}"
+    thread_id = f"{full_ticket_id}-work"
+    branch_name = f"ticket/{full_ticket_id}"
+
+    console = Console()
+
+    # --- Accept / Reject actions ---
+    if accept:
+        ticket.status = "closed"
+        write_ticket(ticket, ticket_path)
+        update_agent_state(
+            base,
+            feature,
+            session_name,
+            status="done",
+            last_activity=datetime.now(UTC).isoformat(),
+        )
+        typer.echo(f"{full_ticket_id}: accepted — ticket closed")
+        return
+
+    if reject is not None:
+        try:
+            add_message(base, feature, thread_id, from_="king", to=session_name, body=reject)
+        except FileNotFoundError:
+            typer.echo(f"No work thread found for {full_ticket_id}.")
+            raise typer.Exit(code=1) from None
+        update_agent_state(
+            base,
+            feature,
+            session_name,
+            status="working",
+            last_activity=datetime.now(UTC).isoformat(),
+        )
+        typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant can resume")
+        return
+
+    # --- Show review info ---
+
+    # 1. Run pytest
+    worktree_path = state_root(base) / "worktrees" / full_ticket_id
+    if worktree_path.exists():
+        test_cwd = str(worktree_path)
+    else:
+        test_cwd = str(base)
+
+    typer.echo("Running pytest...")
+    test_result = subprocess.run(
+        ["python", "-m", "pytest", "-x", "-q", "--tb=short"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=test_cwd,
+    )
+    test_passed = test_result.returncode == 0
+    test_output = test_result.stdout.strip()
+    if test_result.stderr.strip():
+        test_output += "\n" + test_result.stderr.strip()
+
+    test_style = "green" if test_passed else "red"
+    test_title = "pytest: PASSED" if test_passed else "pytest: FAILED"
+    console.print(Panel(test_output or "(no output)", title=test_title, border_style=test_style))
+
+    # 2. Run ruff
+    typer.echo("Running ruff...")
+    ruff_result = subprocess.run(
+        ["ruff", "check", "."],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=test_cwd,
+    )
+    ruff_passed = ruff_result.returncode == 0
+    ruff_output = ruff_result.stdout.strip()
+    if ruff_result.stderr.strip():
+        ruff_output += "\n" + ruff_result.stderr.strip()
+
+    ruff_style = "green" if ruff_passed else "red"
+    ruff_title = "ruff: PASSED" if ruff_passed else "ruff: ISSUES"
+    console.print(Panel(ruff_output or "All checks passed!", title=ruff_title, border_style=ruff_style))
+
+    # 3. Show diff
+    diff_result = subprocess.run(
+        ["git", "diff", f"HEAD...{branch_name}", "--stat"],
+        capture_output=True,
+        text=True,
+        cwd=str(base),
+    )
+    diff_output = diff_result.stdout.strip()
+    if diff_output:
+        console.print(Panel(diff_output, title=f"diff: HEAD...{branch_name}", border_style="blue"))
+    else:
+        typer.echo("(no diff available)")
+
+    # 4. Show worklog
+    worklog = extract_worklog(ticket_path)
+    if worklog:
+        console.print(Panel(Markdown(worklog), title="Worklog", border_style="yellow"))
+    else:
+        typer.echo("(no worklog entries)")
+
+    # 5. Show session status
+    state = get_agent_state(base, feature, session_name)
+    typer.echo(f"\nPeasant status: {state.status}")
+
+    # Prompt for action
+    all_passed = test_passed and ruff_passed
+    if all_passed:
+        typer.echo("\nAll checks passed. Use --accept to close the ticket or --reject 'feedback' to send feedback.")
+    else:
+        typer.echo("\nSome checks failed. Use --reject 'feedback' to send feedback.")
+
+
 agent_app = typer.Typer(name="agent", help="Agent harness commands.")
 app.add_typer(agent_app, name="agent")
 

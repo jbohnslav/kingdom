@@ -13,8 +13,8 @@ from typer.testing import CliRunner
 from kingdom import cli
 from kingdom.session import AgentState, get_agent_state, set_agent_state
 from kingdom.state import ensure_branch_layout, logs_root, set_current_run
-from kingdom.thread import thread_dir
-from kingdom.ticket import Ticket, write_ticket
+from kingdom.thread import add_message, create_thread, list_messages, thread_dir
+from kingdom.ticket import Ticket, find_ticket, write_ticket
 
 runner = CliRunner()
 
@@ -302,3 +302,301 @@ class TestPeasantClean:
 
             assert result.exit_code == 1
             assert "No worktree" in result.output
+
+
+def setup_work_thread(base: Path, ticket_id: str = "kin-test") -> str:
+    """Create a work thread for a ticket. Returns thread_id."""
+    thread_id = f"{ticket_id}-work"
+    session_name = f"peasant-{ticket_id}"
+    create_thread(base, BRANCH, thread_id, [session_name, "king"], "work")
+    return thread_id
+
+
+class TestPeasantMsg:
+    def test_msg_sends_directive(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            thread_id = setup_work_thread(base)
+
+            result = runner.invoke(cli.app, ["peasant", "msg", "kin-test", "focus on tests"])
+
+            assert result.exit_code == 0, result.output
+            assert "Directive sent" in result.output
+
+            # Message should appear in the thread
+            messages = list_messages(base, BRANCH, thread_id)
+            assert len(messages) == 1
+            assert messages[0].from_ == "king"
+            assert messages[0].to == "peasant-kin-test"
+            assert "focus on tests" in messages[0].body
+
+    def test_msg_multiple_directives(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            thread_id = setup_work_thread(base)
+
+            runner.invoke(cli.app, ["peasant", "msg", "kin-test", "first directive"])
+            runner.invoke(cli.app, ["peasant", "msg", "kin-test", "second directive"])
+
+            messages = list_messages(base, BRANCH, thread_id)
+            assert len(messages) == 2
+            assert "first directive" in messages[0].body
+            assert "second directive" in messages[1].body
+
+    def test_msg_no_thread(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            # Don't create the work thread
+
+            result = runner.invoke(cli.app, ["peasant", "msg", "kin-test", "hello"])
+
+            assert result.exit_code == 1
+            assert "No work thread" in result.output
+
+    def test_msg_ticket_not_found(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["peasant", "msg", "kin-nope", "hello"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output
+
+
+class TestPeasantRead:
+    def test_read_shows_peasant_messages(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            thread_id = setup_work_thread(base)
+
+            # Add some messages — one from king, two from peasant
+            add_message(base, BRANCH, thread_id, from_="king", to="peasant-kin-test", body="Start working")
+            add_message(base, BRANCH, thread_id, from_="peasant-kin-test", to="king", body="Working on it")
+            add_message(base, BRANCH, thread_id, from_="peasant-kin-test", to="king", body="STATUS: BLOCKED\nNeed help")
+
+            result = runner.invoke(cli.app, ["peasant", "read", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "Working on it" in result.output
+            assert "BLOCKED" in result.output
+            # King's message should not appear (filtered to peasant only)
+            assert "Start working" not in result.output
+
+    def test_read_no_messages(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            setup_work_thread(base)
+
+            result = runner.invoke(cli.app, ["peasant", "read", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "No messages" in result.output
+
+    def test_read_last_n(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            thread_id = setup_work_thread(base)
+
+            # Add several peasant messages
+            for i in range(5):
+                add_message(base, BRANCH, thread_id, from_="peasant-kin-test", to="king", body=f"Message {i}")
+
+            result = runner.invoke(cli.app, ["peasant", "read", "kin-test", "--last", "2"])
+
+            assert result.exit_code == 0
+            assert "Message 3" in result.output
+            assert "Message 4" in result.output
+            assert "Message 0" not in result.output
+
+    def test_read_no_thread(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            result = runner.invoke(cli.app, ["peasant", "read", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "No work thread" in result.output
+
+    def test_read_ticket_not_found(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["peasant", "read", "kin-nope"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output
+
+
+class TestPeasantReview:
+    def test_review_shows_results(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base)
+
+            # Add a worklog to the ticket
+            from kingdom.harness import append_worklog
+
+            append_worklog(ticket_path, "Did some work")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            with (
+                patch("subprocess.run") as mock_run,
+            ):
+                # pytest result
+                pytest_result = MagicMock()
+                pytest_result.returncode = 0
+                pytest_result.stdout = "5 passed"
+                pytest_result.stderr = ""
+
+                # ruff result
+                ruff_result = MagicMock()
+                ruff_result.returncode = 0
+                ruff_result.stdout = ""
+                ruff_result.stderr = ""
+
+                # git diff result
+                diff_result = MagicMock()
+                diff_result.stdout = " src/foo.py | 5 ++-\n 1 file changed"
+                diff_result.stderr = ""
+
+                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
+
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "PASSED" in result.output
+            assert "Did some work" in result.output
+            assert "done" in result.output
+            assert "--accept" in result.output
+
+    def test_review_accept_closes_ticket(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+
+            assert result.exit_code == 0, result.output
+            assert "accepted" in result.output
+
+            # Ticket should be closed
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
+
+            # Session should be done
+            state = get_agent_state(base, BRANCH, session_name)
+            assert state.status == "done"
+
+    def test_review_reject_sends_feedback(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            thread_id = setup_work_thread(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix the edge case"])
+
+            assert result.exit_code == 0, result.output
+            assert "rejected" in result.output
+            assert "feedback sent" in result.output
+
+            # Feedback should be in the thread
+            messages = list_messages(base, BRANCH, thread_id)
+            assert len(messages) == 1
+            assert messages[0].from_ == "king"
+            assert "fix the edge case" in messages[0].body
+
+            # Session should be set back to working
+            state = get_agent_state(base, BRANCH, session_name)
+            assert state.status == "working"
+
+    def test_review_shows_failures(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            with patch("subprocess.run") as mock_run:
+                pytest_result = MagicMock()
+                pytest_result.returncode = 1
+                pytest_result.stdout = "FAILED test_foo.py"
+                pytest_result.stderr = ""
+
+                ruff_result = MagicMock()
+                ruff_result.returncode = 1
+                ruff_result.stdout = "E501 line too long"
+                ruff_result.stderr = ""
+
+                diff_result = MagicMock()
+                diff_result.stdout = ""
+                diff_result.stderr = ""
+
+                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
+
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "FAILED" in result.output
+            assert "ISSUES" in result.output
+            assert "--reject" in result.output
+
+    def test_review_ticket_not_found(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["peasant", "review", "kin-nope"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output
