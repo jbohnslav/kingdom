@@ -39,6 +39,7 @@ class AgentState:
     pid: int | None = None
     ticket: str | None = None
     thread: str | None = None
+    agent_backend: str | None = None
     started_at: str | None = None
     last_activity: str | None = None
 
@@ -93,6 +94,7 @@ def get_agent_state(base: Path, branch: str, agent_name: str) -> AgentState:
         pid=data.get("pid"),
         ticket=data.get("ticket"),
         thread=data.get("thread"),
+        agent_backend=data.get("agent_backend"),
         started_at=data.get("started_at"),
         last_activity=data.get("last_activity"),
     )

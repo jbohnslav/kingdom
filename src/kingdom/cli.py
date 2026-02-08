@@ -897,6 +897,7 @@ def peasant_start(
         pid=proc.pid,
         ticket=full_ticket_id,
         thread=thread_id,
+        agent_backend=agent,
         started_at=now,
         last_activity=now,
     )
@@ -935,8 +936,8 @@ def peasant_status() -> None:
 
     table = Table(title="Active Peasants")
     table.add_column("Ticket", style="cyan")
+    table.add_column("Agent")
     table.add_column("Status", style="bold")
-    table.add_column("PID")
     table.add_column("Elapsed")
     table.add_column("Last Activity")
 
@@ -966,12 +967,12 @@ def peasant_status() -> None:
                 last = "?"
 
         # Check if process is still alive
-        pid_str = str(p.pid) if p.pid else "-"
+        display_status = p.status
         if p.pid and p.status == "working":
             try:
                 os.kill(p.pid, 0)
             except OSError:
-                pid_str = f"{p.pid} (dead)"
+                display_status = "dead"
 
         # Color status
         status_style = {
@@ -980,12 +981,15 @@ def peasant_status() -> None:
             "done": "blue",
             "failed": "red",
             "stopped": "dim",
-        }.get(p.status, "")
+            "dead": "red",
+        }.get(display_status, "")
+
+        agent_display = p.agent_backend or "?"
 
         table.add_row(
             ticket,
-            f"[{status_style}]{p.status}[/{status_style}]" if status_style else p.status,
-            pid_str,
+            agent_display,
+            f"[{status_style}]{display_status}[/{status_style}]" if status_style else display_status,
             elapsed,
             last,
         )
@@ -1030,9 +1034,13 @@ def peasant_logs(
         raise typer.Exit(code=1)
 
     if follow:
-        # Use tail -f on stdout log
+        # Tail both stdout and stderr
         with contextlib.suppress(KeyboardInterrupt):
-            subprocess.run(["tail", "-f", str(stdout_log)])
+            files = [str(f) for f in [stdout_log, stderr_log] if f.exists()]
+            if files:
+                subprocess.run(["tail", "-f", *files])
+            else:
+                typer.echo("Log files are empty.")
         return
 
     # Show both stdout and stderr
@@ -1173,7 +1181,7 @@ def agent_run(
     status = run_agent_loop(
         base=base,
         branch=feature,
-        agent_name=agent,
+        agent_backend=agent,
         ticket_id=ticket,
         worktree=worktree_path,
         thread_id=thread,

@@ -116,16 +116,28 @@ def append_worklog(ticket_path: Path, entry: str) -> None:
     """Append an entry to the ticket's worklog section.
 
     If no worklog section exists, creates one at the end of the ticket body.
+    Inserts before the next ## heading if Worklog is not the last section.
     """
     ticket = read_ticket(ticket_path)
     timestamp = datetime.now(UTC).strftime("%H:%M")
 
     worklog_line = f"- [{timestamp}] {entry}"
 
-    if "## Worklog" in ticket.body:
-        ticket.body = ticket.body + "\n" + worklog_line
-    else:
+    if "## Worklog" not in ticket.body:
         ticket.body = ticket.body.rstrip() + "\n\n## Worklog\n\n" + worklog_line
+    else:
+        # Find the worklog section and insert before the next heading
+        parts = ticket.body.split("## Worklog", 1)
+        after_header = parts[1]
+        next_heading = re.search(r"\n(## )", after_header)
+        if next_heading:
+            # Insert before the next section
+            insert_pos = next_heading.start()
+            after_header = after_header[:insert_pos] + "\n" + worklog_line + after_header[insert_pos:]
+        else:
+            # Worklog is the last section — append at end
+            after_header = after_header + "\n" + worklog_line
+        ticket.body = parts[0] + "## Worklog" + after_header
 
     write_ticket(ticket, ticket_path)
 
@@ -168,10 +180,11 @@ def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: i
     return directives, max_seq
 
 
-def auto_commit(worktree: Path, message: str) -> bool:
+def auto_commit(worktree: Path, message: str) -> tuple[bool, str | None]:
     """Stage and commit all changes in the worktree.
 
-    Returns True if a commit was made, False if nothing to commit.
+    Returns (committed, error): committed is True if a commit was made,
+    error is a message string if something went wrong.
     """
     # Check for changes
     result = subprocess.run(
@@ -180,16 +193,20 @@ def auto_commit(worktree: Path, message: str) -> bool:
         text=True,
         cwd=worktree,
     )
+    if result.returncode != 0:
+        return False, f"git status failed: {result.stderr.strip()}"
     if not result.stdout.strip():
-        return False
+        return False, None
 
     # Stage all changes
-    subprocess.run(
+    result = subprocess.run(
         ["git", "add", "-A"],
         capture_output=True,
         text=True,
         cwd=worktree,
     )
+    if result.returncode != 0:
+        return False, f"git add failed: {result.stderr.strip()}"
 
     # Commit
     result = subprocess.run(
@@ -198,7 +215,32 @@ def auto_commit(worktree: Path, message: str) -> bool:
         text=True,
         cwd=worktree,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False, f"git commit failed: {result.stderr.strip()}"
+    return True, None
+
+
+def run_tests(worktree: Path) -> tuple[bool, str]:
+    """Run pytest in the worktree to verify work.
+
+    Returns (passed, output): passed is True if tests pass.
+    """
+    try:
+        result = subprocess.run(
+            ["python", "-m", "pytest", "-x", "-q", "--tb=short"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=worktree,
+        )
+        output = result.stdout.strip()
+        if result.stderr.strip():
+            output += "\n" + result.stderr.strip()
+        return result.returncode == 0, output
+    except FileNotFoundError:
+        return True, "pytest not found, skipping verification"
+    except subprocess.TimeoutExpired:
+        return False, "Test suite timed out after 120s"
 
 
 def run_agent_loop(
@@ -321,6 +363,12 @@ def run_agent_loop(
             final_status = "failed"
             break
 
+        # Check for stop signal after backend call returns
+        if stop_requested:
+            final_status = "stopped"
+            logger.info("Stopping after backend call (signal received)")
+            break
+
         # Parse response
         text, new_session_id, _raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
         if new_session_id:
@@ -340,9 +388,12 @@ def run_agent_loop(
 
         # Auto-commit any changes
         commit_msg = f"peasant: {ticket_id} iteration {iteration}"
-        committed = auto_commit(worktree, commit_msg)
+        committed, commit_error = auto_commit(worktree, commit_msg)
         if committed:
             logger.info("Auto-committed changes")
+        elif commit_error:
+            logger.error("Auto-commit failed: %s", commit_error)
+            append_worklog(ticket_path, f"Auto-commit failed: {commit_error}")
 
         # Append to worklog
         worklog_entry = extract_worklog_entry(text)
@@ -366,8 +417,18 @@ def run_agent_loop(
 
         # Check stop conditions
         if status == "done":
-            final_status = "done"
-            logger.info("Agent reports DONE")
+            # Verify by running tests before accepting done
+            logger.info("Agent reports DONE — verifying tests...")
+            tests_passed, test_output = run_tests(worktree)
+            if tests_passed:
+                final_status = "done"
+                logger.info("Tests passed, accepting DONE")
+                append_worklog(ticket_path, "Tests passed — marking done")
+            else:
+                logger.warning("Tests failed, overriding DONE to CONTINUE")
+                append_worklog(ticket_path, f"Agent reported DONE but tests failed: {test_output[:200]}")
+                # Don't break — continue the loop so agent can fix
+                continue
             break
         elif status == "blocked":
             final_status = "blocked"

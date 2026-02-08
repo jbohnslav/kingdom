@@ -128,16 +128,19 @@ class TestPeasantStatus:
                     status="working",
                     pid=99999,
                     ticket="kin-042",
+                    agent_backend="claude",
                     started_at=now,
                     last_activity=now,
                 ),
             )
 
-            result = runner.invoke(cli.app, ["peasant", "status"])
+            with patch("os.kill"):  # Mock kill so liveness check doesn't mark as dead
+                result = runner.invoke(cli.app, ["peasant", "status"])
 
             assert result.exit_code == 0
             assert "kin-042" in result.output
             assert "working" in result.output
+            assert "claude" in result.output
 
     def test_status_ignores_non_peasant_sessions(self) -> None:
         with runner.isolated_filesystem():
