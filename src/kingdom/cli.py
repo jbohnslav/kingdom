@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 from datetime import UTC
 from pathlib import Path
@@ -20,8 +21,9 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
-from kingdom.council import Council, create_run_bundle
+from kingdom.council import Council
 from kingdom.design import build_design_template
+from kingdom.session import get_current_thread, set_current_thread
 from kingdom.state import (
     archive_root,
     backlog_root,
@@ -271,23 +273,22 @@ council_app = typer.Typer(name="council", help="Query council members.")
 app.add_typer(council_app, name="council")
 
 
-@council_app.command("ask", help="Query all council members and display responses.")
+@council_app.command("ask", help="Query council members.")
 def council_ask(
     prompt: Annotated[str, typer.Argument(help="Prompt to send to council members.")],
+    to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
+    thread: Annotated[str | None, typer.Option("--thread", help="'new' to start a fresh thread.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
-    open_dir: Annotated[bool, typer.Option("--open", help="Open response directory in $EDITOR.")] = False,
     timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
 ) -> None:
-    """Query all council members and display with Rich panels."""
+    """Query council members via threaded conversations."""
+    from kingdom.thread import add_message, create_thread
+
     base = Path.cwd()
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
-    council_logs_dir = council_logs_root(base, feature)
-
-    # Ensure directories exist
     logs_dir.mkdir(parents=True, exist_ok=True)
-    council_logs_dir.mkdir(parents=True, exist_ok=True)
 
     console = Console()
 
@@ -295,24 +296,71 @@ def council_ask(
     c.timeout = timeout
     c.load_sessions(base, feature)
 
-    # Query with progress
-    responses = query_with_progress(c, prompt, json_output, console)
+    # Validate --to target
+    if to:
+        member = c.get_member(to)
+        if member is None:
+            available = [m.name for m in c.members]
+            typer.echo(f"Unknown member: {to}")
+            typer.echo(f"Available: {', '.join(available)}")
+            raise typer.Exit(code=1)
+
+    # Determine thread: continue current, or create new
+    current = get_current_thread(base, feature)
+
+    if thread == "new" or current is None:
+        thread_id = f"council-{secrets.token_hex(2)}"
+        member_names = [m.name for m in c.members]
+        create_thread(base, feature, thread_id, ["king", *member_names], "council")
+        set_current_thread(base, feature, thread_id)
+    else:
+        thread_id = current
+
+    # Write king's message to thread
+    target = to or "all"
+    add_message(base, feature, thread_id, from_="king", to=target, body=prompt)
+
+    # Query members
+    if to:
+        if not json_output:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task(f"Querying {to}...", total=None)
+                response = member.query(prompt, timeout)
+                progress.update(task, description="Done")
+        else:
+            response = member.query(prompt, timeout)
+        responses = {to: response}
+    else:
+        responses = query_with_progress(c, prompt, json_output, console)
+
+    # Write each response as a message to the thread
+    for name, response in responses.items():
+        body = response.text if response.text else f"*Error: {response.error}*"
+        add_message(base, feature, thread_id, from_=name, to="king", body=body)
+
     c.save_sessions(base, feature)
 
-    # Create run bundle
-    bundle = create_run_bundle(council_logs_dir, prompt, responses)
-    run_id = bundle["run_id"]
-    run_dir = bundle["run_dir"]
-    response_paths = bundle["paths"]
-
+    # Display results
     if json_output:
-        output_json(responses, run_id, run_dir, response_paths)
+        output = {
+            "thread_id": thread_id,
+            "responses": {
+                name: {
+                    "text": r.text,
+                    "error": r.error,
+                    "elapsed": r.elapsed,
+                }
+                for name, r in responses.items()
+            },
+        }
+        print(json.dumps(output, indent=2))
     else:
-        display_rich_panels(responses, run_dir, console)
-
-    if open_dir:
-        editor = os.environ.get("EDITOR", "open")
-        subprocess.run([editor, str(run_dir)])
+        display_rich_panels(responses, thread_id, console)
 
 
 @council_app.command("reset", help="Clear all council sessions.")
@@ -333,355 +381,103 @@ def council_reset() -> None:
     typer.echo("Sessions cleared.")
 
 
-@council_app.command("last", help="Show the most recent council run.")
-def council_last() -> None:
-    """Print the most recent council run_id and paths."""
-    base = Path.cwd()
-    feature = resolve_current_run(base)
-    council_logs_dir = council_logs_root(base, feature)
-
-    if not council_logs_dir.exists():
-        typer.echo("No council runs found.")
-        raise typer.Exit(code=1)
-
-    # Find most recent run by directory mtime
-    runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
-    if not runs:
-        typer.echo("No council runs found.")
-        raise typer.Exit(code=1)
-
-    latest = max(runs, key=lambda d: d.stat().st_mtime)
-    run_id = latest.name
-
-    typer.echo(f"Run: {run_id}")
-    typer.echo(f"Path: {latest}")
-    typer.echo()
-    typer.echo("Files:")
-    for f in sorted(latest.iterdir()):
-        typer.echo(f"  {f.name}")
-
-
-@council_app.command("followup", help="Follow up with a specific council member.")
-def council_followup(
-    member: Annotated[str, typer.Argument(help="Member name (claude, codex, cursor).")],
-    prompt: Annotated[str, typer.Argument(help="Follow-up prompt.")],
-    json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
+@council_app.command("show", help="Display a council thread or legacy run.")
+def council_show(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID or legacy run ID.")] = None,
 ) -> None:
-    """Send a follow-up prompt to a specific council member."""
-    from datetime import datetime
+    """Display a council thread's message history, or a legacy run."""
+    from kingdom.thread import list_messages, thread_dir
 
     base = Path.cwd()
     feature = resolve_current_run(base)
-
-    logs_dir = logs_root(base, feature)
-    council_logs_dir = council_logs_root(base, feature)
-
-    # Ensure directories exist
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    council_logs_dir.mkdir(parents=True, exist_ok=True)
-
     console = Console()
 
-    c = Council.create(logs_dir=logs_dir, base=base)
-    c.load_sessions(base, feature)
-
-    # Find the member
-    council_member = c.get_member(member)
-    if council_member is None:
-        available = [m.name for m in c.members]
-        typer.echo(f"Unknown member: {member}")
-        typer.echo(f"Available members: {', '.join(available)}")
-        raise typer.Exit(code=1)
-
-    # Query just this member
-    if not json_output:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task(f"Querying {member}...", total=None)
-            response = council_member.query(prompt, c.timeout)
-            progress.update(task, description="Done")
-    else:
-        response = council_member.query(prompt, c.timeout)
-
-    c.save_sessions(base, feature)
-
-    # Find the most recent run to append to, or create a new one
-    runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
-    if runs:
-        run_dir = max(runs, key=lambda d: d.stat().st_mtime)
-    else:
-        # Create a new run bundle
-        from kingdom.council import create_run_bundle
-
-        bundle = create_run_bundle(council_logs_dir, prompt, {member: response})
-        run_dir = bundle["run_dir"]
-
-    # Append to member's response file
-    md_path = run_dir / f"{member}.md"
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    # Build follow-up content
-    followup_content = f"\n\n---\n\n## Follow-up ({timestamp})\n\n**Prompt:** {prompt}\n\n"
-    if response.error:
-        followup_content += f"> **Error:** {response.error}\n\n"
-    followup_content += response.text if response.text else "*No response*"
-    followup_content += f"\n\n*Elapsed: {response.elapsed:.1f}s*"
-
-    # Append or create the file
-    if md_path.exists():
-        existing = md_path.read_text(encoding="utf-8")
-        md_path.write_text(existing + followup_content, encoding="utf-8")
-    else:
-        # Create new file for this member
-        content = f"# {member}\n{followup_content}"
-        md_path.write_text(content, encoding="utf-8")
-
-    if json_output:
-        output = {
-            "member": member,
-            "response": {
-                "text": response.text,
-                "error": response.error,
-                "elapsed": response.elapsed,
-            },
-            "run_dir": str(run_dir),
-            "response_path": str(md_path),
-        }
-        print(json.dumps(output, indent=2))
-    else:
-        # Display the response
-        if response.error:
-            content = f"> **Error:** {response.error}\n\n"
-            if response.text:
-                content += response.text
-            else:
-                content += "*No response*"
-        else:
-            content = response.text if response.text else "*No response*"
-
-        panel = Panel(
-            Markdown(content),
-            title=member,
-            border_style="blue",
-        )
-        console.print(panel)
-        console.print(f"[dim]{response.elapsed:.1f}s[/dim]", justify="right")
-        console.print()
-        console.print(f"[dim]Appended to: {md_path}[/dim]")
-
-
-@council_app.command("critique", help="Have council members evaluate each other's responses.")
-def council_critique(
-    run_id: Annotated[str | None, typer.Argument(help="Run ID to critique (defaults to most recent).")] = None,
-    json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
-) -> None:
-    """Trigger peer evaluation of council responses (Stage 2 pattern)."""
-    base = Path.cwd()
-    feature = resolve_current_run(base)
-
-    logs_dir = logs_root(base, feature)
-    council_logs_dir = council_logs_root(base, feature)
-
-    if not council_logs_dir.exists():
-        typer.echo("No council runs found.")
-        raise typer.Exit(code=1)
-
-    # Find the run to critique
-    if run_id is None:
-        runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
-        if not runs:
-            typer.echo("No council runs found.")
-            raise typer.Exit(code=1)
-        run_dir = max(runs, key=lambda d: d.stat().st_mtime)
-    else:
-        run_dir = council_logs_dir / run_id
-        if not run_dir.exists():
-            typer.echo(f"Run not found: {run_id}")
+    # Resolve thread_id: argument, current thread, or error
+    if thread_id is None:
+        thread_id = get_current_thread(base, feature)
+        if thread_id is None:
+            typer.echo("No current council thread. Use `kd council ask` first.")
             raise typer.Exit(code=1)
 
-    console = Console()
+    # Try as a thread first
+    tdir = thread_dir(base, feature, thread_id)
+    if tdir.exists():
+        messages = list_messages(base, feature, thread_id)
+        if not messages:
+            typer.echo(f"Thread {thread_id}: no messages.")
+            raise typer.Exit(code=1)
 
-    # Load responses from the run
-    responses: dict[str, str] = {}
-    for md_file in run_dir.glob("*.md"):
-        member_name = md_file.stem
-        content = md_file.read_text(encoding="utf-8")
-        responses[member_name] = content
+        console.print(f"[bold]Thread: {thread_id}[/bold]")
+        console.print(f"[dim]{len(messages)} messages[/dim]\n")
 
-    if not responses:
-        typer.echo("No responses found in run.")
-        raise typer.Exit(code=1)
-
-    # Create anonymized versions
-    member_names = sorted(responses.keys())
-    labels = ["A", "B", "C", "D", "E"][: len(member_names)]
-    anonymized: dict[str, tuple[str, str]] = {}  # label -> (member_name, content)
-    for i, name in enumerate(member_names):
-        anonymized[labels[i]] = (name, responses[name])
-
-    # Build critique prompt
-    critique_prompt = build_critique_prompt(anonymized)
-
-    # Create council and query each member
-    c = Council.create(logs_dir=logs_dir, base=base)
-    c.load_sessions(base, feature)
-
-    critiques: dict[str, str] = {}
-
-    if not json_output:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            for member in c.members:
-                task = progress.add_task(f"Getting critique from {member.name}...", total=None)
-                response = member.query(critique_prompt, c.timeout)
-                critiques[member.name] = response.text if response.text else f"*Error: {response.error}*"
-                progress.remove_task(task)
-    else:
-        for member in c.members:
-            response = member.query(critique_prompt, c.timeout)
-            critiques[member.name] = response.text if response.text else f"*Error: {response.error}*"
-
-    c.save_sessions(base, feature)
-
-    # Save critiques to run directory
-    critiques_dir = run_dir / "critiques"
-    critiques_dir.mkdir(exist_ok=True)
-    for name, critique in critiques.items():
-        critique_path = critiques_dir / f"{name}.md"
-        content = f"# Critique by {name}\n\n{critique}"
-        critique_path.write_text(content, encoding="utf-8")
-
-    # Save mapping for reference
-    mapping = {label: name for label, (name, _) in anonymized.items()}
-    write_json(critiques_dir / "mapping.json", mapping)
-
-    if json_output:
-        output = {
-            "run_id": run_dir.name,
-            "mapping": mapping,
-            "critiques": critiques,
-            "critiques_dir": str(critiques_dir),
-        }
-        print(json.dumps(output, indent=2))
-    else:
-        console.print(f"\n[bold]Critiques for {run_dir.name}[/bold]")
-        console.print(f"Response mapping: {', '.join(f'{k}={v}' for k, v in mapping.items())}\n")
-
-        for name, critique in critiques.items():
+        for msg in messages:
+            ts = msg.timestamp.strftime("%H:%M:%S")
+            subtitle = f"{ts} · to {msg.to}"
+            border = "green" if msg.from_ == "king" else "blue"
             panel = Panel(
-                Markdown(critique),
-                title=f"Critique by {name}",
-                border_style="green",
+                Markdown(msg.body),
+                title=msg.from_,
+                subtitle=subtitle,
+                border_style=border,
             )
             console.print(panel)
             console.print()
+        return
 
-        console.print(f"[dim]Saved to: {critiques_dir}[/dim]")
-
-
-def build_critique_prompt(anonymized: dict[str, tuple[str, str]]) -> str:
-    """Build the critique prompt with anonymized responses."""
-    parts = [
-        "You are evaluating responses from different AI assistants. "
-        "Each response is labeled anonymously. Please provide a brief critique "
-        "of each response, identifying:\n"
-        "1. Key strengths\n"
-        "2. Potential weaknesses or blind spots\n"
-        "3. Which response (if any) you would recommend and why\n\n"
-        "Be concise and focus on substantive differences.\n\n"
-        "---\n\n"
-    ]
-
-    for label, (_, content) in sorted(anonymized.items()):
-        # Extract just the response text, not the header/footer
-        lines = content.split("\n")
-        # Skip the title line and any metadata
-        text_lines = []
-        in_content = False
-        for line in lines:
-            if line.startswith("# "):
-                in_content = True
-                continue
-            if line.startswith("---") and "*Elapsed:" in lines[-1]:
-                break
-            if in_content:
-                text_lines.append(line)
-
-        cleaned_content = "\n".join(text_lines).strip()
-        parts.append(f"## Response {label}\n\n{cleaned_content}\n\n---\n\n")
-
-    return "".join(parts)
-
-
-@council_app.command("show", help="Display a council run.")
-def council_show(
-    run_id: Annotated[str, typer.Argument(help="Run ID (e.g., run-4f3a) or 'last'.")],
-) -> None:
-    """Display a saved council run with responses and metadata."""
-    base = Path.cwd()
-    feature = resolve_current_run(base)
+    # Fall back to legacy run bundle in logs/council/
     council_logs_dir = council_logs_root(base, feature)
-
-    if not council_logs_dir.exists():
-        typer.echo("No council runs found.")
-        raise typer.Exit(code=1)
-
-    # Handle 'last' as special case
-    if run_id == "last":
-        runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
-        if not runs:
-            typer.echo("No council runs found.")
-            raise typer.Exit(code=1)
-        run_dir = max(runs, key=lambda d: d.stat().st_mtime)
-    else:
-        run_dir = council_logs_dir / run_id
-        if not run_dir.exists():
-            typer.echo(f"Run not found: {run_id}")
+    run_dir = council_logs_dir / thread_id
+    if not run_dir.exists():
+        # Try 'last' alias
+        if thread_id == "last":
+            runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
+            if not runs:
+                typer.echo("No council runs found.")
+                raise typer.Exit(code=1)
+            run_dir = max(runs, key=lambda d: d.stat().st_mtime)
+        else:
+            typer.echo(f"Thread or run not found: {thread_id}")
             raise typer.Exit(code=1)
 
-    console = Console()
-
-    # Read metadata
+    # Display legacy run
     metadata_path = run_dir / "metadata.json"
     if metadata_path.exists():
         metadata = read_json(metadata_path)
         typer.echo(f"Run: {run_dir.name}")
         typer.echo(f"Timestamp: {metadata.get('timestamp', 'unknown')}")
-        typer.echo(f"Prompt: {metadata.get('prompt', 'unknown')[:100]}...")
+        prompt_text = metadata.get("prompt", "unknown")
+        typer.echo(f"Prompt: {prompt_text[:100]}...")
         typer.echo()
 
-    # Show errors if any
-    errors_path = run_dir / "errors.json"
-    if errors_path.exists():
-        errors = read_json(errors_path)
-        typer.echo("Errors:")
-        for member, error in errors.items():
-            typer.echo(f"  {member}: {error}")
-        typer.echo()
-
-    # Show response files
-    typer.echo("Responses:")
     for md_file in sorted(run_dir.glob("*.md")):
-        member = md_file.stem
         content = md_file.read_text(encoding="utf-8")
-        # Show first few lines as preview
-        lines = content.split("\n")[:5]
-        preview = "\n".join(lines)
-        if len(content.split("\n")) > 5:
-            preview += "\n..."
+        console.print(Panel(Markdown(content), title=md_file.stem, border_style="blue"))
 
-        console.print(Panel(preview, title=member, border_style="blue"))
+    typer.echo(f"\n[dim]Legacy run: {run_dir}[/dim]")
 
-    typer.echo()
-    typer.echo(f"Full responses: {run_dir}")
+
+@council_app.command("list", help="List all council threads.")
+def council_list() -> None:
+    """Show all council threads with message counts."""
+    from kingdom.thread import list_threads, next_message_number, thread_dir
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    current = get_current_thread(base, feature)
+
+    threads = list_threads(base, feature)
+    council_threads = [t for t in threads if t.pattern == "council"]
+
+    if not council_threads:
+        typer.echo("No council threads.")
+        return
+
+    for t in council_threads:
+        tdir = thread_dir(base, feature, t.id)
+        msg_count = next_message_number(tdir) - 1
+        created = t.created_at.strftime("%Y-%m-%d %H:%M")
+        marker = " *" if t.id == current else ""
+        typer.echo(f"{t.id}  {created}  {msg_count} msgs{marker}")
 
 
 def query_with_progress(council, prompt, json_output, console):
@@ -703,7 +499,7 @@ def query_with_progress(council, prompt, json_output, console):
     return responses
 
 
-def display_rich_panels(responses, run_dir, console):
+def display_rich_panels(responses, thread_id, console):
     """Display responses as Rich panels with Markdown."""
     for name in sorted(responses.keys()):
         response = responses[name]
@@ -726,27 +522,7 @@ def display_rich_panels(responses, run_dir, console):
         console.print(f"[dim]{response.elapsed:.1f}s[/dim]", justify="right")
         console.print()
 
-    console.print(f"[dim]Saved to: {run_dir}[/dim]")
-
-
-def output_json(responses, run_id, run_dir, response_paths):
-    """Output JSON format for --json flag."""
-    output = {
-        "run_id": run_id,
-        "responses": {
-            name: {
-                "text": r.text,
-                "error": r.error,
-                "elapsed": r.elapsed,
-            }
-            for name, r in responses.items()
-        },
-        "paths": {
-            "run_dir": str(run_dir),
-            "responses": {name: str(path) for name, path in response_paths.items()},
-        },
-    }
-    print(json.dumps(output, indent=2))
+    console.print(f"[dim]Thread: {thread_id}[/dim]")
 
 
 design_app = typer.Typer(name="design", help="Manage design documents.")
