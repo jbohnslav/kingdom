@@ -137,6 +137,36 @@ class TestCouncilAsk:
             assert result.exit_code == 1
             assert "Unknown member" in result.output
 
+    def test_ask_invalid_thread_value_fails(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "ask", "--thread", "nw", "Hello"])
+
+            assert result.exit_code == 1
+            assert "Invalid --thread value" in result.output
+
+    def test_ask_stale_current_thread_recovers(self) -> None:
+        """If current_thread points to a missing directory, ask creates a new thread."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Set a stale pointer
+            set_current_thread(base, BRANCH, "council-gone")
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query(responses):
+                result = runner.invoke(cli.app, ["council", "ask", "After stale"])
+
+            assert result.exit_code == 0
+
+            current = get_current_thread(base, BRANCH)
+            assert current is not None
+            assert current != "council-gone"
+            assert current.startswith("council-")
+
     def test_ask_json_output(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

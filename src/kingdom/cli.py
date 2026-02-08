@@ -282,7 +282,7 @@ def council_ask(
     timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
 ) -> None:
     """Query council members via threaded conversations."""
-    from kingdom.thread import add_message, create_thread
+    from kingdom.thread import add_message, create_thread, thread_dir
 
     base = Path.cwd()
     feature = resolve_current_run(base)
@@ -291,6 +291,12 @@ def council_ask(
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     console = Console()
+
+    # Validate --thread value
+    if thread is not None and thread != "new":
+        typer.echo(f"Invalid --thread value: {thread}")
+        typer.echo("Use --thread new to start a fresh thread.")
+        raise typer.Exit(code=1)
 
     c = Council.create(logs_dir=logs_dir, base=base)
     c.timeout = timeout
@@ -307,8 +313,14 @@ def council_ask(
 
     # Determine thread: continue current, or create new
     current = get_current_thread(base, feature)
+    start_new = thread == "new" or current is None
 
-    if thread == "new" or current is None:
+    # Recover from stale pointer: current_thread set but directory missing
+    if not start_new and not thread_dir(base, feature, current).exists():
+        set_current_thread(base, feature, None)
+        start_new = True
+
+    if start_new:
         thread_id = f"council-{secrets.token_hex(2)}"
         member_names = [m.name for m in c.members]
         create_thread(base, feature, thread_id, ["king", *member_names], "council")
@@ -453,7 +465,7 @@ def council_show(
         content = md_file.read_text(encoding="utf-8")
         console.print(Panel(Markdown(content), title=md_file.stem, border_style="blue"))
 
-    typer.echo(f"\n[dim]Legacy run: {run_dir}[/dim]")
+    console.print(f"\n[dim]Legacy run: {run_dir}[/dim]")
 
 
 @council_app.command("list", help="List all council threads.")
