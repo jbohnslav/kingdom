@@ -42,3 +42,11 @@ Agent harness (kd agent run) that runs an autonomous loop: build prompt from tic
 - Added `kd agent run` CLI command as alternative entry point for the harness
 - Decision: used `os.open()`/`os.close()` for log file descriptors passed to `Popen` to satisfy ruff SIM115 (context manager rule) while keeping FDs open for the child process
 - 33 harness tests + 15 CLI tests, all 324 tests passing
+- Fix: done-gating — harness now runs `pytest -x -q` in worktree when agent reports DONE; if tests fail, overrides to CONTINUE and feeds failure back to agent
+- Fix: SIGTERM check added after blocking backend call returns, so stop takes effect even if signal arrives mid-subprocess
+- Fix: `auto_commit()` now returns `(bool, str | None)` — checks all git return codes, logs and worklogs commit failures
+- Fix: `append_worklog()` inserts entries before the next `## ` heading, not at EOF — entries stay within worklog section bounds
+- Fix: added `agent_backend` field to `AgentState`, persisted in `peasant start`, shown as Agent column in `peasant status` table
+- Fix: `peasant logs --follow` now tails both stdout.log and stderr.log
+- Fix: status table shows "dead" for working peasants whose PID is no longer alive
+- 38 harness tests + 15 CLI tests, all 329 tests passing
