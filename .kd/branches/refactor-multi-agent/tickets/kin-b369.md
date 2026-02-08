@@ -1,6 +1,6 @@
 ---
 id: kin-b369
-status: open
+status: closed
 deps: [kin-54d6]
 links: []
 created: 2026-02-07T22:34:30Z
