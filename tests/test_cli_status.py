@@ -8,7 +8,6 @@ from kingdom import cli
 from kingdom.state import ensure_run_layout, set_current_run
 from kingdom.ticket import Ticket, write_ticket
 
-
 runner = CliRunner()
 
 
