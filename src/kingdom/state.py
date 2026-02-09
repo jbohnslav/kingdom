@@ -176,6 +176,22 @@ current
     if not config_path.exists():
         write_json(config_path, {})
 
+    init_worktree_path = state_root(base) / "init-worktree.sh"
+    if not init_worktree_path.exists():
+        init_worktree_path.write_text(
+            '#!/usr/bin/env bash\n'
+            '# Kingdom worktree init — runs after "kd peasant start" creates a worktree.\n'
+            '# The worktree path is passed as $1.\n'
+            '#\n'
+            '# Examples:\n'
+            '#   cd "$1" && uv sync && pre-commit install\n'
+            '#   cd "$1" && npm install\n'
+            '#\n'
+            'echo "⚔️  Preparing the realm at $1"\n',
+            encoding="utf-8",
+        )
+        init_worktree_path.chmod(0o755)
+
     return {
         "state_root": state_root(base),
         "runs_root": runs_root(base),

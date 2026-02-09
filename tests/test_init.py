@@ -18,6 +18,9 @@ def test_ensure_base_layout_creates_structure(tmp_path: Path) -> None:
     assert (tmp_path / ".kd" / "worktrees").is_dir()
     assert (tmp_path / ".kd" / "config.json").exists()
     assert (tmp_path / ".kd" / ".gitignore").exists()
+    init_script = tmp_path / ".kd" / "init-worktree.sh"
+    assert init_script.exists()
+    assert init_script.stat().st_mode & 0o111  # executable
 
     assert paths["state_root"] == tmp_path / ".kd"
     assert paths["runs_root"] == tmp_path / ".kd" / "runs"

@@ -887,6 +887,21 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
     if result.returncode != 0:
         raise RuntimeError(f"Error creating worktree: {result.stderr.strip()}")
 
+    # Run init-worktree.sh if it exists
+    init_script = state_root(base) / "init-worktree.sh"
+    if init_script.exists() and os.access(init_script, os.X_OK):
+        init_result = subprocess.run(
+            [str(init_script), str(worktree_path)],
+            capture_output=True,
+            text=True,
+        )
+        if init_result.stdout.strip():
+            typer.echo(init_result.stdout.strip())
+        if init_result.returncode != 0:
+            typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
+            if init_result.stderr.strip():
+                typer.echo(init_result.stderr.strip())
+
     # Track in state.json
     try:
         feature = resolve_current_run(base)
