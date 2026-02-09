@@ -945,6 +945,55 @@ def remove_worktree(base: Path, full_ticket_id: str) -> None:
         pass
 
 
+def launch_harness(
+    base: Path,
+    feature: str,
+    session_name: str,
+    agent: str,
+    full_ticket_id: str,
+    worktree_path: Path,
+    thread_id: str,
+) -> int:
+    """Launch the harness subprocess in the background. Returns the PID."""
+    peasant_logs_dir = logs_root(base, feature) / session_name
+    peasant_logs_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log = peasant_logs_dir / "stdout.log"
+    stderr_log = peasant_logs_dir / "stderr.log"
+
+    harness_cmd = [
+        sys.executable,
+        "-m",
+        "kingdom.harness",
+        "--agent",
+        agent,
+        "--ticket",
+        full_ticket_id,
+        "--worktree",
+        str(worktree_path),
+        "--thread",
+        thread_id,
+        "--session",
+        session_name,
+        "--base",
+        str(base),
+    ]
+
+    stdout_fd = os.open(str(stdout_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    stderr_fd = os.open(str(stderr_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+
+    proc = subprocess.Popen(
+        harness_cmd,
+        stdout=stdout_fd,
+        stderr=stderr_fd,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    os.close(stdout_fd)
+    os.close(stderr_fd)
+    return proc.pid
+
+
 @peasant_app.command("start", help="Launch a peasant agent on a ticket.")
 def peasant_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
@@ -1016,53 +1065,17 @@ def peasant_start(
         seed_body += ticket.body
         add_message(base, feature, thread_id, from_="king", to=session_name, body=seed_body)
 
-    # 4. Set up logs directory
-    peasant_logs_dir = logs_root(base, feature) / session_name
-    peasant_logs_dir.mkdir(parents=True, exist_ok=True)
-    stdout_log = peasant_logs_dir / "stdout.log"
-    stderr_log = peasant_logs_dir / "stderr.log"
+    # 4. Launch harness as background process
+    pid = launch_harness(base, feature, session_name, agent, full_ticket_id, worktree_path, thread_id)
 
-    # 5. Launch harness as background process
-    harness_cmd = [
-        sys.executable,
-        "-m",
-        "kingdom.harness",
-        "--agent",
-        agent,
-        "--ticket",
-        full_ticket_id,
-        "--worktree",
-        str(worktree_path),
-        "--thread",
-        thread_id,
-        "--session",
-        session_name,
-        "--base",
-        str(base),
-    ]
-
-    stdout_fd = os.open(str(stdout_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
-    stderr_fd = os.open(str(stderr_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
-
-    proc = subprocess.Popen(
-        harness_cmd,
-        stdout=stdout_fd,
-        stderr=stderr_fd,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    os.close(stdout_fd)
-    os.close(stderr_fd)
-
-    # 6. Update session with pid and status
+    # 5. Update session with pid and status
     now = datetime.now(UTC).isoformat()
     update_agent_state(
         base,
         feature,
         session_name,
         status="working",
-        pid=proc.pid,
+        pid=pid,
         ticket=full_ticket_id,
         thread=thread_id,
         agent_backend=agent,
@@ -1070,7 +1083,8 @@ def peasant_start(
         last_activity=now,
     )
 
-    typer.echo(f"Started {session_name} (pid {proc.pid})")
+    peasant_logs_dir = logs_root(base, feature) / session_name
+    typer.echo(f"Started {session_name} (pid {pid})")
     typer.echo(f"  Agent: {agent}")
     typer.echo(f"  Ticket: {full_ticket_id}")
     typer.echo(f"  Worktree: {worktree_path}")
@@ -1354,6 +1368,21 @@ def peasant_msg(
 
     typer.echo(f"Directive sent to {full_ticket_id}")
 
+    # Warn if peasant is not running
+    from kingdom.session import get_agent_state
+
+    session_name = f"peasant-{full_ticket_id}"
+    state = get_agent_state(base, feature, session_name)
+    process_alive = False
+    if state.status == "working" and state.pid:
+        try:
+            os.kill(state.pid, 0)
+            process_alive = True
+        except OSError:
+            pass
+    if not process_alive:
+        typer.echo(f"Warning: peasant is not running (status: {state.status}). Message won't be picked up until restarted.")
+
 
 @peasant_app.command("read", help="Show messages from a peasant.")
 def peasant_read(
@@ -1469,14 +1498,41 @@ def peasant_review(
         except FileNotFoundError:
             typer.echo(f"No work thread found for {full_ticket_id}.")
             raise typer.Exit(code=1) from None
-        update_agent_state(
-            base,
-            feature,
-            session_name,
-            status="working",
-            last_activity=datetime.now(UTC).isoformat(),
-        )
-        typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant can resume")
+
+        # Check if peasant process is still alive
+        state = get_agent_state(base, feature, session_name)
+        process_alive = False
+        if state.pid:
+            try:
+                os.kill(state.pid, 0)
+                process_alive = True
+            except OSError:
+                pass
+
+        if process_alive:
+            update_agent_state(
+                base,
+                feature,
+                session_name,
+                status="working",
+                last_activity=datetime.now(UTC).isoformat(),
+            )
+            typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant will pick it up")
+        else:
+            # Relaunch the harness
+            agent_backend = state.agent_backend or "claude"
+            worktree_path = state_root(base) / "worktrees" / full_ticket_id
+            pid = launch_harness(base, feature, session_name, agent_backend, full_ticket_id, worktree_path, thread_id)
+            now = datetime.now(UTC).isoformat()
+            update_agent_state(
+                base,
+                feature,
+                session_name,
+                status="working",
+                pid=pid,
+                last_activity=now,
+            )
+            typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant relaunched (pid {pid})")
         return
 
     # --- Show review info ---

@@ -359,6 +359,54 @@ class TestPeasantMsg:
             assert result.exit_code == 1
             assert "No work thread" in result.output
 
+    def test_msg_warns_dead_peasant(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            thread_id = setup_work_thread(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "msg", "kin-test", "do something"])
+
+            assert result.exit_code == 0, result.output
+            assert "Directive sent" in result.output
+            assert "Warning" in result.output
+            assert "not running" in result.output
+
+            # Message should still be written to thread
+            messages = list_messages(base, BRANCH, thread_id)
+            assert len(messages) == 1
+            assert "do something" in messages[0].body
+
+    def test_msg_no_warning_when_alive(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            setup_work_thread(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="working", pid=os.getpid()),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "msg", "kin-test", "keep going"])
+
+            assert result.exit_code == 0, result.output
+            assert "Directive sent" in result.output
+            assert "Warning" not in result.output
+
     def test_msg_ticket_not_found(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -545,7 +593,7 @@ class TestPeasantReview:
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "done"
 
-    def test_review_reject_sends_feedback(self) -> None:
+    def test_review_reject_relaunches_dead_peasant(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -557,24 +605,60 @@ class TestPeasantReview:
                 base,
                 BRANCH,
                 session_name,
-                AgentState(name=session_name, status="done"),
+                AgentState(name=session_name, status="done", agent_backend="claude"),
             )
 
-            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix the edge case"])
+            with patch("kingdom.cli.launch_harness", return_value=54321) as mock_launch:
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix the edge case"])
 
             assert result.exit_code == 0, result.output
             assert "rejected" in result.output
-            assert "feedback sent" in result.output
+            assert "relaunched" in result.output
+            assert "54321" in result.output
 
             # Feedback should be in the thread
             messages = list_messages(base, BRANCH, thread_id)
             assert len(messages) == 1
-            assert messages[0].from_ == "king"
             assert "fix the edge case" in messages[0].body
 
-            # Session should be set back to working
+            # Session should be working with new PID
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "working"
+            assert state.pid == 54321
+
+            # launch_harness should have been called
+            mock_launch.assert_called_once()
+
+    def test_review_reject_no_relaunch_if_alive(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            thread_id = setup_work_thread(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="working", pid=os.getpid()),
+            )
+
+            with patch("kingdom.cli.launch_harness") as mock_launch:
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "try again"])
+
+            assert result.exit_code == 0, result.output
+            assert "rejected" in result.output
+            assert "pick it up" in result.output
+            assert "relaunched" not in result.output
+
+            # Should NOT have relaunched
+            mock_launch.assert_not_called()
+
+            # Feedback should still be in the thread
+            messages = list_messages(base, BRANCH, thread_id)
+            assert len(messages) == 1
+            assert "try again" in messages[0].body
 
     def test_review_shows_failures(self) -> None:
         with runner.isolated_filesystem():
