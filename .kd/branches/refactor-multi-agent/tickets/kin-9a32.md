@@ -1,6 +1,6 @@
 ---
 id: kin-9a32
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-09T18:48:16Z
@@ -25,7 +25,18 @@ When overriding DONE to CONTINUE, the harness logs "Tests failed, overriding DON
 
 ## Acceptance Criteria
 
-- [ ] `kd peasant logs --follow` shows the agent's actual CLI output, not just harness bookkeeping
-- [ ] Harness DONE check runs both pytest and ruff check (matching `kd peasant review`)
-- [ ] When tests or lint fail, the full failure output is logged (visible in `kd peasant logs`)
-- [ ] Peasant that passes harness DONE check also passes `kd peasant review` gates
+- [x] `kd peasant logs --follow` shows the agent's actual CLI output, not just harness bookkeeping
+- [x] Harness DONE check runs both pytest and ruff check (matching `kd peasant review`)
+- [x] When tests or lint fail, the full failure output is logged (visible in `kd peasant logs`)
+- [x] Peasant that passes harness DONE check also passes `kd peasant review` gates
+
+## Worklog
+
+- Agent stdout/stderr now logged after each backend call (harness.py:357-361)
+- Added `run_lint()` function parallel to `run_tests()`, runs `ruff check .`
+- DONE check calls both `run_tests()` and `run_lint()` — matches `kd peasant review` gates
+- On gate failure, full pytest/ruff output logged via logger (visible in stdout.log), worklog gets summary
+- Fixed `run_tests()` to use `sys.executable` instead of `"python"` (matches review code)
+- Fixed `agent_backend` → `agent_name` kwarg bug in `kd agent run` CLI command
+- Added test for lint-only failure (`test_loop_continues_when_done_but_lint_fails`)
+- All 374 tests pass, ruff clean
