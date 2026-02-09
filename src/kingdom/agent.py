@@ -272,9 +272,10 @@ RESPONSE_PARSERS = {
 def build_claude_command(config: AgentConfig, prompt: str, session_id: str | None) -> list[str]:
     """Build claude CLI command.
 
-    Format: ``claude --print --output-format json [--resume SESSION] -p PROMPT``
+    Format: ``claude --dangerously-skip-permissions --print --output-format json [--resume SESSION] -p PROMPT``
     """
     cmd = shlex.split(config.cli)
+    cmd.insert(1, "--dangerously-skip-permissions")
     if session_id:
         cmd.extend([config.resume_flag, session_id])
     cmd.extend(["-p", prompt])
@@ -287,6 +288,7 @@ def build_codex_command(config: AgentConfig, prompt: str, session_id: str | None
     Codex uses subcommand-style resume: ``codex exec resume <id> --json <prompt>``
     """
     parts = shlex.split(config.cli)
+    parts.insert(1, "--dangerously-bypass-approvals-and-sandbox")
     if session_id:
         try:
             exec_idx = parts.index("exec")
@@ -302,9 +304,12 @@ def build_codex_command(config: AgentConfig, prompt: str, session_id: str | None
 def build_cursor_command(config: AgentConfig, prompt: str, session_id: str | None) -> list[str]:
     """Build cursor agent CLI command.
 
-    Format: ``agent --print --output-format json PROMPT [--resume SESSION]``
+    Format: ``agent --force --sandbox disabled --print --output-format json PROMPT [--resume SESSION]``
     """
     cmd = shlex.split(config.cli)
+    cmd.insert(1, "--force")
+    cmd.insert(2, "--sandbox")
+    cmd.insert(3, "disabled")
     cmd.append(prompt)
     if session_id:
         cmd.extend([config.resume_flag, session_id])
