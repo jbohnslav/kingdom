@@ -304,6 +304,10 @@ while not done and not blocked:
 
 The peasant runs tests (`pytest`) and linters (`ruff`) when it makes sense — the agent decides, like an engineer would. Not on every iteration.
 
+**Harness quality gates must match review gates.** The harness DONE condition must validate the same things `kd peasant review` checks — currently pytest AND ruff. If the harness only runs pytest but review also runs ruff, the peasant will claim "done" with lint failures and get bounced by review. The harness should run both `pytest` and `ruff check` before accepting a DONE signal.
+
+**Harness logging must include test output.** When tests or lint fail, the harness must log the actual failure output (which tests failed, error messages), not just "Tests failed, overriding DONE to CONTINUE." Without this, debugging from logs is impossible.
+
 **Stop conditions:**
 - **Done** — ticket acceptance criteria met, tests pass, and lint/formatting checks (`ruff`) pass. Status → `done`.
 - **Blocked** — needs a decision, hit something unexpected, can't proceed. Status → `blocked`. Writes escalation to thread.
@@ -430,7 +434,7 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 - Priority: 3
 - Ticket: kin-b369
 - Depends on: T5
-- Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread (peasant picks it up on next loop iteration). `kd peasant read <ticket>` shows recent messages from the peasant (escalations, status updates). `kd peasant review <ticket>` is the Hand's final review after peasant signals done — verify tests, review diff and worklog, accept or reject.
+- Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread (peasant picks it up on next loop iteration). If the harness has already exited (dead/done/stopped), the directive is written to the thread but never read — `kd peasant msg` should warn when the target peasant is not running. `kd peasant read <ticket>` shows recent messages from the peasant (escalations, status updates). `kd peasant review <ticket>` is the Hand's final review after peasant signals done — verify tests, review diff and worklog, accept or reject.
 - Acceptance:
   - [ ] `kd peasant msg KIN-042 "focus on tests"` writes directive to thread, peasant picks up on next iteration
   - [ ] `kd peasant read KIN-042` shows peasant's messages (escalations, worklog updates)
