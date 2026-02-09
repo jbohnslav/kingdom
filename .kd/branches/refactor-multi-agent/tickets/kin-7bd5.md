@@ -1,6 +1,6 @@
 ---
 id: kin-7bd5
-status: open
+status: closed
 deps: [kin-111b]
 links: []
 created: 2026-02-09T16:43:42Z
