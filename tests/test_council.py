@@ -18,13 +18,34 @@ def make_member(name: str) -> CouncilMember:
     return CouncilMember(config=DEFAULT_AGENTS[name])
 
 
+class TestCouncilMemberPermissions:
+    """Council members should NOT include skip-permissions flags."""
+
+    def test_claude_no_skip_permissions(self) -> None:
+        member = make_member("claude")
+        cmd = member.build_command("hello world")
+        assert "--dangerously-skip-permissions" not in cmd
+        assert cmd == ["claude", "--print", "--output-format", "json", "-p", "hello world"]
+
+    def test_codex_no_skip_permissions(self) -> None:
+        member = make_member("codex")
+        cmd = member.build_command("hello world")
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+        assert cmd == ["codex", "exec", "--json", "hello world"]
+
+    def test_cursor_no_skip_permissions(self) -> None:
+        member = make_member("cursor")
+        cmd = member.build_command("hello world")
+        assert "--force" not in cmd
+        assert "--sandbox" not in cmd
+
+
 class TestClaudeMember:
     def test_build_command_without_session(self) -> None:
         member = make_member("claude")
         cmd = member.build_command("hello world")
         assert cmd == [
             "claude",
-            "--dangerously-skip-permissions",
             "--print",
             "--output-format",
             "json",
@@ -36,10 +57,8 @@ class TestClaudeMember:
         member = make_member("claude")
         member.session_id = "abc123"
         cmd = member.build_command("hello")
-        # --resume must come before -p
         assert cmd == [
             "claude",
-            "--dangerously-skip-permissions",
             "--print",
             "--output-format",
             "json",
@@ -54,7 +73,7 @@ class TestCodexMember:
     def test_build_command_without_session(self) -> None:
         member = make_member("codex")
         cmd = member.build_command("hello world")
-        assert cmd == ["codex", "--dangerously-bypass-approvals-and-sandbox", "exec", "--json", "hello world"]
+        assert cmd == ["codex", "exec", "--json", "hello world"]
 
     def test_build_command_with_session(self) -> None:
         """Codex uses 'exec resume <thread_id>' for continuation."""
@@ -63,7 +82,6 @@ class TestCodexMember:
         cmd = member.build_command("hello")
         assert cmd == [
             "codex",
-            "--dangerously-bypass-approvals-and-sandbox",
             "exec",
             "resume",
             "thread-123",
@@ -401,3 +419,73 @@ class TestCouncilSessions:
         assert council.get_member("claude").session_id == "legacy-sess-id"
         assert not old_path.exists()
         assert session_path(project, BRANCH, "claude").exists()
+
+
+class TestQueryToThread:
+    """Tests for Council.query_to_thread()."""
+
+    def test_writes_responses_to_thread(self, project: Path) -> None:
+        from kingdom.thread import create_thread, list_messages
+
+        thread_id = "council-test"
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+
+        council = Council.create(base=project)
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "test response"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+            responses = council.query_to_thread("test prompt", project, BRANCH, thread_id)
+
+        assert len(responses) == 3
+        messages = list_messages(project, BRANCH, thread_id)
+        # 3 response messages (one per member)
+        assert len(messages) == 3
+        senders = {m.from_ for m in messages}
+        assert senders == {"claude", "codex", "cursor"}
+
+    def test_calls_callback_for_each_response(self, project: Path) -> None:
+        from kingdom.thread import create_thread
+
+        thread_id = "council-cb"
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+
+        council = Council.create(base=project)
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "ok"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        callback_calls = []
+
+        def on_response(name, response):
+            callback_calls.append(name)
+
+        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+            council.query_to_thread("test", project, BRANCH, thread_id, callback=on_response)
+
+        assert len(callback_calls) == 3
+        assert set(callback_calls) == {"claude", "codex", "cursor"}
+
+    def test_handles_errors_in_thread(self, project: Path) -> None:
+        from kingdom.thread import create_thread, list_messages
+
+        thread_id = "council-err"
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+
+        council = Council.create(base=project)
+
+        with patch("kingdom.council.base.subprocess.run", side_effect=FileNotFoundError()):
+            responses = council.query_to_thread("test", project, BRANCH, thread_id)
+
+        # All should have errors
+        for resp in responses.values():
+            assert resp.error is not None
+
+        # All should still be written to thread
+        messages = list_messages(project, BRANCH, thread_id)
+        assert len(messages) == 3

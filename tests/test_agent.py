@@ -317,6 +317,43 @@ class TestBuildCommand:
             build_command(config, "hello", session_id="thread-1")
 
 
+class TestBuildCommandSkipPermissions:
+    def test_claude_skip_permissions_false(self) -> None:
+        cmd = build_command(DEFAULT_AGENTS["claude"], "hello world", skip_permissions=False)
+        assert "--dangerously-skip-permissions" not in cmd
+        assert cmd == ["claude", "--print", "--output-format", "json", "-p", "hello world"]
+
+    def test_codex_skip_permissions_false(self) -> None:
+        cmd = build_command(DEFAULT_AGENTS["codex"], "hello world", skip_permissions=False)
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+        assert cmd == ["codex", "exec", "--json", "hello world"]
+
+    def test_cursor_skip_permissions_false(self) -> None:
+        cmd = build_command(DEFAULT_AGENTS["cursor"], "hello world", skip_permissions=False)
+        assert "--force" not in cmd
+        assert "--sandbox" not in cmd
+        assert "disabled" not in cmd
+        assert cmd == ["agent", "--print", "--output-format", "json", "hello world"]
+
+    def test_claude_skip_permissions_true_is_default(self) -> None:
+        cmd_default = build_command(DEFAULT_AGENTS["claude"], "hello")
+        cmd_explicit = build_command(DEFAULT_AGENTS["claude"], "hello", skip_permissions=True)
+        assert cmd_default == cmd_explicit
+        assert "--dangerously-skip-permissions" in cmd_default
+
+    def test_codex_skip_permissions_false_with_session(self) -> None:
+        cmd = build_command(DEFAULT_AGENTS["codex"], "hello", session_id="t-1", skip_permissions=False)
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+        assert "resume" in cmd
+        assert "t-1" in cmd
+
+    def test_cursor_skip_permissions_false_with_session(self) -> None:
+        cmd = build_command(DEFAULT_AGENTS["cursor"], "hello", session_id="c-1", skip_permissions=False)
+        assert "--force" not in cmd
+        assert "--resume" in cmd
+        assert "c-1" in cmd
+
+
 class TestParseClaudeResponse:
     def test_json_output(self) -> None:
         stdout = '{"result": "hello world", "session_id": "sess-123"}'

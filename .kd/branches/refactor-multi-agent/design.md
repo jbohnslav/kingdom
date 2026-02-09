@@ -234,15 +234,27 @@ The King watches this happen in their terminal. They can interject ("actually us
 ```bash
 # Council (broadcast to all advisors)
 kd council ask "Should we use Redis?"              # new thread, all members
+kd council ask --async "Should we use Redis?"      # fire-and-forget (returns thread ID)
 kd council ask --to codex "Elaborate on pooling"   # same thread, one member
 kd council ask "Final recommendations?"            # same thread, all members
 kd council ask --thread new "Different topic"      # explicit new thread
 
 kd council show [thread-id]                        # show thread history
+kd council watch [thread-id]                       # live stream the conversation
 kd council list                                    # list threads
 ```
 
-The current `kd council ask` / `kd council followup` / `kd council critique` collapse into one command. `ask` defaults to "continue current thread" if one exists, or "start new thread" if not. `--to` targets a specific member.
+The current `kd council ask` / `kd council followup` / `kd council critique` collapse into one command. `ask` defaults to "continue current thread" if one exists.
+- **Interactive mode (default):** Streams responses to stdout. The Hand sees the output.
+- **Async mode (`--async`):** Returns the thread ID immediately. The King can then watch the debate in a separate terminal (`kd council watch <thread-id>`) to prevent the Hand from "taking over" the synthesis.
+
+**Council inside the Hand's TUI:** Council queries take 60-120s (multiple agent subprocesses). When the King runs `kd council ask` as a local command inside Claude Code, long-running commands get backgrounded automatically — output goes to a capture file instead of displaying inline. The King never sees the responses without manually retrieving them.
+
+The workaround today is two-step: `kd council ask` (backgrounds), then `kd council show` (instant, stays foreground, renders panels inline). This works but isn't obvious.
+
+The better design is to make `kd council ask` async: dispatch agents in the background and return immediately ("Querying council-XXXX..."). Agents write responses to the thread as they finish. `kd council show --wait` polls until responses arrive and displays them. The first command is instant (never backgrounds), the second blocks but actively renders. This also means the King can fire off a question and check back later — more chat-room than RPC.
+
+**Council permissions:** Council agents must run without elevated permissions (no `--dangerously-skip-permissions` or equivalent). Council is read-only — agents advise, they don't act. Skip-permissions flags should only be passed for peasant execution. Currently `build_command()` inserts them unconditionally.
 
 **Peasant execution:**
 
@@ -254,14 +266,16 @@ kd peasant msg KIN-042 "Focus on tests"     # send directive
 kd peasant read KIN-042                     # read escalations
 kd peasant review KIN-042                   # review work + run quality gates
 kd peasant stop KIN-042                     # stop the agent process
+kd peasant sync KIN-042                     # pull parent branch changes into worktree
 ```
 
 `kd peasant start` does what the current `kd peasant` does (worktree + branch) plus:
-1. Creates `sessions/peasant-KIN-042.json`
-2. Creates a `kin-042-work` thread with members `[peasant-kin-042, king]`
-3. Seeds the thread with a `ticket_start` message (ticket content, acceptance criteria, refs)
-4. Launches the backend agent as a subprocess in the worktree
-5. Captures stdout/stderr to log files
+1. **Setup**: runs `uv sync` and `pre-commit install` in the worktree to ensure dependencies and hooks are ready.
+2. Creates `sessions/peasant-KIN-042.json`
+3. Creates a `kin-042-work` thread with members `[peasant-kin-042, king]`
+4. Seeds the thread with a `ticket_start` message (ticket content, acceptance criteria, refs)
+5. Launches the backend agent as a subprocess in the worktree
+6. Captures stdout/stderr to log files (ensuring agent "thought" output is visible, not just harness logs)
 
 **Status overview:**
 
@@ -288,10 +302,10 @@ while not done and not blocked:
     8. Check: done? blocked? new directives in thread?
 ```
 
-The peasant runs tests when it makes sense — the agent decides, like an engineer would. Not on every iteration.
+The peasant runs tests (`pytest`) and linters (`ruff`) when it makes sense — the agent decides, like an engineer would. Not on every iteration.
 
 **Stop conditions:**
-- **Done** — ticket acceptance criteria met, tests pass. Status → `done`.
+- **Done** — ticket acceptance criteria met, tests pass, and lint/formatting checks (`ruff`) pass. Status → `done`.
 - **Blocked** — needs a decision, hit something unexpected, can't proceed. Status → `blocked`. Writes escalation to thread.
 - **Stopped** — King/Hand sent `kd peasant stop`. Status → `stopped`.
 - **Failed** — unrecoverable error. Status → `failed`.
@@ -320,7 +334,7 @@ On `kd peasant review KIN-042` (Hand reviews after peasant signals done):
 3. Review the diff and worklog
 4. Accept (merge ticket branch) or reject (send feedback, peasant resumes)
 
-If the Hand rejects, the peasant gets a feedback message and status goes back to `working`.
+If the Hand rejects, the peasant gets a feedback message and status goes back to `working`. If the peasant process has exited, `kd peasant review --reject` **automatically restarts it** so it can address the feedback immediately.
 
 ## What We're NOT Building (v1)
 
@@ -380,15 +394,16 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 - Priority: 2
 - Ticket: kin-111b
 - Depends on: T1, T2, T3
-- Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--thread new` forces a new thread. Add `kd council show [thread-id]` and `kd council list`. Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor. Existing council run bundles in `logs/council/run-*` remain readable but new queries go to threads.
+- Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--thread new` forces a new thread. Add `--async` flag to return immediately. Add `kd council show` (static) and `kd council watch` (live tail). Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor.
 - Acceptance:
   - [ ] `kd council ask "prompt"` creates thread on first use, continues on subsequent
+  - [ ] `kd council ask --async` returns thread ID immediately without waiting
   - [ ] `kd council ask --to codex "prompt"` sends to one member only
   - [ ] `kd council ask --thread new "prompt"` starts a fresh thread
   - [ ] All messages written to thread directory as sequential .md files
   - [ ] Resume tokens stored in `sessions/<agent>.json`, used on follow-up queries
   - [ ] `kd council show` displays thread history with Rich panels
-  - [ ] `kd council show` falls back to `logs/council/run-*` for pre-migration runs
+  - [ ] `kd council watch` tails the thread message files live
   - [ ] `kd council list` shows all council threads
   - [ ] Old `followup` and `critique` commands removed
 

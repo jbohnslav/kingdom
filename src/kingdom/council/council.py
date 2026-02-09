@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +72,51 @@ class Council:
                         elapsed=0.0,
                         raw="",
                     )
+
+        return responses
+
+    def query_to_thread(
+        self,
+        prompt: str,
+        base: Path,
+        branch: str,
+        thread_id: str,
+        callback: Callable[[str, AgentResponse], None] | None = None,
+    ) -> dict[str, AgentResponse]:
+        """Query all members, writing each response to a thread as it arrives.
+
+        Args:
+            prompt: The query prompt.
+            base: Project root.
+            branch: Branch name.
+            thread_id: Thread ID to write responses to.
+            callback: Optional function called with (name, response) as each arrives.
+
+        Returns:
+            Dict mapping member name to AgentResponse.
+        """
+        from kingdom.thread import add_message
+
+        responses: dict[str, AgentResponse] = {}
+
+        with ThreadPoolExecutor(max_workers=len(self.members)) as executor:
+            futures = {executor.submit(member.query, prompt, self.timeout): member for member in self.members}
+
+            for future in as_completed(futures):
+                member = futures[future]
+                try:
+                    response = future.result()
+                except Exception as e:
+                    response = AgentResponse(name=member.name, text="", error=str(e), elapsed=0.0, raw="")
+
+                responses[member.name] = response
+
+                # Write to thread
+                body = response.text if response.text else f"*Error: {response.error}*"
+                add_message(base, branch, thread_id, from_=member.name, to="king", body=body)
+
+                if callback:
+                    callback(member.name, response)
 
         return responses
 

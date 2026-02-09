@@ -36,8 +36,11 @@ class CouncilMember:
         return self.config.name
 
     def build_command(self, prompt: str) -> list[str]:
-        """Build the CLI command to execute."""
-        return agent_build_command(self.config, prompt, self.session_id)
+        """Build the CLI command to execute.
+
+        Council queries are read-only, so skip_permissions is False.
+        """
+        return agent_build_command(self.config, prompt, self.session_id, skip_permissions=False)
 
     def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse response from CLI output.

@@ -282,9 +282,15 @@ def council_ask(
     to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
     thread: Annotated[str | None, typer.Option("--thread", help="'new' to start a fresh thread.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
+    async_mode: Annotated[bool, typer.Option("--async", help="Dispatch and return immediately.")] = False,
     timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
 ) -> None:
-    """Query council members via threaded conversations."""
+    """Query council members via threaded conversations.
+
+    Default mode streams responses as Rich panels as each agent finishes.
+    Use --async to dispatch agents in the background and return immediately.
+    Use --json for machine-readable batch output.
+    """
     from kingdom.thread import add_message, create_thread, thread_dir
 
     base = Path.cwd()
@@ -306,6 +312,7 @@ def council_ask(
     c.load_sessions(base, feature)
 
     # Validate --to target
+    member = None
     if to:
         member = c.get_member(to)
         if member is None:
@@ -325,7 +332,7 @@ def council_ask(
 
     if start_new:
         thread_id = f"council-{secrets.token_hex(2)}"
-        member_names = [m.name for m in c.members]
+        member_names = [to] if to else [m.name for m in c.members]
         create_thread(base, feature, thread_id, ["king", *member_names], "council")
         set_current_thread(base, feature, thread_id)
     else:
@@ -335,33 +342,52 @@ def council_ask(
     target = to or "all"
     add_message(base, feature, thread_id, from_="king", to=target, body=prompt)
 
-    # Query members
-    if to:
-        if not json_output:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-                transient=True,
-            ) as progress:
-                task = progress.add_task(f"Querying {to}...", total=None)
+    # --async mode: fork and return immediately
+    if async_mode:
+        member_names_str = to if to else ", ".join(m.name for m in c.members)
+        typer.echo(f"Thread: {thread_id}")
+        typer.echo(f"Dispatching to: {member_names_str}")
+        typer.echo("Use `kd council watch` to see responses.")
+
+        # Double-fork to prevent zombie processes
+        pid = os.fork()
+        if pid > 0:
+            # Parent returns immediately
+            return
+
+        # First child: detach
+        os.setsid()
+        pid2 = os.fork()
+        if pid2 > 0:
+            os._exit(0)
+
+        # Second child: run the queries
+        try:
+            if to and member:
                 response = member.query(prompt, timeout)
-                progress.update(task, description="Done")
-        else:
-            response = member.query(prompt, timeout)
-        responses = {to: response}
-    else:
-        responses = query_with_progress(c, prompt, json_output, console)
+                body = response.text if response.text else f"*Error: {response.error}*"
+                add_message(base, feature, thread_id, from_=to, to="king", body=body)
+            else:
+                c.query_to_thread(prompt, base, feature, thread_id)
+            c.save_sessions(base, feature)
+        finally:
+            os._exit(0)
 
-    # Write each response as a message to the thread
-    for name, response in responses.items():
-        body = response.text if response.text else f"*Error: {response.error}*"
-        add_message(base, feature, thread_id, from_=name, to="king", body=body)
-
-    c.save_sessions(base, feature)
-
-    # Display results
+    # --json mode: batch query, no streaming
     if json_output:
+        if to and member:
+            response = member.query(prompt, timeout)
+            responses = {to: response}
+            body = response.text if response.text else f"*Error: {response.error}*"
+            add_message(base, feature, thread_id, from_=to, to="king", body=body)
+        else:
+            responses = query_with_progress(c, prompt, json_output, console)
+            for name, resp in responses.items():
+                body = resp.text if resp.text else f"*Error: {resp.error}*"
+                add_message(base, feature, thread_id, from_=name, to="king", body=body)
+
+        c.save_sessions(base, feature)
+
         output = {
             "thread_id": thread_id,
             "responses": {
@@ -374,8 +400,33 @@ def council_ask(
             },
         }
         print(json.dumps(output, indent=2))
+        return
+
+    # Default streaming mode: render each response as it arrives
+    member_names_str = to if to else ", ".join(m.name for m in c.members)
+    console.print(f"[dim]Thread: {thread_id}[/dim]")
+    console.print(f"[dim]Querying: {member_names_str}...[/dim]\n")
+
+    if to and member:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task(f"Querying {to}...", total=None)
+            response = member.query(prompt, timeout)
+            progress.update(task, description="Done")
+        body = response.text if response.text else f"*Error: {response.error}*"
+        add_message(base, feature, thread_id, from_=to, to="king", body=body)
+        render_response_panel(response, console)
     else:
-        display_rich_panels(responses, thread_id, console)
+        def on_response(name, response):
+            render_response_panel(response, console)
+
+        c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
+
+    c.save_sessions(base, feature)
 
 
 @council_app.command("reset", help="Clear all council sessions.")
@@ -445,6 +496,9 @@ def council_show(
     if not run_dir.exists():
         # Try 'last' alias
         if thread_id == "last":
+            if not council_logs_dir.exists():
+                typer.echo("No council runs found.")
+                raise typer.Exit(code=1)
             runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
             if not runs:
                 typer.echo("No council runs found.")
@@ -495,6 +549,113 @@ def council_list() -> None:
         typer.echo(f"{t.id}  {created}  {msg_count} msgs{marker}")
 
 
+@council_app.command("watch", help="Watch a council thread for incoming responses.")
+def council_watch(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
+    timeout: Annotated[int, typer.Option("--timeout", help="Max seconds to wait.")] = 300,
+) -> None:
+    """Watch a council thread and render agent responses as they arrive.
+
+    Polls the thread directory for new message files and renders agent
+    responses as Rich panels. Exits when all expected members have responded
+    or on timeout/Ctrl+C.
+    """
+    import time
+
+    from kingdom.council.base import AgentResponse
+    from kingdom.thread import get_thread, list_messages, thread_dir
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    console = Console()
+
+    # Resolve thread_id
+    if thread_id is None:
+        thread_id = get_current_thread(base, feature)
+        if thread_id is None:
+            typer.echo("No current council thread. Use `kd council ask` first.")
+            raise typer.Exit(code=1)
+
+    tdir = thread_dir(base, feature, thread_id)
+    if not tdir.exists():
+        typer.echo(f"Thread not found: {thread_id}")
+        raise typer.Exit(code=1)
+
+    # Read thread metadata to get expected members
+    meta = get_thread(base, feature, thread_id)
+    expected_members = {m for m in meta.members if m != "king"}
+
+    console.print(f"[bold]Watching: {thread_id}[/bold]")
+    console.print(f"[dim]Expecting: {', '.join(sorted(expected_members))}[/dim]\n")
+
+    # Track which messages we've already rendered
+    seen_sequences: set[int] = set()
+    responded_members: set[str] = set()
+
+    # Render any existing agent responses
+    messages = list_messages(base, feature, thread_id)
+    for msg in messages:
+        seen_sequences.add(msg.sequence)
+        if msg.from_ != "king" and msg.from_ in expected_members:
+            responded_members.add(msg.from_)
+            response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)
+            render_response_panel(response, console)
+
+    if responded_members >= expected_members:
+        console.print("[dim]All members have responded.[/dim]")
+        return
+
+    # Poll for new messages
+    start_time = time.monotonic()
+    try:
+        while time.monotonic() - start_time < timeout:
+            time.sleep(0.5)
+
+            messages = list_messages(base, feature, thread_id)
+            for msg in messages:
+                if msg.sequence in seen_sequences:
+                    continue
+                seen_sequences.add(msg.sequence)
+
+                if msg.from_ != "king" and msg.from_ in expected_members:
+                    responded_members.add(msg.from_)
+                    response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)
+                    render_response_panel(response, console)
+
+            if responded_members >= expected_members:
+                console.print("[dim]All members have responded.[/dim]")
+                return
+    except KeyboardInterrupt:
+        console.print("\n[dim]Watch interrupted.[/dim]")
+        return
+
+    console.print(f"[yellow]Timeout after {timeout}s. Received from: {', '.join(sorted(responded_members))}[/yellow]")
+    missing = expected_members - responded_members
+    if missing:
+        console.print(f"[yellow]Missing: {', '.join(sorted(missing))}[/yellow]")
+
+
+def render_response_panel(response, console):
+    """Render a single AgentResponse as a Rich panel."""
+    if response.error:
+        content = f"> **Error:** {response.error}\n\n"
+        if response.text:
+            content += response.text
+        else:
+            content += "*No response*"
+    else:
+        content = response.text if response.text else "*No response*"
+
+    panel = Panel(
+        Markdown(content),
+        title=response.name,
+        border_style="blue",
+    )
+    console.print(panel)
+    console.print(f"[dim]{response.elapsed:.1f}s[/dim]", justify="right")
+    console.print()
+
+
 def query_with_progress(council, prompt, json_output, console):
     """Query with spinner showing member progress."""
     if json_output:
@@ -517,25 +678,7 @@ def query_with_progress(council, prompt, json_output, console):
 def display_rich_panels(responses, thread_id, console):
     """Display responses as Rich panels with Markdown."""
     for name in sorted(responses.keys()):
-        response = responses[name]
-
-        if response.error:
-            content = f"> **Error:** {response.error}\n\n"
-            if response.text:
-                content += response.text
-            else:
-                content += "*No response*"
-        else:
-            content = response.text if response.text else "*No response*"
-
-        panel = Panel(
-            Markdown(content),
-            title=response.name,
-            border_style="blue",
-        )
-        console.print(panel)
-        console.print(f"[dim]{response.elapsed:.1f}s[/dim]", justify="right")
-        console.print()
+        render_response_panel(responses[name], console)
 
     console.print(f"[dim]Thread: {thread_id}[/dim]")
 

@@ -269,26 +269,32 @@ RESPONSE_PARSERS = {
 # ---------------------------------------------------------------------------
 
 
-def build_claude_command(config: AgentConfig, prompt: str, session_id: str | None) -> list[str]:
+def build_claude_command(
+    config: AgentConfig, prompt: str, session_id: str | None, skip_permissions: bool = True
+) -> list[str]:
     """Build claude CLI command.
 
-    Format: ``claude --dangerously-skip-permissions --print --output-format json [--resume SESSION] -p PROMPT``
+    Format: ``claude [--dangerously-skip-permissions] --print --output-format json [--resume SESSION] -p PROMPT``
     """
     cmd = shlex.split(config.cli)
-    cmd.insert(1, "--dangerously-skip-permissions")
+    if skip_permissions:
+        cmd.insert(1, "--dangerously-skip-permissions")
     if session_id:
         cmd.extend([config.resume_flag, session_id])
     cmd.extend(["-p", prompt])
     return cmd
 
 
-def build_codex_command(config: AgentConfig, prompt: str, session_id: str | None) -> list[str]:
+def build_codex_command(
+    config: AgentConfig, prompt: str, session_id: str | None, skip_permissions: bool = True
+) -> list[str]:
     """Build codex CLI command.
 
     Codex uses subcommand-style resume: ``codex exec resume <id> --json <prompt>``
     """
     parts = shlex.split(config.cli)
-    parts.insert(1, "--dangerously-bypass-approvals-and-sandbox")
+    if skip_permissions:
+        parts.insert(1, "--dangerously-bypass-approvals-and-sandbox")
     if session_id:
         try:
             exec_idx = parts.index("exec")
@@ -301,15 +307,18 @@ def build_codex_command(config: AgentConfig, prompt: str, session_id: str | None
     return cmd
 
 
-def build_cursor_command(config: AgentConfig, prompt: str, session_id: str | None) -> list[str]:
+def build_cursor_command(
+    config: AgentConfig, prompt: str, session_id: str | None, skip_permissions: bool = True
+) -> list[str]:
     """Build cursor agent CLI command.
 
-    Format: ``agent --force --sandbox disabled --print --output-format json PROMPT [--resume SESSION]``
+    Format: ``agent [--force --sandbox disabled] --print --output-format json PROMPT [--resume SESSION]``
     """
     cmd = shlex.split(config.cli)
-    cmd.insert(1, "--force")
-    cmd.insert(2, "--sandbox")
-    cmd.insert(3, "disabled")
+    if skip_permissions:
+        cmd.insert(1, "--force")
+        cmd.insert(2, "--sandbox")
+        cmd.insert(3, "disabled")
     cmd.append(prompt)
     if session_id:
         cmd.extend([config.resume_flag, session_id])
@@ -323,10 +332,19 @@ COMMAND_BUILDERS = {
 }
 
 
-def build_command(config: AgentConfig, prompt: str, session_id: str | None = None) -> list[str]:
+def build_command(
+    config: AgentConfig, prompt: str, session_id: str | None = None, skip_permissions: bool = True
+) -> list[str]:
     """Build a CLI command for an agent.
 
     Dispatches to backend-specific command builder.
+
+    Args:
+        config: Agent configuration.
+        prompt: The prompt text.
+        session_id: Optional session ID for resume.
+        skip_permissions: If True (default), insert flags to bypass permission prompts.
+            Set to False for read-only council queries.
 
     Raises:
         ValueError: If the backend is unknown.
@@ -334,7 +352,7 @@ def build_command(config: AgentConfig, prompt: str, session_id: str | None = Non
     builder = COMMAND_BUILDERS.get(config.backend)
     if builder is None:
         raise ValueError(f"Unknown backend: {config.backend}")
-    return builder(config, prompt, session_id)
+    return builder(config, prompt, session_id, skip_permissions)
 
 
 def parse_response(config: AgentConfig, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
