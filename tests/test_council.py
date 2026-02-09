@@ -22,28 +22,28 @@ class TestClaudeMember:
     def test_build_command_without_session(self) -> None:
         member = make_member("claude")
         cmd = member.build_command("hello world")
-        assert cmd == ["claude", "--print", "--output-format", "json", "-p", "hello world"]
+        assert cmd == ["claude", "--dangerously-skip-permissions", "--print", "--output-format", "json", "-p", "hello world"]
 
     def test_build_command_with_session(self) -> None:
         member = make_member("claude")
         member.session_id = "abc123"
         cmd = member.build_command("hello")
         # --resume must come before -p
-        assert cmd == ["claude", "--print", "--output-format", "json", "--resume", "abc123", "-p", "hello"]
+        assert cmd == ["claude", "--dangerously-skip-permissions", "--print", "--output-format", "json", "--resume", "abc123", "-p", "hello"]
 
 
 class TestCodexMember:
     def test_build_command_without_session(self) -> None:
         member = make_member("codex")
         cmd = member.build_command("hello world")
-        assert cmd == ["codex", "exec", "--json", "hello world"]
+        assert cmd == ["codex", "--dangerously-bypass-approvals-and-sandbox", "exec", "--json", "hello world"]
 
     def test_build_command_with_session(self) -> None:
         """Codex uses 'exec resume <thread_id>' for continuation."""
         member = make_member("codex")
         member.session_id = "thread-123"
         cmd = member.build_command("hello")
-        assert cmd == ["codex", "exec", "resume", "thread-123", "--json", "hello"]
+        assert cmd == ["codex", "--dangerously-bypass-approvals-and-sandbox", "exec", "resume", "thread-123", "--json", "hello"]
 
     def test_parse_response_jsonl_extracts_thread_id(self) -> None:
         """Codex --json outputs JSONL; extract thread_id and agent message."""
