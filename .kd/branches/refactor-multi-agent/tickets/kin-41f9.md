@@ -95,3 +95,10 @@ The ticket branch (`ticket/<ticket-id>`) remains for merging.
 - [ ] `kd peasant review` ran quality gates and showed diff + worklog
 - [ ] Ticket accepted or rejected via review
 - [ ] Notes on what broke or felt wrong captured in worklog below
+
+## Worklog
+
+- Launched peasant on kin-b202 as the smoke test ticket. Peasant blocked on file write permissions (no auto-approve for edits).
+- `kd peasant read` shows good messages — the agent wrote those itself and they're informative. But `kd peasant logs --follow` just to snoop on what the agent is doing is not working — only shows iteration boundaries and final status, no visibility into what the agent is actually doing.
+- The agent doesn't have file write permissions, which is crazy — it's blocked on editing a file in its own worktree. Peasants need to be launched with write permissions enabled.
+- `kd peasant status` works.
