@@ -572,6 +572,84 @@ class TestRunAgentLoop:
 
         assert status == "failed"
 
+    def test_agent_output_logged(self, project: Path, ticket_path: Path) -> None:
+        """Agent stdout/stderr must appear in log records."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "Edited foo.py\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_result.stderr = "some debug info from agent"
+        mock_result.returncode = 0
+
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
+            patch("kingdom.harness.logger") as mock_logger,
+        ):
+            run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        # Collect all info log messages
+        info_calls = [str(call) for call in mock_logger.info.call_args_list]
+        log_text = "\n".join(info_calls)
+        assert "Agent stdout" in log_text
+        assert "Agent stderr" in log_text
+        assert "some debug info from agent" in log_text
+
+    def test_gate_failure_details_logged(self, project: Path, ticket_path: Path) -> None:
+        """Full pytest/ruff failure output must appear in log records when gates fail."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        call_count = 0
+
+        def mock_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            result.stderr = ""
+            result.returncode = 0
+            return result
+
+        lint_fail_output = "src/foo.py:10:1: F401 `os` imported but unused"
+        lint_call_count = 0
+
+        def mock_lint(*args, **kwargs):
+            nonlocal lint_call_count
+            lint_call_count += 1
+            if lint_call_count >= 2:
+                return LINT_PASS
+            return (False, lint_fail_output)
+
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", side_effect=mock_lint),
+            patch("kingdom.harness.logger") as mock_logger,
+        ):
+            run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        # Full ruff failure output should appear in a warning log
+        warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
+        warning_text = "\n".join(warning_calls)
+        assert lint_fail_output in warning_text
+
     def test_loop_stopped_by_signal_after_backend(self, project: Path, ticket_path: Path) -> None:
         """SIGTERM during backend call should stop after it returns."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
