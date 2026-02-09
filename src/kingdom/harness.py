@@ -187,7 +187,7 @@ def run_tests(worktree: Path) -> tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            ["python", "-m", "pytest", "-x", "-q", "--tb=short"],
+            [sys.executable, "-m", "pytest", "-x", "-q", "--tb=short"],
             capture_output=True,
             text=True,
             timeout=120,
@@ -201,6 +201,29 @@ def run_tests(worktree: Path) -> tuple[bool, str]:
         return True, "pytest not found, skipping verification"
     except subprocess.TimeoutExpired:
         return False, "Test suite timed out after 120s"
+
+
+def run_lint(worktree: Path) -> tuple[bool, str]:
+    """Run ruff check in the worktree to verify lint.
+
+    Returns (passed, output): passed is True if lint passes.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "."],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=worktree,
+        )
+        output = result.stdout.strip()
+        if result.stderr.strip():
+            output += "\n" + result.stderr.strip()
+        return result.returncode == 0, output
+    except FileNotFoundError:
+        return True, "ruff not found, skipping lint check"
+    except subprocess.TimeoutExpired:
+        return False, "Lint check timed out after 60s"
 
 
 def run_agent_loop(
@@ -331,6 +354,12 @@ def run_agent_loop(
             logger.info("Stopping after backend call (signal received)")
             break
 
+        # Log raw agent output so it appears in `kd peasant logs --follow`
+        if proc.stdout.strip():
+            logger.info("--- Agent stdout ---\n%s\n--- End agent stdout ---", proc.stdout.strip())
+        if proc.stderr.strip():
+            logger.info("--- Agent stderr ---\n%s\n--- End agent stderr ---", proc.stderr.strip())
+
         # Parse response
         text, new_session_id, _raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
         if new_session_id:
@@ -372,16 +401,29 @@ def run_agent_loop(
 
         # Check stop conditions
         if status == "done":
-            # Verify by running tests before accepting done
-            logger.info("Agent reports DONE — verifying tests...")
+            # Verify by running quality gates (pytest + ruff) before accepting done
+            logger.info("Agent reports DONE — running quality gates...")
             tests_passed, test_output = run_tests(worktree)
-            if tests_passed:
+            lint_passed, lint_output = run_lint(worktree)
+
+            if tests_passed and lint_passed:
                 final_status = "done"
-                logger.info("Tests passed, accepting DONE")
-                append_worklog(ticket_path, "Tests passed — marking done")
+                logger.info("Quality gates passed (pytest + ruff), accepting DONE")
+                append_worklog(ticket_path, "Quality gates passed (pytest + ruff) — marking done")
             else:
-                logger.warning("Tests failed, overriding DONE to CONTINUE")
-                append_worklog(ticket_path, f"Agent reported DONE but tests failed: {test_output[:200]}")
+                failures = []
+                if not tests_passed:
+                    failures.append(f"pytest:\n{test_output}")
+                if not lint_passed:
+                    failures.append(f"ruff:\n{lint_output}")
+                failure_detail = "\n\n".join(failures)
+                logger.warning("Quality gates failed, overriding DONE to CONTINUE:\n%s", failure_detail)
+                summary = []
+                if not tests_passed:
+                    summary.append("pytest failed")
+                if not lint_passed:
+                    summary.append("ruff failed")
+                append_worklog(ticket_path, f"DONE rejected ({', '.join(summary)}). See logs for details.")
                 # Don't break — continue the loop so agent can fix
                 continue
             break

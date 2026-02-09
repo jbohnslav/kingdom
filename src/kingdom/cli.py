@@ -1594,7 +1594,7 @@ def agent_run(
     status = run_agent_loop(
         base=base,
         branch=feature,
-        agent_backend=agent,
+        agent_name=agent,
         ticket_id=ticket,
         worktree=worktree_path,
         thread_id=thread,

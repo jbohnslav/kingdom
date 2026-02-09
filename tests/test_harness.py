@@ -28,6 +28,8 @@ BRANCH = "feature/harness-test"
 # Common mock return values
 TESTS_PASS = (True, "4 passed")
 TESTS_FAIL = (False, "FAILED test_foo.py::test_bar - AssertionError")
+LINT_PASS = (True, "All checks passed!")
+LINT_FAIL = (False, "src/foo.py:1:1: F401 `os` imported but unused")
 
 
 @pytest.fixture()
@@ -233,7 +235,7 @@ class TestRunAgentLoop:
         set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
         return thread_id, session_name
 
-    def test_loop_done_when_tests_pass(self, project: Path, ticket_path: Path) -> None:
+    def test_loop_done_when_gates_pass(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
         mock_result = MagicMock()
@@ -244,6 +246,7 @@ class TestRunAgentLoop:
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
             patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
         ):
             status = run_agent_loop(
                 base=project,
@@ -258,6 +261,10 @@ class TestRunAgentLoop:
         assert status == "done"
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "done"
+
+        # Worklog should mention quality gates
+        ticket = read_ticket(ticket_path)
+        assert "quality gates passed" in ticket.body.lower()
 
     def test_loop_continues_when_done_but_tests_fail(self, project: Path, ticket_path: Path) -> None:
         """Agent says DONE but tests fail — loop should continue, not accept done."""
@@ -287,6 +294,7 @@ class TestRunAgentLoop:
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
             patch("kingdom.harness.run_tests", side_effect=mock_tests),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
         ):
             status = run_agent_loop(
                 base=project,
@@ -301,9 +309,55 @@ class TestRunAgentLoop:
         assert status == "done"
         assert call_count == 2  # Had to iterate again after test failure
 
-        # Worklog should mention the test failure
+        # Worklog should mention the failure
         ticket = read_ticket(ticket_path)
-        assert "tests failed" in ticket.body.lower()
+        assert "pytest failed" in ticket.body.lower()
+
+    def test_loop_continues_when_done_but_lint_fails(self, project: Path, ticket_path: Path) -> None:
+        """Agent says DONE but ruff fails — loop should continue."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        call_count = 0
+
+        def mock_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            result.stderr = ""
+            result.returncode = 0
+            return result
+
+        lint_call_count = 0
+
+        def mock_lint(*args, **kwargs):
+            nonlocal lint_call_count
+            lint_call_count += 1
+            if lint_call_count >= 2:
+                return LINT_PASS
+            return LINT_FAIL
+
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", side_effect=mock_lint),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "done"
+        assert call_count == 2
+
+        # Worklog should mention lint failure
+        ticket = read_ticket(ticket_path)
+        assert "ruff failed" in ticket.body.lower()
 
     def test_loop_blocked(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
@@ -362,6 +416,7 @@ class TestRunAgentLoop:
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
             patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
         ):
             run_agent_loop(
                 base=project,
@@ -389,6 +444,7 @@ class TestRunAgentLoop:
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
             patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
         ):
             run_agent_loop(
                 base=project,
@@ -415,6 +471,7 @@ class TestRunAgentLoop:
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
             patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
         ):
             run_agent_loop(
                 base=project,
@@ -449,6 +506,7 @@ class TestRunAgentLoop:
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
             patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
         ):
             status = run_agent_loop(
                 base=project,
