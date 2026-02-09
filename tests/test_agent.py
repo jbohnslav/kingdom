@@ -232,27 +232,41 @@ class TestCreateDefaultAgentFiles:
 class TestBuildCommand:
     def test_claude_without_session(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["claude"], "hello world")
-        assert cmd == ["claude", "--print", "--output-format", "json", "-p", "hello world"]
+        assert cmd == [
+            "claude", "--dangerously-skip-permissions", "--print", "--output-format", "json", "-p", "hello world",
+        ]
 
     def test_claude_with_session(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["claude"], "hello", session_id="abc123")
-        assert cmd == ["claude", "--print", "--output-format", "json", "--resume", "abc123", "-p", "hello"]
+        assert cmd == [
+            "claude", "--dangerously-skip-permissions", "--print", "--output-format", "json",
+            "--resume", "abc123", "-p", "hello",
+        ]
 
     def test_codex_without_session(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["codex"], "hello world")
-        assert cmd == ["codex", "exec", "--json", "hello world"]
+        assert cmd == [
+            "codex", "--dangerously-bypass-approvals-and-sandbox", "exec", "--json", "hello world",
+        ]
 
     def test_codex_with_session(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["codex"], "hello", session_id="thread-123")
-        assert cmd == ["codex", "exec", "resume", "thread-123", "--json", "hello"]
+        assert cmd == [
+            "codex", "--dangerously-bypass-approvals-and-sandbox", "exec", "resume", "thread-123", "--json", "hello",
+        ]
 
     def test_cursor_without_session(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["cursor"], "hello world")
-        assert cmd == ["agent", "--print", "--output-format", "json", "hello world"]
+        assert cmd == [
+            "agent", "--force", "--sandbox", "disabled", "--print", "--output-format", "json", "hello world",
+        ]
 
     def test_cursor_with_session(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["cursor"], "hello", session_id="conv-456")
-        assert cmd == ["agent", "--print", "--output-format", "json", "hello", "--resume", "conv-456"]
+        assert cmd == [
+            "agent", "--force", "--sandbox", "disabled", "--print", "--output-format", "json",
+            "hello", "--resume", "conv-456",
+        ]
 
     def test_unknown_backend_raises(self) -> None:
         config = AgentConfig(name="bad", backend="unknown", cli="bad", resume_flag="")
