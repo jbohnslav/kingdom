@@ -1546,14 +1546,10 @@ def status(
         if design_path_str:
             typer.echo(f"Design: {design_path_str}")
         typer.echo()
-        typer.echo(f"Design: {design_status}")
-        typer.echo(f"Breakdown: {breakdown_status}")
-        typer.echo()
         total = sum(status_counts.values())
         typer.echo(
-            f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, {status_counts['closed']} closed ({total} total)"
+            f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, {status_counts['closed']} closed, {ready_count} ready ({total} total)"
         )
-        typer.echo(f"Ready: {ready_count}")
 
 
 def check_cli(command: list[str]) -> tuple[bool, str | None]:
