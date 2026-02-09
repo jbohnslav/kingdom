@@ -1,11 +1,11 @@
 ---
 id: kin-cebe
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-09T18:48:40Z
 type: task
-priority: 1
+priority: 2
 ---
 # Review --reject auto-relaunch and dead peasant warnings
 
@@ -21,7 +21,16 @@ Currently `kd peasant msg` writes to the thread silently even when the harness i
 
 ## Acceptance Criteria
 
-- [ ] `kd peasant review --reject "fix X"` restarts the harness if the peasant process has exited
-- [ ] After reject-relaunch, peasant picks up the feedback on its next iteration
-- [ ] `kd peasant msg` warns when the target peasant is not running (dead/done/stopped)
-- [ ] `kd peasant msg` still writes the message to the thread (so it's there when peasant restarts)
+- [x] `kd peasant review --reject "fix X"` restarts the harness if the peasant process has exited
+- [x] After reject-relaunch, peasant picks up the feedback on its next iteration
+- [x] `kd peasant msg` warns when the target peasant is not running (dead/done/stopped)
+- [x] `kd peasant msg` still writes the message to the thread (so it's there when peasant restarts)
+
+## Worklog
+
+- Extracted `launch_harness()` helper from `peasant_start` to reuse in reject path
+- Reject path checks if PID is alive; if dead, relaunches harness with same agent config
+- If alive, just sends feedback and lets running peasant pick it up
+- `peasant_msg` checks session state + PID liveness after writing; warns if not running
+- Added 4 new tests: reject-relaunch, reject-no-relaunch-if-alive, msg-warns-dead, msg-no-warning-alive
+- No difficulties — `agent_backend` is stored in session state so relaunch has all needed info
