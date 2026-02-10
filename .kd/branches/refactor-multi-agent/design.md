@@ -387,12 +387,12 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 - Depends on: none
 - Description: Per-agent runtime state in `sessions/<agent>.json`. Each agent writes only its own file (no locking needed). Helpers to get/set agent status, resume_id, pid, ticket, thread, timestamps. Agent status enum: idle, working, blocked, done, failed, stopped. Branch-level `current_thread` stays in `state.json`. Migrate existing `.session` files (plain text resume IDs) to the new `.json` format on first access.
 - Acceptance:
-  - [ ] `get_agent_state(branch, agent_name)` reads `sessions/<agent>.json`
-  - [ ] `set_agent_state(branch, agent_name, **fields)` writes `sessions/<agent>.json`
-  - [ ] `list_active_agents(branch)` scans sessions/ for agents with status != idle
-  - [ ] `get_current_thread(branch)` / `set_current_thread(branch, thread_id)` manage current thread pointer in state.json
-  - [ ] Existing `.session` files migrated to `.json` on first read (read old format, write new format, remove old file)
-  - [ ] Existing state.json fields preserved
+  - [x] `get_agent_state(branch, agent_name)` reads `sessions/<agent>.json`
+  - [x] `set_agent_state(branch, agent_name, **fields)` writes `sessions/<agent>.json`
+  - [x] `list_active_agents(branch)` scans sessions/ for agents with status != idle
+  - [x] `get_current_thread(branch)` / `set_current_thread(branch, thread_id)` manage current thread pointer in state.json
+  - [x] Existing `.session` files migrated to `.json` on first read (read old format, write new format, remove old file)
+  - [x] Existing state.json fields preserved
 
 ### T4: Council refactor
 - Priority: 2
@@ -400,16 +400,16 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 - Depends on: T1, T2, T3
 - Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--thread new` forces a new thread. Add `--async` flag to return immediately. Add `kd council show` (static) and `kd council watch` (live tail). Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor.
 - Acceptance:
-  - [ ] `kd council ask "prompt"` creates thread on first use, continues on subsequent
-  - [ ] `kd council ask --async` returns thread ID immediately without waiting
-  - [ ] `kd council ask --to codex "prompt"` sends to one member only
-  - [ ] `kd council ask --thread new "prompt"` starts a fresh thread
-  - [ ] All messages written to thread directory as sequential .md files
-  - [ ] Resume tokens stored in `sessions/<agent>.json`, used on follow-up queries
-  - [ ] `kd council show` displays thread history with Rich panels
-  - [ ] `kd council watch` tails the thread message files live
-  - [ ] `kd council list` shows all council threads
-  - [ ] Old `followup` and `critique` commands removed
+  - [x] `kd council ask "prompt"` creates thread on first use, continues on subsequent
+  - [x] `kd council ask --async` returns thread ID immediately without waiting
+  - [x] `kd council ask --to codex "prompt"` sends to one member only
+  - [x] `kd council ask --thread new "prompt"` starts a fresh thread
+  - [x] All messages written to thread directory as sequential .md files
+  - [x] Resume tokens stored in `sessions/<agent>.json`, used on follow-up queries
+  - [x] `kd council show` displays thread history with Rich panels
+  - [x] `kd council watch` tails the thread message files live
+  - [x] `kd council list` shows all council threads
+  - [x] Old `followup` and `critique` commands removed
 
 ### T5: Peasant execution
 - Priority: 2
@@ -436,10 +436,10 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 - Depends on: T5
 - Description: `kd peasant msg <ticket> "message"` writes a directive to the work thread (peasant picks it up on next loop iteration). If the harness has already exited (dead/done/stopped), the directive is written to the thread but never read — `kd peasant msg` should warn when the target peasant is not running. `kd peasant read <ticket>` shows recent messages from the peasant (escalations, status updates). `kd peasant review <ticket>` is the Hand's final review after peasant signals done — verify tests, review diff and worklog, accept or reject.
 - Acceptance:
-  - [ ] `kd peasant msg KIN-042 "focus on tests"` writes directive to thread, peasant picks up on next iteration
-  - [ ] `kd peasant read KIN-042` shows peasant's messages (escalations, worklog updates)
-  - [ ] `kd peasant review KIN-042` runs pytest + ruff, shows diff + worklog for Hand review
-  - [ ] Hand can accept (ticket closed, branch ready to merge) or reject (feedback sent, peasant resumes)
+  - [x] `kd peasant msg KIN-042 "focus on tests"` writes directive to thread, peasant picks up on next iteration
+  - [x] `kd peasant read KIN-042` shows peasant's messages (escalations, worklog updates)
+  - [x] `kd peasant review KIN-042` runs pytest + ruff, shows diff + worklog for Hand review
+  - [x] Hand can accept (ticket closed, branch ready to merge) or reject (feedback sent, peasant resumes)
 
 ## References
 
