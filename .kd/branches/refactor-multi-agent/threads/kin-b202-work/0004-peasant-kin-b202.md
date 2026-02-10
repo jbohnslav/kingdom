@@ -16,7 +16,7 @@ The commit is already in place from the previous iteration. All tests pass.
 
 In `src/kingdom/cli.py`, the `status` command's human-readable output was simplified:
 - **Removed** the `Design: {design_status}` line (e.g., "Design: present")
-- **Removed** the `Breakdown: {breakdown_status}` line (e.g., "Breakdown: empty") 
+- **Removed** the `Breakdown: {breakdown_status}` line (e.g., "Breakdown: empty")
 - **Removed** the separate `Ready: {ready_count}` line
 - **Added** ready count to the Tickets summary line: `Tickets: X open, Y in progress, Z closed, N ready (T total)`
 

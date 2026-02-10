@@ -23,7 +23,7 @@ The test file looks correct. Working tree is clean. All 349 tests pass. Both com
 
 ## Acceptance criteria:
 - "Design: present" line removed
-- "Breakdown: empty" line removed  
+- "Breakdown: empty" line removed
 - Ready count in Tickets summary line
 - No separate Ready line
 - All 349 tests pass

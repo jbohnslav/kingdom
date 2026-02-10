@@ -443,7 +443,6 @@ class TestCouncilWatch:
             assert "codex" in result.output
             assert "cursor" in result.output
 
-
     def test_watch_targeted_ask_completes_without_timeout(self) -> None:
         """watch on a --to thread should complete when the targeted member responds."""
         with runner.isolated_filesystem():

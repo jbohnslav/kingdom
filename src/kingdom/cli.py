@@ -421,6 +421,7 @@ def council_ask(
         add_message(base, feature, thread_id, from_=to, to="king", body=body)
         render_response_panel(response, console)
     else:
+
         def on_response(name, response):
             render_response_panel(response, console)
 
@@ -1363,7 +1364,9 @@ def peasant_sync(
     if state.status == "working" and state.pid:
         try:
             os.kill(state.pid, 0)
-            typer.echo(f"Peasant is running on {full_ticket_id} (pid {state.pid}). Stop it first with `kd peasant stop`.")
+            typer.echo(
+                f"Peasant is running on {full_ticket_id} (pid {state.pid}). Stop it first with `kd peasant stop`."
+            )
             raise typer.Exit(code=1)
         except OSError:
             pass  # Process is dead, safe to sync
@@ -1470,7 +1473,9 @@ def peasant_msg(
         except OSError:
             pass
     if not process_alive:
-        typer.echo(f"Warning: peasant is not running (status: {state.status}). Message won't be picked up until restarted.")
+        typer.echo(
+            f"Warning: peasant is not running (status: {state.status}). Message won't be picked up until restarted."
+        )
 
 
 @peasant_app.command("read", help="Show messages from a peasant.")
