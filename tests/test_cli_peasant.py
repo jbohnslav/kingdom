@@ -629,6 +629,30 @@ class TestPeasantReview:
             # launch_harness should have been called
             mock_launch.assert_called_once()
 
+    def test_review_reject_relaunches_on_stale_pid(self) -> None:
+        """PID reuse: status=done but PID happens to be alive (another process). Should still relaunch."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            setup_work_thread(base)
+
+            session_name = "peasant-kin-test"
+            # Status is "done" but PID is alive (os.getpid()) — simulates PID reuse
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done", pid=os.getpid(), agent_backend="claude"),
+            )
+
+            with patch("kingdom.cli.launch_harness", return_value=99999) as mock_launch:
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix it"])
+
+            assert result.exit_code == 0, result.output
+            assert "relaunched" in result.output
+            mock_launch.assert_called_once()
+
     def test_review_reject_no_relaunch_if_alive(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

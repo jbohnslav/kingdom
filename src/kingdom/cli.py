@@ -1502,7 +1502,7 @@ def peasant_review(
         # Check if peasant process is still alive
         state = get_agent_state(base, feature, session_name)
         process_alive = False
-        if state.pid:
+        if state.status == "working" and state.pid:
             try:
                 os.kill(state.pid, 0)
                 process_alive = True
