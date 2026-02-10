@@ -112,7 +112,7 @@ class TestCouncilAsk:
                 runner.invoke(cli.app, ["council", "ask", "First topic"])
                 first_thread = get_current_thread(base, BRANCH)
 
-                runner.invoke(cli.app, ["council", "ask", "--thread", "new", "New topic"])
+                runner.invoke(cli.app, ["council", "ask", "--new-thread", "New topic"])
                 second_thread = get_current_thread(base, BRANCH)
 
             assert first_thread != second_thread
@@ -173,16 +173,6 @@ class TestCouncilAsk:
 
             assert result.exit_code == 1
             assert "Unknown member" in result.output
-
-    def test_ask_invalid_thread_value_fails(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-
-            result = runner.invoke(cli.app, ["council", "ask", "--thread", "nw", "Hello"])
-
-            assert result.exit_code == 1
-            assert "Invalid --thread value" in result.output
 
     def test_ask_stale_current_thread_recovers(self) -> None:
         """If current_thread points to a missing directory, ask creates a new thread."""
@@ -330,7 +320,7 @@ class TestCouncilList:
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
                 runner.invoke(cli.app, ["council", "ask", "Topic 1"])
-                runner.invoke(cli.app, ["council", "ask", "--thread", "new", "Topic 2"])
+                runner.invoke(cli.app, ["council", "ask", "--new-thread", "Topic 2"])
 
             result = runner.invoke(cli.app, ["council", "list"])
 
