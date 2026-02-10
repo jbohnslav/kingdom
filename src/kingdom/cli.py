@@ -1329,6 +1329,95 @@ def peasant_clean(
         raise typer.Exit(code=1) from None
 
 
+@peasant_app.command("sync", help="Pull parent branch changes into a peasant's worktree.")
+def peasant_sync(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+) -> None:
+    """Merge the parent branch into the worktree's ticket branch, then refresh dependencies."""
+    from kingdom.session import get_agent_state
+
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, _ = result
+    full_ticket_id = ticket.id
+
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    # Refuse if peasant is actively running
+    session_name = f"peasant-{full_ticket_id}"
+    state = get_agent_state(base, feature, session_name)
+    if state.status == "working" and state.pid:
+        try:
+            os.kill(state.pid, 0)
+            typer.echo(f"Peasant is running on {full_ticket_id} (pid {state.pid}). Stop it first with `kd peasant stop`.")
+            raise typer.Exit(code=1)
+        except OSError:
+            pass  # Process is dead, safe to sync
+
+    # Find worktree
+    worktree_path = state_root(base) / "worktrees" / full_ticket_id
+    if not worktree_path.exists():
+        typer.echo(f"No worktree found for {full_ticket_id}. Has the peasant been started?")
+        raise typer.Exit(code=1)
+
+    # Merge parent branch into worktree
+    parent_branch = feature
+    typer.echo(f"Merging {parent_branch} into worktree for {full_ticket_id}...")
+    merge_result = subprocess.run(
+        ["git", "merge", parent_branch, "--no-edit"],
+        capture_output=True,
+        text=True,
+        cwd=worktree_path,
+    )
+
+    if merge_result.returncode != 0:
+        # Check for merge conflict
+        typer.echo("Merge failed.")
+        if merge_result.stdout.strip():
+            typer.echo(merge_result.stdout.strip())
+        if merge_result.stderr.strip():
+            typer.echo(merge_result.stderr.strip())
+        # Abort the merge so we don't leave the worktree in a dirty state
+        subprocess.run(["git", "merge", "--abort"], capture_output=True, cwd=worktree_path)
+        typer.echo(f"\nMerge aborted. To resolve manually:\n  cd {worktree_path}\n  git merge {parent_branch}")
+        raise typer.Exit(code=1)
+
+    if merge_result.stdout.strip():
+        typer.echo(merge_result.stdout.strip())
+
+    # Run init-worktree.sh to refresh dependencies
+    init_script = state_root(base) / "init-worktree.sh"
+    if init_script.exists() and os.access(init_script, os.X_OK):
+        typer.echo("Running init-worktree.sh...")
+        init_result = subprocess.run(
+            [str(init_script), str(worktree_path)],
+            capture_output=True,
+            text=True,
+        )
+        if init_result.stdout.strip():
+            typer.echo(init_result.stdout.strip())
+        if init_result.returncode != 0:
+            typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
+            if init_result.stderr.strip():
+                typer.echo(init_result.stderr.strip())
+
+    typer.echo(f"Sync complete for {full_ticket_id}")
+
+
 @peasant_app.command("msg", help="Send a directive to a working peasant.")
 def peasant_msg(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],

@@ -304,6 +304,166 @@ class TestPeasantClean:
             assert "No worktree" in result.output
 
 
+class TestPeasantSync:
+    def test_sync_merges_parent_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            # Create fake worktree directory
+            from kingdom.state import state_root
+
+            worktree_path = state_root(base) / "worktrees" / "kin-test"
+            worktree_path.mkdir(parents=True, exist_ok=True)
+
+            merge_result = MagicMock()
+            merge_result.returncode = 0
+            merge_result.stdout = "Already up to date."
+            merge_result.stderr = ""
+
+            with patch("subprocess.run", return_value=merge_result):
+                result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "Sync complete" in result.output
+
+    def test_sync_refuses_while_running(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="working", pid=os.getpid()),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "running" in result.output.lower()
+            assert "stop" in result.output.lower()
+
+    def test_sync_allows_when_dead_pid(self) -> None:
+        """Status=working but PID is dead — should allow sync."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="working", pid=99999999),
+            )
+
+            from kingdom.state import state_root
+
+            worktree_path = state_root(base) / "worktrees" / "kin-test"
+            worktree_path.mkdir(parents=True, exist_ok=True)
+
+            merge_result = MagicMock()
+            merge_result.returncode = 0
+            merge_result.stdout = "Already up to date."
+            merge_result.stderr = ""
+
+            with patch("subprocess.run", return_value=merge_result):
+                result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "Sync complete" in result.output
+
+    def test_sync_no_worktree(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "No worktree" in result.output
+
+    def test_sync_merge_conflict_aborts(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            from kingdom.state import state_root
+
+            worktree_path = state_root(base) / "worktrees" / "kin-test"
+            worktree_path.mkdir(parents=True, exist_ok=True)
+
+            merge_result = MagicMock()
+            merge_result.returncode = 1
+            merge_result.stdout = "CONFLICT (content): Merge conflict in foo.py"
+            merge_result.stderr = ""
+
+            abort_result = MagicMock()
+            abort_result.returncode = 0
+
+            with patch("subprocess.run", side_effect=[merge_result, abort_result]) as mock_run:
+                result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "Merge failed" in result.output
+            assert "resolve manually" in result.output.lower()
+
+            # Should have called git merge --abort
+            calls = mock_run.call_args_list
+            assert any("--abort" in str(c) for c in calls)
+
+    def test_sync_runs_init_script(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            from kingdom.state import state_root
+
+            worktree_path = state_root(base) / "worktrees" / "kin-test"
+            worktree_path.mkdir(parents=True, exist_ok=True)
+
+            # Create executable init script
+            init_script = state_root(base) / "init-worktree.sh"
+            init_script.write_text("#!/bin/bash\necho 'init ran'", encoding="utf-8")
+            init_script.chmod(0o755)
+
+            merge_result = MagicMock()
+            merge_result.returncode = 0
+            merge_result.stdout = "Already up to date."
+            merge_result.stderr = ""
+
+            init_run_result = MagicMock()
+            init_run_result.returncode = 0
+            init_run_result.stdout = "init ran"
+            init_run_result.stderr = ""
+
+            with patch("subprocess.run", side_effect=[merge_result, init_run_result]):
+                result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "init-worktree.sh" in result.output
+            assert "Sync complete" in result.output
+
+    def test_sync_ticket_not_found(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["peasant", "sync", "kin-nope"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output
+
+
 def setup_work_thread(base: Path, ticket_id: str = "kin-test") -> str:
     """Create a work thread for a ticket. Returns thread_id."""
     thread_id = f"{ticket_id}-work"
