@@ -59,27 +59,37 @@ def ticket_path(project: Path) -> Path:
 
 class TestBuildPrompt:
     def test_basic_prompt(self) -> None:
-        prompt = build_prompt("Do the thing", "", [], 1)
-        assert "Do the thing" in prompt
+        ticket_path = Path("/project/tickets/kin-001.md")
+        prompt = build_prompt(ticket_path, "", [], 1)
+        assert str(ticket_path) in prompt
         assert "iteration 1" in prompt
         assert "STATUS: DONE" in prompt
         assert "STATUS: BLOCKED" in prompt
         assert "STATUS: CONTINUE" in prompt
 
+    def test_prompt_does_not_contain_ticket_body(self) -> None:
+        ticket_path = Path("/project/tickets/kin-001.md")
+        prompt = build_prompt(ticket_path, "", [], 1)
+        assert "Do the thing" not in prompt
+        assert str(ticket_path) in prompt
+
     def test_prompt_with_worklog(self) -> None:
-        prompt = build_prompt("Do the thing", "- Did step 1", [], 2)
+        ticket_path = Path("/project/tickets/kin-001.md")
+        prompt = build_prompt(ticket_path, "- Did step 1", [], 2)
         assert "Current Worklog" in prompt
         assert "Did step 1" in prompt
 
     def test_prompt_with_directives(self) -> None:
-        prompt = build_prompt("Do the thing", "", ["Focus on tests", "Use pytest"], 3)
+        ticket_path = Path("/project/tickets/kin-001.md")
+        prompt = build_prompt(ticket_path, "", ["Focus on tests", "Use pytest"], 3)
         assert "Directives from Lead" in prompt
         assert "Focus on tests" in prompt
         assert "Use pytest" in prompt
 
     def test_prompt_with_all(self) -> None:
-        prompt = build_prompt("Do it", "- Done A", ["Do B"], 5)
-        assert "Do it" in prompt
+        ticket_path = Path("/project/tickets/kin-001.md")
+        prompt = build_prompt(ticket_path, "- Done A", ["Do B"], 5)
+        assert str(ticket_path) in prompt
         assert "Done A" in prompt
         assert "Do B" in prompt
         assert "iteration 5" in prompt
