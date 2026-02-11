@@ -15,7 +15,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
 import typer
 from rich.console import Console
@@ -1006,18 +1006,24 @@ def launch_harness(
     return proc.pid
 
 
-@peasant_app.command("start", help="Launch a peasant agent on a ticket.")
-def peasant_start(
-    ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
-    agent: Annotated[str, typer.Option("--agent", help="Agent to use.")] = "claude",
-) -> None:
-    """Create worktree, session, thread, and launch agent harness in background."""
-    from kingdom.session import update_agent_state
-    from kingdom.thread import create_thread
+class _PeasantContext(NamedTuple):
+    """Resolved ticket and (optionally) feature branch for a peasant command."""
 
+    base: Path
+    ticket: Ticket
+    ticket_path: Path
+    full_ticket_id: str
+    feature: str
+
+
+def _resolve_peasant_context(ticket_id: str) -> _PeasantContext:
+    """Resolve ticket and feature branch, or exit with an error message.
+
+    Handles the repeated preamble shared by peasant_* commands:
+    find_ticket + AmbiguousTicketMatch handling + resolve_current_run.
+    """
     base = Path.cwd()
 
-    # Find the ticket
     try:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
@@ -1028,15 +1034,35 @@ def peasant_start(
         typer.echo(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
-    ticket, _ticket_path = result
+    ticket, ticket_path = result
     full_ticket_id = ticket.id
 
-    # Resolve current branch
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
+
+    return _PeasantContext(
+        base=base,
+        ticket=ticket,
+        ticket_path=ticket_path,
+        full_ticket_id=full_ticket_id,
+        feature=feature,
+    )
+
+
+@peasant_app.command("start", help="Launch a peasant agent on a ticket.")
+def peasant_start(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
+    agent: Annotated[str, typer.Option("--agent", help="Agent to use.")] = "claude",
+) -> None:
+    """Create worktree, session, thread, and launch agent harness in background."""
+    from kingdom.session import update_agent_state
+    from kingdom.thread import create_thread
+
+    ctx = _resolve_peasant_context(ticket_id)
+    base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
 
     session_name = f"peasant-{full_ticket_id}"
     thread_id = f"{full_ticket_id}-work"
@@ -1197,34 +1223,15 @@ def peasant_logs(
     follow: Annotated[bool, typer.Option("--follow", "-f", help="Tail logs continuously.")] = False,
 ) -> None:
     """Show stdout/stderr logs for a peasant."""
-    base = Path.cwd()
+    ctx = _resolve_peasant_context(ticket_id)
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, _ = result
-    full_ticket_id = ticket.id
-
-    try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
-
-    session_name = f"peasant-{full_ticket_id}"
-    peasant_logs_dir = logs_root(base, feature) / session_name
+    session_name = f"peasant-{ctx.full_ticket_id}"
+    peasant_logs_dir = logs_root(ctx.base, ctx.feature) / session_name
     stdout_log = peasant_logs_dir / "stdout.log"
     stderr_log = peasant_logs_dir / "stderr.log"
 
     if not peasant_logs_dir.exists():
-        typer.echo(f"No logs found for {full_ticket_id}")
+        typer.echo(f"No logs found for {ctx.full_ticket_id}")
         raise typer.Exit(code=1)
 
     if follow:
@@ -1259,26 +1266,8 @@ def peasant_stop(
     """Send SIGTERM to the peasant process and update status to stopped."""
     from kingdom.session import get_agent_state, update_agent_state
 
-    base = Path.cwd()
-
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, _ = result
-    full_ticket_id = ticket.id
-
-    try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
+    ctx = _resolve_peasant_context(ticket_id)
+    base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     session_name = f"peasant-{full_ticket_id}"
     state = get_agent_state(base, feature, session_name)
@@ -1315,26 +1304,13 @@ def peasant_clean(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
 ) -> None:
     """Remove the git worktree for a ticket."""
-    base = Path.cwd()
+    ctx = _resolve_peasant_context(ticket_id)
 
     try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, _ = result
-    full_ticket_id = ticket.id
-
-    try:
-        remove_worktree(base, full_ticket_id)
-        typer.echo(f"Removed worktree for {full_ticket_id}")
+        remove_worktree(ctx.base, ctx.full_ticket_id)
+        typer.echo(f"Removed worktree for {ctx.full_ticket_id}")
     except FileNotFoundError:
-        typer.echo(f"No worktree found for {full_ticket_id}")
+        typer.echo(f"No worktree found for {ctx.full_ticket_id}")
         raise typer.Exit(code=1) from None
     except RuntimeError as exc:
         typer.echo(str(exc))
@@ -1348,26 +1324,8 @@ def peasant_sync(
     """Merge the parent branch into the worktree's ticket branch, then refresh dependencies."""
     from kingdom.session import get_agent_state
 
-    base = Path.cwd()
-
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, _ = result
-    full_ticket_id = ticket.id
-
-    try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
+    ctx = _resolve_peasant_context(ticket_id)
+    base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     # Refuse if peasant is actively running
     session_name = f"peasant-{full_ticket_id}"
@@ -1440,26 +1398,8 @@ def peasant_msg(
     """Write a directive to the work thread; the peasant picks it up on next loop iteration."""
     from kingdom.thread import add_message
 
-    base = Path.cwd()
-
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, _ = result
-    full_ticket_id = ticket.id
-
-    try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
+    ctx = _resolve_peasant_context(ticket_id)
+    base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     thread_id = f"{full_ticket_id}-work"
 
@@ -1497,26 +1437,8 @@ def peasant_read(
     """Show recent messages from the peasant (escalations, status updates)."""
     from kingdom.thread import list_messages
 
-    base = Path.cwd()
-
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, _ = result
-    full_ticket_id = ticket.id
-
-    try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
+    ctx = _resolve_peasant_context(ticket_id)
+    base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     thread_id = f"{full_ticket_id}-work"
     session_name = f"peasant-{full_ticket_id}"
@@ -1552,26 +1474,9 @@ def peasant_review(
     from kingdom.session import get_agent_state, update_agent_state
     from kingdom.thread import add_message
 
-    base = Path.cwd()
-
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
-    full_ticket_id = ticket.id
-
-    try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
+    ctx = _resolve_peasant_context(ticket_id)
+    base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
+    full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
 
     session_name = f"peasant-{full_ticket_id}"
     thread_id = f"{full_ticket_id}-work"
