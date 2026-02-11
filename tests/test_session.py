@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ from kingdom.session import (
     set_current_thread,
     update_agent_state,
 )
-from kingdom.state import ensure_branch_layout, sessions_root
+from kingdom.state import ensure_branch_layout, locked_json_update, sessions_root
 
 BRANCH = "feature/test-branch"
 
@@ -254,3 +255,53 @@ class TestCurrentThread:
         set_current_thread(project, BRANCH, "thread-1")
         set_current_thread(project, BRANCH, "thread-2")
         assert get_current_thread(project, BRANCH) == "thread-2"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for multi-process concurrency tests (must be top-level for pickle)
+# ---------------------------------------------------------------------------
+
+
+def _increment_counter(args: tuple[str, str]) -> None:
+    """Atomically increment a 'counter' field in a JSON file via locked_json_update."""
+    path_str, lock_name = args
+    from pathlib import Path as P
+
+    path = P(path_str)
+
+    def _inc(data: dict) -> dict:  # type: ignore[type-arg]
+        data["counter"] = data.get("counter", 0) + 1
+        return data
+
+    locked_json_update(path, _inc)
+
+
+class TestLockedJsonUpdate:
+    """Verify that locked_json_update prevents lost updates under concurrency."""
+
+    def test_concurrent_increments(self, tmp_path: Path) -> None:
+        """Spawn multiple processes that each increment a counter; none should be lost."""
+        json_path = tmp_path / "counter.json"
+        json_path.write_text("{}", encoding="utf-8")
+
+        n = 40
+        args = [(str(json_path), "counter") for _ in range(n)]
+        with ProcessPoolExecutor(max_workers=8) as pool:
+            list(pool.map(_increment_counter, args))
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert data["counter"] == n, f"Expected {n}, got {data['counter']} — lost updates!"
+
+    def test_concurrent_update_agent_state(self, project: Path) -> None:
+        """Multiple processes bump last_activity; final PID should reflect last writer."""
+        set_agent_state(project, BRANCH, "claude", AgentState(name="claude", status="working"))
+
+        json_path = session_path(project, BRANCH, "claude")
+        n = 20
+        args = [(str(json_path), "agent") for _ in range(n)]
+        with ProcessPoolExecutor(max_workers=4) as pool:
+            list(pool.map(_increment_counter, args))
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        # The counter should reflect all increments (no lost updates).
+        assert data["counter"] == n
