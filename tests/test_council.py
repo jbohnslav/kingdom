@@ -489,3 +489,125 @@ class TestQueryToThread:
         # All should still be written to thread
         messages = list_messages(project, BRANCH, thread_id)
         assert len(messages) == 3
+
+
+class TestCouncilWorker:
+    """Tests for the council async worker module."""
+
+    def test_worker_queries_all_members(self, project: Path) -> None:
+        from kingdom.council.worker import main
+        from kingdom.thread import create_thread, list_messages
+
+        thread_id = "council-work"
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "worker response"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+            main(
+                [
+                    "--base",
+                    str(project),
+                    "--feature",
+                    BRANCH,
+                    "--thread-id",
+                    thread_id,
+                    "--prompt",
+                    "test prompt",
+                    "--timeout",
+                    "10",
+                ]
+            )
+
+        messages = list_messages(project, BRANCH, thread_id)
+        assert len(messages) == 3
+        senders = {m.from_ for m in messages}
+        assert senders == {"claude", "codex", "cursor"}
+
+    def test_worker_queries_single_member(self, project: Path) -> None:
+        from kingdom.council.worker import main
+        from kingdom.thread import create_thread, list_messages
+
+        thread_id = "council-single"
+        create_thread(project, BRANCH, thread_id, ["king", "codex"], "council")
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "codex says hi"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+            main(
+                [
+                    "--base",
+                    str(project),
+                    "--feature",
+                    BRANCH,
+                    "--thread-id",
+                    thread_id,
+                    "--prompt",
+                    "targeted prompt",
+                    "--timeout",
+                    "10",
+                    "--to",
+                    "codex",
+                ]
+            )
+
+        messages = list_messages(project, BRANCH, thread_id)
+        assert len(messages) == 1
+        assert messages[0].from_ == "codex"
+
+    def test_worker_unknown_member_exits(self, project: Path) -> None:
+        from kingdom.council.worker import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "--base",
+                    str(project),
+                    "--feature",
+                    BRANCH,
+                    "--thread-id",
+                    "council-err",
+                    "--prompt",
+                    "test",
+                    "--to",
+                    "nonexistent",
+                ]
+            )
+
+        assert exc_info.value.code == 1
+
+    def test_worker_saves_sessions(self, project: Path) -> None:
+        from kingdom.council.worker import main
+        from kingdom.thread import create_thread
+
+        thread_id = "council-sess"
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "ok", "session_id": "sess-123"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+            main(
+                [
+                    "--base",
+                    str(project),
+                    "--feature",
+                    BRANCH,
+                    "--thread-id",
+                    thread_id,
+                    "--prompt",
+                    "session test",
+                ]
+            )
+
+        # Sessions should have been saved
+        state = get_agent_state(project, BRANCH, "claude")
+        assert state.name == "claude"
