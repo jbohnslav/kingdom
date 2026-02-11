@@ -268,7 +268,7 @@ def run_agent_loop(
     if result is None:
         logger.error("Ticket not found: %s", ticket_id)
         return "failed"
-    ticket, ticket_path = result
+    _, ticket_path = result
 
     # Track whether we should stop
     stop_requested = False
