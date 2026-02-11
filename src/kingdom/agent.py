@@ -23,8 +23,8 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
+from kingdom.parsing import parse_frontmatter
 from kingdom.state import state_root
-from kingdom.ticket import parse_yaml_value
 
 
 @dataclass
@@ -60,22 +60,7 @@ def parse_agent_file(content: str) -> AgentConfig:
     Raises:
         ValueError: If frontmatter is missing or required fields are absent.
     """
-    if not content.startswith("---"):
-        raise ValueError("Agent file must start with YAML frontmatter (---)")
-
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        raise ValueError("Invalid frontmatter: missing closing ---")
-
-    frontmatter = parts[1].strip()
-
-    fm: dict[str, str | int | list[str] | None] = {}
-    for line in frontmatter.split("\n"):
-        line = line.strip()
-        if not line or ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        fm[key.strip()] = parse_yaml_value(value)
+    fm, _ = parse_frontmatter(content)
 
     name = fm.get("name")
     backend = fm.get("backend")

@@ -27,8 +27,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kingdom.parsing import parse_frontmatter, serialize_yaml_value
 from kingdom.state import branch_root, ensure_dir, normalize_branch_name, read_json, write_json
-from kingdom.ticket import parse_yaml_value, serialize_yaml_value
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -282,24 +282,7 @@ def add_message(
 def parse_message(path: Path) -> Message:
     """Parse a message file (YAML frontmatter + markdown body)."""
     content = path.read_text(encoding="utf-8")
-
-    if not content.startswith("---"):
-        raise ValueError(f"Message must start with YAML frontmatter: {path}")
-
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        raise ValueError(f"Invalid frontmatter in message: {path}")
-
-    frontmatter = parts[1].strip()
-    body = parts[2].strip()
-
-    fm: dict[str, str | int | list[str] | None] = {}
-    for line in frontmatter.split("\n"):
-        line = line.strip()
-        if not line or ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        fm[key.strip()] = parse_yaml_value(value)
+    fm, body = parse_frontmatter(content)
 
     # Parse timestamp
     ts_str = fm.get("timestamp", "")
