@@ -1,5 +1,6 @@
 """Tests for council members and their CLI command building."""
 
+import importlib.util
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -491,6 +492,10 @@ class TestQueryToThread:
         assert len(messages) == 3
 
 
+_has_worker = importlib.util.find_spec("kingdom.council.worker") is not None
+
+
+@pytest.mark.skipif(not _has_worker, reason="kingdom.council.worker not available")
 class TestCouncilWorker:
     """Tests for the council async worker module."""
 
