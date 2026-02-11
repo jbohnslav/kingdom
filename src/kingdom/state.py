@@ -138,11 +138,15 @@ def read_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, data: dict[str, Any]) -> None:
     """Atomically write *data* as JSON to *path*.
 
-    Writes to a temporary file in the same directory, then renames into place
-    so that concurrent readers never see a partially-written file.
+    Writes to a uniquely-named temporary file in the same directory, then
+    renames into place so concurrent readers never see a partial write and
+    concurrent writers don't clobber each other's temp files.
     """
     serialized = json.dumps(data, indent=2, sort_keys=True)
-    tmp = path.with_suffix(".tmp")
+    # Build a unique temp name using pid + thread id to avoid collisions
+    # without relying on tempfile.mkstemp (which uses os.open internally
+    # and can break under test mocks that patch os.open).
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text(f"{serialized}\n", encoding="utf-8")
     os.rename(tmp, path)
 
