@@ -33,7 +33,7 @@ from kingdom.ticket import find_ticket, read_ticket, write_ticket
 logger = logging.getLogger("kingdom.harness")
 
 MAX_ITERATIONS = 50
-AGENT_TIMEOUT = 300  # 5 minutes per backend call
+AGENT_TIMEOUT = 900  # 15 minutes per backend call
 
 
 def build_prompt(ticket_path: Path, worklog: str, directives: list[str], iteration: int) -> str:
