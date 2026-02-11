@@ -1,0 +1,24 @@
+---
+id: kin-760e
+status: closed
+deps: []
+links: []
+created: 2026-02-10T15:00:46Z
+type: task
+priority: 2
+---
+# Replace hand-rolled YAML frontmatter parser with PyYAML
+
+Three copies of the same split('---', 2) + line-by-line split(':', 1) parser exist in ticket.py, agent.py, and thread.py. Replace with a single parse_frontmatter utility using PyYAML or stdlib. Add tests for edge cases.
+
+## Worklog
+
+- [18:27] Backend call timed out
+- [02:40] ## What I did this iteration
+- [02:40] DONE rejected (pytest failed). See logs for details.
+- [02:40] Everything is in order. Let me do a final summary of the state:
+- [02:40] DONE rejected (pytest failed). See logs for details.
+- [02:42] ## What I did this iteration
+- [02:42] DONE rejected (pytest failed). See logs for details.
+- [02:45] ## What I did this iteration
+- [02:45] Quality gates passed (pytest + ruff) — marking done
