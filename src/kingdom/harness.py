@@ -36,18 +36,18 @@ MAX_ITERATIONS = 50
 AGENT_TIMEOUT = 300  # 5 minutes per backend call
 
 
-def build_prompt(ticket_body: str, worklog: str, directives: list[str], iteration: int) -> str:
+def build_prompt(ticket_path: Path, worklog: str, directives: list[str], iteration: int) -> str:
     """Build the prompt sent to the backend agent.
 
-    Combines ticket content, existing worklog, and any new directives
-    from the work thread into a single prompt.
+    References the ticket file by path (so the agent can read it directly)
+    and includes existing worklog and any new directives from the work thread.
     """
     parts = []
 
     parts.append("You are a peasant agent working on a ticket. Work autonomously to complete it.")
     parts.append("")
     parts.append("## Ticket")
-    parts.append(ticket_body)
+    parts.append(f"Read the ticket file at: {ticket_path}")
 
     if worklog:
         parts.append("")
@@ -313,15 +313,13 @@ def run_agent_loop(
             last_activity=now,
         )
 
-        # Re-read ticket (may have been updated by worklog appends)
-        ticket = read_ticket(ticket_path)
         worklog = extract_worklog(ticket_path)
 
         # Check for new directives from the lead
         directives, last_seen_seq = get_new_directives(base, branch, thread_id, last_seen_seq)
 
         # Build prompt
-        prompt = build_prompt(ticket.body, worklog, directives, iteration)
+        prompt = build_prompt(ticket_path, worklog, directives, iteration)
 
         # Call backend
         cmd = build_command(agent_config, prompt, resume_id)
