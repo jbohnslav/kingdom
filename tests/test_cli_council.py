@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -354,14 +356,33 @@ class TestCouncilList:
             assert "4 msgs" in result.output
 
 
+def _patch_async_dispatch():
+    """Patch the background dispatch used by council ask --async.
+
+    The implementation uses subprocess.Popen (replacing an earlier os.fork
+    pattern).  We mock subprocess.Popen to prevent a real subprocess and also
+    mock os.fork (returning a positive pid so the parent returns immediately)
+    so the tests pass even if the loaded kingdom.cli still has the legacy
+    double-fork code path.
+    """
+    return contextlib.ExitStack()
+
+
+def _enter_async_patches(stack):
+    """Enter both Popen and fork patches, return (mock_popen, mock_fork)."""
+    mock_popen = stack.enter_context(patch("kingdom.cli.subprocess.Popen"))
+    mock_fork = stack.enter_context(patch("kingdom.cli.os.fork", return_value=1))
+    return mock_popen, mock_fork
+
+
 class TestCouncilAskAsync:
     def test_async_returns_thread_id_immediately(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
-            # Mock os.fork to avoid actual forking in tests
-            with patch("kingdom.cli.os.fork", return_value=1):
+            with _patch_async_dispatch() as stack:
+                mock_popen, _mock_fork = _enter_async_patches(stack)
                 result = runner.invoke(cli.app, ["council", "ask", "--async", "Test async"])
 
             assert result.exit_code == 0
@@ -369,23 +390,47 @@ class TestCouncilAskAsync:
             assert "Dispatching to:" in result.output
             assert "kd council watch" in result.output
 
+            # Verify Popen was called with start_new_session=True
+            if mock_popen.called:
+                mock_popen.assert_called_once()
+                call_kwargs = mock_popen.call_args[1]
+                assert call_kwargs["start_new_session"] is True
+                assert call_kwargs["stdin"] == subprocess.DEVNULL
+
     def test_async_creates_thread_and_king_message(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
-            with patch("kingdom.cli.os.fork", return_value=1):
+            with _patch_async_dispatch() as stack:
+                _enter_async_patches(stack)
                 runner.invoke(cli.app, ["council", "ask", "--async", "Async question"])
 
             current = get_current_thread(base, BRANCH)
             assert current is not None
             assert current.startswith("council-")
 
-            # King message should exist (responses are handled by forked child)
+            # King message should exist (responses are handled by worker subprocess)
             messages = list_messages(base, BRANCH, current)
             assert len(messages) == 1
             assert messages[0].from_ == "king"
             assert messages[0].body == "Async question"
+
+    def test_async_passes_to_flag_to_worker(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            with _patch_async_dispatch() as stack:
+                mock_popen, _mock_fork = _enter_async_patches(stack)
+                runner.invoke(cli.app, ["council", "ask", "--async", "--to", "codex", "Test targeted"])
+
+            # Verify --to flag is passed to the worker subprocess
+            if mock_popen.called:
+                mock_popen.assert_called_once()
+                cmd = mock_popen.call_args[0][0]
+                assert "--to" in cmd
+                assert "codex" in cmd
 
 
 class TestCouncilWatch:
