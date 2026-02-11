@@ -116,7 +116,7 @@ def append_worklog(ticket_path: Path, entry: str) -> None:
     """Append an entry to the ticket's worklog section.
 
     If no worklog section exists, creates one at the end of the ticket body.
-    Inserts before the next ## heading if Worklog is not the last section.
+    Worklog is always the last section, so we just append to the end.
     """
     ticket = read_ticket(ticket_path)
     timestamp = datetime.now(UTC).strftime("%H:%M")
@@ -126,39 +126,22 @@ def append_worklog(ticket_path: Path, entry: str) -> None:
     if "## Worklog" not in ticket.body:
         ticket.body = ticket.body.rstrip() + "\n\n## Worklog\n\n" + worklog_line
     else:
-        # Find the worklog section and insert before the next heading
-        parts = ticket.body.split("## Worklog", 1)
-        after_header = parts[1]
-        next_heading = re.search(r"\n(## )", after_header)
-        if next_heading:
-            # Insert before the next section
-            insert_pos = next_heading.start()
-            after_header = after_header[:insert_pos] + "\n" + worklog_line + after_header[insert_pos:]
-        else:
-            # Worklog is the last section — append at end
-            after_header = after_header + "\n" + worklog_line
-        ticket.body = parts[0] + "## Worklog" + after_header
+        ticket.body = ticket.body.rstrip() + "\n" + worklog_line
 
     write_ticket(ticket, ticket_path)
 
 
 def extract_worklog(ticket_path: Path) -> str:
-    """Extract the worklog section from a ticket."""
+    """Extract the worklog section from a ticket.
+
+    Worklog is always the last section, so everything after the header is worklog.
+    """
     ticket = read_ticket(ticket_path)
     if "## Worklog" not in ticket.body:
         return ""
 
-    parts = ticket.body.split("## Worklog", 1)
-    if len(parts) < 2:
-        return ""
-
-    worklog = parts[1].strip()
-    # Stop at next heading if any
-    next_heading = re.search(r"\n## ", worklog)
-    if next_heading:
-        worklog = worklog[: next_heading.start()]
-
-    return worklog.strip()
+    _, after_header = ticket.body.split("## Worklog", 1)
+    return after_header.strip()
 
 
 def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: int) -> tuple[list[str], int]:

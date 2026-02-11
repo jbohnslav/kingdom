@@ -154,22 +154,17 @@ class TestAppendWorklog:
         ticket = read_ticket(ticket_path)
         assert re.search(r"\[\d{2}:\d{2}\]", ticket.body)
 
-    def test_appends_within_section_bounds(self, ticket_path: Path) -> None:
-        """Worklog entries should stay within ## Worklog, not drift past next heading."""
+    def test_appends_to_end_of_document(self, ticket_path: Path) -> None:
+        """Worklog entries append to end of document (worklog is always last section)."""
         ticket = read_ticket(ticket_path)
-        ticket.body += "\n\n## Worklog\n\n- Existing\n\n## Notes\n\nSome notes here"
+        ticket.body += "\n\n## Worklog\n\n- Existing"
         write_ticket(ticket, ticket_path)
 
         append_worklog(ticket_path, "New entry")
         ticket = read_ticket(ticket_path)
 
-        # Extract worklog section and notes section
-        worklog_idx = ticket.body.index("## Worklog")
-        notes_idx = ticket.body.index("## Notes")
-        new_entry_idx = ticket.body.index("New entry")
-
-        # New entry should be between Worklog header and Notes header
-        assert worklog_idx < new_entry_idx < notes_idx
+        # New entry should be at the very end
+        assert ticket.body.rstrip().endswith("New entry")
 
 
 class TestExtractWorklog:
@@ -185,14 +180,15 @@ class TestExtractWorklog:
         assert "Entry 1" in worklog
         assert "Entry 2" in worklog
 
-    def test_stops_at_next_heading(self, ticket_path: Path) -> None:
+    def test_returns_everything_after_header(self, ticket_path: Path) -> None:
+        """Worklog is always the last section, so everything after header is worklog."""
         ticket = read_ticket(ticket_path)
-        ticket.body += "\n\n## Worklog\n\n- Entry 1\n\n## Notes\n\nNot worklog"
+        ticket.body += "\n\n## Worklog\n\n- Entry 1\n- Entry 2"
         write_ticket(ticket, ticket_path)
 
         worklog = extract_worklog(ticket_path)
         assert "Entry 1" in worklog
-        assert "Not worklog" not in worklog
+        assert "Entry 2" in worklog
 
 
 class TestGetNewDirectives:
