@@ -342,36 +342,39 @@ def council_ask(
     target = to or "all"
     add_message(base, feature, thread_id, from_="king", to=target, body=prompt)
 
-    # --async mode: fork and return immediately
+    # --async mode: dispatch worker subprocess and return immediately
     if async_mode:
         member_names_str = to if to else ", ".join(m.name for m in c.members)
         typer.echo(f"Thread: {thread_id}")
         typer.echo(f"Dispatching to: {member_names_str}")
         typer.echo("Use `kd council watch` to see responses.")
 
-        # Double-fork to prevent zombie processes
-        pid = os.fork()
-        if pid > 0:
-            # Parent returns immediately
-            return
+        worker_cmd = [
+            sys.executable,
+            "-m",
+            "kingdom.council.worker",
+            "--base",
+            str(base),
+            "--feature",
+            feature,
+            "--thread-id",
+            thread_id,
+            "--prompt",
+            prompt,
+            "--timeout",
+            str(timeout),
+        ]
+        if to:
+            worker_cmd.extend(["--to", to])
 
-        # First child: detach
-        os.setsid()
-        pid2 = os.fork()
-        if pid2 > 0:
-            os._exit(0)
-
-        # Second child: run the queries
-        try:
-            if to and member:
-                response = member.query(prompt, timeout)
-                body = response.text if response.text else f"*Error: {response.error}*"
-                add_message(base, feature, thread_id, from_=to, to="king", body=body)
-            else:
-                c.query_to_thread(prompt, base, feature, thread_id)
-            c.save_sessions(base, feature)
-        finally:
-            os._exit(0)
+        subprocess.Popen(
+            worker_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
 
     # --json mode: batch query, no streaming
     if json_output:

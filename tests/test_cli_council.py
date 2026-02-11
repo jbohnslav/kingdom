@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -360,8 +361,7 @@ class TestCouncilAskAsync:
             base = Path.cwd()
             setup_project(base)
 
-            # Mock os.fork to avoid actual forking in tests
-            with patch("kingdom.cli.os.fork", return_value=1):
+            with patch("kingdom.cli.subprocess.Popen") as mock_popen:
                 result = runner.invoke(cli.app, ["council", "ask", "--async", "Test async"])
 
             assert result.exit_code == 0
@@ -369,23 +369,42 @@ class TestCouncilAskAsync:
             assert "Dispatching to:" in result.output
             assert "kd council watch" in result.output
 
+            # Verify Popen was called with start_new_session=True
+            mock_popen.assert_called_once()
+            call_kwargs = mock_popen.call_args[1]
+            assert call_kwargs["start_new_session"] is True
+            assert call_kwargs["stdin"] == subprocess.DEVNULL
+
     def test_async_creates_thread_and_king_message(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
-            with patch("kingdom.cli.os.fork", return_value=1):
+            with patch("kingdom.cli.subprocess.Popen"):
                 runner.invoke(cli.app, ["council", "ask", "--async", "Async question"])
 
             current = get_current_thread(base, BRANCH)
             assert current is not None
             assert current.startswith("council-")
 
-            # King message should exist (responses are handled by forked child)
+            # King message should exist (responses are handled by worker subprocess)
             messages = list_messages(base, BRANCH, current)
             assert len(messages) == 1
             assert messages[0].from_ == "king"
             assert messages[0].body == "Async question"
+
+    def test_async_passes_to_flag_to_worker(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            with patch("kingdom.cli.subprocess.Popen") as mock_popen:
+                runner.invoke(cli.app, ["council", "ask", "--async", "--to", "codex", "Test targeted"])
+
+            mock_popen.assert_called_once()
+            cmd = mock_popen.call_args[0][0]
+            assert "--to" in cmd
+            assert "codex" in cmd
 
 
 class TestCouncilWatch:
