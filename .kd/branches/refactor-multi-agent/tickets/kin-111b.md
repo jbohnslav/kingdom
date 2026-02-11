@@ -9,12 +9,12 @@ priority: 2
 ---
 # Council refactor
 
-Rewire kd council ask to use threads + agent configs. Merge ask/followup/critique into unified ask with --to flag. ask defaults to continue current thread if one exists, or start new thread if not. --thread new forces a new thread. Add kd council show [thread-id] and kd council list. Remove old followup and critique commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor. Existing council run bundles in logs/council/run-* remain readable but new queries go to threads.
+Rewire kd council ask to use threads + agent configs. Merge ask/followup/critique into unified ask with --to flag. ask defaults to continue current thread if one exists, or start new thread if not. --new-thread forces a new thread. Add kd council show [thread-id] and kd council list. Remove old followup and critique commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor. Existing council run bundles in logs/council/run-* remain readable but new queries go to threads.
 
 ## Acceptance
 - [x] kd council ask "prompt" creates thread on first use, continues on subsequent
 - [x] kd council ask --to codex "prompt" sends to one member only
-- [x] kd council ask --thread new "prompt" starts a fresh thread
+- [x] kd council ask --new-thread "prompt" starts a fresh thread
 - [x] All messages written to thread directory as sequential .md files
 - [x] Resume tokens stored in sessions/<agent>.json, used on follow-up queries
 - [x] kd council show displays thread history with Rich panels
@@ -26,7 +26,7 @@ Rewire kd council ask to use threads + agent configs. Merge ask/followup/critiqu
 
 - Rewrote council_ask: uses get_current_thread/set_current_thread for thread continuity, generates council-<4hex> thread IDs, writes king message + each member response to thread
 - Added --to flag: validates member name, queries single member, writes targeted messages (to=member instead of to=all)
-- Added --thread new flag: forces new thread even when current_thread exists
+- Added --new-thread flag: forces new thread even when current_thread exists
 - Rewrote council_show: displays thread messages as Rich panels (green border for king, blue for agents), falls back to logs/council/run-* for pre-migration runs via direct path lookup
 - Added council_list: filters threads by pattern=council, shows thread ID, created date, message count, marks current thread with *
 - Removed followup, critique, last, build_critique_prompt — followup/critique functionality subsumed by ask --to and thread continuity

@@ -237,7 +237,7 @@ kd council ask "Should we use Redis?"              # new thread, all members
 kd council ask --async "Should we use Redis?"      # fire-and-forget (returns thread ID)
 kd council ask --to codex "Elaborate on pooling"   # same thread, one member
 kd council ask "Final recommendations?"            # same thread, all members
-kd council ask --thread new "Different topic"      # explicit new thread
+kd council ask --new-thread "Different topic"       # explicit new thread
 
 kd council show [thread-id]                        # show thread history
 kd council watch [thread-id]                       # live stream the conversation
@@ -398,12 +398,12 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 - Priority: 2
 - Ticket: kin-111b
 - Depends on: T1, T2, T3
-- Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--thread new` forces a new thread. Add `--async` flag to return immediately. Add `kd council show` (static) and `kd council watch` (live tail). Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor.
+- Description: Rewire `kd council ask` to use threads + agent configs. Merge `ask`/`followup`/`critique` into unified `ask` with `--to` flag. `ask` defaults to continue current thread if one exists, or start new thread if not. `--new-thread` forces a new thread. Add `--async` flag to return immediately. Add `kd council show` (static) and `kd council watch` (live tail). Remove old `followup` and `critique` commands. Store council resume tokens in per-agent session files. Keep parallel execution via ThreadPoolExecutor.
 - Acceptance:
   - [x] `kd council ask "prompt"` creates thread on first use, continues on subsequent
   - [x] `kd council ask --async` returns thread ID immediately without waiting
   - [x] `kd council ask --to codex "prompt"` sends to one member only
-  - [x] `kd council ask --thread new "prompt"` starts a fresh thread
+  - [x] `kd council ask --new-thread "prompt"` starts a fresh thread
   - [x] All messages written to thread directory as sequential .md files
   - [x] Resume tokens stored in `sessions/<agent>.json`, used on follow-up queries
   - [x] `kd council show` displays thread history with Rich panels

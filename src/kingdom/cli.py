@@ -280,7 +280,7 @@ app.add_typer(council_app, name="council")
 def council_ask(
     prompt: Annotated[str, typer.Argument(help="Prompt to send to council members.")],
     to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
-    thread: Annotated[str | None, typer.Option("--thread", help="'new' to start a fresh thread.")] = None,
+    new_thread: Annotated[bool, typer.Option("--new-thread", help="Start a fresh thread.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
     async_mode: Annotated[bool, typer.Option("--async", help="Dispatch and return immediately.")] = False,
     timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
@@ -301,12 +301,6 @@ def council_ask(
 
     console = Console()
 
-    # Validate --thread value
-    if thread is not None and thread != "new":
-        typer.echo(f"Invalid --thread value: {thread}")
-        typer.echo("Use --thread new to start a fresh thread.")
-        raise typer.Exit(code=1)
-
     c = Council.create(logs_dir=logs_dir, base=base)
     c.timeout = timeout
     c.load_sessions(base, feature)
@@ -323,7 +317,7 @@ def council_ask(
 
     # Determine thread: continue current, or create new
     current = get_current_thread(base, feature)
-    start_new = thread == "new" or current is None
+    start_new = new_thread or current is None
 
     # Recover from stale pointer: current_thread set but directory missing
     if not start_new and not thread_dir(base, feature, current).exists():
