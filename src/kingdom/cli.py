@@ -593,10 +593,18 @@ def council_watch(
     seen_sequences: set[int] = set()
     responded_members: set[str] = set()
 
-    # Render any existing agent responses
+    # Find the most recent king ask so we only consider responses to it
     messages = list_messages(base, feature, thread_id)
+    last_ask_seq = 0
+    for msg in messages:
+        if msg.from_ == "king":
+            last_ask_seq = msg.sequence
+
+    # Render existing agent responses that came after the latest ask
     for msg in messages:
         seen_sequences.add(msg.sequence)
+        if msg.sequence <= last_ask_seq:
+            continue
         if msg.from_ != "king" and msg.from_ in expected_members:
             responded_members.add(msg.from_)
             response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)

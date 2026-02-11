@@ -464,6 +464,36 @@ class TestCouncilWatch:
             assert "All members have responded" in result.output
             assert "Missing" not in result.output
 
+    def test_watch_ignores_prior_round_responses(self) -> None:
+        """watch should only consider responses after the most recent king ask.
+
+        Regression test: if a prior round had all members respond, watch on a
+        new ask (with no responses yet) should NOT report 'All members have responded'.
+        """
+        from kingdom.thread import add_message
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Round 1: ask + all members respond
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "First question"])
+
+            current = get_current_thread(base, BRANCH)
+
+            # Round 2: king asks again but no responses yet
+            add_message(base, BRANCH, current, from_="king", to="all", body="Second question")
+
+            result = runner.invoke(cli.app, ["council", "watch", current, "--timeout", "1"])
+
+            assert result.exit_code == 0
+            # Should NOT claim all members responded (those were from round 1)
+            assert "All members have responded" not in result.output
+            # Should show timeout since no new responses arrived
+            assert "Timeout" in result.output
+
 
 class TestCouncilShowLast:
     def test_show_last_no_logs_dir(self) -> None:
