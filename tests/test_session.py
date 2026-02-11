@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ProcessPoolExecutor
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -258,28 +260,44 @@ class TestCurrentThread:
 
 
 # ---------------------------------------------------------------------------
-# Helpers for multi-process concurrency tests (must be top-level for pickle)
+# Concurrency tests using subprocesses
 # ---------------------------------------------------------------------------
 
-
-def _increment_counter(args: tuple[str, str]) -> None:
-    """Atomically increment a 'counter' field in a JSON file via locked_json_update."""
-    from pathlib import Path as P
-
-    from kingdom.state import locked_json_update as _locked_update
-
-    path_str, _lock_name = args
-    path = P(path_str)
-
-    def _inc(data: dict) -> dict:  # type: ignore[type-arg]
+# Inline script executed by each worker subprocess.  It adds the *worktree*
+# src/ to sys.path so the correct ``kingdom.state`` is imported even when
+# pytest is invoked from the main repository root.
+_WORKER_SCRIPT = textwrap.dedent("""\
+    import json, sys, pathlib
+    sys.path.insert(0, sys.argv[1])       # src/ directory
+    from kingdom.state import locked_json_update
+    path = pathlib.Path(sys.argv[2])
+    def _inc(data):
         data["counter"] = data.get("counter", 0) + 1
         return data
+    locked_json_update(path, _inc)
+""")
 
-    _locked_update(path, _inc)
+
+def _spawn_workers(src_dir: str, json_path: str, n: int) -> None:
+    """Launch *n* subprocesses that each atomically increment a counter."""
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _WORKER_SCRIPT, src_dir, json_path],
+        )
+        for _ in range(n)
+    ]
+    for p in procs:
+        p.wait()
+        assert p.returncode == 0, f"Worker exited with {p.returncode}"
 
 
 class TestLockedJsonUpdate:
     """Verify that locked_json_update prevents lost updates under concurrency."""
+
+    @staticmethod
+    def _src_dir() -> str:
+        """Return the src/ directory for this worktree."""
+        return str(Path(__file__).resolve().parent.parent / "src")
 
     def test_concurrent_increments(self, tmp_path: Path) -> None:
         """Spawn multiple processes that each increment a counter; none should be lost."""
@@ -287,22 +305,18 @@ class TestLockedJsonUpdate:
         json_path.write_text("{}", encoding="utf-8")
 
         n = 40
-        args = [(str(json_path), "counter") for _ in range(n)]
-        with ProcessPoolExecutor(max_workers=8) as pool:
-            list(pool.map(_increment_counter, args))
+        _spawn_workers(self._src_dir(), str(json_path), n)
 
         data = json.loads(json_path.read_text(encoding="utf-8"))
         assert data["counter"] == n, f"Expected {n}, got {data['counter']} — lost updates!"
 
     def test_concurrent_update_agent_state(self, project: Path) -> None:
-        """Multiple processes bump last_activity; final PID should reflect last writer."""
+        """Multiple processes bump a counter on an existing agent state file."""
         set_agent_state(project, BRANCH, "claude", AgentState(name="claude", status="working"))
 
         json_path = session_path(project, BRANCH, "claude")
         n = 20
-        args = [(str(json_path), "agent") for _ in range(n)]
-        with ProcessPoolExecutor(max_workers=4) as pool:
-            list(pool.map(_increment_counter, args))
+        _spawn_workers(self._src_dir(), str(json_path), n)
 
         data = json.loads(json_path.read_text(encoding="utf-8"))
         # The counter should reflect all increments (no lost updates).
