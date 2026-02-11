@@ -679,3 +679,48 @@ class TestRunAgentLoop:
         assert status == "stopped"
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "stopped"
+
+    def test_loop_picks_up_king_messages_sent_while_down(self, project: Path, ticket_path: Path) -> None:
+        """King messages posted after peasant's last message should appear as directives."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        # Simulate a previous peasant message (seq 2), then king sends a directive (seq 3)
+        add_message(project, BRANCH, thread_id, from_=session_name, to="king", body="Previous work")
+        add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Please also fix the tests")
+
+        captured_prompts: list[str] = []
+
+        def mock_run(*args, **kwargs):
+            # Capture the prompt to verify directives were included
+            cmd = args[0] if args else kwargs.get("args", [])
+            # The prompt is passed as the last argument
+            for item in cmd:
+                if "Please also fix the tests" in str(item):
+                    captured_prompts.append(str(item))
+            result = MagicMock()
+            result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            result.stderr = ""
+            result.returncode = 0
+            return result
+
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
+            patch("kingdom.harness.build_prompt", wraps=build_prompt) as mock_build_prompt,
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "done"
+        # The first call to build_prompt should have included the king's directive
+        first_call = mock_build_prompt.call_args_list[0]
+        directives_arg = first_call[0][2]  # 3rd positional arg is directives
+        assert "Please also fix the tests" in directives_arg

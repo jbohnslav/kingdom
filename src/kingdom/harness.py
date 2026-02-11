@@ -284,12 +284,16 @@ def run_agent_loop(
     agent_state = get_agent_state(base, branch, session_name)
     resume_id = agent_state.resume_id
 
+    # Initialize last_seen_seq to the sequence of the last message sent by
+    # this peasant, so that any king messages sent while we were down are
+    # picked up as new directives on the first iteration.
     last_seen_seq = 0
-    # Find current high water mark from thread
     try:
         messages = list_messages(base, branch, thread_id)
-        if messages:
-            last_seen_seq = messages[-1].sequence
+        for msg in reversed(messages):
+            if msg.from_ == session_name:
+                last_seen_seq = msg.sequence
+                break
     except FileNotFoundError:
         pass
 
