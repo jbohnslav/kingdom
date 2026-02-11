@@ -180,6 +180,14 @@ def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: i
     return directives, max_seq
 
 
+def _worktree_python(worktree: Path) -> str:
+    """Return the Python executable for the worktree's venv, falling back to sys.executable."""
+    venv_python = worktree / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
 def run_tests(worktree: Path) -> tuple[bool, str]:
     """Run pytest in the worktree to verify work.
 
@@ -187,7 +195,7 @@ def run_tests(worktree: Path) -> tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-x", "-q", "--tb=short"],
+            [_worktree_python(worktree), "-m", "pytest", "-x", "-q", "--tb=short"],
             capture_output=True,
             text=True,
             timeout=120,
@@ -210,7 +218,7 @@ def run_lint(worktree: Path) -> tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "ruff", "check", "."],
+            [_worktree_python(worktree), "-m", "ruff", "check", "."],
             capture_output=True,
             text=True,
             timeout=60,
