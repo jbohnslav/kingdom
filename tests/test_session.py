@@ -19,7 +19,7 @@ from kingdom.session import (
     set_current_thread,
     update_agent_state,
 )
-from kingdom.state import ensure_branch_layout, locked_json_update, sessions_root
+from kingdom.state import ensure_branch_layout, sessions_root
 
 BRANCH = "feature/test-branch"
 
@@ -264,16 +264,18 @@ class TestCurrentThread:
 
 def _increment_counter(args: tuple[str, str]) -> None:
     """Atomically increment a 'counter' field in a JSON file via locked_json_update."""
-    path_str, _lock_name = args
     from pathlib import Path as P
 
+    from kingdom.state import locked_json_update as _locked_update
+
+    path_str, _lock_name = args
     path = P(path_str)
 
     def _inc(data: dict) -> dict:  # type: ignore[type-arg]
         data["counter"] = data.get("counter", 0) + 1
         return data
 
-    locked_json_update(path, _inc)
+    _locked_update(path, _inc)
 
 
 class TestLockedJsonUpdate:
