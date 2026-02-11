@@ -1,7 +1,8 @@
 """Agent session state management.
 
 Per-agent runtime state stored in ``sessions/<agent>.json`` under each branch.
-Each agent writes only its own file, so no locking is needed.
+Read-modify-write helpers use ``fcntl.flock`` advisory locking so that
+concurrent callers (harness process, CLI commands) do not lose updates.
 
 Session JSON format::
 
@@ -24,7 +25,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from kingdom.state import branch_root, read_json, sessions_root, write_json
+from kingdom.state import branch_root, locked_json_update, read_json, sessions_root, write_json
 
 AGENT_STATUSES = frozenset({"idle", "working", "blocked", "done", "failed", "stopped"})
 
@@ -117,20 +118,55 @@ def set_agent_state(base: Path, branch: str, agent_name: str, state: AgentState)
 def update_agent_state(base: Path, branch: str, agent_name: str, **fields: Any) -> AgentState:
     """Read-modify-write agent state with the given field updates.
 
-    Convenience wrapper: reads current state, applies updates, writes back.
+    Acquires an exclusive file lock so concurrent callers (harness, CLI) cannot
+    interleave their read-modify-write cycles and lose updates.
 
     Returns:
         Updated AgentState.
     """
-    state = get_agent_state(base, branch, agent_name)
-
-    for key, value in fields.items():
-        if not hasattr(state, key):
+    # Validate field names before acquiring lock.
+    dummy = AgentState(name=agent_name)
+    for key in fields:
+        if not hasattr(dummy, key):
             raise ValueError(f"Unknown AgentState field: {key}")
-        setattr(state, key, value)
 
-    set_agent_state(base, branch, agent_name, state)
-    return state
+    json_path = session_path(base, branch, agent_name)
+
+    def _apply(data: dict[str, Any]) -> dict[str, Any]:
+        # Reconstruct AgentState from persisted dict.
+        state = AgentState(
+            name=data.get("name", agent_name),
+            status=data.get("status", "idle"),
+            resume_id=data.get("resume_id"),
+            pid=data.get("pid"),
+            ticket=data.get("ticket"),
+            thread=data.get("thread"),
+            agent_backend=data.get("agent_backend"),
+            started_at=data.get("started_at"),
+            last_activity=data.get("last_activity"),
+        )
+        for key, value in fields.items():
+            setattr(state, key, value)
+        state.name = agent_name
+        out: dict[str, Any] = {}
+        for k, v in asdict(state).items():
+            if v is not None:
+                out[k] = v
+        return out
+
+    data = locked_json_update(json_path, _apply)
+
+    return AgentState(
+        name=data.get("name", agent_name),
+        status=data.get("status", "idle"),
+        resume_id=data.get("resume_id"),
+        pid=data.get("pid"),
+        ticket=data.get("ticket"),
+        thread=data.get("thread"),
+        agent_backend=data.get("agent_backend"),
+        started_at=data.get("started_at"),
+        last_activity=data.get("last_activity"),
+    )
 
 
 def list_active_agents(base: Path, branch: str) -> list[AgentState]:
@@ -171,17 +207,18 @@ def get_current_thread(base: Path, branch: str) -> str | None:
 
 
 def set_current_thread(base: Path, branch: str, thread_id: str | None) -> None:
-    """Set current_thread in branch state.json, preserving other fields."""
+    """Set current_thread in branch state.json, preserving other fields.
+
+    Uses file locking to avoid losing concurrent updates to other fields
+    in the same state.json (e.g. ``design_approved``, ``branch``).
+    """
     state_path = branch_root(base, branch) / "state.json"
-    try:
-        data = read_json(state_path)
-    except FileNotFoundError:
-        data = {}
 
-    if thread_id is None:
-        data.pop("current_thread", None)
-    else:
-        data["current_thread"] = thread_id
+    def _apply(data: dict[str, Any]) -> dict[str, Any]:
+        if thread_id is None:
+            data.pop("current_thread", None)
+        else:
+            data["current_thread"] = thread_id
+        return data
 
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(state_path, data)
+    locked_json_update(state_path, _apply)
