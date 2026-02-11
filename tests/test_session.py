@@ -264,7 +264,7 @@ class TestCurrentThread:
 
 def _increment_counter(args: tuple[str, str]) -> None:
     """Atomically increment a 'counter' field in a JSON file via locked_json_update."""
-    path_str, lock_name = args
+    path_str, _lock_name = args
     from pathlib import Path as P
 
     path = P(path_str)
