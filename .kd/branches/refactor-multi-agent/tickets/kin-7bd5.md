@@ -1,0 +1,45 @@
+---
+id: kin-7bd5
+status: closed
+deps: [kin-111b]
+links: []
+created: 2026-02-09T16:43:42Z
+type: task
+priority: 2
+---
+# Council streaming UX: async dispatch + progressive response rendering
+
+`kd council ask` currently blocks until all agents respond (60-120s), then prints all panels at once. When run inside Claude Code's TUI, long-running commands get backgrounded — output goes to a capture file and the King never sees it.
+
+## Changes
+
+**Default behavior (streaming):** `kd council ask "prompt"` dispatches agents in parallel via ThreadPoolExecutor, returns control to the display loop immediately, then polls the thread directory for new message files. Each response is rendered as a Rich panel the moment it arrives. Command exits after all expected members respond (or timeout).
+
+**Async override:** `kd council ask --async "prompt"` dispatches agents and returns the thread ID instantly. No polling, no waiting.
+
+**Reattach:** `kd council watch [thread-id]` reattaches to a thread and streams responses as they arrive (same renderer as default `ask`).
+
+**Static view:** `kd council show [thread-id]` unchanged — renders whatever is in the thread right now.
+
+The streaming renderer (poll thread dir, render new messages) is one shared function used by both `ask` (default) and `watch`.
+
+## Why
+
+The King uses council from inside the Hand's TUI. The current blocking behavior causes Claude Code to background the command, hiding the output. Streaming output starts within seconds, keeping it foreground. It also feels more like a chat room — responses roll in one by one.
+
+## Council permissions (related)
+
+Council agents must run without elevated permissions (`--dangerously-skip-permissions`, etc.). `build_command()` currently inserts skip-permissions flags unconditionally. Council queries are read-only — agents advise, they don't act. Add a `skip_permissions: bool` parameter to `build_command()` and pass `False` for council callers.
+
+## Acceptance Criteria
+
+- [ ] `kd council ask "prompt"` dispatches agents and immediately starts polling for responses
+- [ ] Each agent's response renders as a Rich panel the moment it arrives (progressive, not batched)
+- [ ] Command exits after all responses received or timeout
+- [ ] `kd council ask --async "prompt"` returns thread ID instantly, no waiting
+- [ ] `kd council watch <thread-id>` reattaches and streams new responses
+- [ ] Streaming renderer is shared between `ask` default mode and `watch`
+- [ ] Ctrl+C during streaming stops waiting but preserves responses already in thread
+- [ ] `kd council show` still works as static view
+- [ ] Council agents run without skip-permissions flags (read-only mode)
+- [ ] `build_command()` accepts parameter to control skip-permissions; council passes `False`

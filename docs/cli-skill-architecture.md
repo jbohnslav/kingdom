@@ -637,3 +637,112 @@ main:.kd/runs/oauth-refresh/
 ```
 
 Anyone reviewing the repo can see the full history: what was designed, how it was broken down, and what each ticket actually did.
+
+## Open Design Tension: CLI-Only vs. Tmux-Backed Agent Sessions
+
+There is a fundamental tension in how Kingdom should manage multiple concurrent agents (council members, peasants, future workers) as the system grows.
+
+### The Problem
+
+Today, Kingdom is CLI-only. `kd council ask` spawns subprocesses, waits for responses, and prints output. This works for the current use case: one-shot council queries from inside a coding agent. But several forces push against staying purely CLI-based:
+
+1. **Peasants working in parallel.** When multiple peasants execute tickets concurrently, the user needs visibility into what each one is doing — whether it's stuck, making progress, or needs intervention. A CLI that spawns background subprocesses and writes to log files provides no natural way to observe or interact with those processes.
+
+2. **Council follow-ups.** A one-shot `kd council ask` doesn't support conversational flow. The King may want to ask claude a follow-up, then pivot to codex, then bring the full council back in. Session continuity via `--resume` helps mechanically, but the UX of repeatedly invoking CLI commands feels stilted compared to a persistent conversation.
+
+3. **Direct King-to-Council access.** A core principle of the design is that the King reads council responses directly, without the Hand filtering or summarizing. But if the King is always working inside the Hand's TUI (Claude Code, Cursor, etc.), every council invocation is mediated by the Hand — it runs the command, it displays the output, it may editorialize. The King never truly "sits in the room" with the council.
+
+4. **Monitoring at scale.** With 3 council members, blocking until all respond is tolerable. With 5+ peasants working in parallel across worktrees, the user needs a dashboard — what's running, what's done, what failed. A CLI can print status, but it can't provide a live, updating view.
+
+### Option A: Stay CLI-Only, Files as Communication
+
+Keep Kingdom as a pure CLI. Agents communicate through files on disk. The user invokes `kd` commands and reads output in their terminal.
+
+**How it works:**
+- `kd council ask` remains subprocess-based, prints to stdout
+- Council responses are saved to `.kd/.../council/<run-id>/` as markdown files
+- Peasant progress is written to log files and work logs
+- `kd status` and `kd peasant status` provide point-in-time snapshots
+- The Hand can read council output files when the King references them
+
+**Precedent:** Ralph (bash loop, files as state), OpenClaw's session primitives (`sessions_send`/`sessions_spawn`), Gastown's Beads (git-backed message passing). None of these systems build a chat room or TUI for inter-agent communication. They all use files or structured messages.
+
+**Strengths:**
+- Simplest implementation — no tmux dependency, no session lifecycle management
+- Works everywhere (remote servers, CI, containers, any terminal)
+- Files are inspectable, diffable, and persist naturally
+- The Hand (whatever coding agent) already has a great TUI — don't compete with it
+
+**Weaknesses:**
+- No live visibility into running agents — only after-the-fact logs
+- No natural way to "watch" multiple peasants work in parallel
+- Council interaction feels like invoking a tool, not having a conversation
+- The King never escapes the Hand's mediation
+
+### Option B: Tmux-Backed Agent Sessions
+
+Use tmux as the session manager. Certain `kd` commands create tmux windows in a shared session, one agent per window. Kingdom orchestrates via files, with tmux providing visibility and notification.
+
+**How it works:**
+- `kd council chat` opens a tmux window (or set of windows) with a persistent council session
+- Each council member runs in its own tmux window, with its own coding agent CLI (claude, codex, cursor)
+- Kingdom passes messages via files: writes a prompt file, then uses tmux to notify the agent ("check this file: `.kd/.../inbox/msg-001.md`")
+- The agent reads the file, processes it, writes a response file
+- The user can switch between tmux windows to observe any agent directly
+- `kd peasant start <ticket>` opens a new tmux window with an agent working that ticket
+- The user can `Ctrl-b w` to see all active windows: their Hand, the council members, the peasants
+
+```
+tmux session: kd-kingdom
+┌────────────────────────────────────────────┐
+│ Windows:                                   │
+│  0: hand (claude code)                     │
+│  1: council-claude                         │
+│  2: council-codex                          │
+│  3: council-agent                          │
+│  4: peasant-kin-a1b2 (working oauth token) │
+│  5: peasant-kin-c3d4 (working oauth ui)    │
+└────────────────────────────────────────────┘
+```
+
+**Message passing:**
+- Kingdom writes a structured message file (markdown with YAML frontmatter: sender, timestamp, context references)
+- Kingdom uses `tmux send-keys` to paste a short notification into the agent's window, e.g. `"Read and respond to .kd/.../inbox/msg-003.md"` or loads the message into the agent's stdin
+- The agent reads the file, does its work, writes a response to `.kd/.../outbox/`
+- Kingdom detects the response (via file watch or polling) and routes it
+
+**Precedent:** Gastown uses tmux as the UI layer — panes for observation, not for transport. The Mayor coordinates Polecats through git-backed Beads, not through terminal I/O. Tmux is "where you watch," files are "how they talk."
+
+**Strengths:**
+- The King can directly observe any agent by switching windows — true unmediated access
+- Peasants working in parallel are naturally visible (one window each)
+- Each agent runs in a full terminal, so it gets all the TUI features (syntax highlighting, progress, tool calls) for free — Kingdom doesn't have to replicate any of it
+- Council conversations can be persistent — the agent stays running in its window
+- Scales naturally: more agents = more windows
+- Notification mechanism (`tmux send-keys` or file-based) keeps agents loosely coupled
+
+**Weaknesses:**
+- Hard dependency on tmux — doesn't work in environments without it
+- Session lifecycle management (creating, cleaning up, reconnecting to windows)
+- Risk of window sprawl with many agents
+- `tmux send-keys` for notification is fragile — the agent may be mid-operation
+- More complex orchestration code in Kingdom
+- Doesn't work well for headless/CI use cases
+
+### Option C: Hybrid
+
+Default to CLI-only for simple operations (`kd council ask` for one-shot queries, `kd status` for snapshots). Use tmux when the user explicitly wants persistent, observable agent sessions (`kd council chat`, `kd peasant start --attach`).
+
+This avoids the tmux dependency for basic usage while providing live visibility when the user wants it. The tradeoff is maintaining two code paths.
+
+### Unresolved Questions
+
+1. **Can `tmux send-keys` reliably prompt an agent to read a file?** If the agent is mid-operation (running a tool, waiting on an API call), injecting keystrokes may corrupt its state. Gastown avoids this by using tmux for observation only, not for input. An alternative is writing to the agent's stdin pipe, or having the agent poll an inbox directory.
+
+2. **Does the King actually need to watch agents directly?** If the output artifacts (response files, work logs, status) are good enough, maybe live observation is a want, not a need. The CLI-only approach bets on artifacts being sufficient. The tmux approach bets on live observation being essential.
+
+3. **How do existing coding agent CLIs handle being "messaged"?** Claude Code has `--resume` for session continuity but no "inbox" mechanism. Codex is stateless per invocation. If agents can't be naturally prompted mid-session, the tmux notification pattern may require running agents in a specific "polling" mode that Kingdom defines — adding complexity.
+
+4. **What happens on remote servers / SSH?** Tmux works well over SSH (attach/detach), which is actually a strength. But headless CI environments and containers may not have tmux available. The CLI-only path is more portable.
+
+5. **Is there a middle ground with just log tailing?** Instead of full tmux orchestration, Kingdom could simply provide `kd watch` — a Rich-based live display that tails all active agent log files. This gives visibility without managing agent lifecycles through tmux. The agents remain subprocesses; tmux is optional for the user's own window management.

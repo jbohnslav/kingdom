@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+from kingdom.parsing import parse_frontmatter, serialize_yaml_value
 
 
 @dataclass
@@ -50,7 +51,7 @@ class Ticket:
     external_ref: str | None = None
 
 
-def _clamp_priority(value: int | str | None) -> int:
+def clamp_priority(value: int | str | None) -> int:
     """Clamp priority to valid range (1-3).
 
     Args:
@@ -97,76 +98,6 @@ def generate_ticket_id(tickets_dir: Path | None = None) -> str:
     raise RuntimeError(f"Failed to generate unique ticket ID after {max_attempts} attempts")
 
 
-def _parse_yaml_value(value: str) -> str | int | list[str] | None:
-    """Parse a single YAML value (simple types only).
-
-    Handles:
-        - Strings (quoted or unquoted)
-        - Integers
-        - Lists in [item1, item2] format
-        - null/empty
-
-    Args:
-        value: The raw YAML value string.
-
-    Returns:
-        Parsed Python value.
-    """
-    value = value.strip()
-
-    # Handle empty/null
-    if not value or value.lower() in ("null", "~"):
-        return None
-
-    # Handle lists
-    if value.startswith("[") and value.endswith("]"):
-        inner = value[1:-1].strip()
-        if not inner:
-            return []
-        # Split by comma, strip whitespace and quotes
-        items = []
-        for item in inner.split(","):
-            item = item.strip().strip("'\"")
-            if item:
-                items.append(item)
-        return items
-
-    # Handle integers
-    if re.match(r"^-?\d+$", value):
-        return int(value)
-
-    # Handle quoted strings
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
-
-    # Plain string
-    return value
-
-
-def _serialize_yaml_value(value: str | int | list[str] | None) -> str:
-    """Serialize a Python value to YAML format.
-
-    Args:
-        value: The Python value to serialize.
-
-    Returns:
-        YAML-formatted string.
-    """
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, list):
-        if not value:
-            return "[]"
-        # Format as [item1, item2]
-        return "[" + ", ".join(str(item) for item in value) + "]"
-    # String - no quotes needed for simple values
-    return str(value)
-
-
 def parse_ticket(content: str) -> Ticket:
     """Parse ticket content from YAML frontmatter + markdown body.
 
@@ -179,27 +110,7 @@ def parse_ticket(content: str) -> Ticket:
     Raises:
         ValueError: If the content doesn't have valid frontmatter.
     """
-    # Split frontmatter from body
-    if not content.startswith("---"):
-        raise ValueError("Ticket must start with YAML frontmatter (---)")
-
-    # Find the closing ---
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        raise ValueError("Invalid frontmatter: missing closing ---")
-
-    frontmatter = parts[1].strip()
-    body_content = parts[2].strip()
-
-    # Parse frontmatter into dict
-    frontmatter_dict: dict[str, str | int | list[str] | None] = {}
-    for line in frontmatter.split("\n"):
-        line = line.strip()
-        if not line or ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key = key.strip()
-        frontmatter_dict[key] = _parse_yaml_value(value)
+    frontmatter_dict, body_content = parse_frontmatter(content)
 
     # Extract title from body (first # heading)
     title = ""
@@ -236,7 +147,7 @@ def parse_ticket(content: str) -> Ticket:
         links=links if isinstance(links, list) else [],
         created=created,
         type=str(frontmatter_dict.get("type", "task")),
-        priority=_clamp_priority(frontmatter_dict.get("priority", 2)),
+        priority=clamp_priority(frontmatter_dict.get("priority", 2)),
         assignee=str(frontmatter_dict.get("assignee")) if frontmatter_dict.get("assignee") else None,
         title=title,
         body=body,
@@ -260,8 +171,8 @@ def serialize_ticket(ticket: Ticket) -> str:
     # Required fields in standard order
     lines.append(f"id: {ticket.id}")
     lines.append(f"status: {ticket.status}")
-    lines.append(f"deps: {_serialize_yaml_value(ticket.deps)}")
-    lines.append(f"links: {_serialize_yaml_value(ticket.links)}")
+    lines.append(f"deps: {serialize_yaml_value(ticket.deps)}")
+    lines.append(f"links: {serialize_yaml_value(ticket.links)}")
 
     # Format datetime as ISO with Z suffix
     created_str = ticket.created.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -278,7 +189,7 @@ def serialize_ticket(ticket: Ticket) -> str:
     if ticket.parent:
         lines.append(f"parent: {ticket.parent}")
     if ticket.tags:
-        lines.append(f"tags: {_serialize_yaml_value(ticket.tags)}")
+        lines.append(f"tags: {serialize_yaml_value(ticket.tags)}")
 
     lines.append("---")
 

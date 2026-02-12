@@ -12,9 +12,13 @@ Example:
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
 import unicodedata
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -108,14 +112,14 @@ def tickets_root(base: Path, feature: str) -> Path:
     return run_root(base, feature) / "tickets"
 
 
+def threads_root(base: Path, feature: str) -> Path:
+    """Path to threads directory under branch structure."""
+    return branch_root(base, feature) / "threads"
+
+
 def council_logs_root(base: Path, feature: str) -> Path:
     """Path to council run bundles, preferring branch structure."""
     return logs_root(base, feature) / "council"
-
-
-def hand_session_path(base: Path, feature: str) -> Path:
-    """Path to the Hand's session file."""
-    return sessions_root(base, feature) / "hand.session"
 
 
 def ensure_dir(path: Path) -> None:
@@ -132,8 +136,54 @@ def read_json(path: Path) -> dict[str, Any]:
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
+    """Atomically write *data* as JSON to *path*.
+
+    Writes to a uniquely-named temporary file in the same directory, then
+    renames into place so concurrent readers never see a partial write and
+    concurrent writers don't clobber each other's temp files.
+    """
     serialized = json.dumps(data, indent=2, sort_keys=True)
-    path.write_text(f"{serialized}\n", encoding="utf-8")
+    # Build a unique temp name using pid + thread id to avoid collisions
+    # without relying on tempfile.mkstemp (which uses os.open internally
+    # and can break under test mocks that patch os.open).
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(f"{serialized}\n", encoding="utf-8")
+    os.rename(tmp, path)
+
+
+@contextmanager
+def _flock(lock_path: Path) -> Iterator[None]:
+    """Hold an exclusive advisory lock on *lock_path* for the duration of the block."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fp = open(lock_path, "a+b")  # noqa: SIM115
+    try:
+        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        fp.close()
+
+
+def locked_json_update(
+    path: Path,
+    updater: Callable[[dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
+    """Atomic read-modify-write of a JSON file under an advisory file lock.
+
+    Acquires an exclusive ``fcntl.flock`` on ``<path>.lock``, reads the current
+    JSON (or ``{}`` if missing), passes it to *updater(data)*, and writes the
+    result back via :func:`write_json`.  Returns the updated dict.
+    """
+    lock_path = path.parent / f".{path.name}.lock"
+    with _flock(lock_path):
+        try:
+            data = read_json(path)
+        except FileNotFoundError:
+            data = {}
+        data = updater(data)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, data)
+    return data
 
 
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -175,6 +225,22 @@ current
     config_path = state_root(base) / "config.json"
     if not config_path.exists():
         write_json(config_path, {})
+
+    init_worktree_path = state_root(base) / "init-worktree.sh"
+    if not init_worktree_path.exists():
+        init_worktree_path.write_text(
+            "#!/usr/bin/env bash\n"
+            '# Kingdom worktree init — runs after "kd peasant start" creates a worktree.\n'
+            "# The worktree path is passed as $1.\n"
+            "#\n"
+            "# Examples:\n"
+            '#   cd "$1" && uv sync && pre-commit install\n'
+            '#   cd "$1" && npm install\n'
+            "#\n"
+            'echo "⚔️  Preparing the realm at $1"\n',
+            encoding="utf-8",
+        )
+        init_worktree_path.chmod(0o755)
 
     return {
         "state_root": state_root(base),

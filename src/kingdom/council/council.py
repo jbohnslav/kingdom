@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from kingdom.agent import DEFAULT_AGENTS, AgentConfig, agents_root, list_agents
+from kingdom.session import get_agent_state, update_agent_state
+
 from .base import AgentResponse, CouncilMember
-from .claude import ClaudeMember
-from .codex import CodexMember
-from .cursor import CursorAgentMember
 
 
 @dataclass
@@ -20,13 +21,30 @@ class Council:
     timeout: int = 300
 
     @classmethod
-    def create(cls, logs_dir: Path | None = None) -> Council:
-        """Create a council with default members."""
-        members: list[CouncilMember] = [
-            ClaudeMember(),
-            CodexMember(),
-            CursorAgentMember(),
-        ]
+    def create(cls, logs_dir: Path | None = None, base: Path | None = None) -> Council:
+        """Create a council with configured or default members.
+
+        If ``base`` is provided and ``.kd/agents/`` contains agent files,
+        those are used. Otherwise falls back to built-in defaults.
+
+        Raises:
+            ValueError: If agent files exist but none could be parsed.
+        """
+        configs: list[AgentConfig] = []
+        if base is not None:
+            configs = list_agents(base)
+            if not configs:
+                root = agents_root(base)
+                if root.exists() and any(root.glob("*.md")):
+                    raise ValueError(
+                        f"Agent files in {root} exist but none could be parsed. "
+                        "Check .kd/agents/*.md for syntax errors."
+                    )
+
+        if not configs:
+            configs = list(DEFAULT_AGENTS.values())
+
+        members: list[CouncilMember] = [CouncilMember(config=c) for c in configs]
 
         if logs_dir:
             for member in members:
@@ -57,6 +75,51 @@ class Council:
 
         return responses
 
+    def query_to_thread(
+        self,
+        prompt: str,
+        base: Path,
+        branch: str,
+        thread_id: str,
+        callback: Callable[[str, AgentResponse], None] | None = None,
+    ) -> dict[str, AgentResponse]:
+        """Query all members, writing each response to a thread as it arrives.
+
+        Args:
+            prompt: The query prompt.
+            base: Project root.
+            branch: Branch name.
+            thread_id: Thread ID to write responses to.
+            callback: Optional function called with (name, response) as each arrives.
+
+        Returns:
+            Dict mapping member name to AgentResponse.
+        """
+        from kingdom.thread import add_message
+
+        responses: dict[str, AgentResponse] = {}
+
+        with ThreadPoolExecutor(max_workers=len(self.members)) as executor:
+            futures = {executor.submit(member.query, prompt, self.timeout): member for member in self.members}
+
+            for future in as_completed(futures):
+                member = futures[future]
+                try:
+                    response = future.result()
+                except Exception as e:
+                    response = AgentResponse(name=member.name, text="", error=str(e), elapsed=0.0, raw="")
+
+                responses[member.name] = response
+
+                # Write to thread
+                body = response.text if response.text else f"*Error: {response.error}*"
+                add_message(base, branch, thread_id, from_=member.name, to="king", body=body)
+
+                if callback:
+                    callback(member.name, response)
+
+        return responses
+
     def reset_sessions(self) -> None:
         """Reset all member sessions."""
         for member in self.members:
@@ -69,25 +132,14 @@ class Council:
                 return member
         return None
 
-    def load_sessions(self, sessions_dir: Path) -> None:
-        """Load session IDs from files."""
-        if not sessions_dir.exists():
-            return
-
+    def load_sessions(self, base: Path, branch: str) -> None:
+        """Load session IDs from agent state files."""
         for member in self.members:
-            session_file = sessions_dir / f"{member.name}.session"
-            if session_file.exists():
-                content = session_file.read_text(encoding="utf-8").strip()
-                if content:
-                    member.session_id = content
+            state = get_agent_state(base, branch, member.name)
+            if state.resume_id:
+                member.session_id = state.resume_id
 
-    def save_sessions(self, sessions_dir: Path) -> None:
-        """Save session IDs to files."""
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-
+    def save_sessions(self, base: Path, branch: str) -> None:
+        """Save session IDs to agent state files."""
         for member in self.members:
-            session_file = sessions_dir / f"{member.name}.session"
-            if member.session_id:
-                session_file.write_text(f"{member.session_id}\n", encoding="utf-8")
-            elif session_file.exists():
-                session_file.unlink()
+            update_agent_state(base, branch, member.name, resume_id=member.session_id)

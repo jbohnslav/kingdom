@@ -10,7 +10,7 @@ runner = CliRunner()
 
 def test_doctor_all_installed() -> None:
     """Test doctor command when all CLIs are installed."""
-    with patch.object(cli, "_check_cli", return_value=(True, None)):
+    with patch.object(cli, "check_cli", return_value=(True, None)):
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0
         assert "✓" in result.output
@@ -27,7 +27,7 @@ def test_doctor_missing_cli() -> None:
             return (False, "Command not found")
         return (True, None)
 
-    with patch.object(cli, "_check_cli", side_effect=mock_check):
+    with patch.object(cli, "check_cli", side_effect=mock_check):
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 1
         assert "✗" in result.output
@@ -37,7 +37,7 @@ def test_doctor_missing_cli() -> None:
 
 def test_doctor_json_output() -> None:
     """Test doctor command with --json flag."""
-    with patch.object(cli, "_check_cli", return_value=(True, None)):
+    with patch.object(cli, "check_cli", return_value=(True, None)):
         result = runner.invoke(cli.app, ["doctor", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -54,7 +54,7 @@ def test_doctor_json_with_missing() -> None:
             return (False, "Command not found")
         return (True, None)
 
-    with patch.object(cli, "_check_cli", side_effect=mock_check):
+    with patch.object(cli, "check_cli", side_effect=mock_check):
         result = runner.invoke(cli.app, ["doctor", "--json"])
         assert result.exit_code == 1
         data = json.loads(result.output)

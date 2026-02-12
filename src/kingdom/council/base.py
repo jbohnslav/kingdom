@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import subprocess
 import time
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+
+from kingdom.agent import AgentConfig
+from kingdom.agent import build_command as agent_build_command
+from kingdom.agent import parse_response as agent_parse_response
 
 
 @dataclass
@@ -21,33 +24,38 @@ class AgentResponse:
 
 
 @dataclass
-class CouncilMember(ABC):
-    """Abstract base class for council members."""
+class CouncilMember:
+    """A council member backed by an agent config."""
 
-    name: str = field(init=False)
+    config: AgentConfig
     session_id: str | None = None
     log_path: Path | None = None
 
-    @abstractmethod
-    def build_command(self, prompt: str) -> list[str]:
-        """Build the CLI command to execute."""
-        ...
+    @property
+    def name(self) -> str:
+        return self.config.name
 
-    @abstractmethod
+    def build_command(self, prompt: str) -> list[str]:
+        """Build the CLI command to execute.
+
+        Council queries are read-only, so skip_permissions is False.
+        """
+        return agent_build_command(self.config, prompt, self.session_id, skip_permissions=False)
+
     def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse response from CLI output.
 
         Returns:
             tuple of (text, session_id, raw_output)
         """
-        ...
+        return agent_parse_response(self.config, stdout, stderr, code)
 
     def query(self, prompt: str, timeout: int = 300) -> AgentResponse:
         """Execute a query and return the response."""
         start = time.monotonic()
-        command = self.build_command(prompt)
 
         try:
+            command = self.build_command(prompt)
             result = subprocess.run(
                 command,
                 capture_output=True,
@@ -71,7 +79,7 @@ class CouncilMember(ABC):
                 elapsed=elapsed,
                 raw=raw,
             )
-            self._log(prompt, text, error, elapsed)
+            self.log(prompt, text, error, elapsed)
             return response
 
         except subprocess.TimeoutExpired:
@@ -84,12 +92,13 @@ class CouncilMember(ABC):
                 elapsed=elapsed,
                 raw="",
             )
-            self._log(prompt, "", error, elapsed)
+            self.log(prompt, "", error, elapsed)
             return response
 
         except FileNotFoundError:
             elapsed = time.monotonic() - start
-            error = f"Command not found: {command[0]}"
+            cmd_name = self.config.cli.split()[0] if self.config.cli else "unknown"
+            error = f"Command not found: {cmd_name}"
             response = AgentResponse(
                 name=self.name,
                 text="",
@@ -97,14 +106,27 @@ class CouncilMember(ABC):
                 elapsed=elapsed,
                 raw="",
             )
-            self._log(prompt, "", error, elapsed)
+            self.log(prompt, "", error, elapsed)
+            return response
+
+        except ValueError as e:
+            elapsed = time.monotonic() - start
+            error = f"Invalid agent config: {e}"
+            response = AgentResponse(
+                name=self.name,
+                text="",
+                error=error,
+                elapsed=elapsed,
+                raw="",
+            )
+            self.log(prompt, "", error, elapsed)
             return response
 
     def reset_session(self) -> None:
         """Clear the session ID."""
         self.session_id = None
 
-    def _log(self, prompt: str, text: str, error: str | None, elapsed: float) -> None:
+    def log(self, prompt: str, text: str, error: str | None, elapsed: float) -> None:
         """Log the interaction to the log file."""
         if not self.log_path:
             return
