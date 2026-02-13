@@ -13,6 +13,8 @@ from kingdom.council.council import Council
 from kingdom.session import AgentState, get_agent_state, session_path, set_agent_state
 from kingdom.state import ensure_branch_layout
 
+PREAMBLE = CouncilMember.COUNCIL_PREAMBLE
+
 
 def make_member(name: str) -> CouncilMember:
     """Create a CouncilMember from default agent config."""
@@ -26,13 +28,13 @@ class TestCouncilMemberPermissions:
         member = make_member("claude")
         cmd = member.build_command("hello world")
         assert "--dangerously-skip-permissions" not in cmd
-        assert cmd == ["claude", "--print", "--output-format", "json", "-p", "hello world"]
+        assert cmd == ["claude", "--print", "--output-format", "json", "-p", PREAMBLE + "hello world"]
 
     def test_codex_no_skip_permissions(self) -> None:
         member = make_member("codex")
         cmd = member.build_command("hello world")
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
-        assert cmd == ["codex", "exec", "--json", "hello world"]
+        assert cmd == ["codex", "exec", "--json", PREAMBLE + "hello world"]
 
     def test_cursor_no_skip_permissions(self) -> None:
         member = make_member("cursor")
@@ -51,7 +53,7 @@ class TestClaudeMember:
             "--output-format",
             "json",
             "-p",
-            "hello world",
+            PREAMBLE + "hello world",
         ]
 
     def test_build_command_with_session(self) -> None:
@@ -66,7 +68,7 @@ class TestClaudeMember:
             "--resume",
             "abc123",
             "-p",
-            "hello",
+            PREAMBLE + "hello",
         ]
 
 
@@ -74,7 +76,7 @@ class TestCodexMember:
     def test_build_command_without_session(self) -> None:
         member = make_member("codex")
         cmd = member.build_command("hello world")
-        assert cmd == ["codex", "exec", "--json", "hello world"]
+        assert cmd == ["codex", "exec", "--json", PREAMBLE + "hello world"]
 
     def test_build_command_with_session(self) -> None:
         """Codex uses 'exec resume <thread_id>' for continuation."""
@@ -87,7 +89,7 @@ class TestCodexMember:
             "resume",
             "thread-123",
             "--json",
-            "hello",
+            PREAMBLE + "hello",
         ]
 
     def test_parse_response_jsonl_extracts_thread_id(self) -> None:
@@ -119,7 +121,7 @@ class TestCursorAgentMember:
         assert "--print" in cmd  # required for non-interactive use
         assert "--output-format" in cmd
         assert "json" in cmd
-        assert "hello world" in cmd
+        assert PREAMBLE + "hello world" in cmd
         # prompt is positional, not with -p flag
         assert "-p" not in cmd
 
