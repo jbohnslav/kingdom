@@ -2330,25 +2330,18 @@ def ticket_pull(
     dest_dir = get_tickets_dir(base)
     backlog_tickets = backlog_root(base) / "tickets"
 
-    # Pass 1: validate all tickets before moving any
+    # Pass 1: validate all tickets before moving any (backlog-scoped lookup)
     validated: list[tuple[Ticket, Path]] = []
     seen_ids: set[str] = set()
     for tid in ticket_ids:
-        try:
-            result = find_ticket(base, tid)
-        except AmbiguousTicketMatch as e:
-            typer.echo(f"Error: {e}")
-            raise typer.Exit(code=1) from None
+        normalized = tid if tid.startswith("kin-") else f"kin-{tid}"
+        ticket_path = backlog_tickets / f"{normalized}.md"
 
-        if result is None:
-            typer.echo(f"Ticket not found: {tid}")
+        if not ticket_path.exists():
+            typer.echo(f"Ticket not found in backlog: {tid}")
             raise typer.Exit(code=1)
 
-        ticket, ticket_path = result
-
-        if ticket_path.parent.resolve() != backlog_tickets.resolve():
-            typer.echo(f"Error: {ticket.id} is not in the backlog")
-            raise typer.Exit(code=1)
+        ticket = read_ticket(ticket_path)
 
         if ticket.id in seen_ids:
             continue

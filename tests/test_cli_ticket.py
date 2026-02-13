@@ -237,7 +237,7 @@ class TestTicketPull:
             result = runner.invoke(cli.app, ["tk", "pull", "kin-brnc"])
 
             assert result.exit_code == 1
-            assert "not in the backlog" in result.output
+            assert "not found in backlog" in result.output
 
     def test_pull_not_found_errors(self) -> None:
         with runner.isolated_filesystem():
@@ -349,7 +349,7 @@ class TestTicketPull:
             result = runner.invoke(cli.app, ["tk", "pull", "kin-here"])
 
             assert result.exit_code == 1
-            assert "not in the backlog" in result.output
+            assert "not found in backlog" in result.output
             # Ticket should still be on the branch
             assert (branch_dir / "kin-here.md").exists()
 
