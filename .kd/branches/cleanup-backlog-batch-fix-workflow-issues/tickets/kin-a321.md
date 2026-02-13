@@ -1,0 +1,40 @@
+---
+id: kin-a321
+status: open
+deps: []
+links: []
+created: 2026-02-05T01:13:15Z
+type: bug
+priority: 2
+---
+# kd done timing creates awkward git workflow
+
+Running `kd done` moves `.kd/branches/<name>/` to `.kd/archive/<name>/`, creating uncommitted git changes. On master with branch protection, these changes can't be committed.
+
+## Solution: Status-only, no directory move
+
+`kd done` becomes a status transition, not a filesystem operation:
+
+1. Set `status: "done"` and `done_at` timestamp in state.json
+2. Clear current session pointer
+3. Remove git worktrees
+4. **Do not move** the branch directory to archive
+
+All CLI commands that list/read branches must filter out done branches by default:
+- `kd status` — skip done branches (or show them dimmed)
+- `kd tk list` / `kd tk ready` — exclude tickets from done branches
+- `kd start` — don't suggest done branches
+- `kd tk pull` — don't search done branches as source
+- Any other command that iterates `.kd/branches/`
+
+Add `--all` or `--include-done` flag where it makes sense to see archived work.
+
+Remove the `shutil.move` to archive and the archive directory collision logic from `done()`. Remove or repurpose `.kd/archive/` (may keep for future `kd gc` if clutter becomes an issue).
+
+## Acceptance Criteria
+
+- [ ] `kd done` sets status in state.json without moving files
+- [ ] `kd done` still clears session pointer and removes worktrees
+- [ ] `kd tk list` / `kd tk ready` exclude done branch tickets
+- [ ] `kd status` hides or visually distinguishes done branches
+- [ ] No tracked file changes result from running `kd done`
