@@ -11,6 +11,8 @@ priority: 2
 
 Simplify kd status output: remove the 'Design: present' line and the 'Breakdown: empty' line. Include Ready count in the Tickets summary line instead of printing a separate Ready line.
 
+Additionally, `kd status` should show which tickets are open vs closed and list any council threads. Currently there's no way to see full workflow status at a glance — an agent driving the kd lifecycle end-to-end had no quick way to see what work remained without running multiple commands (`kd tk list`, checking thread dirs manually).
+
 ## Worklog
 
 - [20:16] I'm blocked on file write permissions. I need you to approve the edit to `/Users/jrb/code/kingdom/.kd/worktrees/kin-b202/src/kingdom/cli.py` to proceed.
