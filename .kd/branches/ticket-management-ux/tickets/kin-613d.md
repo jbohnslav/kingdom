@@ -1,6 +1,6 @@
 ---
 id: kin-613d
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-05T04:34:09Z

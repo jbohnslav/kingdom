@@ -1,6 +1,6 @@
 ---
 id: kin-341e
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T14:28:29Z
