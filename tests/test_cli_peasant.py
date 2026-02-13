@@ -78,6 +78,37 @@ class TestPeasantStart:
             tdir = thread_dir(base, BRANCH, "kin-test-work")
             assert tdir.exists()
 
+    def test_start_hand_mode(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            # Mock Popen so we don't actually launch a process
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            # Mock worktree creation - ensure it is NOT called
+            with (
+                patch("kingdom.cli.create_worktree") as mock_create_worktree,
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+            ):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            assert "Running in hand mode" in result.output
+            assert "pid 12345" in result.output
+
+            # create_worktree should NOT be called
+            mock_create_worktree.assert_not_called()
+
+            # Session should be created
+            state = get_agent_state(base, BRANCH, "peasant-kin-test")
+            assert state.status == "working"
+            assert state.pid == 12345
+
     def test_start_refuses_if_already_running(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

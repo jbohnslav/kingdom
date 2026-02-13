@@ -1,6 +1,6 @@
 """Background worker for async council queries.
 
-Invoked as a subprocess by ``kd council ask --async``::
+Invoked as a subprocess by ``kd council ask`` (default async dispatch)::
 
     python -m kingdom.council.worker \\
         --base /path/to/project \\
@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--feature", required=True)
     parser.add_argument("--thread-id", required=True)
     parser.add_argument("--prompt", required=True)
-    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--to", default=None, dest="to_member")
     args = parser.parse_args(argv)
 

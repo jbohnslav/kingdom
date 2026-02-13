@@ -69,7 +69,7 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                result = runner.invoke(cli.app, ["council", "ask", "What is caching?"])
+                result = runner.invoke(cli.app, ["council", "ask", "--sync", "What is caching?"])
 
             assert result.exit_code == 0, result.output
             assert "Thread:" in result.output
@@ -92,8 +92,8 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "First question"])
-                result = runner.invoke(cli.app, ["council", "ask", "Follow up"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "First question"])
+                result = runner.invoke(cli.app, ["council", "ask", "--sync", "Follow up"])
 
             assert result.exit_code == 0
 
@@ -111,10 +111,10 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "First topic"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "First topic"])
                 first_thread = get_current_thread(base, BRANCH)
 
-                runner.invoke(cli.app, ["council", "ask", "--new-thread", "New topic"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "--new-thread", "New topic"])
                 second_thread = get_current_thread(base, BRANCH)
 
             assert first_thread != second_thread
@@ -135,7 +135,7 @@ class TestCouncilAsk:
             mock_result.returncode = 0
 
             with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
-                result = runner.invoke(cli.app, ["council", "ask", "--to", "codex", "Tell me more"])
+                result = runner.invoke(cli.app, ["council", "ask", "--sync", "--to", "codex", "Tell me more"])
 
             assert result.exit_code == 0
 
@@ -160,7 +160,7 @@ class TestCouncilAsk:
             mock_result.returncode = 0
 
             with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
-                runner.invoke(cli.app, ["council", "ask", "--to", "codex", "Hello"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "--to", "codex", "Hello"])
 
             current = get_current_thread(base, BRANCH)
             meta = get_thread(base, BRANCH, current)
@@ -171,7 +171,7 @@ class TestCouncilAsk:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(cli.app, ["council", "ask", "--to", "unknown", "Hello"])
+            result = runner.invoke(cli.app, ["council", "ask", "--sync", "--to", "unknown", "Hello"])
 
             assert result.exit_code == 1
             assert "Unknown member" in result.output
@@ -187,7 +187,7 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                result = runner.invoke(cli.app, ["council", "ask", "After stale"])
+                result = runner.invoke(cli.app, ["council", "ask", "--sync", "After stale"])
 
             assert result.exit_code == 0
 
@@ -203,7 +203,7 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query(responses):
-                result = runner.invoke(cli.app, ["council", "ask", "--json", "Test"])
+                result = runner.invoke(cli.app, ["council", "ask", "--sync", "--json", "Test"])
 
             assert result.exit_code == 0
             data = json.loads(result.output)
@@ -218,7 +218,7 @@ class TestCouncilAsk:
 
             responses = make_responses("claude")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "Test"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "Test"])
 
             from kingdom.session import get_agent_state
 
@@ -237,7 +237,7 @@ class TestCouncilShow:
             # Create a thread with messages
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "What is caching?"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "What is caching?"])
 
             result = runner.invoke(cli.app, ["council", "show"])
 
@@ -252,7 +252,7 @@ class TestCouncilShow:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "Question 1"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "Question 1"])
                 thread_id = get_current_thread(base, BRANCH)
 
             result = runner.invoke(cli.app, ["council", "show", thread_id])
@@ -321,8 +321,8 @@ class TestCouncilList:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "Topic 1"])
-                runner.invoke(cli.app, ["council", "ask", "--new-thread", "Topic 2"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "Topic 1"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "--new-thread", "Topic 2"])
 
             result = runner.invoke(cli.app, ["council", "list"])
 
@@ -338,7 +338,7 @@ class TestCouncilList:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "A question"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "A question"])
 
             result = runner.invoke(cli.app, ["council", "list"])
 
@@ -347,54 +347,46 @@ class TestCouncilList:
 
 
 def _patch_async_dispatch():
-    """Patch the background dispatch used by council ask --async.
+    """Patch the background dispatch used by council ask (default async mode).
 
-    The implementation uses subprocess.Popen (replacing an earlier os.fork
-    pattern).  We mock subprocess.Popen to prevent a real subprocess and also
-    mock os.fork (returning a positive pid so the parent returns immediately)
-    so the tests pass even if the loaded kingdom.cli still has the legacy
-    double-fork code path.
+    Mocks subprocess.Popen to prevent a real worker subprocess from launching.
     """
     return contextlib.ExitStack()
 
 
 def _enter_async_patches(stack):
-    """Enter both Popen and fork patches, return (mock_popen, mock_fork)."""
+    """Enter Popen patch, return mock_popen."""
     mock_popen = stack.enter_context(patch("kingdom.cli.subprocess.Popen"))
-    mock_fork = stack.enter_context(patch("kingdom.cli.os.fork", return_value=1))
-    return mock_popen, mock_fork
+    return mock_popen
 
 
 class TestCouncilAskAsync:
-    def test_async_returns_thread_id_immediately(self) -> None:
+    def test_no_watch_returns_immediately(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
             with _patch_async_dispatch() as stack:
-                mock_popen, _mock_fork = _enter_async_patches(stack)
-                result = runner.invoke(cli.app, ["council", "ask", "--async", "Test async"])
+                mock_popen = _enter_async_patches(stack)
+                result = runner.invoke(cli.app, ["council", "ask", "--no-watch", "Test async"])
 
             assert result.exit_code == 0
-            assert "Thread:" in result.output
-            assert "Dispatching to:" in result.output
-            assert "kd council watch" in result.output
+            assert "Dispatched" in result.output
 
             # Verify Popen was called with start_new_session=True
-            if mock_popen.called:
-                mock_popen.assert_called_once()
-                call_kwargs = mock_popen.call_args[1]
-                assert call_kwargs["start_new_session"] is True
-                assert call_kwargs["stdin"] == subprocess.DEVNULL
+            mock_popen.assert_called_once()
+            call_kwargs = mock_popen.call_args[1]
+            assert call_kwargs["start_new_session"] is True
+            assert call_kwargs["stdin"] == subprocess.DEVNULL
 
-    def test_async_creates_thread_and_king_message(self) -> None:
+    def test_no_watch_creates_thread_and_king_message(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
             with _patch_async_dispatch() as stack:
                 _enter_async_patches(stack)
-                runner.invoke(cli.app, ["council", "ask", "--async", "Async question"])
+                runner.invoke(cli.app, ["council", "ask", "--no-watch", "Async question"])
 
             current = get_current_thread(base, BRANCH)
             assert current is not None
@@ -406,21 +398,20 @@ class TestCouncilAskAsync:
             assert messages[0].from_ == "king"
             assert messages[0].body == "Async question"
 
-    def test_async_passes_to_flag_to_worker(self) -> None:
+    def test_no_watch_passes_to_flag_to_worker(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
             with _patch_async_dispatch() as stack:
-                mock_popen, _mock_fork = _enter_async_patches(stack)
-                runner.invoke(cli.app, ["council", "ask", "--async", "--to", "codex", "Test targeted"])
+                mock_popen = _enter_async_patches(stack)
+                runner.invoke(cli.app, ["council", "ask", "--no-watch", "--to", "codex", "Test targeted"])
 
             # Verify --to flag is passed to the worker subprocess
-            if mock_popen.called:
-                mock_popen.assert_called_once()
-                cmd = mock_popen.call_args[0][0]
-                assert "--to" in cmd
-                assert "codex" in cmd
+            mock_popen.assert_called_once()
+            cmd = mock_popen.call_args[0][0]
+            assert "--to" in cmd
+            assert "codex" in cmd
 
 
 class TestCouncilWatch:
@@ -432,7 +423,7 @@ class TestCouncilWatch:
             # Create a thread with responses already written
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "Test question"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "Test question"])
 
             current = get_current_thread(base, BRANCH)
             result = runner.invoke(cli.app, ["council", "watch", current])
@@ -467,7 +458,7 @@ class TestCouncilWatch:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "Test"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "Test"])
 
             current = get_current_thread(base, BRANCH)
             result = runner.invoke(cli.app, ["council", "watch", current])
@@ -490,7 +481,7 @@ class TestCouncilWatch:
             mock_result.returncode = 0
 
             with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
-                runner.invoke(cli.app, ["council", "ask", "--to", "codex", "Targeted question"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "--to", "codex", "Targeted question"])
 
             current = get_current_thread(base, BRANCH)
             result = runner.invoke(cli.app, ["council", "watch", current, "--timeout", "1"])
@@ -514,7 +505,7 @@ class TestCouncilWatch:
             # Round 1: ask + all members respond
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "First question"])
+                runner.invoke(cli.app, ["council", "ask", "--sync", "First question"])
 
             current = get_current_thread(base, BRANCH)
 

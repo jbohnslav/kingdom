@@ -282,13 +282,16 @@ def council_ask(
     to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
     new_thread: Annotated[bool, typer.Option("--new-thread", help="Start a fresh thread.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
-    async_mode: Annotated[bool, typer.Option("--async", help="Dispatch and return immediately.")] = False,
-    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
+    sync: Annotated[bool, typer.Option("--sync", help="Block until all responses arrive (old behavior).")] = False,
+    no_watch: Annotated[bool, typer.Option("--no-watch", help="Dispatch only, don't wait for responses.")] = False,
+    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 300,
 ) -> None:
     """Query council members via threaded conversations.
 
-    Default mode streams responses as Rich panels as each agent finishes.
-    Use --async to dispatch agents in the background and return immediately.
+    Default: dispatches agents in background, then watches for responses
+    as Rich panels (returns instantly, never gets backgrounded by TUI hosts).
+    Use --sync to block in-process until all responses arrive (old behavior).
+    Use --no-watch to dispatch and return immediately without watching.
     Use --json for machine-readable batch output.
     """
     from kingdom.thread import add_message, create_thread, thread_dir
@@ -336,41 +339,7 @@ def council_ask(
     target = to or "all"
     add_message(base, feature, thread_id, from_="king", to=target, body=prompt)
 
-    # --async mode: dispatch worker subprocess and return immediately
-    if async_mode:
-        member_names_str = to if to else ", ".join(m.name for m in c.members)
-        typer.echo(f"Thread: {thread_id}")
-        typer.echo(f"Dispatching to: {member_names_str}")
-        typer.echo("Use `kd council watch` to see responses.")
-
-        worker_cmd = [
-            sys.executable,
-            "-m",
-            "kingdom.council.worker",
-            "--base",
-            str(base),
-            "--feature",
-            feature,
-            "--thread-id",
-            thread_id,
-            "--prompt",
-            prompt,
-            "--timeout",
-            str(timeout),
-        ]
-        if to:
-            worker_cmd.extend(["--to", to])
-
-        subprocess.Popen(
-            worker_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        return
-
-    # --json mode: batch query, no streaming
+    # --json mode: batch query (always sync, no streaming)
     if json_output:
         if to and member:
             response = member.query(prompt, timeout)
@@ -399,32 +368,72 @@ def council_ask(
         print(json.dumps(output, indent=2))
         return
 
-    # Default streaming mode: render each response as it arrives
+    # --sync mode: block in-process until all responses arrive (old default)
+    if sync:
+        member_names_str = to if to else ", ".join(m.name for m in c.members)
+        console.print(f"[dim]Thread: {thread_id}[/dim]")
+        console.print(f"[dim]Querying: {member_names_str}...[/dim]\n")
+
+        if to and member:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task(f"Querying {to}...", total=None)
+                response = member.query(prompt, timeout)
+                progress.update(task, description="Done")
+            body = response.text if response.text else f"*Error: {response.error}*"
+            add_message(base, feature, thread_id, from_=to, to="king", body=body)
+            render_response_panel(response, console)
+        else:
+
+            def on_response(name, response):
+                render_response_panel(response, console)
+
+            c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
+
+        c.save_sessions(base, feature)
+        return
+
+    # Default: dispatch agents in background, then watch for responses
     member_names_str = to if to else ", ".join(m.name for m in c.members)
     console.print(f"[dim]Thread: {thread_id}[/dim]")
     console.print(f"[dim]Querying: {member_names_str}...[/dim]\n")
 
-    if to and member:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task(f"Querying {to}...", total=None)
-            response = member.query(prompt, timeout)
-            progress.update(task, description="Done")
-        body = response.text if response.text else f"*Error: {response.error}*"
-        add_message(base, feature, thread_id, from_=to, to="king", body=body)
-        render_response_panel(response, console)
-    else:
+    worker_cmd = [
+        sys.executable,
+        "-m",
+        "kingdom.council.worker",
+        "--base",
+        str(base),
+        "--feature",
+        feature,
+        "--thread-id",
+        thread_id,
+        "--prompt",
+        prompt,
+        "--timeout",
+        str(timeout),
+    ]
+    if to:
+        worker_cmd.extend(["--to", to])
 
-        def on_response(name, response):
-            render_response_panel(response, console)
+    subprocess.Popen(
+        worker_cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
-        c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
+    if no_watch:
+        typer.echo(f"Dispatched. Use `kd council watch {thread_id}` to see responses.")
+        return
 
-    c.save_sessions(base, feature)
+    # Fall through to watch — poll thread dir and render panels as they arrive
+    council_watch(thread_id=thread_id, timeout=timeout)
 
 
 @council_app.command("reset", help="Clear all council sessions.")
@@ -1050,6 +1059,7 @@ def _resolve_peasant_context(ticket_id: str) -> _PeasantContext:
 def peasant_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
     agent: Annotated[str, typer.Option("--agent", help="Agent to use.")] = "claude",
+    hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
     from kingdom.session import update_agent_state
@@ -1074,12 +1084,16 @@ def peasant_start(
         except OSError:
             pass  # Process is dead, continue
 
-    # 1. Create worktree
-    try:
-        worktree_path = create_worktree(base, full_ticket_id)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
+    # 1. Create worktree (or use base if hand mode)
+    if hand:
+        worktree_path = base
+        typer.echo(f"Running in hand mode (serial) on {base}")
+    else:
+        try:
+            worktree_path = create_worktree(base, full_ticket_id)
+        except RuntimeError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(code=1) from None
 
     # 2. Create work thread (ignore if already exists)
     with contextlib.suppress(FileExistsError):
