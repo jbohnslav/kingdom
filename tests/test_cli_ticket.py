@@ -456,3 +456,85 @@ class TestTicketShow:
             assert result.exit_code == 0, result.output
             assert ".kd/" in result.output
             assert "kin-sh01.md" in result.output
+
+
+class TestMigrate:
+    def test_dry_run_shows_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-ab12")
+
+            result = runner.invoke(cli.app, ["migrate"])
+
+            assert result.exit_code == 0, result.output
+            assert "rename:" in result.output
+            assert "rewrite:" in result.output
+            assert "Dry run complete" in result.output
+
+            # File should NOT have been renamed (dry-run)
+            assert (tickets_dir / "kin-ab12.md").exists()
+            assert not (tickets_dir / "ab12.md").exists()
+
+    def test_apply_renames_and_rewrites(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            # Create ticket with a dep that references another kin- ID
+            ticket = Ticket(
+                id="kin-ab12",
+                status="open",
+                title="Test",
+                body="See kin-cd34 for details",
+                deps=["kin-cd34"],
+                created=datetime.now(UTC),
+            )
+            path = tickets_dir / "kin-ab12.md"
+            tickets_dir.mkdir(parents=True, exist_ok=True)
+            write_ticket(ticket, path)
+
+            result = runner.invoke(cli.app, ["migrate", "--apply"])
+
+            assert result.exit_code == 0, result.output
+            assert "Migrated:" in result.output
+
+            # File should be renamed
+            assert not (tickets_dir / "kin-ab12.md").exists()
+            assert (tickets_dir / "ab12.md").exists()
+
+            # Content should have kin- prefix removed
+            content = (tickets_dir / "ab12.md").read_text()
+            assert "kin-ab12" not in content
+            assert "id: ab12" in content
+            assert "kin-cd34" not in content
+            assert "cd34" in content
+
+    def test_apply_is_idempotent(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-ab12")
+
+            runner.invoke(cli.app, ["migrate", "--apply"])
+            result = runner.invoke(cli.app, ["migrate", "--apply"])
+
+            assert result.exit_code == 0
+            assert "0 files renamed" in result.output
+
+    def test_collision_aborts(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-ab12")
+            # Create a file that would collide
+            (tickets_dir / "ab12.md").write_text("collision")
+
+            result = runner.invoke(cli.app, ["migrate", "--apply"])
+
+            assert result.exit_code == 1
+            assert "collision" in result.output

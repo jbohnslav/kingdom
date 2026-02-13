@@ -1971,12 +1971,16 @@ def doctor(
 
 @app.command(help="Migrate legacy kin-XXXX ticket IDs to short XXXX format.")
 def migrate(
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would change without making changes.")] = False,
+    apply: Annotated[bool, typer.Option("--apply", help="Apply changes (default is dry-run).")] = False,
 ) -> None:
-    """Rename ticket files and rewrite frontmatter IDs, deps, and parent refs to drop 'kin-' prefix."""
+    """Rename ticket files and rewrite frontmatter IDs, deps, and parent refs to drop 'kin-' prefix.
+
+    By default shows what would change (dry-run). Use --apply to execute.
+    """
     import re
 
     base = Path.cwd()
+    dry_run = not apply
 
     # Collect all ticket files across backlog, branches, and archive
     ticket_dirs: list[Path] = []
@@ -2003,20 +2007,42 @@ def migrate(
 
     renamed = 0
     rewritten = 0
+    collisions: list[str] = []
 
+    # Preflight: check for collisions before any renames
     for td in ticket_dirs:
         for ticket_file in sorted(td.glob("kin-*.md")):
-            old_name = ticket_file.name
-            new_name = old_name[4:]  # Remove "kin-" prefix
+            new_name = ticket_file.name[4:]  # Remove "kin-" prefix
+            new_path = ticket_file.parent / new_name
+            if new_path.exists():
+                collisions.append(str(ticket_file.relative_to(base)))
+
+    if collisions:
+        typer.echo("Error: collision detected — target files already exist:")
+        for c in collisions:
+            typer.echo(f"  {c}")
+        raise typer.Exit(code=1)
+
+    # Pass 1: rename files (git mv for history preservation)
+    for td in ticket_dirs:
+        for ticket_file in sorted(td.glob("kin-*.md")):
+            new_name = ticket_file.name[4:]
             new_path = ticket_file.parent / new_name
 
             if dry_run:
                 typer.echo(f"  rename: {ticket_file.relative_to(base)} → {new_name}")
             else:
-                ticket_file.rename(new_path)
+                # Use git mv if in a git repo, fall back to plain rename
+                result = subprocess.run(
+                    ["git", "mv", str(ticket_file), str(new_path)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    ticket_file.rename(new_path)
                 renamed += 1
 
-    # Rewrite frontmatter in all ticket files (both old and new names)
+    # Pass 2: rewrite frontmatter in all ticket files
     for td in ticket_dirs:
         for ticket_file in sorted(td.glob("*.md")):
             content = ticket_file.read_text(encoding="utf-8")
@@ -2029,7 +2055,7 @@ def migrate(
                     rewritten += 1
 
     if dry_run:
-        typer.echo("\nDry run complete. Use --no-dry-run to apply changes.")
+        typer.echo("\nDry run complete. Run with --apply to execute.")
     else:
         typer.echo(f"Migrated: {renamed} files renamed, {rewritten} files rewritten")
 
@@ -2113,6 +2139,9 @@ def ticket_create(
 @ticket_app.command("list", help="List tickets.")
 def ticket_list(
     all_tickets: Annotated[bool, typer.Option("--all", "-a", help="List all tickets across all locations.")] = False,
+    include_done: Annotated[
+        bool, typer.Option("--include-done", help="Include tickets from done branches (with --all).")
+    ] = False,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
@@ -2153,7 +2182,7 @@ def ticket_list(
         branches_dir = branches_root(base)
         if branches_dir.exists():
             for branch_dir in branches_dir.iterdir():
-                if branch_dir.is_dir() and not is_branch_done(branch_dir):
+                if branch_dir.is_dir() and (include_done or not is_branch_done(branch_dir)):
                     tickets_dir = branch_dir / "tickets"
                     if tickets_dir.exists():
                         locations.append((f"branch:{branch_dir.name}", tickets_dir))
