@@ -43,4 +43,4 @@ jobs:
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
-          allowed_tools: 'Bash(gh pr:*),Bash(gh api:*),Bash(gh diff:*)'
+          claude_args: '--allowedTools "Bash(gh pr:*),Bash(gh api:*),Bash(gh diff:*)"'
