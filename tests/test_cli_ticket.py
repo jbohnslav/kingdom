@@ -440,6 +440,7 @@ class TestTicketMove:
 
             assert result.exit_code == 1
             assert "No current branch active" in result.output
+            assert "kd start" in result.output
 
 
 class TestTicketShow:

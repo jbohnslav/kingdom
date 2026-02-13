@@ -491,7 +491,7 @@ def council_show(
             subtitle = f"{ts} · to {msg.to}"
 
             # Use H2 for sender, italic for metadata
-            header = f"## {msg.from_} ({subtitle})"
+            header = f"## [{subtitle}] {msg.from_}"
             console.print(Markdown(f"{header}\n\n{msg.body}"))
             console.print()
         return
@@ -2296,7 +2296,7 @@ def ticket_move(
         try:
             target = resolve_current_run(base)
         except RuntimeError:
-            typer.echo("Error: No current branch active. Please specify a target branch.")
+            typer.echo("Error: No current branch active. Please specify a target branch or run `kd start` first.")
             raise typer.Exit(code=1) from None
 
     if target.lower() == "backlog":
