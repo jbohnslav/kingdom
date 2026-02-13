@@ -1,6 +1,6 @@
 ---
 id: kin-b43e
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-05T00:26:22Z

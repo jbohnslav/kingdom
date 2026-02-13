@@ -1,6 +1,6 @@
 ---
 id: kin-db3b
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T14:24:23Z
