@@ -388,11 +388,11 @@ def council_ask(
                 progress.update(task, description="Done")
             body = response.text if response.text else f"*Error: {response.error}*"
             add_message(base, feature, thread_id, from_=to, to="king", body=body)
-            render_response_panel(response, console)
+            render_response(response, console)
         else:
 
             def on_response(name, response):
-                render_response_panel(response, console)
+                render_response(response, console)
 
             c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
 
@@ -617,7 +617,7 @@ def watch_thread(
         if msg.from_ != "king" and msg.from_ in expected_members:
             responded_members.add(msg.from_)
             response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)
-            render_response_panel(response, console)
+            render_response(response, console)
 
     if responded_members >= expected_members:
         console.print("[dim]All members have responded.[/dim]")
@@ -638,7 +638,7 @@ def watch_thread(
                 if msg.from_ != "king" and msg.from_ in expected_members:
                     responded_members.add(msg.from_)
                     response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)
-                    render_response_panel(response, console)
+                    render_response(response, console)
 
             if responded_members >= expected_members:
                 console.print("[dim]All members have responded.[/dim]")
@@ -662,7 +662,7 @@ def council_watch(
     watch_thread(thread_id=thread_id, timeout=timeout)
 
 
-def render_response_panel(response, console):
+def render_response(response, console):
     """Render a single AgentResponse as Markdown."""
     if response.error:
         content = f"> **Error:** {response.error}\n\n"
@@ -700,7 +700,7 @@ def query_with_progress(council, prompt, json_output, console):
 def display_rich_panels(responses, thread_id, console):
     """Display responses as Rich panels with Markdown."""
     for name in sorted(responses.keys()):
-        render_response_panel(responses[name], console)
+        render_response(responses[name], console)
 
     console.print(f"[dim]Thread: {thread_id}[/dim]")
 

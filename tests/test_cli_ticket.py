@@ -399,3 +399,59 @@ class TestTicketCloseIdempotent:
             assert archived_path.exists()
             # Should NOT be in backlog
             assert not (backlog_root(base) / "tickets" / "kin-idem.md").exists()
+
+
+class TestTicketMove:
+    def test_move_defaults_to_current_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            backlog_dir = backlog_root(base) / "tickets"
+            create_ticket_in(backlog_dir, "kin-mv01")
+
+            result = runner.invoke(cli.app, ["tk", "move", "kin-mv01"])
+
+            assert result.exit_code == 0, result.output
+            assert "Moved" in result.output
+            branch_tickets = branch_root(base, BRANCH) / "tickets" / "kin-mv01.md"
+            assert branch_tickets.exists()
+
+    def test_move_already_in_destination(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv02")
+
+            result = runner.invoke(cli.app, ["tk", "move", "kin-mv02"])
+
+            assert result.exit_code == 0, result.output
+            assert "already in" in result.output
+
+    def test_move_no_active_branch_errors(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            # Don't set current run
+            backlog_dir = backlog_root(base) / "tickets"
+            create_ticket_in(backlog_dir, "kin-mv03")
+
+            result = runner.invoke(cli.app, ["tk", "move", "kin-mv03"])
+
+            assert result.exit_code == 1
+            assert "No current branch active" in result.output
+
+
+class TestTicketShow:
+    def test_show_displays_file_path(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-sh01")
+
+            result = runner.invoke(cli.app, ["tk", "show", "kin-sh01"])
+
+            assert result.exit_code == 0, result.output
+            assert ".kd/" in result.output
+            assert "kin-sh01.md" in result.output
