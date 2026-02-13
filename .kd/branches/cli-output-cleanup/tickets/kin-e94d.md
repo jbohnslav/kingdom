@@ -1,6 +1,6 @@
 ---
 id: kin-e94d
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-05T00:18:28Z

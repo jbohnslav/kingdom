@@ -1,6 +1,6 @@
 ---
 id: kin-3f60
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T21:37:57Z

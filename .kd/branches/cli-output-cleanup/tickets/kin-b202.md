@@ -1,6 +1,6 @@
 ---
 id: kin-b202
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-07T23:20:41Z

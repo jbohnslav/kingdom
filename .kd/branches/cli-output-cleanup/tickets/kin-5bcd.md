@@ -1,6 +1,6 @@
 ---
 id: kin-5bcd
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T13:39:46Z

@@ -70,3 +70,26 @@ Additionally, several small output issues compound into friction:
 ### Design Update (round 2)
 - King overruled the council's suggestion to drop Rich Markdown renderer. The Markdown renderer is good — it gives nice formatted output for humans. The problem is only the Panel boxes.
 - Updated approach: `console.print(Markdown(f"## header\n\n{content}"))` — keeps nice rendering, drops box chars.
+
+### Implementation
+- Cursor council member actually implemented most changes during its round 2 review (unexpected but useful — council agents can write code during exploration).
+- Remaining work: fixed per-line whitespace stripping (body.rstrip() → per-line stripping), removed dead variables (test_style, ruff_style), updated remaining "run" → "session" terminology in state.py, fixed 4 test assertions.
+- All 459 tests pass. Ruff clean.
+
+### kd Workflow Experience Notes
+**What worked well:**
+- `kd tk ready` → scan tickets → `kd tk move` → pull into branch: intuitive flow.
+- `kd council ask` provides genuinely useful multi-perspective feedback. Having 3 agents review a design catches edge cases a single reviewer misses (codex caught whitespace scoping, claude caught dead variables, cursor just went ahead and implemented it).
+- `kd tk close` is simple and satisfying. Closing 8 tickets at once was smooth.
+- The ticket format (`kin-XXXX [P#][status] - title`) is scannable and agent-friendly.
+
+**What was clunky:**
+- `kd tk move <id> <branch>` requiring explicit branch name when you're already on that branch — experienced kin-3f60 firsthand. Now fixed.
+- Pre-commit hook catching trailing whitespace in council output 3 times in one session — each time requiring re-stage + re-commit. Now fixed via per-line stripping in add_message().
+- Council output itself uses Panel boxes (ironic for a PR about removing them). The council watch output wraps responses in `╭──╮` boxes — the very thing we're removing from regular CLI output. This is hardcoded in the council watch flow and wasn't changed here (it's the live display, not persisted output).
+- `kd design` printing absolute paths meant I couldn't copy-paste the path directly. Now fixed.
+
+**For agents specifically:**
+- The `kd start` → `kd design` → `kd council ask` → `kd tk move` → work → `kd tk close` lifecycle is clear and linear. An agent could follow this with minimal prompting.
+- The main friction point for agents is that `kd council ask` output is wrapped in Rich panels — the response text is useful but the box-drawing chars in the output would pollute an agent's context window. This PR fixes that for regular CLI commands but the council watch display (live streaming) still uses panels.
+- `kd tk show` not having the file path (now fixed) was a real blocker — agents need to know where to find the file to read or edit it.
