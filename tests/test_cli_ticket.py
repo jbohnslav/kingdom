@@ -43,7 +43,7 @@ def create_ticket_in(directory: Path, ticket_id: str = "kin-t001") -> Path:
 
 
 class TestTicketCreate:
-    def test_create_prints_absolute_path(self) -> None:
+    def test_create_prints_relative_path(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -52,7 +52,7 @@ class TestTicketCreate:
 
             assert result.exit_code == 0, result.output
             output = result.output.strip()
-            assert output.startswith("/")
+            assert output.startswith(".kd/")
             assert output.endswith(".md")
             assert Path(output).exists()
 
@@ -271,7 +271,7 @@ class TestTicketPull:
             result = runner.invoke(cli.app, ["tk", "pull", "kin-norun"])
 
             assert result.exit_code == 1
-            assert "No active run." in result.output
+            assert "No active session." in result.output
 
     def test_pull_all_flag_is_not_supported(self) -> None:
         with runner.isolated_filesystem():

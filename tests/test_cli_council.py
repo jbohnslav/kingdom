@@ -290,7 +290,7 @@ class TestCouncilShow:
             result = runner.invoke(cli.app, ["council", "show", "run-abcd"])
 
             assert result.exit_code == 0
-            assert "Legacy run" in result.output
+            assert "Archived session" in result.output
 
     def test_show_not_found_errors(self) -> None:
         with runner.isolated_filesystem():
@@ -531,7 +531,7 @@ class TestCouncilShowLast:
             result = runner.invoke(cli.app, ["council", "show", "last"])
 
             assert result.exit_code == 1
-            assert "No council runs found" in result.output
+            assert "No council history found" in result.output
 
 
 class TestCouncilReset:

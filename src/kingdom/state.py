@@ -375,11 +375,11 @@ def resolve_current_run(base: Path) -> str:
     """
     current_path = state_root(base) / "current"
     if not current_path.exists():
-        raise RuntimeError("No active run. Use `kd start <feature>` first.")
+        raise RuntimeError("No active session. Use `kd start <feature>` first.")
 
     feature = current_path.read_text(encoding="utf-8").strip()
     if not feature:
-        raise RuntimeError("Current run is empty. Use `kd start <feature>` again.")
+        raise RuntimeError("Current session is empty. Use `kd start <feature>` again.")
 
     # Check new branch-based structure first
     branch_dir = branch_root(base, feature)
@@ -391,4 +391,4 @@ def resolve_current_run(base: Path) -> str:
     if legacy_run_dir.exists():
         return feature
 
-    raise RuntimeError(f"Current run '{feature}' not found at {branch_dir} or {legacy_run_dir}.")
+    raise RuntimeError(f"Current session '{feature}' not found at {branch_dir} or {legacy_run_dir}.")

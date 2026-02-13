@@ -249,6 +249,9 @@ def add_message(
     seq = next_message_number(tdir)
     now = datetime.now(UTC)
 
+    # Strip trailing whitespace from each line to satisfy pre-commit hooks
+    body = "\n".join(line.rstrip() for line in body.splitlines())
+
     msg = Message(
         from_=from_,
         to=to,

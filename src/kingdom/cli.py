@@ -20,7 +20,6 @@ from typing import Annotated, NamedTuple
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
@@ -139,10 +138,12 @@ def get_current_git_branch() -> str | None:
     return branch
 
 
-@app.command(help="Initialize a branch-based run and state.")
+@app.command(help="Initialize a branch-based session and state.")
 def start(
     branch: Annotated[str | None, typer.Argument(help="Branch name (defaults to current git branch).")] = None,
-    force: Annotated[bool, typer.Option("--force", "-f", help="Force start even if a run is already active.")] = False,
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Force start even if a session is already active.")
+    ] = False,
 ) -> None:
     base = Path.cwd()
 
@@ -158,7 +159,7 @@ def start(
     current_path = state_root(base) / "current"
     if current_path.exists() and not force:
         existing = current_path.read_text(encoding="utf-8").strip()
-        typer.echo(f"Error: A run is already active: {existing}")
+        typer.echo(f"Error: A session is already active: {existing}")
         typer.echo("Use --force to override, or run `kd done` first.")
         raise typer.Exit(code=1)
 
@@ -185,21 +186,21 @@ def start(
     state["branch"] = branch
     write_json(state_path, state)
 
-    typer.echo(f"Started run for branch: {branch}")
+    typer.echo(f"Started session for branch: {branch}")
     typer.echo(f"Location: {branch_dir}")
 
 
-@app.command(help="Mark the current run as done and archive it.")
+@app.command(help="Mark the current session as done and archive it.")
 def done(
-    feature: Annotated[str | None, typer.Argument(help="Branch name (defaults to current run).")] = None,
+    feature: Annotated[str | None, typer.Argument(help="Branch name (defaults to current session).")] = None,
 ) -> None:
-    """Mark a run as complete, archive it, and clear the current run pointer."""
+    """Mark a session as complete, archive it, and clear the current session pointer."""
     import shutil
     from datetime import datetime
 
     base = Path.cwd()
 
-    # Resolve feature: use argument or fall back to current run
+    # Resolve feature: use argument or fall back to current session
     if feature is None:
         try:
             feature = resolve_current_run(base)
@@ -263,7 +264,7 @@ def done(
         except OSError as e:
             typer.echo(f"Warning: Could not remove worktree directory: {e}")
 
-    # Clear current run pointer (only if this was the current run)
+    # Clear current session pointer (only if this was the current session)
     current_path = state_root(base) / "current"
     if current_path.exists():
         current_feature = current_path.read_text(encoding="utf-8").strip()
@@ -456,11 +457,11 @@ def council_reset() -> None:
     typer.echo("Sessions cleared.")
 
 
-@council_app.command("show", help="Display a council thread or legacy run.")
+@council_app.command("show", help="Display a council thread.")
 def council_show(
-    thread_id: Annotated[str | None, typer.Argument(help="Thread ID or legacy run ID.")] = None,
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
 ) -> None:
-    """Display a council thread's message history, or a legacy run."""
+    """Display a council thread's message history."""
     from kingdom.thread import list_messages, thread_dir
 
     base = Path.cwd()
@@ -488,14 +489,10 @@ def council_show(
         for msg in messages:
             ts = msg.timestamp.strftime("%H:%M:%S")
             subtitle = f"{ts} · to {msg.to}"
-            border = "green" if msg.from_ == "king" else "blue"
-            panel = Panel(
-                Markdown(msg.body),
-                title=msg.from_,
-                subtitle=subtitle,
-                border_style=border,
-            )
-            console.print(panel)
+
+            # Use H2 for sender, italic for metadata
+            header = f"## {msg.from_} ({subtitle})"
+            console.print(Markdown(f"{header}\n\n{msg.body}"))
             console.print()
         return
 
@@ -506,22 +503,22 @@ def council_show(
         # Try 'last' alias
         if thread_id == "last":
             if not council_logs_dir.exists():
-                typer.echo("No council runs found.")
+                typer.echo("No council history found.")
                 raise typer.Exit(code=1)
             runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
             if not runs:
-                typer.echo("No council runs found.")
+                typer.echo("No council history found.")
                 raise typer.Exit(code=1)
             run_dir = max(runs, key=lambda d: d.stat().st_mtime)
         else:
-            typer.echo(f"Thread or run not found: {thread_id}")
+            typer.echo(f"Thread not found: {thread_id}")
             raise typer.Exit(code=1)
 
     # Display legacy run
     metadata_path = run_dir / "metadata.json"
     if metadata_path.exists():
         metadata = read_json(metadata_path)
-        typer.echo(f"Run: {run_dir.name}")
+        typer.echo(f"Session: {run_dir.name}")
         typer.echo(f"Timestamp: {metadata.get('timestamp', 'unknown')}")
         prompt_text = metadata.get("prompt", "unknown")
         typer.echo(f"Prompt: {prompt_text[:100]}...")
@@ -529,9 +526,9 @@ def council_show(
 
     for md_file in sorted(run_dir.glob("*.md")):
         content = md_file.read_text(encoding="utf-8")
-        console.print(Panel(Markdown(content), title=md_file.stem, border_style="blue"))
+        console.print(Markdown(f"## {md_file.stem}\n\n{content}"))
 
-    console.print(f"\n[dim]Legacy run: {run_dir}[/dim]")
+    console.print(f"\n[dim]Archived session: {run_dir}[/dim]")
 
 
 @council_app.command("list", help="List all council threads.")
@@ -666,7 +663,7 @@ def council_watch(
 
 
 def render_response_panel(response, console):
-    """Render a single AgentResponse as a Rich panel."""
+    """Render a single AgentResponse as Markdown."""
     if response.error:
         content = f"> **Error:** {response.error}\n\n"
         if response.text:
@@ -676,12 +673,7 @@ def render_response_panel(response, console):
     else:
         content = response.text if response.text else "*No response*"
 
-    panel = Panel(
-        Markdown(content),
-        title=response.name,
-        border_style="blue",
-    )
-    console.print(panel)
+    console.print(Markdown(f"## {response.name}\n\n{content}"))
     console.print(f"[dim]{response.elapsed:.1f}s[/dim]", justify="right")
     console.print()
 
@@ -758,10 +750,10 @@ def design_default(ctx: typer.Context) -> None:
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
         design_path.parent.mkdir(parents=True, exist_ok=True)
         design_path.write_text(build_design_template(feature), encoding="utf-8")
-        typer.echo(f"Created design template at {design_path}")
+        typer.echo(f"Created design template at {design_path.relative_to(base)}")
         return
 
-    typer.echo(f"Design already exists at {design_path}")
+    typer.echo(f"Design already exists at {design_path.relative_to(base)}")
 
 
 @design_app.command("show", help="Print the design document.")
@@ -809,11 +801,11 @@ def breakdown(
     if not breakdown_path.exists() or not breakdown_path.read_text(encoding="utf-8").strip():
         breakdown_path.parent.mkdir(parents=True, exist_ok=True)
         breakdown_path.write_text(build_breakdown_template(feature), encoding="utf-8")
-        typer.echo(f"Created breakdown template at {breakdown_path}")
+        typer.echo(f"Created breakdown template at {breakdown_path.relative_to(base)}")
         return
 
     if not apply:
-        typer.echo(f"Breakdown already exists at {breakdown_path}")
+        typer.echo(f"Breakdown already exists at {breakdown_path.relative_to(base)}")
         typer.echo("Use --apply to create tickets from the breakdown.")
         return
 
@@ -1304,11 +1296,11 @@ def peasant_logs(
 
     if stdout_log.exists() and stdout_log.stat().st_size > 0:
         content = stdout_log.read_text(encoding="utf-8")
-        console.print(Panel(content, title="stdout", border_style="green"))
+        console.print(Markdown(f"## stdout\n\n```\n{content}\n```"))
 
     if stderr_log.exists() and stderr_log.stat().st_size > 0:
         content = stderr_log.read_text(encoding="utf-8")
-        console.print(Panel(content, title="stderr", border_style="red"))
+        console.print(Markdown(f"## stderr\n\n```\n{content}\n```"))
 
     if not (stdout_log.exists() or stderr_log.exists()):
         typer.echo("Log files are empty.")
@@ -1515,7 +1507,8 @@ def peasant_read(
     console = Console()
     for msg in peasant_msgs[-last:]:
         ts = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        console.print(Panel(Markdown(msg.body), title=f"[{ts}] {msg.from_} → {msg.to}", border_style="cyan"))
+        header = f"## [{ts}] {msg.from_} → {msg.to}"
+        console.print(Markdown(f"{header}\n\n{msg.body}"))
 
 
 @peasant_app.command("review", help="Review a peasant's completed work.")
@@ -1629,9 +1622,9 @@ def peasant_review(
     if test_result.stderr.strip():
         test_output += "\n" + test_result.stderr.strip()
 
-    test_style = "green" if test_passed else "red"
     test_title = "pytest: PASSED" if test_passed else "pytest: FAILED"
-    console.print(Panel(test_output or "(no output)", title=test_title, border_style=test_style))
+    test_content = test_output or "(no output)"
+    console.print(Markdown(f"## {test_title}\n\n```\n{test_content}\n```"))
 
     # 2. Run ruff
     typer.echo("Running ruff...")
@@ -1647,9 +1640,9 @@ def peasant_review(
     if ruff_result.stderr.strip():
         ruff_output += "\n" + ruff_result.stderr.strip()
 
-    ruff_style = "green" if ruff_passed else "red"
     ruff_title = "ruff: PASSED" if ruff_passed else "ruff: ISSUES"
-    console.print(Panel(ruff_output or "All checks passed!", title=ruff_title, border_style=ruff_style))
+    ruff_content = ruff_output or "All checks passed!"
+    console.print(Markdown(f"## {ruff_title}\n\n```\n{ruff_content}\n```"))
 
     # 3. Show diff
     diff_result = subprocess.run(
@@ -1661,16 +1654,16 @@ def peasant_review(
     diff_output = diff_result.stdout.strip()
     diff_err = diff_result.stderr.strip()
     if diff_result.returncode != 0 and diff_err:
-        console.print(Panel(diff_err, title=f"diff error: HEAD...{branch_name}", border_style="red"))
+        console.print(Markdown(f"## diff error: HEAD...{branch_name}\n\n```\n{diff_err}\n```"))
     elif diff_output:
-        console.print(Panel(diff_output, title=f"diff: HEAD...{branch_name}", border_style="blue"))
+        console.print(Markdown(f"## diff: HEAD...{branch_name}\n\n```\n{diff_output}\n```"))
     else:
         typer.echo("(no diff — branch may not have diverged yet)")
 
     # 4. Show worklog
     worklog = extract_worklog(ticket_path)
     if worklog:
-        console.print(Panel(Markdown(worklog), title="Worklog", border_style="yellow"))
+        console.print(Markdown(f"## Worklog\n\n{worklog}"))
     else:
         typer.echo("(no worklog entries)")
 
@@ -1911,21 +1904,20 @@ def doctor(
     if output_json:
         print(json.dumps(results, indent=2))
     else:
-        console = Console()
-        console.print("\nAgent CLIs:")
+        typer.echo("\nAgent CLIs:")
         for check in doctor_checks:
             name = check["name"]
             result = results[name]
             if result["installed"]:
-                console.print(f"  [green]✓[/green] {name:12} (installed)")
+                typer.secho(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
             else:
-                console.print(f"  [red]✗[/red] {name:12} (not found)")
+                typer.secho(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
 
         if issues:
-            console.print("\nIssues found:")
+            typer.echo("\nIssues found:")
             for issue in issues:
-                console.print(f"  {issue['name']}: {issue['hint']}")
-        console.print()
+                typer.echo(f"  {issue['name']}: {issue['hint']}")
+        typer.echo()
 
     if issues:
         raise typer.Exit(code=1)
@@ -2004,7 +1996,7 @@ def ticket_create(
     ticket_path = tickets_dir / f"{ticket_id}.md"
     write_ticket(ticket, ticket_path)
 
-    typer.echo(str(ticket_path.resolve()))
+    typer.echo(str(ticket_path.relative_to(base)))
 
 
 @ticket_app.command("list", help="List tickets.")
@@ -2151,6 +2143,7 @@ def ticket_show(
         # Read and display the raw file content for human-readable output
         content = ticket_path.read_text(encoding="utf-8")
         console = Console()
+        console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
         console.print(Markdown(content))
 
 
@@ -2281,7 +2274,7 @@ def ticket_undep(
 @ticket_app.command("move", help="Move a ticket to another branch.")
 def ticket_move(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
-    target: Annotated[str, typer.Argument(help="Target branch name or 'backlog'.")],
+    target: Annotated[str | None, typer.Argument(help="Target branch name or 'backlog' (defaults to current).")] = None,
 ) -> None:
     """Move a ticket to a different branch or backlog."""
     base = Path.cwd()
@@ -2299,6 +2292,13 @@ def ticket_move(
     ticket, ticket_path = result
 
     # Determine destination
+    if target is None:
+        try:
+            target = resolve_current_run(base)
+        except RuntimeError:
+            typer.echo("Error: No current branch active. Please specify a target branch.")
+            raise typer.Exit(code=1) from None
+
     if target.lower() == "backlog":
         dest_dir = backlog_root(base) / "tickets"
     else:
@@ -2306,6 +2306,12 @@ def ticket_move(
         dest_dir = branches_root(base) / normalized / "tickets"
 
     dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if already in destination
+    if ticket_path.parent.resolve() == dest_dir.resolve():
+        typer.echo(f"Ticket {ticket.id} is already in {dest_dir.parent.name}")
+        return
+
     new_path = move_ticket(ticket_path, dest_dir)
     typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name}")
 
