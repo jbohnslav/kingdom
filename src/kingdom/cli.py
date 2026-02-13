@@ -1971,7 +1971,7 @@ def ticket_create(
 
     # Validate priority range (1-3)
     if priority < 1 or priority > 3:
-        typer.echo(f"Warning: Priority {priority} outside valid range (1-3), clamping.")
+        sys.stderr.write(f"Warning: Priority {priority} outside valid range (1-3), clamping.\n")
         priority = max(1, min(3, priority))
 
     # Ensure base layout exists
@@ -2004,7 +2004,7 @@ def ticket_create(
     ticket_path = tickets_dir / f"{ticket_id}.md"
     write_ticket(ticket, ticket_path)
 
-    typer.echo(ticket_id)
+    typer.echo(str(ticket_path.resolve()))
 
 
 @ticket_app.command("list", help="List tickets.")
@@ -2172,6 +2172,17 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
     old_status = ticket.status
     ticket.status = new_status
     write_ticket(ticket, ticket_path)
+
+    # Auto-archive: closing a backlog ticket moves it to archive/backlog/tickets/
+    backlog_tickets = backlog_root(base) / "tickets"
+    archive_backlog_tickets = archive_root(base) / "backlog" / "tickets"
+    if new_status == "closed" and ticket_path.parent.resolve() == backlog_tickets.resolve():
+        ticket_path = move_ticket(ticket_path, archive_backlog_tickets)
+
+    # Auto-restore: reopening/starting an archived backlog ticket moves it back to backlog
+    if new_status in ("open", "in_progress") and ticket_path.parent.resolve() == archive_backlog_tickets.resolve():
+        ticket_path = move_ticket(ticket_path, backlog_tickets)
+
     typer.echo(f"{ticket.id}: {old_status} → {new_status}")
 
 
@@ -2297,6 +2308,50 @@ def ticket_move(
     dest_dir.mkdir(parents=True, exist_ok=True)
     new_path = move_ticket(ticket_path, dest_dir)
     typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name}")
+
+
+@ticket_app.command("pull", help="Pull backlog tickets into the current branch.")
+def ticket_pull(
+    ticket_ids: Annotated[list[str], typer.Argument(help="Ticket IDs to pull from backlog.")],
+) -> None:
+    """Move one or more tickets from backlog to the current branch."""
+    base = Path.cwd()
+
+    try:
+        resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    if not ticket_ids:
+        typer.echo("Error: at least one ticket ID is required")
+        raise typer.Exit(code=1)
+
+    dest_dir = get_tickets_dir(base)
+    backlog_tickets = backlog_root(base) / "tickets"
+
+    # Pass 1: validate all tickets before moving any (backlog-scoped lookup)
+    validated: list[tuple[Ticket, Path]] = []
+    seen_ids: set[str] = set()
+    for tid in ticket_ids:
+        normalized = tid if tid.startswith("kin-") else f"kin-{tid}"
+        ticket_path = backlog_tickets / f"{normalized}.md"
+
+        if not ticket_path.exists():
+            typer.echo(f"Ticket not found in backlog: {tid}")
+            raise typer.Exit(code=1)
+
+        ticket = read_ticket(ticket_path)
+
+        if ticket.id in seen_ids:
+            continue
+        seen_ids.add(ticket.id)
+        validated.append((ticket, ticket_path))
+
+    # Pass 2: move all validated tickets
+    for _, ticket_path in validated:
+        new_path = move_ticket(ticket_path, dest_dir)
+        typer.echo(str(new_path.resolve()))
 
 
 @ticket_app.command("ready", help="List tickets ready to work on.")

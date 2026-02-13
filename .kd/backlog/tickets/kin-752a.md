@@ -1,6 +1,6 @@
 ---
 id: kin-752a
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T18:07:18Z

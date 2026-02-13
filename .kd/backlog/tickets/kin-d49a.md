@@ -1,6 +1,6 @@
 ---
 id: kin-d49a
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T18:06:55Z

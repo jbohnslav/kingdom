@@ -1,6 +1,6 @@
 ---
 id: kin-b908
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T18:07:05Z

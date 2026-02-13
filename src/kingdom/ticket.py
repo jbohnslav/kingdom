@@ -378,6 +378,8 @@ def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     new_path = dest_dir / ticket_path.name
+    if new_path.exists():
+        raise FileExistsError(f"Destination already exists: {new_path}")
     ticket_path.rename(new_path)
     return new_path
 
