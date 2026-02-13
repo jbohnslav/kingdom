@@ -2,66 +2,87 @@
 
 ## Goal
 
-Make worktree-based parallel execution optional. After planning/design/breakdown, the user chooses an execution mode:
-- **Parallel**: peasants work tickets concurrently in separate worktrees (existing default)
-- **Serial (Hand)**: the King's preferred agent works tickets one at a time in the current directory
+Simplify the execution model by introducing a core `kd work <ticket>` command that launches the autonomous loop (RALPH) for a single ticket.
 
-The planning, design, council iteration, and ticket breakdown phases are identical. The only fork is at "run the tickets."
+- **`kd work <ticket>`**: Runs the loop in the *current directory*.
+    - If run in the root (Hand mode), it works on the main branch.
+    - If run inside a peasant worktree, it works on that ticket's branch.
+- **`kd peasant start <ticket>`**: Orchestrator command.
+    - **Default (Parallel)**: Creates a worktree, then launches `kd work <ticket>` *inside that worktree* (as a background process).
+    - **`--hand` (Serial)**: Launches `kd work <ticket>` *in the current directory* (as a background process).
+
+This decouples "environment setup" (peasant start) from "doing the work" (work).
 
 ## Context
 
-The `--hand` flag on `peasant start` already exists (`cli.py:1053`). When set, it uses `base` as the worktree path instead of creating one (`cli.py:1079-1080`). The harness respects whatever path it's given (`cli.py:960`, `harness.py`). A test covers the basic path (`test_cli_peasant.py:81`).
+Currently, `kd peasant start` does too much:
+1. Resolves context
+2. Creates worktree (or not)
+3. Creates thread
+4. Seeds thread
+5. Launches `kd agent run` (internal command) via `subprocess.Popen`
 
-However, hand mode is a per-command flag today, not a first-class execution mode. Several commands assume worktrees exist and break or behave oddly in hand mode:
-- `peasant review --reject` hardcodes worktree path lookup for relaunch (`cli.py:1533`)
-- `peasant review` runs tests/diff against worktree path (`cli.py:1550-1552`)
-- `peasant clean` tries to remove a worktree that doesn't exist
-- `peasant sync` looks for a worktree directory (`cli.py:1343`)
-- No guard prevents running multiple hand-mode workers in the same directory
+The internal `kd agent run` command (`cli.py:1630`) is close to what we want `kd work` to be, but it's hidden and coupled to the harness implementation details. Promoting it to a top-level `kd work` command makes the system more composable.
 
 ## Requirements
 
-1. **Persist `hand` flag in session state** — `update_agent_state` records `hand=True` so downstream commands (review, clean, sync) know the mode without re-specifying it
-2. **Serial guard** — refuse `peasant start --hand` if another hand-mode peasant is already active in the same base directory
-3. **Review uses stored worktree path** — `peasant review` (tests, diff, reject/relaunch) uses the path from session state (`base` for hand, worktree for parallel), not hardcoded worktree lookup
-4. **Clean/sync no-op in hand mode** — exit 0 with informational message, not an error
-5. **`peasant start-ready`** — new convenience command that starts all `ready` tickets. Default fans out in parallel. With `--hand`, runs serially (start, wait for completion, start next).
+1.  **New Command: `kd work <ticket>`**
+    - Runs the autonomous loop for the specified ticket.
+    - Uses the current working directory as the workspace.
+    - Can be run interactively (foreground) or via `peasant start` (background).
+    - Updates session state (working/done/blocked).
+    - Seeds the work thread with ticket content on first run (so `kd peasant read` shows context).
+    - Must honor `--base` flag — `_resolve_peasant_context` currently hardcodes `Path.cwd()`, needs to accept an explicit base for background launches.
 
-## Non-Goals
+2.  **Refactor `kd peasant start`**
+    - Instead of calling `kingdom.harness` directly or `kd agent run`, it should invoke `kd work`.
+    - **Parallel**: `mkdir worktree -> git worktree add -> cd worktree -> kd work <ticket> &`
+    - **Hand**: `kd work <ticket> &` (in current dir)
 
-- Changing the planning/design/breakdown workflow
-- Foreground streaming of agent output (future enhancement)
-- Run-level config for execution mode (per-command flag is sufficient for now)
-- Renaming "peasant" commands for hand mode — the Hand is still dispatched through the peasant system
+3.  **Extract `launch_work_background` helper**
+    - The Popen boilerplate (build cmd, open log fds, Popen, close fds) is needed in both `peasant start` and `peasant review --reject`. Extract into a shared helper rather than duplicating inline.
 
-## Decisions
-
-- **`--hand` flag name**: fits the Kingdom theme — Hand of the King, a trusted singular assistant
-- **Hand flag persisted in AgentState, not run-level state**: simpler, each session knows its own mode
-- **`start-ready` is a new command, not a flag on `start`**: `start` takes a single ticket, `start-ready` operates on the queue — different semantics
-- **Clean/sync exit 0 in hand mode**: not an error, just nothing to do
-- **Safety**: `remove_worktree` must never be called on the base directory
+4.  **Clean up dead code**
+    - Remove `harness.py:main()` and `__main__` block (nothing calls `python -m kingdom.harness` anymore).
+    - Remove empty `agent_app` typer group (`kd agent` has no commands).
 
 ## Workflow
 
-```
-Planning (unchanged)          Execution (choose one)
-─────────────────────         ─────────────────────
-kd council ask ...            Parallel:
-kd design                      kd peasant start kin-a1 --agent claude
-kd breakdown                   kd peasant start kin-b2 --agent claude
-kd ticket ready                 (background, separate worktrees)
-
-                              Serial (Hand):
-                                kd peasant start kin-a1 --hand
-                                 (wait for completion)
-                                kd peasant start kin-b2 --hand
-
-                              Or:
-                                kd peasant start-ready --hand
-                                 (runs all ready tickets serially)
+**Manual / Debugging:**
+```bash
+# Developer wants to see the agent work on a ticket in their current terminal
+kd work kin-123
+# Agent runs in foreground, logs to stdout, edits files in .
 ```
 
-## Open Questions
+**Peasant Orchestration (Parallel):**
+```bash
+# Developer wants to dispatch work
+kd peasant start kin-123
+# 1. Creates .kd/worktrees/kin-123
+# 2. Spawns background process: "cd .kd/worktrees/kin-123 && kd work kin-123"
+```
 
-- Should `start-ready --hand` auto-accept passing tickets and continue, or pause for review between each?
+**Hand Orchestration (Serial Background):**
+```bash
+# Developer wants agent to work in background on current checkout
+kd peasant start kin-123 --hand
+# 1. Spawns background process: "kd work kin-123" (in current dir)
+```
+
+## Decisions
+
+- **Command Name**: `kd work` — simple, active verb. Fits with `kd plan`, `kd design`.
+- **Execution**: `kd work` is the atomic unit of labor. `kd peasant` is the manager that assigns workspaces.
+- **`launch_work_background` helper**: restores DRY without reverting to the old `launch_harness` (which called `kingdom.harness` directly). New helper calls `kd work` via Popen.
+- **`--base` on `kd work`**: required for background launches where cwd may differ from repo root. Interactive mode defaults to cwd.
+
+## Issues Found (Council Review)
+
+Cursor implemented `kd work` and the `peasant start` refactor without being asked. The architecture is correct but has integration gaps:
+
+1. **10 test failures** — 3 in `test_cli_peasant.py` (mock `launch_harness` which no longer exists), 7 in `test_council.py` (council preamble injection changes expected prompt shapes)
+2. **`kd work` ignores `--base`** — `_resolve_peasant_context` hardcodes `Path.cwd()`, so `kd work --base /path` from a different directory fails to find tickets
+3. **Duplicated Popen boilerplate** — same ~25 lines in `peasant_start` and `peasant_review`
+4. **No thread seed in interactive `kd work`** — thread created but not seeded with ticket content
+5. **Dead code** — `harness.py:main()`, empty `kd agent` subcommand group
