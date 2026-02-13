@@ -50,6 +50,7 @@ from kingdom.ticket import (
     find_ticket,
     generate_ticket_id,
     list_tickets,
+    move_ticket,
     read_ticket,
     write_ticket,
 )
@@ -996,6 +997,10 @@ def _resolve_peasant_context(ticket_id: str, base: Path | None = None) -> _Peasa
     except RuntimeError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
+
+    # Auto-pull backlog tickets into the current branch
+    if ticket_path.parent == backlog_root(base) / "tickets":
+        ticket_path = move_ticket(ticket_path, branch_root(base, feature) / "tickets")
 
     return _PeasantContext(
         base=base,
@@ -2229,8 +2234,6 @@ def ticket_move(
     target: Annotated[str, typer.Argument(help="Target branch name or 'backlog'.")],
 ) -> None:
     """Move a ticket to a different branch or backlog."""
-    from kingdom.ticket import move_ticket
-
     base = Path.cwd()
 
     try:

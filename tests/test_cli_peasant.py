@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from kingdom import cli
 from kingdom.session import AgentState, get_agent_state, set_agent_state
-from kingdom.state import ensure_branch_layout, logs_root, set_current_run
+from kingdom.state import backlog_root, ensure_branch_layout, logs_root, set_current_run
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
 from kingdom.ticket import Ticket, find_ticket, write_ticket
 
@@ -972,3 +972,88 @@ class TestPeasantReview:
 
             assert result.exit_code == 1
             assert "not found" in result.output
+
+
+class TestBacklogAutoPull:
+    def test_start_moves_backlog_ticket_to_branch(self) -> None:
+        """A ticket in backlog should be moved to the branch tickets dir on peasant start."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create ticket directly in backlog
+            backlog_tickets = backlog_root(base) / "tickets"
+            backlog_tickets.mkdir(parents=True, exist_ok=True)
+            ticket = Ticket(
+                id="kin-back",
+                status="open",
+                title="Backlog ticket",
+                body="From backlog.\n\n## Acceptance\n\n- [ ] Done",
+                created=datetime.now(UTC),
+            )
+            backlog_path = backlog_tickets / "kin-back.md"
+            write_ticket(ticket, backlog_path)
+
+            # Verify it's findable in the backlog
+            assert backlog_path.exists()
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-back"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+            ):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-back"])
+
+            assert result.exit_code == 0, result.output
+
+            # Backlog copy should be gone
+            assert not backlog_path.exists()
+
+            # Ticket should now live under branch tickets
+            branch_tickets = base / ".kd" / "branches" / "feature-peasant-test" / "tickets"
+            new_path = branch_tickets / "kin-back.md"
+            assert new_path.exists()
+
+            # Should still be findable
+            found = find_ticket(base, "kin-back")
+            assert found is not None
+            assert found[0].id == "kin-back"
+
+    def test_auto_pulled_ticket_visible_in_tk_list(self) -> None:
+        """After auto-pull, the ticket should appear in `kd tk list`."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create ticket in backlog
+            backlog_tickets = backlog_root(base) / "tickets"
+            backlog_tickets.mkdir(parents=True, exist_ok=True)
+            ticket = Ticket(
+                id="kin-list",
+                status="open",
+                title="Listable ticket",
+                body="Should show in list.\n\n## Acceptance\n\n- [ ] Listed",
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, backlog_tickets / "kin-list.md")
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-list"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+            ):
+                runner.invoke(cli.app, ["peasant", "start", "kin-list"])
+
+            # kd tk list should now show the ticket
+            result = runner.invoke(cli.app, ["tk", "list"])
+            assert result.exit_code == 0, result.output
+            assert "kin-list" in result.output
+            assert "Listable ticket" in result.output
