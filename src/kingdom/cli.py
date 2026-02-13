@@ -2318,12 +2318,12 @@ def ticket_pull(
     base = Path.cwd()
 
     try:
-        feature = resolve_current_run(base)
+        resolve_current_run(base)
     except RuntimeError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
 
-    dest_dir = branch_root(base, feature) / "tickets"
+    dest_dir = get_tickets_dir(base)
     backlog_tickets = backlog_root(base) / "tickets"
 
     # Pass 1: validate all tickets before moving any

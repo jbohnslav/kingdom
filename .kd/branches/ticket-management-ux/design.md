@@ -64,3 +64,12 @@ Council reviewed (thread council-63a2). Unanimous on all points:
 - **No `--all`**: backlog is a triage buffer, pulling everything defeats the
   purpose. Explicit IDs are a natural guardrail
 - **Fail-fast on multi-ID pull**: validate before moving, stop on first error
+- **Legacy-run destination**: `tk pull` should resolve the tickets dir from the
+  active run, not hardcode `branch_root() / "tickets"` — legacy `.kd/runs/...`
+  paths must work
+- **Duplicate-ID dedup**: `tk pull kin-x kin-x` deduplicates before validation
+  to avoid FileNotFoundError on the second move
+- **Already-on-branch guard**: `tk pull` on a ticket already on the current
+  branch should error clearly, not silently match via global find_ticket
+- **Idempotent close**: closing an already-archived ticket is a no-op (path
+  comparison is false), no double-move — should be tested

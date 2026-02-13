@@ -13,9 +13,10 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     ensure_branch_layout,
+    ensure_run_layout,
     set_current_run,
 )
-from kingdom.ticket import Ticket, write_ticket
+from kingdom.ticket import Ticket, read_ticket, write_ticket
 
 runner = CliRunner()
 
@@ -67,6 +68,21 @@ class TestTicketCreate:
             assert "backlog" in output
             assert Path(output).exists()
 
+    def test_create_accepts_description_and_type_flags(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(
+                cli.app,
+                ["tk", "create", "Typed ticket", "-d", "Body from flag", "-t", "bug"],
+            )
+
+            assert result.exit_code == 0, result.output
+            created_ticket = read_ticket(Path(result.stdout.strip()))
+            assert created_ticket.body == "Body from flag"
+            assert created_ticket.type == "bug"
+
     def test_create_out_of_range_priority_clamps(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -75,10 +91,16 @@ class TestTicketCreate:
             result = runner.invoke(cli.app, ["tk", "create", "Bad priority", "-p", "5"])
 
             assert result.exit_code == 0
-            # First line of output should be the path
-            first_line = result.output.strip().split("\n")[0]
-            assert first_line.endswith(".md")
-            assert Path(first_line).exists()
+            path_output = result.stdout.strip()
+            assert path_output.endswith(".md")
+            assert Path(path_output).exists()
+
+            # Warning should be on stderr so stdout stays script-friendly.
+            assert "Warning: Priority 5 outside valid range" in result.stderr
+            assert "Warning: Priority 5 outside valid range" not in result.stdout
+
+            created_ticket = read_ticket(Path(path_output))
+            assert created_ticket.priority == 3
 
 
 class TestTicketCloseArchive:
@@ -238,6 +260,17 @@ class TestTicketPull:
             result = runner.invoke(cli.app, ["tk", "pull", "kin-norun"])
 
             assert result.exit_code == 1
+            assert "No active run." in result.output
+
+    def test_pull_all_flag_is_not_supported(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "pull", "--all"])
+
+            assert result.exit_code != 0
+            assert "No such option: --all" in result.output
 
     def test_pull_partial_failure_no_moves(self) -> None:
         """If second ticket fails validation, first should NOT have moved."""
@@ -254,3 +287,104 @@ class TestTicketPull:
             assert result.exit_code == 1
             # kin-good should NOT have been moved (two-pass validation)
             assert (backlog_dir / "kin-good.md").exists()
+
+    def test_pull_duplicate_ids_deduplicates(self) -> None:
+        """Duplicate IDs in one pull command should move only once."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            backlog_dir = backlog_root(base) / "tickets"
+            create_ticket_in(backlog_dir, "kin-dupe")
+
+            result = runner.invoke(cli.app, ["tk", "pull", "kin-dupe", "kin-dupe"])
+
+            assert result.exit_code == 0, result.output
+            lines = [line for line in result.stdout.strip().split("\n") if line]
+            assert len(lines) == 1
+
+            branch_path = branch_root(base, BRANCH) / "tickets" / "kin-dupe.md"
+            assert branch_path.exists()
+            assert not (backlog_dir / "kin-dupe.md").exists()
+
+    def test_pull_legacy_run_moves_into_legacy_tickets_dir(self) -> None:
+        """With a legacy active run, pull should target .kd/runs/<run>/tickets."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+
+            legacy_run = "legacy-feature"
+            ensure_run_layout(base, legacy_run)
+            set_current_run(base, legacy_run)
+
+            backlog_dir = backlog_root(base) / "tickets"
+            create_ticket_in(backlog_dir, "kin-legacy")
+
+            result = runner.invoke(cli.app, ["tk", "pull", "kin-legacy"])
+
+            assert result.exit_code == 0, result.output
+            legacy_ticket_path = base / ".kd" / "runs" / legacy_run / "tickets" / "kin-legacy.md"
+            assert legacy_ticket_path.exists()
+            assert str(legacy_ticket_path.resolve()) in result.stdout
+
+    def test_pull_already_on_branch_errors(self) -> None:
+        """Pulling a ticket that's already on the current branch should error."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-here")
+
+            result = runner.invoke(cli.app, ["tk", "pull", "kin-here"])
+
+            assert result.exit_code == 1
+            assert "not in the backlog" in result.output
+            # Ticket should still be on the branch
+            assert (branch_dir / "kin-here.md").exists()
+
+    def test_pull_ticket_appears_in_ready(self) -> None:
+        """After pulling, the ticket should appear in `tk ready`."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            backlog_dir = backlog_root(base) / "tickets"
+            create_ticket_in(backlog_dir, "kin-rdy1")
+
+            # Pull it
+            result = runner.invoke(cli.app, ["tk", "pull", "kin-rdy1"])
+            assert result.exit_code == 0, result.output
+
+            # Now check tk ready
+            result = runner.invoke(cli.app, ["tk", "ready", "--json"])
+            assert result.exit_code == 0, result.output
+            assert "kin-rdy1" in result.output
+
+
+class TestTicketCloseIdempotent:
+    def test_close_already_archived_ticket_is_noop(self) -> None:
+        """Closing an already-closed archived ticket should not double-move."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create a closed ticket directly in archive
+            archive_dir = archive_root(base) / "backlog" / "tickets"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            ticket = Ticket(
+                id="kin-idem",
+                status="closed",
+                title="Already archived",
+                body="Body",
+                created=datetime.now(UTC),
+            )
+            archived_path = archive_dir / "kin-idem.md"
+            write_ticket(ticket, archived_path)
+
+            result = runner.invoke(cli.app, ["tk", "close", "kin-idem"])
+
+            assert result.exit_code == 0, result.output
+            # Should still be in archive, not moved elsewhere
+            assert archived_path.exists()
+            # Should NOT be in backlog
+            assert not (backlog_root(base) / "tickets" / "kin-idem.md").exists()
