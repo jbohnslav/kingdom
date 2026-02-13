@@ -9,9 +9,7 @@ The harness runs an autonomous loop:
   6. Write response as message to work thread
   7. Check stop conditions: done, blocked, stopped, failed
 
-Usage::
-
-    kd agent run --agent claude --ticket kin-042 --worktree /path/to/worktree
+Called in-process by ``kd work <ticket>``.
 """
 
 from __future__ import annotations
@@ -24,9 +22,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kingdom.agent import build_command, load_agent, parse_response
+from kingdom.agent import build_command, clean_agent_env, load_agent, parse_response
 from kingdom.session import get_agent_state, update_agent_state
-from kingdom.state import resolve_current_run
 from kingdom.thread import add_message, list_messages
 from kingdom.ticket import find_ticket, read_ticket, write_ticket
 
@@ -331,6 +328,7 @@ def run_agent_loop(
                 timeout=AGENT_TIMEOUT,
                 cwd=worktree,
                 stdin=subprocess.DEVNULL,
+                env=clean_agent_env(),
             )
         except subprocess.TimeoutExpired:
             logger.error("Backend timed out after %ds", AGENT_TIMEOUT)
@@ -447,43 +445,3 @@ def run_agent_loop(
 
     logger.info("Harness finished with status: %s", final_status)
     return final_status
-
-
-def main() -> None:
-    """Entry point for `kd agent run`."""
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run autonomous agent loop")
-    parser.add_argument("--agent", required=True, help="Agent name (e.g., claude)")
-    parser.add_argument("--ticket", required=True, help="Ticket ID (e.g., kin-042)")
-    parser.add_argument("--worktree", required=True, help="Path to git worktree")
-    parser.add_argument("--thread", required=True, help="Work thread ID")
-    parser.add_argument("--session", required=True, help="Session name (e.g., peasant-kin-042)")
-    parser.add_argument("--base", default=".", help="Project root")
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        stream=sys.stdout,
-    )
-
-    base = Path(args.base).resolve()
-    branch = resolve_current_run(base)
-    worktree = Path(args.worktree).resolve()
-
-    status = run_agent_loop(
-        base=base,
-        branch=branch,
-        agent_name=args.agent,
-        ticket_id=args.ticket,
-        worktree=worktree,
-        thread_id=args.thread,
-        session_name=args.session,
-    )
-
-    sys.exit(0 if status == "done" else 1)
-
-
-if __name__ == "__main__":
-    main()

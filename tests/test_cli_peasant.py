@@ -799,7 +799,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="done", agent_backend="claude"),
             )
 
-            with patch("kingdom.cli.launch_harness", return_value=54321) as mock_launch:
+            with patch("kingdom.cli.launch_work_background", return_value=54321) as mock_launch:
                 result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix the edge case"])
 
             assert result.exit_code == 0, result.output
@@ -837,7 +837,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="done", pid=os.getpid(), agent_backend="claude"),
             )
 
-            with patch("kingdom.cli.launch_harness", return_value=99999) as mock_launch:
+            with patch("kingdom.cli.launch_work_background", return_value=99999) as mock_launch:
                 result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix it"])
 
             assert result.exit_code == 0, result.output
@@ -859,7 +859,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="working", pid=os.getpid()),
             )
 
-            with patch("kingdom.cli.launch_harness") as mock_launch:
+            with patch("kingdom.cli.launch_work_background") as mock_launch:
                 result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "try again"])
 
             assert result.exit_code == 0, result.output

@@ -960,55 +960,6 @@ def remove_worktree(base: Path, full_ticket_id: str) -> None:
         pass
 
 
-def launch_harness(
-    base: Path,
-    feature: str,
-    session_name: str,
-    agent: str,
-    full_ticket_id: str,
-    worktree_path: Path,
-    thread_id: str,
-) -> int:
-    """Launch the harness subprocess in the background. Returns the PID."""
-    peasant_logs_dir = logs_root(base, feature) / session_name
-    peasant_logs_dir.mkdir(parents=True, exist_ok=True)
-    stdout_log = peasant_logs_dir / "stdout.log"
-    stderr_log = peasant_logs_dir / "stderr.log"
-
-    harness_cmd = [
-        sys.executable,
-        "-m",
-        "kingdom.harness",
-        "--agent",
-        agent,
-        "--ticket",
-        full_ticket_id,
-        "--worktree",
-        str(worktree_path),
-        "--thread",
-        thread_id,
-        "--session",
-        session_name,
-        "--base",
-        str(base),
-    ]
-
-    stdout_fd = os.open(str(stdout_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
-    stderr_fd = os.open(str(stderr_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
-
-    proc = subprocess.Popen(
-        harness_cmd,
-        stdout=stdout_fd,
-        stderr=stderr_fd,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    os.close(stdout_fd)
-    os.close(stderr_fd)
-    return proc.pid
-
-
 class _PeasantContext(NamedTuple):
     """Resolved ticket and (optionally) feature branch for a peasant command."""
 
@@ -1019,13 +970,13 @@ class _PeasantContext(NamedTuple):
     feature: str
 
 
-def _resolve_peasant_context(ticket_id: str) -> _PeasantContext:
+def _resolve_peasant_context(ticket_id: str, base: Path | None = None) -> _PeasantContext:
     """Resolve ticket and feature branch, or exit with an error message.
 
     Handles the repeated preamble shared by peasant_* commands:
     find_ticket + AmbiguousTicketMatch handling + resolve_current_run.
     """
-    base = Path.cwd()
+    base = base or Path.cwd()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -1053,6 +1004,59 @@ def _resolve_peasant_context(ticket_id: str) -> _PeasantContext:
         full_ticket_id=full_ticket_id,
         feature=feature,
     )
+
+
+def launch_work_background(
+    base: Path,
+    feature: str,
+    ticket_id: str,
+    agent: str,
+    worktree_path: Path,
+    thread_id: str,
+    session_name: str,
+) -> int:
+    """Launch ``kd work`` as a background process.
+
+    Builds the command, opens log file descriptors, spawns via Popen, and
+    returns the child PID.  Used by ``peasant start`` and ``peasant review --reject``.
+    """
+    peasant_logs_dir = logs_root(base, feature) / session_name
+    peasant_logs_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log = peasant_logs_dir / "stdout.log"
+    stderr_log = peasant_logs_dir / "stderr.log"
+
+    work_cmd = [
+        sys.executable,
+        "-m",
+        "kingdom.cli",
+        "work",
+        ticket_id,
+        "--agent",
+        agent,
+        "--worktree",
+        str(worktree_path),
+        "--thread",
+        thread_id,
+        "--session",
+        session_name,
+        "--base",
+        str(base),
+    ]
+
+    stdout_fd = os.open(str(stdout_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    stderr_fd = os.open(str(stderr_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+
+    proc = subprocess.Popen(
+        work_cmd,
+        stdout=stdout_fd,
+        stderr=stderr_fd,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    os.close(stdout_fd)
+    os.close(stderr_fd)
+    return proc.pid
 
 
 @peasant_app.command("start", help="Launch a peasant agent on a ticket.")
@@ -1112,7 +1116,7 @@ def peasant_start(
         add_message(base, feature, thread_id, from_="king", to=session_name, body=seed_body)
 
     # 4. Launch harness as background process
-    pid = launch_harness(base, feature, session_name, agent, full_ticket_id, worktree_path, thread_id)
+    pid = launch_work_background(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
 
     # 5. Update session with pid and status
     now = datetime.now(UTC).isoformat()
@@ -1540,7 +1544,13 @@ def peasant_review(
             # Relaunch the harness
             agent_backend = state.agent_backend or "claude"
             worktree_path = state_root(base) / "worktrees" / full_ticket_id
-            pid = launch_harness(base, feature, session_name, agent_backend, full_ticket_id, worktree_path, thread_id)
+            if not worktree_path.exists():
+                worktree_path = base
+
+            pid = launch_work_background(
+                base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
+            )
+
             now = datetime.now(UTC).isoformat()
             update_agent_state(
                 base,
@@ -1632,20 +1642,20 @@ def peasant_review(
         typer.echo("\nSome checks failed. Use --reject 'feedback' to send feedback.")
 
 
-agent_app = typer.Typer(name="agent", help="Agent harness commands.")
-app.add_typer(agent_app, name="agent")
-
-
-@agent_app.command("run", help="Run autonomous agent loop (internal).")
-def agent_run(
-    agent: Annotated[str, typer.Option("--agent", help="Agent name.")],
-    ticket: Annotated[str, typer.Option("--ticket", help="Ticket ID.")],
-    worktree: Annotated[str, typer.Option("--worktree", help="Worktree path.")],
-    thread: Annotated[str, typer.Option("--thread", help="Thread ID.")],
-    session: Annotated[str, typer.Option("--session", help="Session name.")],
+@app.command("work", help="Run autonomous agent loop on a ticket.")
+def work(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    agent: Annotated[str, typer.Option("--agent", help="Agent name.")] = "claude",
+    worktree: Annotated[str | None, typer.Option("--worktree", help="Worktree path (internal).")] = None,
+    thread: Annotated[str | None, typer.Option("--thread", help="Thread ID (internal).")] = None,
+    session: Annotated[str | None, typer.Option("--session", help="Session name (internal).")] = None,
     base_dir: Annotated[str, typer.Option("--base", help="Project root.")] = ".",
 ) -> None:
-    """Run the autonomous agent harness loop. Typically launched by `kd peasant start`."""
+    """Run the autonomous agent harness loop.
+
+    Can be run directly (foreground) or via `kd peasant start` (background).
+    If run directly, it works in the current directory.
+    """
     import logging
 
     from kingdom.harness import run_agent_loop
@@ -1663,13 +1673,35 @@ def agent_run(
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
 
+    # Resolve ticket context if not provided (interactive mode)
+    if not (worktree and thread and session):
+        ctx = _resolve_peasant_context(ticket_id, base=base)
+        # In interactive mode, we are the session
+        session = session or f"hand-{ctx.full_ticket_id}"
+        thread = thread or f"{ctx.full_ticket_id}-work"
+        worktree = worktree or str(Path.cwd())
+        # Ensure thread exists
+        from kingdom.thread import add_message, create_thread, thread_dir
+
+        with contextlib.suppress(FileExistsError):
+            create_thread(base, feature, thread, [session, "king"], "work")
+
+        # Seed thread with ticket content (same as peasant_start)
+        tdir = thread_dir(base, feature, thread)
+        existing_msgs = list(tdir.glob("[0-9][0-9][0-9][0-9]-*.md"))
+        if not existing_msgs:
+            seed_body = f"# Starting work on {ctx.full_ticket_id}\n\n"
+            seed_body += f"**Title:** {ctx.ticket.title}\n\n"
+            seed_body += ctx.ticket.body
+            add_message(base, feature, thread, from_="king", to=session, body=seed_body)
+
     worktree_path = Path(worktree).resolve()
 
     status = run_agent_loop(
         base=base,
         branch=feature,
         agent_name=agent,
-        ticket_id=ticket,
+        ticket_id=ticket_id,
         worktree=worktree_path,
         thread_id=thread,
         session_name=session,
