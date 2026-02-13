@@ -2323,6 +2323,10 @@ def ticket_pull(
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
 
+    if not ticket_ids:
+        typer.echo("Error: at least one ticket ID is required")
+        raise typer.Exit(code=1)
+
     dest_dir = get_tickets_dir(base)
     backlog_tickets = backlog_root(base) / "tickets"
 

@@ -249,6 +249,17 @@ class TestTicketPull:
             assert result.exit_code == 1
             assert "not found" in result.output
 
+    def test_pull_no_ids_errors(self) -> None:
+        """Invoking `kd tk pull` with no IDs must fail, not silently succeed."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "pull"])
+
+            assert result.exit_code != 0
+            assert "TICKET_IDS" in result.output or "at least one ticket ID" in result.output
+
     def test_pull_no_active_run_errors(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
