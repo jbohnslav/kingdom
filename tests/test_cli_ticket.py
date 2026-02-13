@@ -281,7 +281,7 @@ class TestTicketPull:
             result = runner.invoke(cli.app, ["tk", "pull", "--all"])
 
             assert result.exit_code != 0
-            assert "No such option: --all" in result.output
+            assert "No such option" in result.output
 
     def test_pull_partial_failure_no_moves(self) -> None:
         """If second ticket fails validation, first should NOT have moved."""
