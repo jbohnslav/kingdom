@@ -1,6 +1,6 @@
 ---
 id: kin-98e7
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T13:38:45Z
