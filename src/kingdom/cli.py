@@ -2179,8 +2179,8 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
     if new_status == "closed" and ticket_path.parent.resolve() == backlog_tickets.resolve():
         ticket_path = move_ticket(ticket_path, archive_backlog_tickets)
 
-    # Auto-restore: reopening an archived backlog ticket moves it back to backlog
-    if new_status == "open" and ticket_path.parent.resolve() == archive_backlog_tickets.resolve():
+    # Auto-restore: reopening/starting an archived backlog ticket moves it back to backlog
+    if new_status in ("open", "in_progress") and ticket_path.parent.resolve() == archive_backlog_tickets.resolve():
         ticket_path = move_ticket(ticket_path, backlog_tickets)
 
     typer.echo(f"{ticket.id}: {old_status} → {new_status}")
@@ -2326,6 +2326,8 @@ def ticket_pull(
     dest_dir = branch_root(base, feature) / "tickets"
     backlog_tickets = backlog_root(base) / "tickets"
 
+    # Pass 1: validate all tickets before moving any
+    validated: list[tuple[Ticket, Path]] = []
     for tid in ticket_ids:
         try:
             result = find_ticket(base, tid)
@@ -2343,6 +2345,10 @@ def ticket_pull(
             typer.echo(f"Error: {ticket.id} is not in the backlog")
             raise typer.Exit(code=1)
 
+        validated.append((ticket, ticket_path))
+
+    # Pass 2: move all validated tickets
+    for _, ticket_path in validated:
         new_path = move_ticket(ticket_path, dest_dir)
         typer.echo(str(new_path.resolve()))
 
