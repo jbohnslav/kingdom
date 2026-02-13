@@ -270,11 +270,23 @@ def add_message(
     lines.append(body)
     lines.append("")
 
-    # Sanitize sender name for filename
+    # Sanitize sender name for filename — use exclusive create ('x') to avoid race
     safe_from = normalize_branch_name(from_)
-    filename = f"{seq:04d}-{safe_from}.md"
-    msg_path = tdir / filename
-    msg_path.write_text("\n".join(lines), encoding="utf-8")
+    content = "\n".join(lines)
+    max_retries = 10
+    for _ in range(max_retries):
+        filename = f"{seq:04d}-{safe_from}.md"
+        msg_path = tdir / filename
+        try:
+            with open(msg_path, "x", encoding="utf-8") as f:
+                f.write(content)
+        except FileExistsError:
+            seq += 1
+            msg.sequence = seq
+            continue
+        break
+    else:
+        raise RuntimeError(f"Failed to write message after {max_retries} retries")
 
     return msg
 
