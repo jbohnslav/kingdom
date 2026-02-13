@@ -434,7 +434,8 @@ def council_ask(
         return
 
     # Fall through to watch — poll thread dir and render panels as they arrive
-    council_watch(thread_id=thread_id, timeout=timeout)
+    ask_expected = {to} if to else {m.name for m in c.members}
+    watch_thread(thread_id=thread_id, timeout=timeout + 30, expected=ask_expected)
 
 
 @council_app.command("reset", help="Clear all council sessions.")
@@ -557,16 +558,17 @@ def council_list() -> None:
         typer.echo(f"{t.id}  {created}  {msg_count} msgs{marker}")
 
 
-@council_app.command("watch", help="Watch a council thread for incoming responses.")
-def council_watch(
-    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
-    timeout: Annotated[int, typer.Option("--timeout", help="Max seconds to wait.")] = 300,
+def watch_thread(
+    thread_id: str | None = None,
+    timeout: int = 300,
+    expected: set[str] | None = None,
 ) -> None:
-    """Watch a council thread and render agent responses as they arrive.
+    """Core watch logic — poll a thread and render responses as Rich panels.
 
-    Polls the thread directory for new message files and renders agent
-    responses as Rich panels. Exits when all expected members have responded
-    or on timeout/Ctrl+C.
+    Args:
+        thread_id: Thread to watch (defaults to current).
+        timeout: Max seconds to wait.
+        expected: If set, only wait for these members instead of all thread members.
     """
     import time
 
@@ -589,9 +591,12 @@ def council_watch(
         typer.echo(f"Thread not found: {thread_id}")
         raise typer.Exit(code=1)
 
-    # Read thread metadata to get expected members
-    meta = get_thread(base, feature, thread_id)
-    expected_members = {m for m in meta.members if m != "king"}
+    # Use caller-provided expected set, or fall back to thread metadata
+    if expected is not None:
+        expected_members = expected
+    else:
+        meta = get_thread(base, feature, thread_id)
+        expected_members = {m for m in meta.members if m != "king"}
 
     console.print(f"[bold]Watching: {thread_id}[/bold]")
     console.print(f"[dim]Expecting: {', '.join(sorted(expected_members))}[/dim]\n")
@@ -649,6 +654,15 @@ def council_watch(
     missing = expected_members - responded_members
     if missing:
         console.print(f"[yellow]Missing: {', '.join(sorted(missing))}[/yellow]")
+
+
+@council_app.command("watch", help="Watch a council thread for incoming responses.")
+def council_watch(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
+    timeout: Annotated[int, typer.Option("--timeout", help="Max seconds to wait.")] = 300,
+) -> None:
+    """Watch a council thread and render agent responses as they arrive."""
+    watch_thread(thread_id=thread_id, timeout=timeout)
 
 
 def render_response_panel(response, console):
@@ -867,14 +881,19 @@ peasant_app = typer.Typer(name="peasant", help="Manage peasant agents.")
 app.add_typer(peasant_app, name="peasant")
 
 
+def worktree_path_for(base: Path, full_ticket_id: str) -> Path:
+    """Return the canonical worktree path for a ticket (may not exist yet)."""
+    return state_root(base) / "worktrees" / full_ticket_id
+
+
 def create_worktree(base: Path, full_ticket_id: str) -> Path:
     """Create a git worktree for a ticket. Returns the worktree path."""
-    worktrees_dir = state_root(base) / "worktrees"
-    worktree_path = worktrees_dir / full_ticket_id
+    worktree_path = worktree_path_for(base, full_ticket_id)
 
     if worktree_path.exists():
         return worktree_path
 
+    worktrees_dir = worktree_path.parent
     worktrees_dir.mkdir(parents=True, exist_ok=True)
 
     branch_name = f"ticket/{full_ticket_id}"
@@ -935,8 +954,7 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
 
 def remove_worktree(base: Path, full_ticket_id: str) -> None:
     """Remove a git worktree for a ticket."""
-    worktrees_dir = state_root(base) / "worktrees"
-    worktree_path = worktrees_dir / full_ticket_id
+    worktree_path = worktree_path_for(base, full_ticket_id)
 
     if not worktree_path.exists():
         raise FileNotFoundError(f"No worktree found for {full_ticket_id}")
@@ -971,16 +989,26 @@ class _PeasantContext(NamedTuple):
     feature: str
 
 
-def _resolve_peasant_context(ticket_id: str, base: Path | None = None) -> _PeasantContext:
+def _resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull: bool = False) -> _PeasantContext:
     """Resolve ticket and feature branch, or exit with an error message.
 
     Handles the repeated preamble shared by peasant_* commands:
     find_ticket + AmbiguousTicketMatch handling + resolve_current_run.
+
+    Args:
+        auto_pull: If True, move backlog tickets into the current branch.
+            Only set for mutating commands (peasant start, kd work).
     """
     base = base or Path.cwd()
 
     try:
-        result = find_ticket(base, ticket_id)
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    try:
+        result = find_ticket(base, ticket_id, branch=feature)
     except AmbiguousTicketMatch as e:
         typer.echo(f"Error: {e}")
         raise typer.Exit(code=1) from None
@@ -992,14 +1020,8 @@ def _resolve_peasant_context(ticket_id: str, base: Path | None = None) -> _Peasa
     ticket, ticket_path = result
     full_ticket_id = ticket.id
 
-    try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
-
-    # Auto-pull backlog tickets into the current branch
-    if ticket_path.parent == backlog_root(base) / "tickets":
+    # Auto-pull backlog tickets into the current branch (mutating commands only)
+    if auto_pull and ticket_path.parent == backlog_root(base) / "tickets":
         ticket_path = move_ticket(ticket_path, branch_root(base, feature) / "tickets")
 
     return _PeasantContext(
@@ -1074,7 +1096,7 @@ def peasant_start(
     from kingdom.session import update_agent_state
     from kingdom.thread import create_thread
 
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = _resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
 
     session_name = f"peasant-{full_ticket_id}"
@@ -1095,6 +1117,22 @@ def peasant_start(
 
     # 1. Create worktree (or use base if hand mode)
     if hand:
+        # Guard: block if another peasant is already running on the same checkout
+        from kingdom.session import list_active_agents
+
+        for agent in list_active_agents(base, feature):
+            if agent.name == session_name:
+                continue  # already handled above
+            if agent.status == "working" and agent.pid and agent.name.startswith("peasant-"):
+                try:
+                    os.kill(agent.pid, 0)
+                    typer.echo(
+                        f"Error: peasant {agent.name} (pid {agent.pid}) is already working "
+                        f"on this checkout. Stop it first or use worktree mode."
+                    )
+                    raise typer.Exit(code=1)
+                except OSError:
+                    pass  # Process is dead, safe to continue
         worktree_path = base
         typer.echo(f"Running in hand mode (serial) on {base}")
     else:
@@ -1358,7 +1396,7 @@ def peasant_sync(
             pass  # Process is dead, safe to sync
 
     # Find worktree
-    worktree_path = state_root(base) / "worktrees" / full_ticket_id
+    worktree_path = worktree_path_for(base, full_ticket_id)
     if not worktree_path.exists():
         typer.echo(f"No worktree found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1)
@@ -1548,9 +1586,10 @@ def peasant_review(
         else:
             # Relaunch the harness
             agent_backend = state.agent_backend or "claude"
-            worktree_path = state_root(base) / "worktrees" / full_ticket_id
+            worktree_path = worktree_path_for(base, full_ticket_id)
             if not worktree_path.exists():
-                worktree_path = base
+                typer.echo(f"Error: worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
+                raise typer.Exit(code=1)
 
             pid = launch_work_background(
                 base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
@@ -1571,7 +1610,7 @@ def peasant_review(
     # --- Show review info ---
 
     # 1. Run pytest
-    worktree_path = state_root(base) / "worktrees" / full_ticket_id
+    worktree_path = worktree_path_for(base, full_ticket_id)
     if worktree_path.exists():
         test_cwd = str(worktree_path)
     else:
@@ -1680,7 +1719,7 @@ def work(
 
     # Resolve ticket context if not provided (interactive mode)
     if not (worktree and thread and session):
-        ctx = _resolve_peasant_context(ticket_id, base=base)
+        ctx = _resolve_peasant_context(ticket_id, base=base, auto_pull=True)
         # In interactive mode, we are the session
         session = session or f"hand-{ctx.full_ticket_id}"
         thread = thread or f"{ctx.full_ticket_id}-work"
@@ -2341,9 +2380,11 @@ def ticket_edit(
         typer.echo(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
+    import shlex
+
     _, ticket_path = result
     editor = os.environ.get("EDITOR", "vim")
-    subprocess.run([editor, str(ticket_path)])
+    subprocess.run([*shlex.split(editor), str(ticket_path)])
 
 
 def main() -> None:

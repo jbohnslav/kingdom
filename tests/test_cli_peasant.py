@@ -791,6 +791,10 @@ class TestPeasantReview:
             create_test_ticket(base)
             thread_id = setup_work_thread(base)
 
+            # Create worktree directory so reject can relaunch
+            worktree_dir = base / ".kd" / "worktrees" / "kin-test"
+            worktree_dir.mkdir(parents=True, exist_ok=True)
+
             session_name = "peasant-kin-test"
             set_agent_state(
                 base,
@@ -827,6 +831,10 @@ class TestPeasantReview:
             setup_project(base)
             create_test_ticket(base)
             setup_work_thread(base)
+
+            # Create worktree directory so reject can relaunch
+            worktree_dir = base / ".kd" / "worktrees" / "kin-test"
+            worktree_dir.mkdir(parents=True, exist_ok=True)
 
             session_name = "peasant-kin-test"
             # Status is "done" but PID is alive (os.getpid()) — simulates PID reuse
