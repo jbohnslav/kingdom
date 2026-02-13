@@ -1,47 +1,70 @@
 # Learnings: ticket-management-ux
 
-## kd Workflow for Agents (How to Use the CLI)
+## Agent Experience Using the kd Workflow
 
-### Branch lifecycle
-1. `git checkout -b <branch> master` — create feature branch
-2. `kd start` — initialize the run (creates `.kd/branches/<branch>/`)
-3. `kd design` — creates design.md template, prints path
-4. Edit design.md with goals, requirements, decisions
-5. `kd council ask "..."` — get council feedback (async by default, watches for responses)
-6. Move tickets from backlog: `kd tk move <id> <branch>`
-7. Work tickets: `kd tk start <id>`, make changes, `kd tk close <id>`
-8. `kd done` — archive the branch when complete
+This was the first time an agent (Claude Code, Opus 4.6) drove the full kd
+lifecycle end-to-end: start → design → council → tickets → implement → review.
 
-### Ticket commands
-- `kd tk create "title"` — create ticket, prints absolute path for editing
-- `kd tk list` — list tickets on current branch
-- `kd tk list --backlog` — list backlog tickets
-- `kd tk ready` — list tickets ready to work (open, deps resolved)
-- `kd tk show <id>` — show ticket details
-- `kd tk start/close/reopen <id>` — change ticket status
-- `kd tk move <id> <branch>` — move ticket to another branch
-- `kd tk edit <id>` — open in $EDITOR
-- `kd tk dep <id> <depends-on>` — add dependency
+### What worked well
 
-### Council commands
-- `kd council ask "prompt"` — dispatch to all members, watch for responses
-- `kd council ask "prompt" --to claude` — ask a single member
-- `kd council watch` — watch current thread for responses
-- `kd council threads` — list threads
-- `kd council read <thread-id>` — read thread messages
+- **Council feedback was genuinely useful.** The three members (claude, codex,
+  cursor) caught real bugs I missed: the two-pass pull issue, the `kd tk start`
+  not restoring archived tickets, and the duplicate-ID crash. Worth the ~2min
+  wait each time.
 
-### Peasant commands (background agents)
-- `kd peasant start <ticket-id>` — launch agent in worktree
-- `kd peasant start <ticket-id> --hand` — launch in current checkout (serial)
-- `kd peasant status` — show running peasants
-- `kd peasant logs <ticket-id>` — show agent logs
-- `kd peasant stop <ticket-id>` — stop a running peasant
-- `kd peasant review <ticket-id>` — review work, `--accept` or `--reject "msg"`
-- `kd work <ticket-id>` — run agent loop directly (foreground)
+- **The design-first flow forced clarity.** Writing the design doc before coding
+  made the council review much more productive — they could read the file and
+  give concrete feedback against stated decisions rather than guessing intent.
 
-### Things learned during this run
-- `kd tk move` is needed to pull backlog tickets into a branch before `kd tk pull` exists
-- Council `ask` is async by default — dispatches background workers, then watches
-- The `.venv` only needs to be sourced once per shell session
-- Design doc should be written before asking council — they read the file
-- Tickets in backlog use global `find_ticket` — scoped search only applies via `_resolve_peasant_context`
+- **Ticket status tracking kept things organized.** `kd tk start` / `kd tk close`
+  gave a clear sense of progress. `kd tk list` showed what was done vs remaining.
+
+- **Async council dispatch is the right default.** The watch mode polls and
+  renders panels as they arrive, so you see fast responders immediately instead
+  of waiting for the slowest one.
+
+### Friction points
+
+- **No `kd tk pull` yet (bootstrapping problem).** Had to use `kd tk move <id>
+  <branch>` to pull backlog tickets — the thing we were building. Felt awkward
+  but unavoidable.
+
+- **`kd tk move` requires the branch name, not "current branch".** Would be
+  nicer if it defaulted to the active run's branch, or if pull existed from
+  the start.
+
+- **Council thread messages need trailing whitespace cleanup.** The pre-commit
+  hook caught trailing whitespace in council response files twice. The council
+  worker should strip trailing whitespace before writing message files.
+
+- **Committing `.kd/` state is manual and easy to forget.** After every
+  `kd tk close`, council ask, or ticket move, you need to `git add .kd/ &&
+  git commit`. Could be automated or at least prompted. It's especially easy
+  to forget the council thread files.
+
+- **No way to see the full workflow status at a glance.** `kd status` shows
+  ticket counts but not which tickets are open/closed or what council threads
+  exist. A richer status command would help.
+
+- **`kd tk create` used to print just the ID.** This was the #1 thing I wanted
+  to fix — as an agent, I need the path to edit the file. Printing the absolute
+  path is much more useful for both agents and `vim $(kd tk create ...)`.
+
+- **Design doc has no formal "approved" state.** After council review, I updated
+  the design doc and committed it, but there's no `kd design approve` or similar
+  to mark it as reviewed. The design doc just exists as a file.
+
+### Observations for future agent integration
+
+- An agent running `kd work` in hand mode would benefit from the full workflow
+  being scriptable: create branch, start run, pull tickets, work, close, done.
+  Most of this works today but some steps (like writing the design doc) require
+  manual editing.
+
+- Council reviews are most valuable when given specific instructions ("review
+  against tickets", "check for bugs in this diff") rather than open-ended asks.
+
+- The two-council-ask pattern (design review, then code review) caught different
+  classes of issues. Design review caught missing requirements (reopen behavior,
+  fail-fast semantics). Code review caught implementation bugs (partial moves,
+  duplicate IDs).
