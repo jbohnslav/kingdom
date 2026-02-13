@@ -50,6 +50,7 @@ from kingdom.ticket import (
     find_ticket,
     generate_ticket_id,
     list_tickets,
+    move_ticket,
     read_ticket,
     write_ticket,
 )
@@ -282,13 +283,16 @@ def council_ask(
     to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
     new_thread: Annotated[bool, typer.Option("--new-thread", help="Start a fresh thread.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
-    async_mode: Annotated[bool, typer.Option("--async", help="Dispatch and return immediately.")] = False,
-    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 120,
+    sync: Annotated[bool, typer.Option("--sync", help="Block until all responses arrive (old behavior).")] = False,
+    no_watch: Annotated[bool, typer.Option("--no-watch", help="Dispatch only, don't wait for responses.")] = False,
+    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 300,
 ) -> None:
     """Query council members via threaded conversations.
 
-    Default mode streams responses as Rich panels as each agent finishes.
-    Use --async to dispatch agents in the background and return immediately.
+    Default: dispatches agents in background, then watches for responses
+    as Rich panels (returns instantly, never gets backgrounded by TUI hosts).
+    Use --sync to block in-process until all responses arrive (old behavior).
+    Use --no-watch to dispatch and return immediately without watching.
     Use --json for machine-readable batch output.
     """
     from kingdom.thread import add_message, create_thread, thread_dir
@@ -336,41 +340,7 @@ def council_ask(
     target = to or "all"
     add_message(base, feature, thread_id, from_="king", to=target, body=prompt)
 
-    # --async mode: dispatch worker subprocess and return immediately
-    if async_mode:
-        member_names_str = to if to else ", ".join(m.name for m in c.members)
-        typer.echo(f"Thread: {thread_id}")
-        typer.echo(f"Dispatching to: {member_names_str}")
-        typer.echo("Use `kd council watch` to see responses.")
-
-        worker_cmd = [
-            sys.executable,
-            "-m",
-            "kingdom.council.worker",
-            "--base",
-            str(base),
-            "--feature",
-            feature,
-            "--thread-id",
-            thread_id,
-            "--prompt",
-            prompt,
-            "--timeout",
-            str(timeout),
-        ]
-        if to:
-            worker_cmd.extend(["--to", to])
-
-        subprocess.Popen(
-            worker_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        return
-
-    # --json mode: batch query, no streaming
+    # --json mode: batch query (always sync, no streaming)
     if json_output:
         if to and member:
             response = member.query(prompt, timeout)
@@ -399,32 +369,73 @@ def council_ask(
         print(json.dumps(output, indent=2))
         return
 
-    # Default streaming mode: render each response as it arrives
+    # --sync mode: block in-process until all responses arrive (old default)
+    if sync:
+        member_names_str = to if to else ", ".join(m.name for m in c.members)
+        console.print(f"[dim]Thread: {thread_id}[/dim]")
+        console.print(f"[dim]Querying: {member_names_str}...[/dim]\n")
+
+        if to and member:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task(f"Querying {to}...", total=None)
+                response = member.query(prompt, timeout)
+                progress.update(task, description="Done")
+            body = response.text if response.text else f"*Error: {response.error}*"
+            add_message(base, feature, thread_id, from_=to, to="king", body=body)
+            render_response_panel(response, console)
+        else:
+
+            def on_response(name, response):
+                render_response_panel(response, console)
+
+            c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
+
+        c.save_sessions(base, feature)
+        return
+
+    # Default: dispatch agents in background, then watch for responses
     member_names_str = to if to else ", ".join(m.name for m in c.members)
     console.print(f"[dim]Thread: {thread_id}[/dim]")
     console.print(f"[dim]Querying: {member_names_str}...[/dim]\n")
 
-    if to and member:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task(f"Querying {to}...", total=None)
-            response = member.query(prompt, timeout)
-            progress.update(task, description="Done")
-        body = response.text if response.text else f"*Error: {response.error}*"
-        add_message(base, feature, thread_id, from_=to, to="king", body=body)
-        render_response_panel(response, console)
-    else:
+    worker_cmd = [
+        sys.executable,
+        "-m",
+        "kingdom.council.worker",
+        "--base",
+        str(base),
+        "--feature",
+        feature,
+        "--thread-id",
+        thread_id,
+        "--prompt",
+        prompt,
+        "--timeout",
+        str(timeout),
+    ]
+    if to:
+        worker_cmd.extend(["--to", to])
 
-        def on_response(name, response):
-            render_response_panel(response, console)
+    subprocess.Popen(
+        worker_cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
-        c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
+    if no_watch:
+        typer.echo(f"Dispatched. Use `kd council watch {thread_id}` to see responses.")
+        return
 
-    c.save_sessions(base, feature)
+    # Fall through to watch — poll thread dir and render panels as they arrive
+    ask_expected = {to} if to else {m.name for m in c.members}
+    watch_thread(thread_id=thread_id, timeout=timeout + 30, expected=ask_expected)
 
 
 @council_app.command("reset", help="Clear all council sessions.")
@@ -547,16 +558,17 @@ def council_list() -> None:
         typer.echo(f"{t.id}  {created}  {msg_count} msgs{marker}")
 
 
-@council_app.command("watch", help="Watch a council thread for incoming responses.")
-def council_watch(
-    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
-    timeout: Annotated[int, typer.Option("--timeout", help="Max seconds to wait.")] = 300,
+def watch_thread(
+    thread_id: str | None = None,
+    timeout: int = 300,
+    expected: set[str] | None = None,
 ) -> None:
-    """Watch a council thread and render agent responses as they arrive.
+    """Core watch logic — poll a thread and render responses as Rich panels.
 
-    Polls the thread directory for new message files and renders agent
-    responses as Rich panels. Exits when all expected members have responded
-    or on timeout/Ctrl+C.
+    Args:
+        thread_id: Thread to watch (defaults to current).
+        timeout: Max seconds to wait.
+        expected: If set, only wait for these members instead of all thread members.
     """
     import time
 
@@ -579,9 +591,12 @@ def council_watch(
         typer.echo(f"Thread not found: {thread_id}")
         raise typer.Exit(code=1)
 
-    # Read thread metadata to get expected members
-    meta = get_thread(base, feature, thread_id)
-    expected_members = {m for m in meta.members if m != "king"}
+    # Use caller-provided expected set, or fall back to thread metadata
+    if expected is not None:
+        expected_members = expected
+    else:
+        meta = get_thread(base, feature, thread_id)
+        expected_members = {m for m in meta.members if m != "king"}
 
     console.print(f"[bold]Watching: {thread_id}[/bold]")
     console.print(f"[dim]Expecting: {', '.join(sorted(expected_members))}[/dim]\n")
@@ -639,6 +654,15 @@ def council_watch(
     missing = expected_members - responded_members
     if missing:
         console.print(f"[yellow]Missing: {', '.join(sorted(missing))}[/yellow]")
+
+
+@council_app.command("watch", help="Watch a council thread for incoming responses.")
+def council_watch(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
+    timeout: Annotated[int, typer.Option("--timeout", help="Max seconds to wait.")] = 300,
+) -> None:
+    """Watch a council thread and render agent responses as they arrive."""
+    watch_thread(thread_id=thread_id, timeout=timeout)
 
 
 def render_response_panel(response, console):
@@ -857,14 +881,19 @@ peasant_app = typer.Typer(name="peasant", help="Manage peasant agents.")
 app.add_typer(peasant_app, name="peasant")
 
 
+def worktree_path_for(base: Path, full_ticket_id: str) -> Path:
+    """Return the canonical worktree path for a ticket (may not exist yet)."""
+    return state_root(base) / "worktrees" / full_ticket_id
+
+
 def create_worktree(base: Path, full_ticket_id: str) -> Path:
     """Create a git worktree for a ticket. Returns the worktree path."""
-    worktrees_dir = state_root(base) / "worktrees"
-    worktree_path = worktrees_dir / full_ticket_id
+    worktree_path = worktree_path_for(base, full_ticket_id)
 
     if worktree_path.exists():
         return worktree_path
 
+    worktrees_dir = worktree_path.parent
     worktrees_dir.mkdir(parents=True, exist_ok=True)
 
     branch_name = f"ticket/{full_ticket_id}"
@@ -925,8 +954,7 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
 
 def remove_worktree(base: Path, full_ticket_id: str) -> None:
     """Remove a git worktree for a ticket."""
-    worktrees_dir = state_root(base) / "worktrees"
-    worktree_path = worktrees_dir / full_ticket_id
+    worktree_path = worktree_path_for(base, full_ticket_id)
 
     if not worktree_path.exists():
         raise FileNotFoundError(f"No worktree found for {full_ticket_id}")
@@ -951,29 +979,87 @@ def remove_worktree(base: Path, full_ticket_id: str) -> None:
         pass
 
 
-def launch_harness(
+class _PeasantContext(NamedTuple):
+    """Resolved ticket and (optionally) feature branch for a peasant command."""
+
+    base: Path
+    ticket: Ticket
+    ticket_path: Path
+    full_ticket_id: str
+    feature: str
+
+
+def _resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull: bool = False) -> _PeasantContext:
+    """Resolve ticket and feature branch, or exit with an error message.
+
+    Handles the repeated preamble shared by peasant_* commands:
+    find_ticket + AmbiguousTicketMatch handling + resolve_current_run.
+
+    Args:
+        auto_pull: If True, move backlog tickets into the current branch.
+            Only set for mutating commands (peasant start, kd work).
+    """
+    base = base or Path.cwd()
+
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+
+    try:
+        result = find_ticket(base, ticket_id, branch=feature)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+    full_ticket_id = ticket.id
+
+    # Auto-pull backlog tickets into the current branch (mutating commands only)
+    if auto_pull and ticket_path.parent == backlog_root(base) / "tickets":
+        ticket_path = move_ticket(ticket_path, branch_root(base, feature) / "tickets")
+
+    return _PeasantContext(
+        base=base,
+        ticket=ticket,
+        ticket_path=ticket_path,
+        full_ticket_id=full_ticket_id,
+        feature=feature,
+    )
+
+
+def launch_work_background(
     base: Path,
     feature: str,
-    session_name: str,
+    ticket_id: str,
     agent: str,
-    full_ticket_id: str,
     worktree_path: Path,
     thread_id: str,
+    session_name: str,
 ) -> int:
-    """Launch the harness subprocess in the background. Returns the PID."""
+    """Launch ``kd work`` as a background process.
+
+    Builds the command, opens log file descriptors, spawns via Popen, and
+    returns the child PID.  Used by ``peasant start`` and ``peasant review --reject``.
+    """
     peasant_logs_dir = logs_root(base, feature) / session_name
     peasant_logs_dir.mkdir(parents=True, exist_ok=True)
     stdout_log = peasant_logs_dir / "stdout.log"
     stderr_log = peasant_logs_dir / "stderr.log"
 
-    harness_cmd = [
+    work_cmd = [
         sys.executable,
         "-m",
-        "kingdom.harness",
+        "kingdom.cli",
+        "work",
+        ticket_id,
         "--agent",
         agent,
-        "--ticket",
-        full_ticket_id,
         "--worktree",
         str(worktree_path),
         "--thread",
@@ -988,7 +1074,7 @@ def launch_harness(
     stderr_fd = os.open(str(stderr_log), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
 
     proc = subprocess.Popen(
-        harness_cmd,
+        work_cmd,
         stdout=stdout_fd,
         stderr=stderr_fd,
         stdin=subprocess.DEVNULL,
@@ -1000,62 +1086,17 @@ def launch_harness(
     return proc.pid
 
 
-class _PeasantContext(NamedTuple):
-    """Resolved ticket and (optionally) feature branch for a peasant command."""
-
-    base: Path
-    ticket: Ticket
-    ticket_path: Path
-    full_ticket_id: str
-    feature: str
-
-
-def _resolve_peasant_context(ticket_id: str) -> _PeasantContext:
-    """Resolve ticket and feature branch, or exit with an error message.
-
-    Handles the repeated preamble shared by peasant_* commands:
-    find_ticket + AmbiguousTicketMatch handling + resolve_current_run.
-    """
-    base = Path.cwd()
-
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
-    full_ticket_id = ticket.id
-
-    try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
-
-    return _PeasantContext(
-        base=base,
-        ticket=ticket,
-        ticket_path=ticket_path,
-        full_ticket_id=full_ticket_id,
-        feature=feature,
-    )
-
-
 @peasant_app.command("start", help="Launch a peasant agent on a ticket.")
 def peasant_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
     agent: Annotated[str, typer.Option("--agent", help="Agent to use.")] = "claude",
+    hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
     from kingdom.session import update_agent_state
     from kingdom.thread import create_thread
 
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = _resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
 
     session_name = f"peasant-{full_ticket_id}"
@@ -1074,12 +1115,32 @@ def peasant_start(
         except OSError:
             pass  # Process is dead, continue
 
-    # 1. Create worktree
-    try:
-        worktree_path = create_worktree(base, full_ticket_id)
-    except RuntimeError as exc:
-        typer.echo(str(exc))
-        raise typer.Exit(code=1) from None
+    # 1. Create worktree (or use base if hand mode)
+    if hand:
+        # Guard: block if another peasant is already running on the same checkout
+        from kingdom.session import list_active_agents
+
+        for agent in list_active_agents(base, feature):
+            if agent.name == session_name:
+                continue  # already handled above
+            if agent.status == "working" and agent.pid and agent.name.startswith("peasant-"):
+                try:
+                    os.kill(agent.pid, 0)
+                    typer.echo(
+                        f"Error: peasant {agent.name} (pid {agent.pid}) is already working "
+                        f"on this checkout. Stop it first or use worktree mode."
+                    )
+                    raise typer.Exit(code=1)
+                except OSError:
+                    pass  # Process is dead, safe to continue
+        worktree_path = base
+        typer.echo(f"Running in hand mode (serial) on {base}")
+    else:
+        try:
+            worktree_path = create_worktree(base, full_ticket_id)
+        except RuntimeError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(code=1) from None
 
     # 2. Create work thread (ignore if already exists)
     with contextlib.suppress(FileExistsError):
@@ -1098,7 +1159,7 @@ def peasant_start(
         add_message(base, feature, thread_id, from_="king", to=session_name, body=seed_body)
 
     # 4. Launch harness as background process
-    pid = launch_harness(base, feature, session_name, agent, full_ticket_id, worktree_path, thread_id)
+    pid = launch_work_background(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
 
     # 5. Update session with pid and status
     now = datetime.now(UTC).isoformat()
@@ -1335,7 +1396,7 @@ def peasant_sync(
             pass  # Process is dead, safe to sync
 
     # Find worktree
-    worktree_path = state_root(base) / "worktrees" / full_ticket_id
+    worktree_path = worktree_path_for(base, full_ticket_id)
     if not worktree_path.exists():
         typer.echo(f"No worktree found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1)
@@ -1525,8 +1586,15 @@ def peasant_review(
         else:
             # Relaunch the harness
             agent_backend = state.agent_backend or "claude"
-            worktree_path = state_root(base) / "worktrees" / full_ticket_id
-            pid = launch_harness(base, feature, session_name, agent_backend, full_ticket_id, worktree_path, thread_id)
+            worktree_path = worktree_path_for(base, full_ticket_id)
+            if not worktree_path.exists():
+                typer.echo(f"Error: worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
+                raise typer.Exit(code=1)
+
+            pid = launch_work_background(
+                base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
+            )
+
             now = datetime.now(UTC).isoformat()
             update_agent_state(
                 base,
@@ -1542,7 +1610,7 @@ def peasant_review(
     # --- Show review info ---
 
     # 1. Run pytest
-    worktree_path = state_root(base) / "worktrees" / full_ticket_id
+    worktree_path = worktree_path_for(base, full_ticket_id)
     if worktree_path.exists():
         test_cwd = str(worktree_path)
     else:
@@ -1618,20 +1686,20 @@ def peasant_review(
         typer.echo("\nSome checks failed. Use --reject 'feedback' to send feedback.")
 
 
-agent_app = typer.Typer(name="agent", help="Agent harness commands.")
-app.add_typer(agent_app, name="agent")
-
-
-@agent_app.command("run", help="Run autonomous agent loop (internal).")
-def agent_run(
-    agent: Annotated[str, typer.Option("--agent", help="Agent name.")],
-    ticket: Annotated[str, typer.Option("--ticket", help="Ticket ID.")],
-    worktree: Annotated[str, typer.Option("--worktree", help="Worktree path.")],
-    thread: Annotated[str, typer.Option("--thread", help="Thread ID.")],
-    session: Annotated[str, typer.Option("--session", help="Session name.")],
+@app.command("work", help="Run autonomous agent loop on a ticket.")
+def work(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    agent: Annotated[str, typer.Option("--agent", help="Agent name.")] = "claude",
+    worktree: Annotated[str | None, typer.Option("--worktree", help="Worktree path (internal).")] = None,
+    thread: Annotated[str | None, typer.Option("--thread", help="Thread ID (internal).")] = None,
+    session: Annotated[str | None, typer.Option("--session", help="Session name (internal).")] = None,
     base_dir: Annotated[str, typer.Option("--base", help="Project root.")] = ".",
 ) -> None:
-    """Run the autonomous agent harness loop. Typically launched by `kd peasant start`."""
+    """Run the autonomous agent harness loop.
+
+    Can be run directly (foreground) or via `kd peasant start` (background).
+    If run directly, it works in the current directory.
+    """
     import logging
 
     from kingdom.harness import run_agent_loop
@@ -1649,13 +1717,35 @@ def agent_run(
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
 
+    # Resolve ticket context if not provided (interactive mode)
+    if not (worktree and thread and session):
+        ctx = _resolve_peasant_context(ticket_id, base=base, auto_pull=True)
+        # In interactive mode, we are the session
+        session = session or f"hand-{ctx.full_ticket_id}"
+        thread = thread or f"{ctx.full_ticket_id}-work"
+        worktree = worktree or str(Path.cwd())
+        # Ensure thread exists
+        from kingdom.thread import add_message, create_thread, thread_dir
+
+        with contextlib.suppress(FileExistsError):
+            create_thread(base, feature, thread, [session, "king"], "work")
+
+        # Seed thread with ticket content (same as peasant_start)
+        tdir = thread_dir(base, feature, thread)
+        existing_msgs = list(tdir.glob("[0-9][0-9][0-9][0-9]-*.md"))
+        if not existing_msgs:
+            seed_body = f"# Starting work on {ctx.full_ticket_id}\n\n"
+            seed_body += f"**Title:** {ctx.ticket.title}\n\n"
+            seed_body += ctx.ticket.body
+            add_message(base, feature, thread, from_="king", to=session, body=seed_body)
+
     worktree_path = Path(worktree).resolve()
 
     status = run_agent_loop(
         base=base,
         branch=feature,
         agent_name=agent,
-        ticket_id=ticket,
+        ticket_id=ticket_id,
         worktree=worktree_path,
         thread_id=thread,
         session_name=session,
@@ -2183,8 +2273,6 @@ def ticket_move(
     target: Annotated[str, typer.Argument(help="Target branch name or 'backlog'.")],
 ) -> None:
     """Move a ticket to a different branch or backlog."""
-    from kingdom.ticket import move_ticket
-
     base = Path.cwd()
 
     try:
@@ -2292,9 +2380,11 @@ def ticket_edit(
         typer.echo(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
+    import shlex
+
     _, ticket_path = result
     editor = os.environ.get("EDITOR", "vim")
-    subprocess.run([editor, str(ticket_path)])
+    subprocess.run([*shlex.split(editor), str(ticket_path)])
 
 
 def main() -> None:

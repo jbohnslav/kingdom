@@ -1,0 +1,12 @@
+---
+id: kin-752a
+status: open
+deps: []
+links: []
+created: 2026-02-13T18:07:18Z
+type: task
+priority: 2
+---
+# Centralize worktree path resolution
+
+Worktree path logic is duplicated in 3+ places (cli.py:938, cli.py:1361, cli.py:1551). Extract a single helper before making other worktree fixes. (from Codex PR #6 review)

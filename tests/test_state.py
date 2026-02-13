@@ -72,9 +72,13 @@ class TestNormalizeBranchName:
         assert normalize_branch_name("develop") == "develop"
 
     def test_empty_after_normalization(self) -> None:
-        """Edge case: name that becomes empty after normalization."""
-        assert normalize_branch_name("///") == ""
-        assert normalize_branch_name("---") == ""
+        """Edge case: name that becomes empty after normalization raises ValueError."""
+        import pytest
+
+        with pytest.raises(ValueError, match="normalizes to empty"):
+            normalize_branch_name("///")
+        with pytest.raises(ValueError, match="normalizes to empty"):
+            normalize_branch_name("---")
 
     def test_mixed_case_with_numbers(self) -> None:
         """Mixed case with numbers."""

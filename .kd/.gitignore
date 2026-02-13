@@ -1,5 +1,6 @@
 # Kingdom operational state (not tracked)
 *.json
+*.json.lock
 *.jsonl
 *.log
 **/logs/

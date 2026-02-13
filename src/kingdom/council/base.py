@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from kingdom.agent import AgentConfig
+from kingdom.agent import AgentConfig, clean_agent_env
 from kingdom.agent import build_command as agent_build_command
 from kingdom.agent import parse_response as agent_parse_response
 
@@ -35,12 +35,22 @@ class CouncilMember:
     def name(self) -> str:
         return self.config.name
 
+    COUNCIL_PREAMBLE = (
+        "You are a council advisor to the King. Your role is read-only unless directly commanded otherwise. "
+        "Answer questions, analyze code, and provide recommendations. "
+        "You may read any file in the codebase. "
+        "If you need the design doc, run `kd design` to find it. "
+        "Do NOT modify source code, tests, configs, or any other files unless the King explicitly asks you to.\n\n"
+    )
+
     def build_command(self, prompt: str) -> list[str]:
         """Build the CLI command to execute.
 
         Council queries are read-only, so skip_permissions is False.
+        The prompt is prefixed with council constraints.
         """
-        return agent_build_command(self.config, prompt, self.session_id, skip_permissions=False)
+        full_prompt = self.COUNCIL_PREAMBLE + prompt
+        return agent_build_command(self.config, full_prompt, self.session_id, skip_permissions=False)
 
     def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse response from CLI output.
@@ -62,6 +72,7 @@ class CouncilMember:
                 text=True,
                 timeout=timeout,
                 stdin=subprocess.DEVNULL,
+                env=clean_agent_env(),
             )
             text, new_session_id, raw = self.parse_response(result.stdout, result.stderr, result.returncode)
             if new_session_id:

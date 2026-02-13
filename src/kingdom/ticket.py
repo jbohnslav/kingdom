@@ -272,7 +272,7 @@ class AmbiguousTicketMatch(Exception):
         super().__init__(f"Partial ID '{partial_id}' matches multiple tickets: {', '.join(match_ids)}")
 
 
-def find_ticket(base: Path, partial_id: str) -> tuple[Ticket, Path] | None:
+def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> tuple[Ticket, Path] | None:
     """Find a ticket by partial ID matching.
 
     Searches across branches/*/tickets/, backlog/tickets/, and archive/*/tickets/.
@@ -281,6 +281,9 @@ def find_ticket(base: Path, partial_id: str) -> tuple[Ticket, Path] | None:
     Args:
         base: Project root directory.
         partial_id: Full or partial ticket ID (e.g., "a1b2" or "kin-a1b2").
+        branch: If provided, only search this branch's tickets and the backlog
+            (not all branches). Useful for scoping peasant commands to the
+            current feature branch.
 
     Returns:
         Tuple of (Ticket, Path) if found, None if not found.
@@ -289,7 +292,7 @@ def find_ticket(base: Path, partial_id: str) -> tuple[Ticket, Path] | None:
         AmbiguousTicketMatch: If multiple tickets match the partial ID.
     """
     # Import here to avoid circular imports
-    from kingdom.state import archive_root, backlog_root, branches_root
+    from kingdom.state import archive_root, backlog_root, branch_root, branches_root
 
     # Normalize partial_id: remove 'kin-' prefix if present for matching
     search_id = partial_id.lower()
@@ -301,14 +304,20 @@ def find_ticket(base: Path, partial_id: str) -> tuple[Ticket, Path] | None:
     # Build list of directories to search
     search_dirs: list[Path] = []
 
-    # branches/*/tickets/
-    branches_dir = branches_root(base)
-    if branches_dir.exists():
-        for branch_dir in branches_dir.iterdir():
-            if branch_dir.is_dir():
-                tickets_dir = branch_dir / "tickets"
-                if tickets_dir.exists():
-                    search_dirs.append(tickets_dir)
+    if branch:
+        # Scoped search: only current branch + backlog
+        scoped = branch_root(base, branch) / "tickets"
+        if scoped.exists():
+            search_dirs.append(scoped)
+    else:
+        # Unscoped: all branches
+        branches_dir = branches_root(base)
+        if branches_dir.exists():
+            for branch_dir in branches_dir.iterdir():
+                if branch_dir.is_dir():
+                    tickets_dir = branch_dir / "tickets"
+                    if tickets_dir.exists():
+                        search_dirs.append(tickets_dir)
 
     # backlog/tickets/
     backlog_tickets = backlog_root(base) / "tickets"

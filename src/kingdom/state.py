@@ -47,7 +47,10 @@ def normalize_branch_name(branch: str) -> str:
     # Collapse multiple dashes into single dash
     no_double_dashes = re.sub(r"-+", "-", cleaned)
     # Strip leading/trailing dashes
-    return no_double_dashes.strip("-")
+    result = no_double_dashes.strip("-")
+    if not result:
+        raise ValueError(f"Branch name normalizes to empty string: {branch!r}")
+    return result
 
 
 def branches_root(base: Path) -> Path:
