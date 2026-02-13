@@ -1,6 +1,6 @@
 ---
 id: kin-b76b
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T14:08:58Z
