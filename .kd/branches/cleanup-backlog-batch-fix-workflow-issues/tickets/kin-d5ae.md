@@ -1,6 +1,6 @@
 ---
 id: kin-d5ae
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T14:15:56Z
