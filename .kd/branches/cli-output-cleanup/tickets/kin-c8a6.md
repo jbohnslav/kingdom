@@ -1,6 +1,6 @@
 ---
 id: kin-c8a6
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-09T17:09:00Z

@@ -1,6 +1,6 @@
 ---
 id: kin-db41
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T13:51:20Z

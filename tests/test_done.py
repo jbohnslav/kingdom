@@ -63,7 +63,7 @@ def test_done_errors_without_active_run() -> None:
         result = runner.invoke(cli.app, ["done"])
 
         assert result.exit_code == 1
-        assert "No active run" in result.output
+        assert "No active session" in result.output
 
 
 def test_done_with_explicit_feature() -> None:

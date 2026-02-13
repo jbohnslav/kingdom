@@ -1,6 +1,6 @@
 ---
 id: kin-b202
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-07T23:20:41Z
@@ -10,6 +10,8 @@ priority: 2
 # Make kd status output more concise
 
 Simplify kd status output: remove the 'Design: present' line and the 'Breakdown: empty' line. Include Ready count in the Tickets summary line instead of printing a separate Ready line.
+
+Additionally, `kd status` should show which tickets are open vs closed and list any council threads. Currently there's no way to see full workflow status at a glance — an agent driving the kd lifecycle end-to-end had no quick way to see what work remained without running multiple commands (`kd tk list`, checking thread dirs manually).
 
 ## Worklog
 
