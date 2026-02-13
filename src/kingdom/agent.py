@@ -317,6 +317,17 @@ COMMAND_BUILDERS = {
 }
 
 
+def clean_agent_env() -> dict[str, str]:
+    """Return an env dict safe for spawning agent CLI subprocesses.
+
+    Strips ``CLAUDECODE`` so child ``claude`` processes don't refuse to start
+    with a "nested session" error when ``kd`` is invoked from inside Claude Code.
+    """
+    import os
+
+    return {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+
 def build_command(
     config: AgentConfig, prompt: str, session_id: str | None = None, skip_permissions: bool = True
 ) -> list[str]:
