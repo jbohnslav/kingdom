@@ -1,6 +1,6 @@
 ---
 id: kin-a321
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-05T01:13:15Z
