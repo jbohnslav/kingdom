@@ -13,8 +13,10 @@ Separate from the auto-pull on `kd work` (kin-d5ae), we need an explicit `kd tk 
 
 ## Acceptance Criteria
 
-- [ ] `kd tk pull <ticket-id>` moves a single ticket from backlog to current branch
-- [ ] `kd tk pull <id1> <id2> <id3>` supports multiple ticket IDs in one call
-- [ ] Uses `git mv` so the move is tracked
-- [ ] Ticket appears in `kd tk list` / `kd tk ready` after pull
-- [ ] Error if ticket isn't in the backlog or already exists on the branch
+- [x] `kd tk pull <ticket-id>` moves a single ticket from backlog to current branch
+- [x] `kd tk pull <id1> <id2> <id3>` supports multiple ticket IDs in one call
+- [x] Uses `move_ticket()` (plain rename, consistent with all other ticket moves — `git mv` dropped per design review)
+- [x] Ticket appears in `kd tk list` / `kd tk ready` after pull
+- [x] Error if ticket isn't in the backlog
+- [x] Two-pass validation: all tickets validated before any are moved
+- [x] Duplicate IDs in one call are deduplicated

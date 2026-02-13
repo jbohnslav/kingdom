@@ -2328,6 +2328,7 @@ def ticket_pull(
 
     # Pass 1: validate all tickets before moving any
     validated: list[tuple[Ticket, Path]] = []
+    seen_ids: set[str] = set()
     for tid in ticket_ids:
         try:
             result = find_ticket(base, tid)
@@ -2345,6 +2346,9 @@ def ticket_pull(
             typer.echo(f"Error: {ticket.id} is not in the backlog")
             raise typer.Exit(code=1)
 
+        if ticket.id in seen_ids:
+            continue
+        seen_ids.add(ticket.id)
         validated.append((ticket, ticket_path))
 
     # Pass 2: move all validated tickets
