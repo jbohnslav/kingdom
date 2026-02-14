@@ -1945,6 +1945,23 @@ def doctor(
         raise typer.Exit(code=1)
 
 
+@app.command(help="Print the current agent's role and name.")
+def whoami() -> None:
+    """Identify the current agent role via KD_ROLE and KD_AGENT_NAME env vars."""
+    import os
+
+    role = os.environ.get("KD_ROLE", "")
+    agent_name = os.environ.get("KD_AGENT_NAME", "")
+
+    if not role:
+        role = "hand" if os.environ.get("CLAUDECODE") else "king"
+
+    if agent_name:
+        typer.echo(f"{role}: {agent_name}")
+    else:
+        typer.echo(role)
+
+
 @app.command(help="Migrate legacy kin-XXXX ticket IDs to short XXXX format.")
 def migrate(
     apply: Annotated[bool, typer.Option("--apply", help="Apply changes (default is dry-run).")] = False,

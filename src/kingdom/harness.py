@@ -328,7 +328,7 @@ def run_agent_loop(
                 timeout=AGENT_TIMEOUT,
                 cwd=worktree,
                 stdin=subprocess.DEVNULL,
-                env=clean_agent_env(),
+                env=clean_agent_env(role="peasant", agent_name=session_name),
             )
         except subprocess.TimeoutExpired:
             logger.error("Backend timed out after %ds", AGENT_TIMEOUT)

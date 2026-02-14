@@ -97,7 +97,7 @@ class CouncilMember:
                 stderr=subprocess.PIPE,
                 text=True,
                 stdin=subprocess.DEVNULL,
-                env=clean_agent_env(),
+                env=clean_agent_env(role="council", agent_name=self.name),
             )
 
             out_thread = threading.Thread(target=read_stdout, args=(process.stdout,), daemon=True)

@@ -41,4 +41,4 @@ After implementing a CLI command or changing its output, run it manually and che
 
 ## Dogfooding
 
-We use `kd` to develop `kd`. When you encounter usability issues, unintuitive behavior, or product feedback while using `kd` commands, capture it — either as a note in the current ticket's worklog or as a new backlog ticket if it's actionable.
+We use `kd` to develop `kd`. Every time you run a `kd` command, pay attention to the experience: Is the output helpful? Is anything confusing or missing? Would a different behavior be more natural? When you notice something off, immediately file a backlog ticket (`kd tk create --backlog "..."`). Don't wait to be asked — this is how we find real UX issues.
