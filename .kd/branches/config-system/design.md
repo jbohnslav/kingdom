@@ -216,3 +216,45 @@ Add `!config.json` to unignore the config file (since `*.json` is currently igno
 ### Migration
 
 No migration needed. `.kd/agents/*.md` doesn't exist in any known deployment. Remove all agent file code — no deprecation warnings or fallback logic.
+
+## Council Review (2026-02-14)
+
+Full review thread: `kd council show council-09ef`
+
+### Verdict
+
+All three council members (claude, codex, cursor) agree: implementation faithfully matches the design. 8 of 9 tickets correctly closed. Code is clean and readable. 550 tests pass.
+
+### Bugs Found
+
+1. **`kd doctor` crashes on invalid config** (ticket 3f8e, reopened by codex)
+   - `doctor()` calls `get_doctor_checks(base)` even when `check_config()` already detected invalid config. `get_doctor_checks` calls `load_config()` again, which raises `ValueError` → unhandled traceback.
+   - Both `kd doctor` and `kd doctor --json` crash. The JSON path is especially bad — outputs traceback instead of valid JSON.
+   - Root cause: no guard on `get_doctor_checks()` behind `config_ok`.
+   - Existing doctor tests mock `check_config` but don't use real invalid config files, so the bug slipped through.
+
+2. **`kd config show` crashes on invalid config** (same class of bug)
+   - Unguarded `load_config()` call without catching `ValueError`.
+   - Add to 3f8e scope.
+
+3. **Missing backend validation in `validate_config()`**
+   - Unknown backends (e.g., `"foo"`) pass validation silently, crash later in `resolve_agent()`.
+   - Should validate backend names against `BACKEND_DEFAULTS` keys at config load time.
+
+4. **Validation accepts non-sensical numeric values**
+   - `timeout <= 0` and `max_iterations <= 0` are accepted as valid. Should require positive values.
+
+### Design Gaps (not blocking merge)
+
+- **`design`/`review` prompt fields are no-op at runtime**: schema supports them, but only `council` and `peasant` phase prompts are consumed in code. Acceptable for v1 — the fields are validated and ready for wiring when the design/review flows use them.
+
+### Pre-existing Issues (backlog)
+
+- Variable shadowing in `peasant_start` (`agent` parameter shadowed by loop variable) — not introduced by this branch.
+
+### Action Items
+
+- [ ] Fix 3f8e: guard `get_doctor_checks()` and `kd config show` against invalid config
+- [ ] Add backend validation to `validate_config()`
+- [ ] Rewrite doctor tests to use `tmp_path` with real invalid config files
+- [ ] Add positive-value validation for timeouts and max_iterations
