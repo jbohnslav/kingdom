@@ -341,6 +341,7 @@ def council_ask(
     c = Council.create(logs_dir=logs_dir, base=base)
     if timeout is not None:
         c.timeout = timeout
+    timeout = c.timeout
     c.load_sessions(base, feature)
 
     # Parse @mentions from prompt (kin-09c9)
