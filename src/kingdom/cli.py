@@ -15,7 +15,10 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, NamedTuple
+from typing import TYPE_CHECKING, Annotated, NamedTuple
+
+if TYPE_CHECKING:
+    from kingdom.thread import ThreadStatus
 
 import typer
 from rich.console import Console
@@ -684,11 +687,10 @@ def council_status(
     print_thread_status(status, base, feature, verbose)
 
 
-def print_thread_status(status, base: Path, feature: str, verbose: bool = False) -> None:
+def print_thread_status(status: ThreadStatus, base: Path, feature: str, verbose: bool = False) -> None:
     """Print response status for a single thread."""
-    from kingdom.thread import ThreadStatus, thread_dir
+    from kingdom.thread import thread_dir
 
-    assert isinstance(status, ThreadStatus)
     if status.pending:
         state = "waiting"
     else:

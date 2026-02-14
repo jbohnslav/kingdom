@@ -340,6 +340,9 @@ class ThreadStatus:
 def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadStatus:
     """Compute who has responded to the most recent king ask in a thread.
 
+    Only considers responses after the latest king message. Earlier rounds
+    in the same thread are ignored.
+
     Returns a ThreadStatus with expected, responded, and pending member sets.
     """
     meta = get_thread(base, branch, thread_id)

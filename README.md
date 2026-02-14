@@ -53,6 +53,8 @@ Query multiple AI models simultaneously for design decisions:
 
 ```bash
 kd council ask "How should we implement OAuth refresh tokens?"
+kd council status          # Check which members have responded
+kd council status -v       # Show log file paths and thread location
 ```
 
 ### 5. Complete Feature
@@ -93,6 +95,7 @@ kd done   # Archive branch folder, clear current
 | `kd breakdown` | Print agent prompt to create tickets from design |
 | `kd ticket <cmd>` | Ticket management (list, show, create, etc.) |
 | `kd council ask` | Query AI council |
+| `kd council status` | Check member response status |
 | `kd doctor` | Check CLI dependencies |
 
 ## Development
