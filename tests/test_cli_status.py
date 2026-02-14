@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -64,5 +65,68 @@ def test_status_json_still_includes_design_breakdown() -> None:
 
         result = runner.invoke(cli.app, ["status", "--json"])
         assert result.exit_code == 0
-        assert "design_status" in result.output
-        assert "breakdown_status" in result.output
+        data = json.loads(result.output)
+        assert "design_status" in data
+        assert "breakdown_status" in data
+        assert data["role"] == "king"
+        assert data["agent_name"] == ""
+        assert data["assignments"] == {}
+
+
+def test_status_human_readable_shows_assignments_section() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        ensure_run_layout(base, feature)
+        set_current_run(base, feature)
+
+        tickets_dir = base / ".kd" / "runs" / feature / "tickets"
+        tickets_dir.mkdir(parents=True, exist_ok=True)
+
+        write_ticket(
+            Ticket(id="kin-0001", title="Assigned", status="open", assignee="hand"),
+            tickets_dir / "kin-0001.md",
+        )
+        write_ticket(
+            Ticket(id="kin-0002", title="Unassigned", status="open"),
+            tickets_dir / "kin-0002.md",
+        )
+
+        result = runner.invoke(cli.app, ["status"])
+        assert result.exit_code == 0
+        assert "Assignments:" in result.output
+        assert "hand: kin-0001 [open] Assigned" in result.output
+        assert "hand: kin-0002" not in result.output
+
+
+def test_status_json_includes_identity_and_assignments() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        ensure_run_layout(base, feature)
+        set_current_run(base, feature)
+
+        tickets_dir = base / ".kd" / "runs" / feature / "tickets"
+        tickets_dir.mkdir(parents=True, exist_ok=True)
+
+        write_ticket(
+            Ticket(id="kin-0001", title="Assigned to hand", status="open", assignee="hand"),
+            tickets_dir / "kin-0001.md",
+        )
+        write_ticket(
+            Ticket(id="kin-0002", title="Assigned to peasant", status="in_progress", assignee="peasant-kin-0002"),
+            tickets_dir / "kin-0002.md",
+        )
+
+        result = runner.invoke(
+            cli.app,
+            ["status", "--json"],
+            env={"KD_ROLE": "hand", "KD_AGENT_NAME": "hand"},
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+
+        assert data["role"] == "hand"
+        assert data["agent_name"] == "hand"
+        assert data["assignments"]["hand"] == ["kin-0001"]
+        assert data["assignments"]["peasant-kin-0002"] == ["kin-0002"]

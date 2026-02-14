@@ -163,6 +163,21 @@ class TestCouncilMemberQuery:
             call_kwargs = mock_cls.call_args.kwargs
             assert call_kwargs.get("stdin") == subprocess.DEVNULL, "stdin must be DEVNULL to prevent hangs"
 
+    def test_query_passes_council_identity_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Council subprocesses should get explicit role/name identity env vars."""
+        monkeypatch.setenv("CLAUDECODE", "1")
+        member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "hello", "session_id": "sess-123"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc) as mock_cls:
+            member.query("test prompt", timeout=30)
+
+            call_kwargs = mock_cls.call_args.kwargs
+            env = call_kwargs.get("env", {})
+            assert env.get("KD_ROLE") == "council"
+            assert env.get("KD_AGENT_NAME") == "claude"
+            assert "CLAUDECODE" not in env
+
     def test_query_returns_agent_response(self) -> None:
         """Query should return an AgentResponse with text and timing."""
         member = make_member("claude")

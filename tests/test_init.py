@@ -6,7 +6,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from kingdom import cli
-from kingdom.state import ensure_base_layout, ensure_run_layout
+from kingdom.state import branch_root, ensure_base_layout, ensure_run_layout
 
 
 def test_ensure_base_layout_creates_structure(tmp_path: Path) -> None:
@@ -152,3 +152,42 @@ def test_cli_start_auto_init_requires_git_repo() -> None:
 
         assert result.exit_code == 1
         assert "Not a git repository" in result.output
+
+
+def test_cli_start_initializes_design_and_prints_path() -> None:
+    """kd start should create design.md from template and print its location."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch = "feature/test-start"
+        result = runner.invoke(cli.app, ["start", branch])
+
+        assert result.exit_code == 0
+        assert f"Started session for branch: {branch}" in result.output
+
+        design_path = branch_root(base, branch) / "design.md"
+        assert design_path.exists()
+        assert "Design: feature/test-start" in design_path.read_text(encoding="utf-8")
+        assert f"Design: {design_path}" in result.output
+
+
+def test_cli_design_is_idempotent_after_start() -> None:
+    """Running kd design after kd start should keep existing design content."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch = "feature/test-start"
+        start_result = runner.invoke(cli.app, ["start", branch])
+        assert start_result.exit_code == 0
+
+        design_path = branch_root(base, branch) / "design.md"
+        before = design_path.read_text(encoding="utf-8")
+
+        design_result = runner.invoke(cli.app, ["design"])
+        assert design_result.exit_code == 0
+        assert "Design already exists at" in design_result.output
+        assert design_path.read_text(encoding="utf-8") == before

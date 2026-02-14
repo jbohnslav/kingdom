@@ -28,3 +28,16 @@ def test_cli_design_and_breakdown_create_templates() -> None:
         assert breakdown_path.exists()
         assert "Ticket Breakdown: example-feature" in result.output
         assert "kd tk create" in result.output
+
+
+def test_cli_breakdown_apply_flag_is_rejected() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        ensure_run_layout(base, feature)
+        set_current_run(base, feature)
+
+        result = runner.invoke(cli.app, ["breakdown", "--apply"])
+        assert result.exit_code != 0
+        assert "No such option" in result.output
