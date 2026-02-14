@@ -1,6 +1,7 @@
 """Tests for council members and their CLI command building."""
 
 import importlib.util
+import io
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,6 +20,17 @@ PREAMBLE = CouncilMember.COUNCIL_PREAMBLE
 def make_member(name: str) -> CouncilMember:
     """Create a CouncilMember from default agent config."""
     return CouncilMember(config=DEFAULT_AGENTS[name])
+
+
+def mock_popen(stdout: str = "", stderr: str = "", returncode: int = 0):
+    """Create a mock Popen that yields stdout/stderr line-by-line."""
+    proc = MagicMock()
+    proc.stdout = io.StringIO(stdout)
+    proc.stderr = io.StringIO(stderr)
+    proc.returncode = returncode
+    proc.poll.return_value = returncode
+    proc.wait.return_value = returncode
+    return proc
 
 
 class TestCouncilMemberPermissions:
@@ -147,29 +159,21 @@ class TestCouncilMemberQuery:
     def test_query_passes_stdin_devnull(self) -> None:
         """Subprocess must use stdin=DEVNULL to prevent CLI hangs."""
         member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "hello", "session_id": "sess-123"}\n')
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "hello", "session_id": "sess-123"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result) as mock_run:
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc) as mock_cls:
             member.query("test prompt", timeout=30)
 
-            mock_run.assert_called_once()
-            call_kwargs = mock_run.call_args.kwargs
+            mock_cls.assert_called_once()
+            call_kwargs = mock_cls.call_args.kwargs
             assert call_kwargs.get("stdin") == subprocess.DEVNULL, "stdin must be DEVNULL to prevent hangs"
 
     def test_query_returns_agent_response(self) -> None:
         """Query should return an AgentResponse with text and timing."""
         member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "test response", "session_id": "sess-456"}\n')
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "test response", "session_id": "sess-456"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
             response = member.query("test prompt", timeout=30)
 
             assert isinstance(response, AgentResponse)
@@ -182,34 +186,43 @@ class TestCouncilMemberQuery:
         """Query should update member's session_id from response."""
         member = make_member("claude")
         assert member.session_id is None
+        proc = mock_popen(stdout='{"result": "hello", "session_id": "new-session-789"}\n')
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "hello", "session_id": "new-session-789"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
             member.query("test prompt", timeout=30)
 
             assert member.session_id == "new-session-789"
 
-    def test_query_handles_timeout(self) -> None:
-        """Query should handle subprocess timeout gracefully."""
+    def test_query_handles_timeout_with_partial_output(self, tmp_path: Path) -> None:
+        """Timeout should capture partial output and stream it to file."""
         member = make_member("claude")
+        partial_output = "partial line 1\npartial line 2\n"
 
-        with patch(
-            "kingdom.council.base.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=30)
-        ):
-            response = member.query("test prompt", timeout=30)
+        proc = MagicMock()
+        proc.stdout = io.StringIO(partial_output)
+        proc.stderr = io.StringIO("")
+        proc.returncode = -9
+        # poll() returns None (still running) so the timeout loop fires
+        proc.poll.return_value = None
+        proc.kill.return_value = None
+        proc.wait.return_value = -9
 
-            assert response.error == "Timeout after 30s"
-            assert response.text == ""
+        stream_path = tmp_path / "stream.md"
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            response = member.query("test prompt", timeout=0, stream_path=stream_path)
+
+        assert response.error is not None
+        assert "Timeout" in response.error
+        assert response.text == partial_output
+        proc.kill.assert_called_once()
+        assert stream_path.read_text() == partial_output
 
     def test_query_handles_command_not_found(self) -> None:
         """Query should handle missing CLI gracefully."""
         member = make_member("claude")
 
-        with patch("kingdom.council.base.subprocess.run", side_effect=FileNotFoundError()):
+        with patch("kingdom.council.base.subprocess.Popen", side_effect=FileNotFoundError()):
             response = member.query("test prompt", timeout=30)
 
             assert "Command not found" in response.error
@@ -218,16 +231,24 @@ class TestCouncilMemberQuery:
     def test_query_captures_stderr_on_error(self) -> None:
         """Query should capture stderr when command fails."""
         member = make_member("claude")
+        proc = mock_popen(stdout="", stderr="Error: API key not set\n", returncode=1)
 
-        mock_result = MagicMock()
-        mock_result.stdout = ""
-        mock_result.stderr = "Error: API key not set"
-        mock_result.returncode = 1
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
             response = member.query("test prompt", timeout=30)
 
             assert response.error == "Error: API key not set"
+
+    def test_query_streams_to_file(self, tmp_path: Path) -> None:
+        """Query should tee stdout to stream_path when provided."""
+        member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "streamed", "session_id": "s1"}\n')
+        stream_path = tmp_path / "stream.md"
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            response = member.query("test prompt", timeout=30, stream_path=stream_path)
+
+        assert response.text == "streamed"
+        assert stream_path.read_text() == '{"result": "streamed", "session_id": "s1"}\n'
 
 
 class TestCouncilMemberQueryAllMembers:
@@ -245,16 +266,12 @@ class TestCouncilMemberQueryAllMembers:
         """All council member types must use stdin=DEVNULL."""
         member = make_member(agent_name)
         assert member.name == expected_name
+        proc = mock_popen(stdout='{"result": "ok"}\n')
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "ok"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result) as mock_run:
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc) as mock_cls:
             member.query("test", timeout=10)
 
-            assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+            assert mock_cls.call_args.kwargs.get("stdin") == subprocess.DEVNULL
 
 
 class TestCouncilMemberQueryConfigErrors:
@@ -435,12 +452,8 @@ class TestQueryToThread:
 
         council = Council.create(base=project)
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "test response"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+        with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
+            mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "test response"}\n')
             responses = council.query_to_thread("test prompt", project, BRANCH, thread_id)
 
         assert len(responses) == 3
@@ -458,17 +471,13 @@ class TestQueryToThread:
 
         council = Council.create(base=project)
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "ok"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
         callback_calls = []
 
         def on_response(name, response):
             callback_calls.append(name)
 
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+        with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
+            mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "ok"}\n')
             council.query_to_thread("test", project, BRANCH, thread_id, callback=on_response)
 
         assert len(callback_calls) == 3
@@ -482,7 +491,7 @@ class TestQueryToThread:
 
         council = Council.create(base=project)
 
-        with patch("kingdom.council.base.subprocess.run", side_effect=FileNotFoundError()):
+        with patch("kingdom.council.base.subprocess.Popen", side_effect=FileNotFoundError()):
             responses = council.query_to_thread("test", project, BRANCH, thread_id)
 
         # All should have errors
@@ -508,12 +517,8 @@ class TestCouncilWorker:
         thread_id = "council-work"
         create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "worker response"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+        with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
+            mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "worker response"}\n')
             main(
                 [
                     "--base",
@@ -541,12 +546,8 @@ class TestCouncilWorker:
         thread_id = "council-single"
         create_thread(project, BRANCH, thread_id, ["king", "codex"], "council")
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "codex says hi"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+        with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
+            mock_cls.return_value = mock_popen(stdout='{"result": "codex says hi"}\n')
             main(
                 [
                     "--base",
@@ -596,12 +597,8 @@ class TestCouncilWorker:
         thread_id = "council-sess"
         create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
 
-        mock_result = MagicMock()
-        mock_result.stdout = '{"result": "ok", "session_id": "sess-123"}'
-        mock_result.stderr = ""
-        mock_result.returncode = 0
-
-        with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+        with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
+            mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "ok", "session_id": "sess-123"}\n')
             main(
                 [
                     "--base",
