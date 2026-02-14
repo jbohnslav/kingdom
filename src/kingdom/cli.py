@@ -1962,41 +1962,84 @@ def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
     return checks
 
 
-@app.command(help="Check if agent CLIs are installed.")
+def check_config(base: Path) -> tuple[bool, str | None]:
+    """Validate .kd/config.json and return (ok, error_message).
+
+    Returns (True, None) if config is valid or doesn't exist.
+    Returns (False, message) if config has errors.
+    """
+    from kingdom.config import load_config
+    from kingdom.state import state_root
+
+    config_path = state_root(base) / "config.json"
+    if not config_path.exists():
+        return True, None
+
+    try:
+        load_config(base)
+        return True, None
+    except ValueError as e:
+        return False, str(e)
+
+
+@app.command(help="Check config and agent CLIs.")
 def doctor(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
-    """Verify agent CLIs are installed and provide guidance."""
+    """Validate config and verify agent CLIs are installed."""
+    from kingdom.state import state_root
+
     base = Path.cwd()
+    has_issues = False
+
+    # 1. Config validation
+    config_path = state_root(base) / "config.json"
+    config_ok, config_error = check_config(base)
+
+    if not config_ok:
+        has_issues = True
+
+    if output_json:
+        config_result = {"exists": config_path.exists(), "valid": config_ok, "error": config_error}
+    else:
+        typer.echo("\nConfig:")
+        if not config_path.exists():
+            typer.secho("  ○ No config.json (using defaults)", fg=typer.colors.YELLOW)
+        elif config_ok:
+            typer.secho("  ✓ config.json valid", fg=typer.colors.GREEN)
+        else:
+            typer.secho(f"  ✗ config.json: {config_error}", fg=typer.colors.RED)
+
+    # 2. Agent CLI checks
     doctor_checks = get_doctor_checks(base)
-    results: dict[str, dict[str, bool | str | None]] = {}
-    issues: list[dict[str, str]] = []
+    cli_results: dict[str, dict[str, bool | str | None]] = {}
+    cli_issues: list[dict[str, str]] = []
 
     for check in doctor_checks:
         installed, error = check_cli(check["command"])
-        results[check["name"]] = {"installed": installed, "error": error}
+        cli_results[check["name"]] = {"installed": installed, "error": error}
         if not installed:
-            issues.append({"name": check["name"], "hint": check["install_hint"]})
+            cli_issues.append({"name": check["name"], "hint": check["install_hint"]})
 
     if output_json:
-        print(json.dumps(results, indent=2))
+        print(json.dumps({"config": config_result, "agents": cli_results}, indent=2))
     else:
         typer.echo("\nAgent CLIs:")
         for check in doctor_checks:
             name = check["name"]
-            result = results[name]
+            result = cli_results[name]
             if result["installed"]:
                 typer.secho(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
             else:
                 typer.secho(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
 
-        if issues:
+        if cli_issues:
             typer.echo("\nIssues found:")
-            for issue in issues:
+            for issue in cli_issues:
                 typer.echo(f"  {issue['name']}: {issue['hint']}")
         typer.echo()
 
-    if issues:
+    if has_issues or cli_issues:
         raise typer.Exit(code=1)
 
 
