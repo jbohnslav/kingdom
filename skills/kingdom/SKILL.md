@@ -45,7 +45,7 @@ kd design                  # create design doc template
 
 4. **Peasants** — For isolated ticket work, spawn a peasant: `kd peasant start <id>` (worktree) or `kd peasant start <id> --hand` (serial, current dir).
 
-5. **Done** — When all tickets are closed: `kd done` to archive the branch.
+5. **Done** — When all tickets are closed: `kd done` to archive the branch. Always run `kd done` before merging a PR.
 
 Check status anytime with `kd status`.
 
@@ -95,7 +95,6 @@ Check status anytime with `kd status`.
 | `kd tk close <id>` | Mark complete |
 | `kd tk reopen <id>` | Reopen a closed ticket |
 | `kd tk ready` | Show tickets ready to work on |
-| `kd tk edit <id>` | Open ticket in editor |
 | `kd tk move <id> <branch>` | Move ticket to another branch |
 | `kd tk pull <id>...` | Pull backlog tickets into current branch |
 | `kd tk dep <id> <dep-id>` | Add dependency |
