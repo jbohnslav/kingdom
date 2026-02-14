@@ -49,6 +49,8 @@ BASH_DEFAULT_TIMEOUT_MS=300000
 
 ## Testing
 
+The full test suite must pass before closing a ticket. No exceptions — "pre-existing failure" is not an excuse to keep going. If tests you didn't write are failing, fix them or raise it with the King before proceeding.
+
 After implementing a CLI command or changing its output, run it manually and check the output looks right. This catches things automated tests miss (formatting, unclear messaging, missing context). If it looks off, fix it — then wire the fix into an automated test if appropriate.
 
 ## Dogfooding

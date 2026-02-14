@@ -128,6 +128,7 @@ Check status anytime with `kd status`.
 - **Worklog**: append progress notes to the ticket's `## Worklog` section as you go.
 - **Acceptance criteria**: only close a ticket when all acceptance criteria are met.
 - **Decisions**: ask the King or consult the council (`kd council ask`) for difficult design decisions — don't guess.
+- **Green suite**: the full test suite must pass before closing a ticket. "Pre-existing failure" is not an excuse — fix it or raise it with the King.
 - **Bugs from this branch**: immediately write a failing test that reproduces it, then fix.
 - **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create` + `kd tk move <id> backlog`) and move on.
 - **Commit often**: commit `.kd/` changes (ticket closures, worklogs, threads) and code changes as you go.
