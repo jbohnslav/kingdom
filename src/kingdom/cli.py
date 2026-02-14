@@ -1990,7 +1990,15 @@ def config_show() -> None:
     except ValueError as e:
         typer.secho(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from None
-    print(json.dumps(dataclasses.asdict(cfg), indent=2))
+
+    def strip_empty(obj: object) -> object:
+        if isinstance(obj, dict):
+            return {k: v for k, v in ((k, strip_empty(v)) for k, v in obj.items()) if v not in ("", [], {}, None)}
+        if isinstance(obj, list):
+            return [strip_empty(item) for item in obj]
+        return obj
+
+    print(json.dumps(strip_empty(dataclasses.asdict(cfg)), indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -2303,7 +2311,8 @@ def ticket_create(
     ticket_path = tickets_dir / f"{ticket_id}.md"
     write_ticket(ticket, ticket_path)
 
-    typer.echo(f"Created {ticket_id}: {title}")
+    dep_suffix = f" (depends on: {', '.join(resolved_deps)})" if resolved_deps else ""
+    typer.echo(f"Created {ticket_id}: {title}{dep_suffix}")
 
 
 @ticket_app.command("ls", help="List tickets.", hidden=True)
