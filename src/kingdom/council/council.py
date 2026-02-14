@@ -18,7 +18,7 @@ class Council:
     """Orchestrates queries to multiple council members."""
 
     members: list[CouncilMember] = field(default_factory=list)
-    timeout: int = 300
+    timeout: int = 600
 
     @classmethod
     def create(cls, logs_dir: Path | None = None, base: Path | None = None) -> Council:
@@ -95,15 +95,21 @@ class Council:
         Returns:
             Dict mapping member name to AgentResponse.
         """
-        from kingdom.thread import add_message
+        from kingdom.thread import add_message, thread_dir
 
         responses: dict[str, AgentResponse] = {}
+        tdir = thread_dir(base, branch, thread_id)
+        tdir.mkdir(parents=True, exist_ok=True)
 
         with ThreadPoolExecutor(max_workers=len(self.members)) as executor:
-            futures = {executor.submit(member.query, prompt, self.timeout): member for member in self.members}
+            futures = {}
+            for member in self.members:
+                # Stream to .stream-{member}.md
+                stream_path = tdir / f".stream-{member.name}.md"
+                futures[executor.submit(member.query, prompt, self.timeout, stream_path)] = (member, stream_path)
 
             for future in as_completed(futures):
-                member = futures[future]
+                member, stream_path = futures[future]
                 try:
                     response = future.result()
                 except Exception as e:
@@ -114,6 +120,10 @@ class Council:
                 # Write to thread
                 body = response.text if response.text else f"*Error: {response.error}*"
                 add_message(base, branch, thread_id, from_=member.name, to="king", body=body)
+
+                # Cleanup stream file
+                if stream_path.exists():
+                    stream_path.unlink()
 
                 if callback:
                     callback(member.name, response)

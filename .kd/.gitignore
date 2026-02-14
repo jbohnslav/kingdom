@@ -7,3 +7,4 @@
 **/sessions/
 worktrees/
 current
+.stream-*.md

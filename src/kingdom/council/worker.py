@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--feature", required=True)
     parser.add_argument("--thread-id", required=True)
     parser.add_argument("--prompt", required=True)
-    parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--to", default=None, dest="to_member")
     args = parser.parse_args(argv)
 
@@ -40,13 +40,23 @@ def main(argv: list[str] | None = None) -> None:
     c.load_sessions(args.base, args.feature)
 
     if args.to_member:
+        from kingdom.thread import thread_dir
+
         member = c.get_member(args.to_member)
         if member is None:
             print(f"Unknown member: {args.to_member}", file=sys.stderr)
             sys.exit(1)
-        response = member.query(args.prompt, args.timeout)
+
+        tdir = thread_dir(args.base, args.feature, args.thread_id)
+        tdir.mkdir(parents=True, exist_ok=True)
+        stream_path = tdir / f".stream-{member.name}.md"
+
+        response = member.query(args.prompt, args.timeout, stream_path=stream_path)
         body = response.text if response.text else f"*Error: {response.error}*"
         add_message(args.base, args.feature, args.thread_id, from_=args.to_member, to="king", body=body)
+
+        if stream_path.exists():
+            stream_path.unlink()
     else:
         c.query_to_thread(args.prompt, args.base, args.feature, args.thread_id)
 

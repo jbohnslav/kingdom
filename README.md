@@ -105,6 +105,11 @@ kd done   # Archive branch folder, clear current
 uv sync
 source .venv/bin/activate
 
+# Optional: expose this repo's Kingdom skill to your agent tool
+ln -s "$(pwd)/skills/kingdom" ~/.codex/skills/private/kingdom
+# or
+ln -s "$(pwd)/skills/kingdom" ~/.claude/skills/kingdom
+
 # Run tests
 pytest tests/
 

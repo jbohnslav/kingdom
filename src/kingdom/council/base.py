@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,28 +61,72 @@ class CouncilMember:
         """
         return agent_parse_response(self.config, stdout, stderr, code)
 
-    def query(self, prompt: str, timeout: int = 300) -> AgentResponse:
-        """Execute a query and return the response."""
+    def query(self, prompt: str, timeout: int = 600, stream_path: Path | None = None) -> AgentResponse:
+        """Execute a query and return the response.
+
+        If stream_path is provided, stdout is tee'd to that file line-by-line
+        as it arrives. On timeout, whatever was captured is preserved both in
+        the stream file and in the returned AgentResponse.
+        """
         start = time.monotonic()
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        stream_file = None
+
+        def read_stdout(pipe: object) -> None:
+            for line in pipe:
+                stdout_lines.append(line)
+                if stream_file:
+                    stream_file.write(line)
+                    stream_file.flush()
+
+        def read_stderr(pipe: object) -> None:
+            for line in pipe:
+                stderr_lines.append(line)
 
         try:
             command = self.build_command(prompt)
-            result = subprocess.run(
+
+            if stream_path:
+                stream_file = stream_path.open("a", encoding="utf-8")
+
+            process = subprocess.Popen(
                 command,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
                 stdin=subprocess.DEVNULL,
                 env=clean_agent_env(),
             )
-            text, new_session_id, raw = self.parse_response(result.stdout, result.stderr, result.returncode)
+
+            out_thread = threading.Thread(target=read_stdout, args=(process.stdout,), daemon=True)
+            err_thread = threading.Thread(target=read_stderr, args=(process.stderr,), daemon=True)
+            out_thread.start()
+            err_thread.start()
+
+            # Wait for process with timeout, polling so threads can collect output
+            while process.poll() is None:
+                if time.monotonic() - start > timeout:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(command, timeout)
+                time.sleep(0.1)
+
+            # Process exited — wait for reader threads to drain pipes
+            out_thread.join(timeout=5)
+            err_thread.join(timeout=5)
+
+            stdout = "".join(stdout_lines)
+            stderr = "".join(stderr_lines)
+
+            text, new_session_id, raw = self.parse_response(stdout, stderr, process.returncode)
             if new_session_id:
                 self.session_id = new_session_id
 
             elapsed = time.monotonic() - start
             error = None
-            if result.returncode != 0 and not text:
-                error = result.stderr.strip() or f"Exit code {result.returncode}"
+            if process.returncode != 0 and not text:
+                error = stderr.strip() or f"Exit code {process.returncode}"
 
             response = AgentResponse(
                 name=self.name,
@@ -96,14 +141,21 @@ class CouncilMember:
         except subprocess.TimeoutExpired:
             elapsed = time.monotonic() - start
             error = f"Timeout after {timeout}s"
+
+            # Reader threads may still have buffered lines — give them a moment
+            out_thread.join(timeout=2)
+            err_thread.join(timeout=2)
+
+            partial = "".join(stdout_lines)
+
             response = AgentResponse(
                 name=self.name,
-                text="",
+                text=partial,
                 error=error,
                 elapsed=elapsed,
-                raw="",
+                raw=partial,
             )
-            self.log(prompt, "", error, elapsed)
+            self.log(prompt, partial, error, elapsed)
             return response
 
         except FileNotFoundError:
@@ -132,6 +184,10 @@ class CouncilMember:
             )
             self.log(prompt, "", error, elapsed)
             return response
+
+        finally:
+            if stream_file:
+                stream_file.close()
 
     def reset_session(self) -> None:
         """Clear the session ID."""

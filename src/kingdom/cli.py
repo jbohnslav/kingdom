@@ -282,7 +282,7 @@ def council_ask(
         bool, typer.Option("--async", help="Dispatch in background, then watch for responses.")
     ] = False,
     no_watch: Annotated[bool, typer.Option("--no-watch", help="With --async, dispatch only without watching.")] = False,
-    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 300,
+    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 600,
 ) -> None:
     """Query council members via threaded conversations.
 
