@@ -644,6 +644,63 @@ def council_list() -> None:
         typer.echo(f"{t.id}  {created}  {msg_count} msgs{marker}")
 
 
+@council_app.command("status", help="Show response status for council threads.")
+def council_status(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current/most recent).")] = None,
+    all_threads: Annotated[bool, typer.Option("--all", help="Show status for all threads.")] = False,
+) -> None:
+    """Show which councillors have responded and which are still pending."""
+    from kingdom.thread import list_threads, thread_response_status
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+
+    if all_threads:
+        threads = list_threads(base, feature)
+        council_threads = [t for t in threads if t.pattern == "council"]
+        if not council_threads:
+            typer.echo("No council threads.")
+            return
+        for t in council_threads:
+            status = thread_response_status(base, feature, t.id)
+            _print_thread_status(status)
+            typer.echo()
+        return
+
+    # Single thread mode
+    if thread_id is None:
+        thread_id = get_current_thread(base, feature)
+        if thread_id is None:
+            threads = list_threads(base, feature)
+            council_threads = [t for t in threads if t.pattern == "council"]
+            if council_threads:
+                thread_id = council_threads[-1].id
+            else:
+                typer.echo("No council threads. Use `kd council ask` first.")
+                raise typer.Exit(code=1)
+
+    status = thread_response_status(base, feature, thread_id)
+    _print_thread_status(status)
+
+
+def _print_thread_status(status) -> None:
+    """Print response status for a single thread."""
+    from kingdom.thread import ThreadStatus
+
+    assert isinstance(status, ThreadStatus)
+    if status.pending:
+        state = "waiting"
+    else:
+        state = "complete"
+
+    typer.echo(f"{status.thread_id}  [{state}]")
+    for name in sorted(status.expected):
+        if name in status.responded:
+            typer.echo(f"  {name}: responded")
+        else:
+            typer.echo(f"  {name}: pending")
+
+
 def watch_thread(
     thread_id: str | None = None,
     timeout: int = 300,

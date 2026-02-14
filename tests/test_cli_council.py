@@ -668,6 +668,120 @@ class TestCouncilMentions:
             assert messages[1].from_ == "claude"
 
 
+class TestCouncilStatus:
+    def test_status_shows_all_responded(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Test question"])
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "complete" in result.output
+            assert "claude: responded" in result.output
+            assert "codex: responded" in result.output
+            assert "cursor: responded" in result.output
+
+    def test_status_shows_pending_members(self) -> None:
+        """When some members haven't responded, status shows them as pending."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create thread manually with only one response
+            create_thread(base, BRANCH, "council-test", ["king", "claude", "codex", "cursor"], "council")
+            set_current_thread(base, BRANCH, "council-test")
+            add_message(base, BRANCH, "council-test", from_="king", to="all", body="Question")
+            add_message(base, BRANCH, "council-test", from_="claude", to="king", body="My answer")
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "waiting" in result.output
+            assert "claude: responded" in result.output
+            assert "codex: pending" in result.output
+            assert "cursor: pending" in result.output
+
+    def test_status_specific_thread(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Test"])
+
+            thread_id = get_current_thread(base, BRANCH)
+            result = runner.invoke(cli.app, ["council", "status", thread_id])
+
+            assert result.exit_code == 0
+            assert thread_id in result.output
+
+    def test_status_all_threads(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Topic 1"])
+                runner.invoke(cli.app, ["council", "ask", "--new-thread", "Topic 2"])
+
+            result = runner.invoke(cli.app, ["council", "status", "--all"])
+
+            assert result.exit_code == 0
+            # Should show status for both threads
+            assert result.output.count("complete") == 2
+
+    def test_status_no_threads_errors(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 1
+
+    def test_status_falls_back_to_most_recent(self) -> None:
+        """When current_thread is unset, status uses most recent thread."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-old", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-old", from_="king", to="all", body="Old")
+            add_message(base, BRANCH, "council-old", from_="claude", to="king", body="Reply")
+
+            create_thread(base, BRANCH, "council-recent", ["king", "codex"], "council")
+            add_message(base, BRANCH, "council-recent", from_="king", to="all", body="New")
+
+            # Ensure council-recent sorts last
+            import json
+
+            from kingdom.thread import threads_root
+
+            meta_path = threads_root(base, BRANCH) / "council-recent" / "thread.json"
+            meta = json.loads(meta_path.read_text())
+            meta["created_at"] = "2099-01-01T00:00:00Z"
+            meta_path.write_text(json.dumps(meta))
+
+            set_current_thread(base, BRANCH, None)
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "council-recent" in result.output
+            assert "codex: pending" in result.output
+
+
 class TestCouncilReset:
     def test_reset_clears_sessions(self) -> None:
         with runner.isolated_filesystem():
