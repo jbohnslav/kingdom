@@ -899,29 +899,32 @@ def breakdown() -> None:
         breakdown_path.parent.mkdir(parents=True, exist_ok=True)
         breakdown_path.write_text(build_breakdown_template(feature), encoding="utf-8")
 
-    # Read design doc for context
-    design_text = ""
-    if design_path.exists():
-        design_text = design_path.read_text(encoding="utf-8").strip()
+    design_rel = design_path.relative_to(base)
 
     prompt = "\n".join(
         [
             f"# Ticket Breakdown: {feature}",
             "",
-            "Read the design doc below, then create tickets using the `kd` CLI.",
+            f"Read the design doc at `{design_rel}`, then create tickets for this branch.",
             "",
             "## Instructions",
             "",
-            f"1. Read the design doc at `{design_path.relative_to(base)}`.",
-            '2. Create tickets: `kd tk create "<title>"` — then edit the ticket file to add description and acceptance criteria.',
-            "3. Set dependencies: `kd tk dep <id> <dep-id>`",
-            "4. Review: `kd tk list` to verify.",
+            f"1. Read the design doc: `{design_rel}`",
+            "2. For each work item, create a ticket:",
+            '   `kd tk create "<title>" -p <priority>` (1=critical, 2=normal, 3=low)',
+            "3. Edit each ticket file to add:",
+            "   - A clear **problem statement** or context",
+            "   - Specific **acceptance criteria** (checkboxes, not blank)",
+            "4. Set dependencies between tickets where one must finish before another:",
+            "   `kd tk dep <ticket-id> <depends-on-id>`",
+            "5. Review the result: `kd tk list`",
             "",
-            "## Design Doc",
+            "## Guidelines",
             "",
-            "```markdown",
-            design_text or "(empty — write the design first with `kd design`)",
-            "```",
+            "- Set **priority** on every ticket (`-p 1` for blockers, `-p 2` for normal, `-p 3` for nice-to-have)",
+            "- Identify **dependencies** — if ticket B can't start until ticket A is done, set `kd tk dep B A`",
+            "- Write **meaningful acceptance criteria** — not empty checkboxes. Each criterion should be verifiable.",
+            "- Keep tickets small and focused — one logical change per ticket",
         ]
     )
 
