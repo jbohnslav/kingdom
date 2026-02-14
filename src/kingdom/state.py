@@ -155,7 +155,7 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 @contextmanager
-def _flock(lock_path: Path) -> Iterator[None]:
+def flock(lock_path: Path) -> Iterator[None]:
     """Hold an exclusive advisory lock on *lock_path* for the duration of the block."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fp = open(lock_path, "a+b")  # noqa: SIM115
@@ -178,7 +178,7 @@ def locked_json_update(
     result back via :func:`write_json`.  Returns the updated dict.
     """
     lock_path = path.parent / f".{path.name}.lock"
-    with _flock(lock_path):
+    with flock(lock_path):
         try:
             data = read_json(path)
         except FileNotFoundError:

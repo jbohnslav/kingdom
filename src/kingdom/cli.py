@@ -984,7 +984,7 @@ def remove_worktree(base: Path, full_ticket_id: str) -> None:
         pass
 
 
-class _PeasantContext(NamedTuple):
+class PeasantContext(NamedTuple):
     """Resolved ticket and (optionally) feature branch for a peasant command."""
 
     base: Path
@@ -994,7 +994,7 @@ class _PeasantContext(NamedTuple):
     feature: str
 
 
-def _resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull: bool = False) -> _PeasantContext:
+def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull: bool = False) -> PeasantContext:
     """Resolve ticket and feature branch, or exit with an error message.
 
     Handles the repeated preamble shared by peasant_* commands:
@@ -1029,7 +1029,7 @@ def _resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull
     if auto_pull and ticket_path.parent == backlog_root(base) / "tickets":
         ticket_path = move_ticket(ticket_path, branch_root(base, feature) / "tickets")
 
-    return _PeasantContext(
+    return PeasantContext(
         base=base,
         ticket=ticket,
         ticket_path=ticket_path,
@@ -1101,7 +1101,7 @@ def peasant_start(
     from kingdom.session import update_agent_state
     from kingdom.thread import create_thread
 
-    ctx = _resolve_peasant_context(ticket_id, auto_pull=True)
+    ctx = resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
 
     session_name = f"peasant-{full_ticket_id}"
@@ -1287,7 +1287,7 @@ def peasant_logs(
     follow: Annotated[bool, typer.Option("--follow", "-f", help="Tail logs continuously.")] = False,
 ) -> None:
     """Show stdout/stderr logs for a peasant."""
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = resolve_peasant_context(ticket_id)
 
     session_name = f"peasant-{ctx.full_ticket_id}"
     peasant_logs_dir = logs_root(ctx.base, ctx.feature) / session_name
@@ -1330,7 +1330,7 @@ def peasant_stop(
     """Send SIGTERM to the peasant process and update status to stopped."""
     from kingdom.session import get_agent_state, update_agent_state
 
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = resolve_peasant_context(ticket_id)
     base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     session_name = f"peasant-{full_ticket_id}"
@@ -1368,7 +1368,7 @@ def peasant_clean(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
 ) -> None:
     """Remove the git worktree for a ticket."""
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = resolve_peasant_context(ticket_id)
 
     try:
         remove_worktree(ctx.base, ctx.full_ticket_id)
@@ -1388,7 +1388,7 @@ def peasant_sync(
     """Merge the parent branch into the worktree's ticket branch, then refresh dependencies."""
     from kingdom.session import get_agent_state
 
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = resolve_peasant_context(ticket_id)
     base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     # Refuse if peasant is actively running
@@ -1462,7 +1462,7 @@ def peasant_msg(
     """Write a directive to the work thread; the peasant picks it up on next loop iteration."""
     from kingdom.thread import add_message
 
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = resolve_peasant_context(ticket_id)
     base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     thread_id = f"{full_ticket_id}-work"
@@ -1501,7 +1501,7 @@ def peasant_read(
     """Show recent messages from the peasant (escalations, status updates)."""
     from kingdom.thread import list_messages
 
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = resolve_peasant_context(ticket_id)
     base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     thread_id = f"{full_ticket_id}-work"
@@ -1539,7 +1539,7 @@ def peasant_review(
     from kingdom.session import get_agent_state, update_agent_state
     from kingdom.thread import add_message
 
-    ctx = _resolve_peasant_context(ticket_id)
+    ctx = resolve_peasant_context(ticket_id)
     base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
     full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
 
@@ -1729,7 +1729,7 @@ def work(
 
     # Resolve ticket context if not provided (interactive mode)
     if not (worktree and thread and session):
-        ctx = _resolve_peasant_context(ticket_id, base=base, auto_pull=True)
+        ctx = resolve_peasant_context(ticket_id, base=base, auto_pull=True)
         # In interactive mode, we are the session
         session = session or f"hand-{ctx.full_ticket_id}"
         thread = thread or f"{ctx.full_ticket_id}-work"
