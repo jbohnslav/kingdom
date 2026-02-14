@@ -294,12 +294,39 @@ def done(
 
     # Clear current session pointer (only if this was the current session)
     current_path = state_root(base) / "current"
+    session_cleared = False
     if current_path.exists():
         current_feature = current_path.read_text(encoding="utf-8").strip()
         if current_feature == normalized:
             clear_current_run(base)
+            session_cleared = True
 
+    # Summary
+    tickets_dir = source_dir / "tickets"
+    all_tickets = list_tickets(tickets_dir)
+    closed_count = sum(1 for t in all_tickets if t.status == "closed")
     typer.echo(f"Done: '{feature}'")
+    if closed_count:
+        typer.echo(f"  {closed_count} tickets closed")
+    if session_cleared:
+        typer.echo("  Session cleared")
+
+    # Remind to push if there are unpushed commits
+    try:
+        rev_result = subprocess.run(
+            ["git", "rev-list", "--count", "@{u}..HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if rev_result.returncode == 0:
+            ahead = int(rev_result.stdout.strip())
+            if ahead > 0:
+                typer.echo(f"  {ahead} unpushed commit(s) — remember to push")
+        else:
+            # No upstream tracking branch — likely unpushed
+            typer.echo("  No upstream branch — remember to push")
+    except (subprocess.SubprocessError, ValueError):
+        pass
 
 
 council_app = typer.Typer(name="council", help="Query council members.")
