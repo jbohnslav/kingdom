@@ -39,7 +39,7 @@ kd design                  # create design doc template
 
 1. **Design** — Write the design doc at `.kd/branches/<branch>/design.md`. For major decisions, consult the council: `kd council ask "question"`. When ready: `kd design approve`.
 
-2. **Breakdown** — Run `kd breakdown` to draft ticket breakdown. Review, then `kd breakdown --apply` to create tickets.
+2. **Breakdown** — Run `kd breakdown` to get an agent prompt for creating tickets from the design doc.
 
 3. **Tickets** — Work through tickets: `kd tk start <id>`, do the work, `kd tk close <id>`. Use `kd tk ready` to see what's unblocked.
 
@@ -68,8 +68,7 @@ Check status anytime with `kd status`.
 | `kd design` | Create design doc template |
 | `kd design show` | Print design document |
 | `kd design approve` | Mark design as approved |
-| `kd breakdown` | Draft ticket breakdown |
-| `kd breakdown --apply` | Create tickets from breakdown |
+| `kd breakdown` | Print agent prompt to create tickets from design |
 
 ### Council
 

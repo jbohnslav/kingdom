@@ -33,6 +33,14 @@ Rules
 
 When working with Python, invoke the relevant /astral:<skill> for uv, ty, and ruff to ensure best practices are followed.
 
+## Workflow
+
+Run `kd done` before creating or merging a PR. It verifies all tickets are closed.
+
+## Skills
+
+The kingdom skill lives at `skills/kingdom/SKILL.md` in this repo. `~/.claude/skills/kingdom` is a symlink to it — edit the repo copy.
+
 ## Agent Timeouts
 
 Council queries can take several minutes. Set bash timeout to 5 minutes:
