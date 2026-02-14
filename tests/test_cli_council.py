@@ -211,6 +211,22 @@ class TestCouncilAsk:
             assert "responses" in data
             assert "claude" in data["responses"]
 
+    def test_ask_does_not_modify_non_kd_files(self) -> None:
+        """Council ask should not mutate project files outside .kd/."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            sentinel = base / "sentinel.py"
+            original = "print('safe')\n"
+            sentinel.write_text(original, encoding="utf-8")
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                result = runner.invoke(cli.app, ["council", "ask", "Analyze only"])
+
+            assert result.exit_code == 0
+            assert sentinel.read_text(encoding="utf-8") == original
+
     def test_ask_saves_sessions(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

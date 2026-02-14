@@ -272,6 +272,37 @@ class TestRunAgentLoop:
         ticket = read_ticket(ticket_path)
         assert "quality gates passed" in ticket.body.lower()
 
+    def test_loop_passes_peasant_identity_env(self, project: Path, ticket_path: Path, monkeypatch) -> None:
+        """Backend subprocess should receive peasant identity env vars."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        monkeypatch.setenv("CLAUDECODE", "1")
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result) as mock_run,
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "done"
+        env = mock_run.call_args.kwargs["env"]
+        assert env["KD_ROLE"] == "peasant"
+        assert env["KD_AGENT_NAME"] == session_name
+        assert "CLAUDECODE" not in env
+
     def test_loop_continues_when_done_but_tests_fail(self, project: Path, ticket_path: Path) -> None:
         """Agent says DONE but tests fail — loop should continue, not accept done."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)

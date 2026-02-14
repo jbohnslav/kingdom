@@ -16,3 +16,21 @@ Currently anyone (including agents with `--dangerously-skip-permissions`) can pu
 - [ ] Direct pushes to master blocked
 - [ ] All changes require a PR
 - [ ] PR requires at least one approval before merge
+
+## Implementation Notes (council)
+
+**This is a GitHub admin task, not a code change.** Use `gh api` or the GitHub UI to set branch protection rules.
+
+**Approach:**
+- Use `gh api` to enforce branch protection on master
+- Optionally create a `scripts/protect_branch.sh` for reproducibility
+
+**Gotchas:**
+- Requires admin permissions on the GitHub repo
+- After enabling, all agents (including peasants with `--dangerously-skip-permissions`) will be blocked from direct pushes — that's the goal
+- Consider whether to also require status checks (CI passing before merge)
+
+## Worklog
+
+- Blocked: private repo on free GitHub plan, branch protection requires Pro or public repo
+- Revisit after making the repo public

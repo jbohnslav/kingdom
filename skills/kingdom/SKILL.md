@@ -39,13 +39,13 @@ kd design                  # create design doc template
 
 1. **Design** — Write the design doc at `.kd/branches/<branch>/design.md`. For major decisions, consult the council: `kd council ask "question"`. When ready: `kd design approve`.
 
-2. **Breakdown** — Run `kd breakdown` to draft ticket breakdown. Review, then `kd breakdown --apply` to create tickets.
+2. **Breakdown** — Run `kd breakdown` to get an agent prompt for creating tickets from the design doc.
 
 3. **Tickets** — Work through tickets: `kd tk start <id>`, do the work, `kd tk close <id>`. Use `kd tk ready` to see what's unblocked.
 
 4. **Peasants** — For isolated ticket work, spawn a peasant: `kd peasant start <id>` (worktree) or `kd peasant start <id> --hand` (serial, current dir).
 
-5. **Done** — When all tickets are closed: `kd done` to archive the branch.
+5. **Done** — When all tickets are closed: `kd done` to archive the branch. Always run `kd done` before merging a PR.
 
 Check status anytime with `kd status`.
 
@@ -68,8 +68,7 @@ Check status anytime with `kd status`.
 | `kd design` | Create design doc template |
 | `kd design show` | Print design document |
 | `kd design approve` | Mark design as approved |
-| `kd breakdown` | Draft ticket breakdown |
-| `kd breakdown --apply` | Create tickets from breakdown |
+| `kd breakdown` | Print agent prompt to create tickets from design |
 
 ### Council
 
@@ -95,7 +94,6 @@ Check status anytime with `kd status`.
 | `kd tk close <id>` | Mark complete |
 | `kd tk reopen <id>` | Reopen a closed ticket |
 | `kd tk ready` | Show tickets ready to work on |
-| `kd tk edit <id>` | Open ticket in editor |
 | `kd tk move <id> <branch>` | Move ticket to another branch |
 | `kd tk pull <id>...` | Pull backlog tickets into current branch |
 | `kd tk dep <id> <dep-id>` | Add dependency |
@@ -123,6 +121,16 @@ Check status anytime with `kd status`.
 | Command | Description |
 |---------|-------------|
 | `kd work <id>` | Run autonomous agent loop on a ticket |
+
+## Working Tickets
+
+- **One at a time**: start a ticket (`kd tk start`), do the work, close it (`kd tk close`), commit, then move to the next.
+- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go.
+- **Acceptance criteria**: only close a ticket when all acceptance criteria are met.
+- **Decisions**: ask the King or consult the council (`kd council ask`) for difficult design decisions — don't guess.
+- **Bugs from this branch**: immediately write a failing test that reproduces it, then fix.
+- **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create` + `kd tk move <id> backlog`) and move on.
+- **Commit often**: commit `.kd/` changes (ticket closures, worklogs, threads) and code changes as you go.
 
 ## Council Guidelines
 

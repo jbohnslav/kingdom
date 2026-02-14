@@ -160,7 +160,7 @@ def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: i
     return directives, max_seq
 
 
-def _worktree_python(worktree: Path) -> str:
+def worktree_python(worktree: Path) -> str:
     """Return the Python executable for a worktree's venv.
 
     Falls back to sys.executable if no venv is found.
@@ -178,7 +178,7 @@ def run_tests(worktree: Path) -> tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            [_worktree_python(worktree), "-m", "pytest", "-x", "-q", "--tb=short"],
+            [worktree_python(worktree), "-m", "pytest", "-x", "-q", "--tb=short"],
             capture_output=True,
             text=True,
             timeout=120,
@@ -201,7 +201,7 @@ def run_lint(worktree: Path) -> tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            [_worktree_python(worktree), "-m", "ruff", "check", "."],
+            [worktree_python(worktree), "-m", "ruff", "check", "."],
             capture_output=True,
             text=True,
             timeout=60,
@@ -328,7 +328,7 @@ def run_agent_loop(
                 timeout=AGENT_TIMEOUT,
                 cwd=worktree,
                 stdin=subprocess.DEVNULL,
-                env=clean_agent_env(),
+                env=clean_agent_env(role="peasant", agent_name=session_name),
             )
         except subprocess.TimeoutExpired:
             logger.error("Backend timed out after %ds", AGENT_TIMEOUT)

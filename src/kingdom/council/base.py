@@ -37,11 +37,11 @@ class CouncilMember:
         return self.config.name
 
     COUNCIL_PREAMBLE = (
-        "You are a council advisor to the King. Your role is read-only unless directly commanded otherwise. "
-        "Answer questions, analyze code, and provide recommendations. "
-        "You may read any file in the codebase. "
-        "If you need the design doc, run `kd design` to find it. "
-        "Do NOT modify source code, tests, configs, or any other files unless the King explicitly asks you to.\n\n"
+        "You are a council advisor to the King. "
+        "Do NOT create, edit, delete, or write source code, tests, configs, or other project files. "
+        "Do NOT run git commands that modify state (commit, push, checkout, etc). "
+        "You may run `kd` commands and read any files. "
+        "Respond with analysis and recommendations — do not implement anything.\n\n"
     )
 
     def build_command(self, prompt: str) -> list[str]:
@@ -96,7 +96,7 @@ class CouncilMember:
                 stderr=subprocess.PIPE,
                 text=True,
                 stdin=subprocess.DEVNULL,
-                env=clean_agent_env(),
+                env=clean_agent_env(role="council", agent_name=self.name),
             )
 
             out_thread = threading.Thread(target=read_stdout, args=(process.stdout,), daemon=True)

@@ -31,8 +31,7 @@ kd design approve   # Mark design as approved
 ### 2. Breakdown Phase
 
 ```bash
-kd breakdown        # Create breakdown.md template
-kd breakdown --apply  # Convert breakdown to tickets
+kd breakdown        # Print agent prompt to create tickets from design
 ```
 
 ### 3. Ticket Management
@@ -92,8 +91,7 @@ kd done   # Archive branch folder, clear current
 | `kd design` | Create/view design document |
 | `kd design show` | Print design.md |
 | `kd design approve` | Mark design approved |
-| `kd breakdown` | Create/view breakdown |
-| `kd breakdown --apply` | Create tickets from breakdown |
+| `kd breakdown` | Print agent prompt to create tickets from design |
 | `kd ticket <cmd>` | Ticket management (list, show, create, etc.) |
 | `kd council ask` | Query AI council |
 | `kd doctor` | Check CLI dependencies |

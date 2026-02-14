@@ -16,6 +16,7 @@ from kingdom.state import (
     set_current_run,
     state_root,
 )
+from kingdom.ticket import Ticket, write_ticket
 
 
 def test_done_marks_state_and_clears_current() -> None:
@@ -187,3 +188,61 @@ def test_done_with_legacy_runs_structure() -> None:
         legacy_dir = state_root(base) / "runs" / "legacy-feature"
         state = read_json(legacy_dir / "state.json")
         assert state["status"] == "done"
+
+
+def test_done_blocks_when_branch_has_open_tickets() -> None:
+    """kd done should fail and list non-closed tickets unless forced."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        tickets_dir = branch_dir / "tickets"
+
+        write_ticket(
+            Ticket(id="kin-open1", status="open", title="Open ticket", created=datetime.now(UTC)),
+            tickets_dir / "kin-open1.md",
+        )
+        write_ticket(
+            Ticket(id="kin-prog1", status="in_progress", title="In progress ticket", created=datetime.now(UTC)),
+            tickets_dir / "kin-prog1.md",
+        )
+
+        result = runner.invoke(cli.app, ["done"])
+
+        assert result.exit_code == 1
+        assert "Error: 2 open ticket(s) on 'test-feature':" in result.output
+        assert "kin-open1 [open] Open ticket" in result.output
+        assert "kin-prog1 [in_progress] In progress ticket" in result.output
+        assert "Close tickets, move them to backlog with `kd tk move`, or use --force." in result.output
+
+        state = read_json(branch_dir / "state.json")
+        assert state.get("status") != "done"
+        assert (base / ".kd" / "current").exists()
+
+
+def test_done_force_overrides_open_ticket_check() -> None:
+    """kd done --force should succeed even if open tickets remain."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        tickets_dir = branch_dir / "tickets"
+        write_ticket(
+            Ticket(id="kin-open1", status="open", title="Open ticket", created=datetime.now(UTC)),
+            tickets_dir / "kin-open1.md",
+        )
+
+        result = runner.invoke(cli.app, ["done", "--force"])
+
+        assert result.exit_code == 0
+        assert "Done: 'test-feature'" in result.output
+        state = read_json(branch_dir / "state.json")
+        assert state["status"] == "done"
+        assert "done_at" in state
+        assert not (base / ".kd" / "current").exists()
