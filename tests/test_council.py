@@ -44,7 +44,7 @@ class TestCouncilMemberPermissions:
         assert "Read" in cmd
         assert "Edit" not in cmd
         assert "Write" not in cmd
-        assert "Bash" not in cmd
+        assert "Bash" in cmd
 
     def test_codex_no_skip_permissions(self) -> None:
         member = make_member("codex")

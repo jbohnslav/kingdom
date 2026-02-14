@@ -327,7 +327,7 @@ class TestBuildCommandSkipPermissions:
         assert "Grep" in cmd
         assert "Edit" not in cmd
         assert "Write" not in cmd
-        assert "Bash" not in cmd
+        assert "Bash" in cmd
 
     def test_codex_skip_permissions_false(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["codex"], "hello world", skip_permissions=False)

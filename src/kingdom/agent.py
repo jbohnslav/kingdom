@@ -267,7 +267,7 @@ def build_claude_command(
     if skip_permissions:
         cmd.insert(1, "--dangerously-skip-permissions")
     else:
-        cmd.extend(["--allowedTools", "Read", "Glob", "Grep", "WebFetch", "WebSearch"])
+        cmd.extend(["--allowedTools", "Bash", "Read", "Glob", "Grep", "WebFetch", "WebSearch"])
     if session_id:
         cmd.extend([config.resume_flag, session_id])
     cmd.extend(["-p", prompt])

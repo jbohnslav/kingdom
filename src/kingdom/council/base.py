@@ -37,12 +37,11 @@ class CouncilMember:
         return self.config.name
 
     COUNCIL_PREAMBLE = (
-        "You are a council advisor to the King. You are READ-ONLY. "
-        "Do NOT create, edit, delete, or write any files. "
+        "You are a council advisor to the King. "
+        "Do NOT create, edit, delete, or write source code, tests, configs, or other project files. "
         "Do NOT run git commands that modify state (commit, push, checkout, etc). "
-        "Do NOT run kd commands that modify state (tk create, tk close, tk move, etc). "
-        "You may ONLY: read files, search code, and respond with analysis and recommendations. "
-        "If you need the design doc, run `kd design show` to print it.\n\n"
+        "You may run `kd` commands and read any files. "
+        "Respond with analysis and recommendations — do not implement anything.\n\n"
     )
 
     def build_command(self, prompt: str) -> list[str]:
