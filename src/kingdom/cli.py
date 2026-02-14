@@ -1150,14 +1150,14 @@ def peasant_start(
         # Guard: block if another peasant is already running on the same checkout
         from kingdom.session import list_active_agents
 
-        for agent in list_active_agents(base, feature):
-            if agent.name == session_name:
+        for active in list_active_agents(base, feature):
+            if active.name == session_name:
                 continue  # already handled above
-            if agent.status == "working" and agent.pid and agent.name.startswith("peasant-"):
+            if active.status == "working" and active.pid and active.name.startswith("peasant-"):
                 try:
-                    os.kill(agent.pid, 0)
+                    os.kill(active.pid, 0)
                     typer.echo(
-                        f"Error: peasant {agent.name} (pid {agent.pid}) is already working "
+                        f"Error: peasant {active.name} (pid {active.pid}) is already working "
                         f"on this checkout. Stop it first or use worktree mode."
                     )
                     raise typer.Exit(code=1)

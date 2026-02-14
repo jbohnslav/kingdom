@@ -109,6 +109,37 @@ class TestPeasantStart:
             assert state.status == "working"
             assert state.pid == 12345
 
+    def test_start_hand_mode_preserves_agent_when_dead_sessions_exist(self) -> None:
+        """The --hand loop variable must not shadow the `agent` parameter."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            # Create a dead peasant session so the guard loop iterates
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-other",
+                AgentState(name="peasant-other", status="working", pid=99999999),
+            )
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+            ):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test", "--hand", "--agent", "claude"])
+
+            assert result.exit_code == 0, result.output
+
+            # The agent_backend should be the string "claude", not an AgentState object
+            state = get_agent_state(base, BRANCH, "peasant-kin-test")
+            assert state.agent_backend == "claude", f"Expected 'claude', got {state.agent_backend!r}"
+
     def test_start_refuses_if_already_running(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
