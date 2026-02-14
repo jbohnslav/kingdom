@@ -49,5 +49,5 @@ kd peasant clean <id>        # remove worktree when done
 For running an agent loop on a ticket without the peasant/worktree setup:
 
 ```bash
-kd work                      # run autonomous agent loop on current ticket
+kd work <id>                 # run autonomous agent loop on a ticket
 ```

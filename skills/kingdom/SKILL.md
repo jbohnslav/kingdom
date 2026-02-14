@@ -97,7 +97,7 @@ Check status anytime with `kd status`.
 | `kd tk ready` | Show tickets ready to work on |
 | `kd tk edit <id>` | Open ticket in editor |
 | `kd tk move <id> <branch>` | Move ticket to another branch |
-| `kd tk pull` | Pull backlog tickets into current branch |
+| `kd tk pull <id>...` | Pull backlog tickets into current branch |
 | `kd tk dep <id> <dep-id>` | Add dependency |
 | `kd tk undep <id> <dep-id>` | Remove dependency |
 | `kd tk assign <id> <agent>` | Assign to agent |
@@ -122,7 +122,7 @@ Check status anytime with `kd status`.
 
 | Command | Description |
 |---------|-------------|
-| `kd work` | Run autonomous agent loop on a ticket |
+| `kd work <id>` | Run autonomous agent loop on a ticket |
 
 ## Council Guidelines
 

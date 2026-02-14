@@ -58,12 +58,12 @@ kd tk list                   # list all tickets on current branch
 kd tk show <id>              # show ticket details
 kd tk edit <id>              # open in $EDITOR
 kd tk move <id> <branch>     # move to another branch
-kd tk pull                   # pull backlog tickets into current branch
+kd tk pull <id>...            # pull backlog tickets into current branch
 ```
 
 ## Backlog
 
-The backlog at `.kd/backlog/tickets/` holds tickets not assigned to any branch. Use `kd tk create --backlog` to add to it, and `kd tk pull` to bring tickets into the current branch.
+The backlog at `.kd/backlog/tickets/` holds tickets not assigned to any branch. Use `kd tk create --backlog` to add to it, and `kd tk pull <id>...` to bring tickets into the current branch.
 
 ## Best Practices
 
