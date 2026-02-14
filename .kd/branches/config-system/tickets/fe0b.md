@@ -1,6 +1,6 @@
 ---
 id: fe0b
-status: open
+status: closed
 deps: [d52d, 5151]
 links: []
 created: 2026-02-14T14:12:21Z
@@ -20,9 +20,19 @@ Update peasant, design, and synthesis paths to use config instead of hardcoded v
 
 ## Acceptance Criteria
 
-- [ ] Peasant agent comes from config (default: claude)
-- [ ] Peasant timeout and max_iterations come from config
-- [ ] Peasant phase prompt is prepended to harness prompts
-- [ ] `design.py` uses config council members, not hardcoded names
-- [ ] `synthesis.py` uses config council members, not hardcoded `COUNCIL_ORDER`
-- [ ] Tests cover: custom peasant agent, peasant prompts, dynamic council order
+- [x] Peasant agent comes from config (default: claude)
+- [x] Peasant timeout and max_iterations come from config
+- [x] Peasant phase prompt is prepended to harness prompts
+- [x] `design.py` uses config council members, not hardcoded names
+- [x] `synthesis.py` uses config council members, not hardcoded `COUNCIL_ORDER`
+- [x] Tests cover: custom peasant agent, peasant prompts, dynamic council order
+
+## Worklog
+
+- harness.py: replaced MAX_ITERATIONS and AGENT_TIMEOUT constants with cfg.peasant values
+- harness.py: build_prompt() accepts phase_prompt and max_iterations, prepends phase prompt
+- harness.py: run_agent_loop() resolves peasant phase prompt (agent-specific or global)
+- synthesis.py: removed COUNCIL_ORDER constant, build_synthesis_prompt() accepts member_names param
+- design.py: build_design_update_prompt() accepts member_names param instead of hardcoded list
+- cli.py: peasant_start and work commands default --agent from config.peasant.agent
+- Updated tests: harness (4 new), synthesis (2 new), design (2 new), all 64 pass

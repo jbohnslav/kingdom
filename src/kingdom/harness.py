@@ -29,17 +29,25 @@ from kingdom.ticket import find_ticket, read_ticket, write_ticket
 
 logger = logging.getLogger("kingdom.harness")
 
-MAX_ITERATIONS = 50
-AGENT_TIMEOUT = 900  # 15 minutes per backend call
 
-
-def build_prompt(ticket_path: Path, worklog: str, directives: list[str], iteration: int) -> str:
+def build_prompt(
+    ticket_path: Path,
+    worklog: str,
+    directives: list[str],
+    iteration: int,
+    max_iterations: int,
+    phase_prompt: str = "",
+) -> str:
     """Build the prompt sent to the backend agent.
 
     References the ticket file by path (so the agent can read it directly)
     and includes existing worklog and any new directives from the work thread.
     """
     parts = []
+
+    if phase_prompt:
+        parts.append(phase_prompt)
+        parts.append("")
 
     parts.append("You are a peasant agent working on a ticket. Work autonomously to complete it.")
     parts.append("")
@@ -59,7 +67,7 @@ def build_prompt(ticket_path: Path, worklog: str, directives: list[str], iterati
 
     parts.append("")
     parts.append("## Instructions")
-    parts.append(f"This is iteration {iteration} of your work loop.")
+    parts.append(f"This is iteration {iteration} of {max_iterations}.")
     parts.append("Work on the ticket. Commit your changes as you go with descriptive commit messages.")
     parts.append("When you respond, structure your output as:")
     parts.append("1. What you did this iteration")
@@ -253,6 +261,13 @@ def run_agent_loop(
         return "failed"
     agent_config = resolve_agent(agent_name, agent_def)
 
+    # Read peasant settings from config
+    max_iterations = cfg.peasant.max_iterations
+    agent_timeout = cfg.peasant.timeout
+
+    # Resolve peasant phase prompt: agent-specific overrides global
+    phase_prompt = agent_def.prompts.get("peasant", "") or cfg.prompts.peasant
+
     # Find ticket
     result = find_ticket(base, ticket_id)
     if result is None:
@@ -289,7 +304,7 @@ def run_agent_loop(
 
     final_status = "failed"
 
-    for iteration in range(1, MAX_ITERATIONS + 1):
+    for iteration in range(1, max_iterations + 1):
         if stop_requested:
             final_status = "stopped"
             logger.info("Stopping at iteration %d (signal received)", iteration)
@@ -313,7 +328,7 @@ def run_agent_loop(
         directives, last_seen_seq = get_new_directives(base, branch, thread_id, last_seen_seq)
 
         # Build prompt
-        prompt = build_prompt(ticket_path, worklog, directives, iteration)
+        prompt = build_prompt(ticket_path, worklog, directives, iteration, max_iterations, phase_prompt)
 
         # Call backend
         cmd = build_command(agent_config, prompt, resume_id)
@@ -324,13 +339,13 @@ def run_agent_loop(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=AGENT_TIMEOUT,
+                timeout=agent_timeout,
                 cwd=worktree,
                 stdin=subprocess.DEVNULL,
                 env=clean_agent_env(role="peasant", agent_name=session_name),
             )
         except subprocess.TimeoutExpired:
-            logger.error("Backend timed out after %ds", AGENT_TIMEOUT)
+            logger.error("Backend timed out after %ds", agent_timeout)
             append_worklog(ticket_path, "Backend call timed out")
             final_status = "failed"
             break
@@ -428,8 +443,8 @@ def run_agent_loop(
 
     else:
         # Max iterations reached
-        logger.warning("Max iterations (%d) reached", MAX_ITERATIONS)
-        append_worklog(ticket_path, f"Max iterations ({MAX_ITERATIONS}) reached without completion")
+        logger.warning("Max iterations (%d) reached", max_iterations)
+        append_worklog(ticket_path, f"Max iterations ({max_iterations}) reached without completion")
         final_status = "failed"
 
     # Final session update

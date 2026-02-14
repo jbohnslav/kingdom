@@ -1113,15 +1113,21 @@ def launch_work_background(
 @peasant_app.command("start", help="Launch a peasant agent on a ticket.")
 def peasant_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
-    agent: Annotated[str, typer.Option("--agent", help="Agent to use.")] = "claude",
+    agent: Annotated[str | None, typer.Option("--agent", help="Agent to use (default: from config).")] = None,
     hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
+    from kingdom.config import load_config
     from kingdom.session import update_agent_state
     from kingdom.thread import create_thread
 
     ctx = resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
+
+    # Default agent from config if not specified on CLI
+    if agent is None:
+        cfg = load_config(base)
+        agent = cfg.peasant.agent
 
     session_name = f"peasant-{full_ticket_id}"
     thread_id = f"{full_ticket_id}-work"
@@ -1718,7 +1724,7 @@ def peasant_review(
 @app.command("work", help="Run autonomous agent loop on a ticket.")
 def work(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
-    agent: Annotated[str, typer.Option("--agent", help="Agent name.")] = "claude",
+    agent: Annotated[str | None, typer.Option("--agent", help="Agent name (default: from config).")] = None,
     worktree: Annotated[str | None, typer.Option("--worktree", help="Worktree path (internal).")] = None,
     thread: Annotated[str | None, typer.Option("--thread", help="Thread ID (internal).")] = None,
     session: Annotated[str | None, typer.Option("--session", help="Session name (internal).")] = None,
@@ -1731,6 +1737,7 @@ def work(
     """
     import logging
 
+    from kingdom.config import load_config
     from kingdom.harness import run_agent_loop
 
     logging.basicConfig(
@@ -1745,6 +1752,11 @@ def work(
     except RuntimeError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
+
+    # Default agent from config if not specified on CLI
+    if agent is None:
+        cfg = load_config(base)
+        agent = cfg.peasant.agent
 
     # Resolve ticket context if not provided (interactive mode)
     if not (worktree and thread and session):
