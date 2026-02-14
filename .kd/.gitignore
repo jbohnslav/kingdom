@@ -8,3 +8,6 @@
 worktrees/
 current
 .stream-*.md
+
+# Config file is tracked
+!config.json

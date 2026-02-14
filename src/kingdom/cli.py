@@ -126,6 +126,27 @@ def init(
         raise typer.Exit(code=1)
 
     paths = ensure_base_layout(base, create_gitignore=not no_gitignore)
+
+    # Scaffold config.json with defaults (idempotent)
+    from kingdom.config import default_config
+
+    config_path = paths["state_root"] / "config.json"
+    if not config_path.exists():
+        import json
+
+        cfg = default_config()
+        data = {
+            "agents": {name: {"backend": a.backend} for name, a in cfg.agents.items()},
+            "prompts": {},
+            "council": {"members": cfg.council.members, "timeout": cfg.council.timeout},
+            "peasant": {
+                "agent": cfg.peasant.agent,
+                "timeout": cfg.peasant.timeout,
+                "max_iterations": cfg.peasant.max_iterations,
+            },
+        }
+        config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
     typer.echo(f"Initialized: {paths['state_root']}")
 
 

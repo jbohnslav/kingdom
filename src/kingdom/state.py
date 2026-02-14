@@ -222,12 +222,11 @@ def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, P
 **/sessions/
 worktrees/
 current
+
+# Config file is tracked
+!config.json
 """
         gitignore_path.write_text(gitignore_content, encoding="utf-8")
-
-    config_path = state_root(base) / "config.json"
-    if not config_path.exists():
-        write_json(config_path, {})
 
     init_worktree_path = state_root(base) / "init-worktree.sh"
     if not init_worktree_path.exists():
@@ -252,7 +251,6 @@ current
         "branches_root": branches_root(base),
         "backlog_root": backlog_root(base),
         "archive_root": archive_root(base),
-        "config_json": config_path,
         "gitignore": gitignore_path if create_gitignore else None,
     }
 
@@ -346,7 +344,6 @@ def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
         "council_logs_root": council_logs_root(base, feature),
         "sessions_root": sessions_root(base, feature),
         "tickets_root": tickets_root(base, feature),
-        "config_json": base_paths["config_json"],
         "state_json": state_path,
         "design_md": design_path,
         "breakdown_md": breakdown_path,
