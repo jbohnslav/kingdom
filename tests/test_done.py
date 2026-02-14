@@ -103,6 +103,7 @@ def test_done_errors_without_active_run() -> None:
 
         assert result.exit_code == 1
         assert "No active session" in result.output
+        assert "kd done <branch>" in result.output
 
 
 def test_done_with_explicit_feature() -> None:

@@ -236,8 +236,8 @@ def done(
     if feature is None:
         try:
             feature = resolve_current_run(base)
-        except RuntimeError as exc:
-            typer.echo(str(exc))
+        except RuntimeError:
+            typer.echo("No active session. Pass the branch name: `kd done <branch>`")
             raise typer.Exit(code=1) from None
 
     # Get the branch directory (normalized name)
