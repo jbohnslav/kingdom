@@ -697,7 +697,7 @@ def _print_thread_status(status, base: Path, feature: str, verbose: bool = False
     typer.echo(f"{status.thread_id}  [{state}]")
     if verbose:
         tdir = thread_dir(base, feature, status.thread_id)
-        typer.echo(f"  thread: {tdir}")
+        typer.echo(f"  thread: {tdir.relative_to(base)}")
     for name in sorted(status.expected):
         if name in status.responded:
             line = f"  {name}: responded"
@@ -706,7 +706,7 @@ def _print_thread_status(status, base: Path, feature: str, verbose: bool = False
         if verbose:
             log_file = logs_root(base, feature) / f"council-{name}.log"
             if log_file.exists():
-                line += f"  log={log_file}"
+                line += f"  log={log_file.relative_to(base)}"
             else:
                 line += "  (no log file)"
         typer.echo(line)
