@@ -260,10 +260,14 @@ def build_claude_command(
     """Build claude CLI command.
 
     Format: ``claude [--dangerously-skip-permissions] --print --output-format json [--resume SESSION] -p PROMPT``
+
+    When skip_permissions is False (council queries), restricts to read-only tools.
     """
     cmd = shlex.split(config.cli)
     if skip_permissions:
         cmd.insert(1, "--dangerously-skip-permissions")
+    else:
+        cmd.extend(["--allowedTools", "Read", "Glob", "Grep", "WebFetch", "WebSearch"])
     if session_id:
         cmd.extend([config.resume_flag, session_id])
     cmd.extend(["-p", prompt])
@@ -276,10 +280,14 @@ def build_codex_command(
     """Build codex CLI command.
 
     Codex uses subcommand-style resume: ``codex exec resume <id> --json <prompt>``
+
+    When skip_permissions is False (council queries), uses read-only sandbox.
     """
     parts = shlex.split(config.cli)
     if skip_permissions:
         parts.insert(1, "--dangerously-bypass-approvals-and-sandbox")
+    else:
+        parts.extend(["-c", 'sandbox_permissions=["disk-full-read-access"]'])
     if session_id:
         try:
             exec_idx = parts.index("exec")
@@ -298,12 +306,16 @@ def build_cursor_command(
     """Build cursor agent CLI command.
 
     Format: ``agent [--force --sandbox disabled] --print --output-format json PROMPT [--resume SESSION]``
+
+    When skip_permissions is False (council queries), uses --mode ask for read-only.
     """
     cmd = shlex.split(config.cli)
     if skip_permissions:
         cmd.insert(1, "--force")
         cmd.insert(2, "--sandbox")
         cmd.insert(3, "disabled")
+    else:
+        cmd.extend(["--mode", "ask"])
     cmd.append(prompt)
     if session_id:
         cmd.extend([config.resume_flag, session_id])

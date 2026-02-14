@@ -40,69 +40,64 @@ class TestCouncilMemberPermissions:
         member = make_member("claude")
         cmd = member.build_command("hello world")
         assert "--dangerously-skip-permissions" not in cmd
-        assert cmd == ["claude", "--print", "--output-format", "json", "-p", PREAMBLE + "hello world"]
+        assert "--allowedTools" in cmd
+        assert "Read" in cmd
+        assert "Edit" not in cmd
+        assert "Write" not in cmd
+        assert "Bash" not in cmd
 
     def test_codex_no_skip_permissions(self) -> None:
         member = make_member("codex")
         cmd = member.build_command("hello world")
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
-        assert cmd == ["codex", "exec", "--json", PREAMBLE + "hello world"]
+        assert "disk-full-read-access" in " ".join(cmd)
 
     def test_cursor_no_skip_permissions(self) -> None:
         member = make_member("cursor")
         cmd = member.build_command("hello world")
         assert "--force" not in cmd
         assert "--sandbox" not in cmd
+        assert "--mode" in cmd
+        assert "ask" in cmd
 
 
 class TestClaudeMember:
     def test_build_command_without_session(self) -> None:
         member = make_member("claude")
         cmd = member.build_command("hello world")
-        assert cmd == [
-            "claude",
-            "--print",
-            "--output-format",
-            "json",
-            "-p",
-            PREAMBLE + "hello world",
-        ]
+        assert cmd[0] == "claude"
+        assert "--allowedTools" in cmd
+        assert "-p" in cmd
+        assert PREAMBLE + "hello world" in cmd
+        assert "--dangerously-skip-permissions" not in cmd
 
     def test_build_command_with_session(self) -> None:
         member = make_member("claude")
         member.session_id = "abc123"
         cmd = member.build_command("hello")
-        assert cmd == [
-            "claude",
-            "--print",
-            "--output-format",
-            "json",
-            "--resume",
-            "abc123",
-            "-p",
-            PREAMBLE + "hello",
-        ]
+        assert "--resume" in cmd
+        assert "abc123" in cmd
+        assert "--allowedTools" in cmd
+        assert PREAMBLE + "hello" in cmd
 
 
 class TestCodexMember:
     def test_build_command_without_session(self) -> None:
         member = make_member("codex")
         cmd = member.build_command("hello world")
-        assert cmd == ["codex", "exec", "--json", PREAMBLE + "hello world"]
+        assert cmd[0] == "codex"
+        assert "disk-full-read-access" in " ".join(cmd)
+        assert PREAMBLE + "hello world" in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
 
     def test_build_command_with_session(self) -> None:
         """Codex uses 'exec resume <thread_id>' for continuation."""
         member = make_member("codex")
         member.session_id = "thread-123"
         cmd = member.build_command("hello")
-        assert cmd == [
-            "codex",
-            "exec",
-            "resume",
-            "thread-123",
-            "--json",
-            PREAMBLE + "hello",
-        ]
+        assert "resume" in cmd
+        assert "thread-123" in cmd
+        assert PREAMBLE + "hello" in cmd
 
     def test_parse_response_jsonl_extracts_thread_id(self) -> None:
         """Codex --json outputs JSONL; extract thread_id and agent message."""

@@ -321,19 +321,26 @@ class TestBuildCommandSkipPermissions:
     def test_claude_skip_permissions_false(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["claude"], "hello world", skip_permissions=False)
         assert "--dangerously-skip-permissions" not in cmd
-        assert cmd == ["claude", "--print", "--output-format", "json", "-p", "hello world"]
+        assert "--allowedTools" in cmd
+        assert "Read" in cmd
+        assert "Glob" in cmd
+        assert "Grep" in cmd
+        assert "Edit" not in cmd
+        assert "Write" not in cmd
+        assert "Bash" not in cmd
 
     def test_codex_skip_permissions_false(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["codex"], "hello world", skip_permissions=False)
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
-        assert cmd == ["codex", "exec", "--json", "hello world"]
+        assert "disk-full-read-access" in " ".join(cmd)
 
     def test_cursor_skip_permissions_false(self) -> None:
         cmd = build_command(DEFAULT_AGENTS["cursor"], "hello world", skip_permissions=False)
         assert "--force" not in cmd
         assert "--sandbox" not in cmd
         assert "disabled" not in cmd
-        assert cmd == ["agent", "--print", "--output-format", "json", "hello world"]
+        assert "--mode" in cmd
+        assert "ask" in cmd
 
     def test_claude_skip_permissions_true_is_default(self) -> None:
         cmd_default = build_command(DEFAULT_AGENTS["claude"], "hello")
