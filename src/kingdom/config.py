@@ -260,13 +260,11 @@ def validate_config(data: dict) -> KingdomConfig:
     for member in council.members:
         if member not in defined:
             raise ValueError(
-                f"council.members references undefined agent '{member}'. "
-                f"Defined agents: {', '.join(sorted(defined))}"
+                f"council.members references undefined agent '{member}'. Defined agents: {', '.join(sorted(defined))}"
             )
     if peasant.agent not in defined:
         raise ValueError(
-            f"peasant.agent references undefined agent '{peasant.agent}'. "
-            f"Defined agents: {', '.join(sorted(defined))}"
+            f"peasant.agent references undefined agent '{peasant.agent}'. Defined agents: {', '.join(sorted(defined))}"
         )
 
     return KingdomConfig(agents=agents, prompts=prompts, council=council, peasant=peasant)
