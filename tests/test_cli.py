@@ -75,27 +75,34 @@ def test_doctor_json_with_missing() -> None:
         assert data["agents"]["codex"]["error"] == "Command not found"
 
 
-def test_doctor_invalid_config() -> None:
-    """Test doctor reports config validation errors."""
+def test_doctor_invalid_config(tmp_path) -> None:
+    """Test doctor reports config errors without crashing."""
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    (kd_dir / "config.json").write_text('{"council": {"timout": 123}}')
+
     with (
         patch.object(cli, "check_cli", return_value=(True, None)),
-        patch.object(cli, "check_config", return_value=(False, "Unknown keys in config: foo")),
+        patch("kingdom.config.state_root", return_value=kd_dir),
+        patch("kingdom.state.state_root", return_value=kd_dir),
     ):
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 1
         assert "✗" in result.output
-        assert "Unknown keys in config: foo" in result.output
+        assert "timout" in result.output
+        # Should skip CLI checks, not crash
+        assert "Skipped" in result.output
 
 
 def test_doctor_no_config_shows_defaults(tmp_path) -> None:
     """Test doctor shows 'using defaults' when no config file exists."""
-    # Create .kd dir without config.json
-    (tmp_path / ".kd").mkdir()
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
 
     with (
         patch.object(cli, "check_cli", return_value=(True, None)),
-        patch.object(cli, "check_config", return_value=(True, None)),
-        patch("kingdom.state.state_root", return_value=tmp_path / ".kd"),
+        patch("kingdom.config.state_root", return_value=kd_dir),
+        patch("kingdom.state.state_root", return_value=kd_dir),
     ):
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0
@@ -110,7 +117,7 @@ def test_doctor_valid_config(tmp_path) -> None:
 
     with (
         patch.object(cli, "check_cli", return_value=(True, None)),
-        patch.object(cli, "check_config", return_value=(True, None)),
+        patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
         result = runner.invoke(cli.app, ["doctor"])
@@ -118,17 +125,41 @@ def test_doctor_valid_config(tmp_path) -> None:
         assert "config.json valid" in result.output
 
 
-def test_doctor_json_invalid_config() -> None:
-    """Test doctor JSON output with invalid config."""
+def test_doctor_json_invalid_config(tmp_path) -> None:
+    """Test doctor JSON output with invalid config is still valid JSON."""
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    (kd_dir / "config.json").write_text('{"peasant": {"agent": "nonexistent"}}')
+
     with (
         patch.object(cli, "check_cli", return_value=(True, None)),
-        patch.object(cli, "check_config", return_value=(False, "bad cross-reference")),
+        patch("kingdom.config.state_root", return_value=kd_dir),
+        patch("kingdom.state.state_root", return_value=kd_dir),
     ):
         result = runner.invoke(cli.app, ["doctor", "--json"])
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert data["config"]["valid"] is False
-        assert "bad cross-reference" in data["config"]["error"]
+        assert "nonexistent" in data["config"]["error"]
+        # CLI checks should be empty (skipped)
+        assert data["agents"] == {}
+
+
+def test_doctor_unknown_backend(tmp_path) -> None:
+    """Test doctor catches unknown backend in config."""
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    (kd_dir / "config.json").write_text('{"agents": {"test": {"backend": "foo"}}}')
+
+    with (
+        patch.object(cli, "check_cli", return_value=(True, None)),
+        patch("kingdom.config.state_root", return_value=kd_dir),
+        patch("kingdom.state.state_root", return_value=kd_dir),
+    ):
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 1
+        assert "✗" in result.output
+        assert "foo" in result.output
 
 
 # -- kd config show ---
@@ -162,3 +193,16 @@ def test_config_show_with_overrides(tmp_path) -> None:
         data = json.loads(result.output)
         assert data["council"]["timeout"] == 300
         assert data["peasant"]["agent"] == "codex"
+
+
+def test_config_show_invalid_config(tmp_path) -> None:
+    """Test kd config show shows clean error on invalid config."""
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    (kd_dir / "config.json").write_text('{"council": {"timout": 123}}')
+
+    with patch("kingdom.config.state_root", return_value=kd_dir):
+        result = runner.invoke(cli.app, ["config", "show"])
+        assert result.exit_code == 1
+        assert "invalid config" in result.output
+        assert "timout" in result.output

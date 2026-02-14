@@ -1956,7 +1956,11 @@ def config_show() -> None:
     from kingdom.config import load_config
 
     base = Path.cwd()
-    cfg = load_config(base)
+    try:
+        cfg = load_config(base)
+    except ValueError as e:
+        typer.secho(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from None
     print(json.dumps(dataclasses.asdict(cfg), indent=2))
 
 
@@ -2036,33 +2040,38 @@ def doctor(
         else:
             typer.secho(f"  ✗ config.json: {config_error}", fg=typer.colors.RED)
 
-    # 2. Agent CLI checks
-    doctor_checks = get_doctor_checks(base)
+    # 2. Agent CLI checks (skip if config is invalid — can't resolve agents)
     cli_results: dict[str, dict[str, bool | str | None]] = {}
     cli_issues: list[dict[str, str]] = []
 
-    for check in doctor_checks:
-        installed, error = check_cli(check["command"])
-        cli_results[check["name"]] = {"installed": installed, "error": error}
-        if not installed:
-            cli_issues.append({"name": check["name"], "hint": check["install_hint"]})
+    if config_ok:
+        doctor_checks = get_doctor_checks(base)
+        for check in doctor_checks:
+            installed, error = check_cli(check["command"])
+            cli_results[check["name"]] = {"installed": installed, "error": error}
+            if not installed:
+                cli_issues.append({"name": check["name"], "hint": check["install_hint"]})
 
     if output_json:
         print(json.dumps({"config": config_result, "agents": cli_results}, indent=2))
     else:
-        typer.echo("\nAgent CLIs:")
-        for check in doctor_checks:
-            name = check["name"]
-            result = cli_results[name]
-            if result["installed"]:
-                typer.secho(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
-            else:
-                typer.secho(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
+        if not config_ok:
+            typer.echo("\nAgent CLIs:")
+            typer.secho("  ○ Skipped (fix config first)", fg=typer.colors.YELLOW)
+        else:
+            typer.echo("\nAgent CLIs:")
+            for check in doctor_checks:
+                name = check["name"]
+                result = cli_results[name]
+                if result["installed"]:
+                    typer.secho(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
+                else:
+                    typer.secho(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
 
-        if cli_issues:
-            typer.echo("\nIssues found:")
-            for issue in cli_issues:
-                typer.echo(f"  {issue['name']}: {issue['hint']}")
+            if cli_issues:
+                typer.echo("\nIssues found:")
+                for issue in cli_issues:
+                    typer.echo(f"  {issue['name']}: {issue['hint']}")
         typer.echo()
 
     if has_issues or cli_issues:

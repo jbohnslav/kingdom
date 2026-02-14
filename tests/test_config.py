@@ -190,6 +190,22 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be a list"):
             validate_config({"council": {"members": "claude"}})
 
+    def test_unknown_backend(self) -> None:
+        with pytest.raises(ValueError, match="not a known backend"):
+            validate_config({"agents": {"myagent": {"backend": "foo"}}})
+
+    def test_council_timeout_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            validate_config({"council": {"timeout": 0}})
+
+    def test_peasant_timeout_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            validate_config({"peasant": {"timeout": -1}})
+
+    def test_peasant_max_iterations_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            validate_config({"peasant": {"max_iterations": 0}})
+
 
 class TestLoadConfig:
     def test_no_file_returns_defaults(self, tmp_path: Path) -> None:

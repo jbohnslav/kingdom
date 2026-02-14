@@ -92,6 +92,7 @@ def default_config() -> KingdomConfig:
 # Validation
 # ---------------------------------------------------------------------------
 
+VALID_BACKENDS = {"claude_code", "codex", "cursor"}
 VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
 VALID_COUNCIL_KEYS = {"members", "timeout"}
@@ -116,6 +117,10 @@ def validate_agent(name: str, data: dict) -> AgentDef:
         raise ValueError(f"Agent '{name}' is missing required field 'backend'")
     if not isinstance(backend, str):
         raise ValueError(f"agents.{name}.backend must be a string, got {type(backend).__name__}")
+    if backend not in VALID_BACKENDS:
+        raise ValueError(
+            f"agents.{name}.backend '{backend}' is not a known backend. Valid backends: {', '.join(sorted(VALID_BACKENDS))}"
+        )
 
     model = data.get("model", "")
     if model and not isinstance(model, str):
@@ -180,6 +185,8 @@ def validate_council(data: dict) -> CouncilConfig:
     timeout = data.get("timeout", 600)
     if not isinstance(timeout, int):
         raise ValueError(f"council.timeout must be an integer, got {type(timeout).__name__}")
+    if timeout <= 0:
+        raise ValueError(f"council.timeout must be positive, got {timeout}")
 
     return CouncilConfig(members=members, timeout=timeout)
 
@@ -195,10 +202,14 @@ def validate_peasant(data: dict) -> PeasantConfig:
     timeout = data.get("timeout", 900)
     if not isinstance(timeout, int):
         raise ValueError(f"peasant.timeout must be an integer, got {type(timeout).__name__}")
+    if timeout <= 0:
+        raise ValueError(f"peasant.timeout must be positive, got {timeout}")
 
     max_iterations = data.get("max_iterations", 50)
     if not isinstance(max_iterations, int):
         raise ValueError(f"peasant.max_iterations must be an integer, got {type(max_iterations).__name__}")
+    if max_iterations <= 0:
+        raise ValueError(f"peasant.max_iterations must be positive, got {max_iterations}")
 
     return PeasantConfig(agent=agent, timeout=timeout, max_iterations=max_iterations)
 
