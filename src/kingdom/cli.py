@@ -137,7 +137,6 @@ def init(
         cfg = default_config()
         data = {
             "agents": {name: {"backend": a.backend} for name, a in cfg.agents.items()},
-            "prompts": {},
             "council": {"members": cfg.council.members, "timeout": cfg.council.timeout},
             "peasant": {
                 "agent": cfg.peasant.agent,

@@ -254,7 +254,13 @@ All three council members (claude, codex, cursor) agree: implementation faithful
 
 ### Action Items
 
-- [ ] Fix 3f8e: guard `get_doctor_checks()` and `kd config show` against invalid config
-- [ ] Add backend validation to `validate_config()`
-- [ ] Rewrite doctor tests to use `tmp_path` with real invalid config files
-- [ ] Add positive-value validation for timeouts and max_iterations
+- [x] Fix 3f8e: guard `get_doctor_checks()` and `kd config show` against invalid config
+- [x] Add backend validation to `validate_config()`
+- [x] Rewrite doctor tests to use `tmp_path` with real invalid config files
+- [x] Add positive-value validation for timeouts and max_iterations
+
+### Post-Review Decisions
+
+- **Don't auto-populate models in scaffolded config**: each CLI already knows its own default model. Pinning models in the default config creates maintenance debt — we'd need a PR every time a new model is released. Users add `model` when they want to pin one.
+- **Populate repo's `.kd/config.json`**: the empty `{}` was confusing. Now explicitly lists agents, council members, peasant settings — serves as a working example and makes the repo's config discoverable.
+- **Removed empty `prompts` from scaffold**: `kd init` no longer writes `"prompts": {}` — less noise, users add prompts when they need them.
