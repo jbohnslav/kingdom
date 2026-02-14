@@ -229,10 +229,10 @@ class TestEnsureBranchLayout:
         branch_dir = ensure_branch_layout(tmp_path, "main")
         assert (branch_dir / "breakdown.md").is_file()
 
-    def test_creates_learnings_md(self, tmp_path: Path) -> None:
-        """ensure_branch_layout creates learnings.md file."""
+    def test_does_not_create_learnings_md(self, tmp_path: Path) -> None:
+        """ensure_branch_layout no longer creates learnings.md."""
         branch_dir = ensure_branch_layout(tmp_path, "main")
-        assert (branch_dir / "learnings.md").is_file()
+        assert not (branch_dir / "learnings.md").exists()
 
     def test_creates_tickets_directory(self, tmp_path: Path) -> None:
         """ensure_branch_layout creates tickets/ subdirectory."""

@@ -261,7 +261,6 @@ def ensure_branch_layout(base: Path, branch: str) -> Path:
     Creates:
         - .kd/branches/<normalized-branch>/design.md (empty file)
         - .kd/branches/<normalized-branch>/breakdown.md (empty file)
-        - .kd/branches/<normalized-branch>/learnings.md (empty file)
         - .kd/branches/<normalized-branch>/tickets/
         - .kd/branches/<normalized-branch>/logs/
         - .kd/branches/<normalized-branch>/sessions/
@@ -298,10 +297,6 @@ def ensure_branch_layout(base: Path, branch: str) -> Path:
     breakdown_path = branch_dir / "breakdown.md"
     if not breakdown_path.exists():
         breakdown_path.write_text("", encoding="utf-8")
-
-    learnings_path = branch_dir / "learnings.md"
-    if not learnings_path.exists():
-        learnings_path.write_text("", encoding="utf-8")
 
     return branch_dir
 

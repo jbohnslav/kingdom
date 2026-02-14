@@ -327,6 +327,49 @@ def parse_message(path: Path) -> Message:
     )
 
 
+@dataclass
+class ThreadStatus:
+    """Response status for the most recent round in a thread."""
+
+    thread_id: str
+    expected: set[str]
+    responded: set[str]
+    pending: set[str]
+
+
+def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadStatus:
+    """Compute who has responded to the most recent king ask in a thread.
+
+    Only considers responses after the latest king message. Earlier rounds
+    in the same thread are ignored.
+
+    Returns a ThreadStatus with expected, responded, and pending member sets.
+    """
+    meta = get_thread(base, branch, thread_id)
+    expected = {m for m in meta.members if m != "king"}
+
+    messages = list_messages(base, branch, thread_id)
+
+    # Find the most recent king message
+    last_ask_seq = 0
+    for msg in messages:
+        if msg.from_ == "king":
+            last_ask_seq = msg.sequence
+
+    # Collect responses after it
+    responded = set()
+    for msg in messages:
+        if msg.sequence > last_ask_seq and msg.from_ in expected:
+            responded.add(msg.from_)
+
+    return ThreadStatus(
+        thread_id=thread_id,
+        expected=expected,
+        responded=responded,
+        pending=expected - responded,
+    )
+
+
 def list_messages(base: Path, branch: str, thread_id: str) -> list[Message]:
     """List all messages in a thread, in sequential order.
 

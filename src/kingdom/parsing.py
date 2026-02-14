@@ -45,13 +45,13 @@ def parse_yaml_value(value: str) -> str | int | list[str] | None:
                 items.append(item)
         return items
 
+    # Handle quoted strings (before integer check to preserve leading zeros)
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+
     # Handle integers
     if re.match(r"^-?\d+$", value):
         return int(value)
-
-    # Handle quoted strings
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
 
     # Plain string
     return value

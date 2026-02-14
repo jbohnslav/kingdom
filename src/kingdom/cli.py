@@ -15,7 +15,10 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, NamedTuple
+from typing import TYPE_CHECKING, Annotated, NamedTuple
+
+if TYPE_CHECKING:
+    from kingdom.thread import ThreadStatus
 
 import typer
 from rich.console import Console
@@ -236,8 +239,8 @@ def done(
     if feature is None:
         try:
             feature = resolve_current_run(base)
-        except RuntimeError as exc:
-            typer.echo(str(exc))
+        except RuntimeError:
+            typer.echo("No active session. Pass the branch name: `kd done <branch>`")
             raise typer.Exit(code=1) from None
 
     # Get the branch directory (normalized name)
@@ -294,12 +297,39 @@ def done(
 
     # Clear current session pointer (only if this was the current session)
     current_path = state_root(base) / "current"
+    session_cleared = False
     if current_path.exists():
         current_feature = current_path.read_text(encoding="utf-8").strip()
         if current_feature == normalized:
             clear_current_run(base)
+            session_cleared = True
 
+    # Summary
+    tickets_dir = source_dir / "tickets"
+    all_tickets = list_tickets(tickets_dir)
+    closed_count = sum(1 for t in all_tickets if t.status == "closed")
     typer.echo(f"Done: '{feature}'")
+    if closed_count:
+        typer.echo(f"  {closed_count} tickets closed")
+    if session_cleared:
+        typer.echo("  Session cleared")
+
+    # Remind to push if there are unpushed commits
+    try:
+        rev_result = subprocess.run(
+            ["git", "rev-list", "--count", "@{u}..HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if rev_result.returncode == 0:
+            ahead = int(rev_result.stdout.strip())
+            if ahead > 0:
+                typer.echo(f"  {ahead} unpushed commit(s) — remember to push")
+        else:
+            # No upstream tracking branch — likely unpushed
+            typer.echo("  No upstream branch — remember to push")
+    except (subprocess.SubprocessError, ValueError):
+        pass
 
 
 council_app = typer.Typer(name="council", help="Query council members.")
@@ -518,18 +548,24 @@ def council_show(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
 ) -> None:
     """Display a council thread's message history."""
-    from kingdom.thread import list_messages, thread_dir
+    from kingdom.thread import list_messages, list_threads, thread_dir
 
     base = Path.cwd()
     feature = resolve_current_run(base)
     console = Console()
 
-    # Resolve thread_id: argument, current thread, or error
+    # Resolve thread_id: argument, current thread, most recent, or error
     if thread_id is None:
         thread_id = get_current_thread(base, feature)
         if thread_id is None:
-            typer.echo("No current council thread. Use `kd council ask` first.")
-            raise typer.Exit(code=1)
+            # Fall back to most recently created council thread
+            threads = list_threads(base, feature)
+            council_threads = [t for t in threads if t.pattern == "council"]
+            if council_threads:
+                thread_id = council_threads[-1].id  # sorted by created_at asc
+            else:
+                typer.echo("No council threads. Use `kd council ask` first.")
+                raise typer.Exit(code=1)
 
     # Try as a thread first
     tdir = thread_dir(base, feature, thread_id)
@@ -609,6 +645,73 @@ def council_list() -> None:
         created = t.created_at.strftime("%Y-%m-%d %H:%M")
         marker = " *" if t.id == current else ""
         typer.echo(f"{t.id}  {created}  {msg_count} msgs{marker}")
+
+
+@council_app.command("status", help="Show response status for council threads.")
+def council_status(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current/most recent).")] = None,
+    all_threads: Annotated[bool, typer.Option("--all", help="Show status for all threads.")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show log file paths.")] = False,
+) -> None:
+    """Show which councillors have responded and which are still pending."""
+    from kingdom.thread import list_threads, thread_response_status
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+
+    if all_threads:
+        threads = list_threads(base, feature)
+        council_threads = [t for t in threads if t.pattern == "council"]
+        if not council_threads:
+            typer.echo("No council threads.")
+            return
+        for t in council_threads:
+            status = thread_response_status(base, feature, t.id)
+            print_thread_status(status, base, feature, verbose)
+            typer.echo()
+        return
+
+    # Single thread mode
+    if thread_id is None:
+        thread_id = get_current_thread(base, feature)
+        if thread_id is None:
+            threads = list_threads(base, feature)
+            council_threads = [t for t in threads if t.pattern == "council"]
+            if council_threads:
+                thread_id = council_threads[-1].id
+            else:
+                typer.echo("No council threads. Use `kd council ask` first.")
+                raise typer.Exit(code=1)
+
+    status = thread_response_status(base, feature, thread_id)
+    print_thread_status(status, base, feature, verbose)
+
+
+def print_thread_status(status: ThreadStatus, base: Path, feature: str, verbose: bool = False) -> None:
+    """Print response status for a single thread."""
+    from kingdom.thread import thread_dir
+
+    if status.pending:
+        state = "waiting"
+    else:
+        state = "complete"
+
+    typer.echo(f"{status.thread_id}  [{state}]")
+    if verbose:
+        tdir = thread_dir(base, feature, status.thread_id)
+        typer.echo(f"  thread: {tdir.relative_to(base)}")
+    for name in sorted(status.expected):
+        if name in status.responded:
+            line = f"  {name}: responded"
+        else:
+            line = f"  {name}: pending"
+        if verbose:
+            log_file = logs_root(base, feature) / f"council-{name}.log"
+            if log_file.exists():
+                line += f"  log={log_file.relative_to(base)}"
+            else:
+                line += "  (no log file)"
+        typer.echo(line)
 
 
 def watch_thread(
@@ -872,29 +975,32 @@ def breakdown() -> None:
         breakdown_path.parent.mkdir(parents=True, exist_ok=True)
         breakdown_path.write_text(build_breakdown_template(feature), encoding="utf-8")
 
-    # Read design doc for context
-    design_text = ""
-    if design_path.exists():
-        design_text = design_path.read_text(encoding="utf-8").strip()
+    design_rel = design_path.relative_to(base)
 
     prompt = "\n".join(
         [
             f"# Ticket Breakdown: {feature}",
             "",
-            "Read the design doc below, then create tickets using the `kd` CLI.",
+            f"Read the design doc at `{design_rel}`, then create tickets for this branch.",
             "",
             "## Instructions",
             "",
-            f"1. Read the design doc at `{design_path.relative_to(base)}`.",
-            '2. Create tickets: `kd tk create "<title>"` — then edit the ticket file to add description and acceptance criteria.',
-            "3. Set dependencies: `kd tk dep <id> <dep-id>`",
-            "4. Review: `kd tk list` to verify.",
+            f"1. Read the design doc: `{design_rel}`",
+            "2. For each work item, create a ticket:",
+            '   `kd tk create "<title>" -p <priority>` (1=critical, 2=normal, 3=low)',
+            "3. Edit each ticket file to add:",
+            "   - A clear **problem statement** or context",
+            "   - Specific **acceptance criteria** (checkboxes, not blank)",
+            "4. Set dependencies between tickets where one must finish before another:",
+            "   `kd tk dep <ticket-id> <depends-on-id>`",
+            "5. Review the result: `kd tk list`",
             "",
-            "## Design Doc",
+            "## Guidelines",
             "",
-            "```markdown",
-            design_text or "(empty — write the design first with `kd design`)",
-            "```",
+            "- Set **priority** on every ticket (`-p 1` for blockers, `-p 2` for normal, `-p 3` for nice-to-have)",
+            "- Identify **dependencies** — if ticket B can't start until ticket A is done, set `kd tk dep B A`",
+            "- Write **meaningful acceptance criteria** — not empty checkboxes. Each criterion should be verifiable.",
+            "- Keep tickets small and focused — one logical change per ticket",
         ]
     )
 
@@ -1150,14 +1256,14 @@ def peasant_start(
         # Guard: block if another peasant is already running on the same checkout
         from kingdom.session import list_active_agents
 
-        for agent in list_active_agents(base, feature):
-            if agent.name == session_name:
+        for active in list_active_agents(base, feature):
+            if active.name == session_name:
                 continue  # already handled above
-            if agent.status == "working" and agent.pid and agent.name.startswith("peasant-"):
+            if active.status == "working" and active.pid and active.name.startswith("peasant-"):
                 try:
-                    os.kill(agent.pid, 0)
+                    os.kill(active.pid, 0)
                     typer.echo(
-                        f"Error: peasant {agent.name} (pid {agent.pid}) is already working "
+                        f"Error: peasant {active.name} (pid {active.pid}) is already working "
                         f"on this checkout. Stop it first or use worktree mode."
                     )
                     raise typer.Exit(code=1)
@@ -1960,7 +2066,15 @@ def config_show() -> None:
     except ValueError as e:
         typer.secho(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from None
-    print(json.dumps(dataclasses.asdict(cfg), indent=2))
+
+    def strip_empty(obj: object) -> object:
+        if isinstance(obj, dict):
+            return {k: v for k, v in ((k, strip_empty(v)) for k, v in obj.items()) if v not in ("", [], {}, None)}
+        if isinstance(obj, list):
+            return [strip_empty(item) for item in obj]
+        return obj
+
+    print(json.dumps(strip_empty(dataclasses.asdict(cfg)), indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -2217,6 +2331,7 @@ def ticket_create(
     priority: Annotated[int, typer.Option("-p", "--priority", help="Priority (1-3, 1 is highest).")] = 2,
     ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
+    dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
 ) -> None:
     """Create a new ticket in the current branch or backlog."""
     from datetime import datetime
@@ -2234,6 +2349,20 @@ def ticket_create(
     tickets_dir = get_tickets_dir(base, backlog=backlog)
     tickets_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve dependency IDs
+    resolved_deps: list[str] = []
+    if dep:
+        for dep_id in dep:
+            try:
+                dep_result = find_ticket(base, dep_id)
+            except AmbiguousTicketMatch as e:
+                typer.echo(f"Error: {e}")
+                raise typer.Exit(code=1) from None
+            if dep_result is None:
+                typer.echo(f"Dependency ticket not found: {dep_id}")
+                raise typer.Exit(code=1)
+            resolved_deps.append(dep_result[0].id)
+
     # Generate unique ID
     ticket_id = generate_ticket_id(tickets_dir)
 
@@ -2246,7 +2375,7 @@ def ticket_create(
     ticket = Ticket(
         id=ticket_id,
         status="open",
-        deps=[],
+        deps=resolved_deps,
         links=[],
         created=datetime.now(UTC),
         type=ticket_type,
@@ -2258,9 +2387,11 @@ def ticket_create(
     ticket_path = tickets_dir / f"{ticket_id}.md"
     write_ticket(ticket, ticket_path)
 
-    typer.echo(str(ticket_path.relative_to(base)))
+    dep_suffix = f" (depends on: {', '.join(resolved_deps)})" if resolved_deps else ""
+    typer.echo(f"Created {ticket_id}: {title}{dep_suffix}")
 
 
+@ticket_app.command("ls", help="List tickets.", hidden=True)
 @ticket_app.command("list", help="List tickets.")
 def ticket_list(
     all_tickets: Annotated[bool, typer.Option("--all", "-a", help="List all tickets across all locations.")] = False,
@@ -2364,16 +2495,45 @@ def ticket_list(
 
 @ticket_app.command("show", help="Show a ticket.")
 def ticket_show(
-    ticket_id: Annotated[
-        str | None, typer.Argument(help="Ticket ID (full or partial). Omit to show ticket assigned to 'hand'.")
+    ticket_ids: Annotated[
+        list[str] | None, typer.Argument(help="Ticket ID(s) (full or partial). Omit to show ticket assigned to 'hand'.")
     ] = None,
+    all_tickets: Annotated[bool, typer.Option("--all", "-a", help="Show all tickets on the current branch.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
-    """Display a ticket by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
+    """Display one or more tickets by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
     base = Path.cwd()
 
-    if ticket_id is None:
-        # Find ticket assigned to "hand" on the current branch
+    # Resolve tickets to show as (Ticket, Path) pairs
+    pairs: list[tuple[Ticket, Path]] = []
+
+    if all_tickets:
+        try:
+            feature = resolve_current_run(base)
+        except RuntimeError:
+            typer.echo("No active session. Use `kd start` first.")
+            raise typer.Exit(code=1) from None
+        tickets_dir = branch_root(base, feature) / "tickets"
+        if tickets_dir.exists():
+            for ticket_file in sorted(tickets_dir.glob("*.md")):
+                with contextlib.suppress(ValueError, FileNotFoundError):
+                    pairs.append((read_ticket(ticket_file), ticket_file))
+        if not pairs:
+            typer.echo("No tickets on this branch.")
+            raise typer.Exit(code=0)
+    elif ticket_ids:
+        for tid in ticket_ids:
+            try:
+                result = find_ticket(base, tid)
+            except AmbiguousTicketMatch as e:
+                typer.echo(f"Error: {e}")
+                raise typer.Exit(code=1) from None
+            if result is None:
+                typer.echo(f"Ticket not found: {tid}")
+                raise typer.Exit(code=1)
+            pairs.append(result)
+    else:
+        # No args: find ticket assigned to "hand"
         try:
             feature = resolve_current_run(base)
         except RuntimeError:
@@ -2383,45 +2543,41 @@ def ticket_show(
         if tickets_dir.exists():
             for t in list_tickets(tickets_dir):
                 if t.assignee == "hand":
-                    ticket_id = t.id
+                    result = find_ticket(base, t.id)
+                    if result:
+                        pairs.append(result)
                     break
-        if ticket_id is None:
+        if not pairs:
             typer.echo("No ticket assigned to 'hand'. Use `kd tk assign <id> hand`.")
             raise typer.Exit(code=1)
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
-
+    # Render
     if output_json:
-        output = {
-            "id": ticket.id,
-            "status": ticket.status,
-            "priority": ticket.priority,
-            "type": ticket.type,
-            "title": ticket.title,
-            "body": ticket.body,
-            "deps": ticket.deps,
-            "links": ticket.links,
-            "created": ticket.created.isoformat(),
-            "assignee": ticket.assignee,
-            "path": str(ticket_path),
-        }
-        typer.echo(json.dumps(output, indent=2))
+        results_json = [
+            {
+                "id": ticket.id,
+                "status": ticket.status,
+                "priority": ticket.priority,
+                "type": ticket.type,
+                "title": ticket.title,
+                "body": ticket.body,
+                "deps": ticket.deps,
+                "links": ticket.links,
+                "created": ticket.created.isoformat(),
+                "assignee": ticket.assignee,
+                "path": str(ticket_path),
+            }
+            for ticket, ticket_path in pairs
+        ]
+        typer.echo(json.dumps(results_json if len(results_json) > 1 else results_json[0], indent=2))
     else:
-        # Read and display the raw file content for human-readable output
-        content = ticket_path.read_text(encoding="utf-8")
-        console = Console()
-        console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
-        console.print(Markdown(content))
+        for i, (_ticket, ticket_path) in enumerate(pairs):
+            if i > 0:
+                typer.echo("")  # separator between tickets
+            content = ticket_path.read_text(encoding="utf-8")
+            console = Console()
+            console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
+            console.print(Markdown(content))
 
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:
@@ -2453,7 +2609,7 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
     if new_status in ("open", "in_progress") and ticket_path.parent.resolve() == archive_backlog_tickets.resolve():
         ticket_path = move_ticket(ticket_path, backlog_tickets)
 
-    typer.echo(f"{ticket.id}: {old_status} → {new_status}")
+    typer.echo(f"{ticket.id}: {old_status} → {new_status} — {ticket.title}")
 
 
 @ticket_app.command("start", help="Mark a ticket as in_progress.")
@@ -2659,7 +2815,7 @@ def ticket_move(
     # Pass 2: move all validated tickets
     for ticket, ticket_path in validated:
         new_path = move_ticket(ticket_path, dest_dir)
-        typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name}")
+        typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name} — {ticket.title}")
 
 
 @ticket_app.command("pull", help="Pull backlog tickets into the current branch.")
@@ -2704,9 +2860,9 @@ def ticket_pull(
         validated.append((ticket, ticket_path))
 
     # Pass 2: move all validated tickets
-    for _, ticket_path in validated:
-        new_path = move_ticket(ticket_path, dest_dir)
-        typer.echo(str(new_path.resolve()))
+    for ticket, ticket_path in validated:
+        move_ticket(ticket_path, dest_dir)
+        typer.echo(f"Pulled {ticket.id}: {ticket.title}")
 
 
 @ticket_app.command("ready", help="List tickets ready to work on.")

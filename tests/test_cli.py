@@ -171,9 +171,9 @@ def test_config_show_defaults() -> None:
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert "agents" in data
-    assert "prompts" in data
     assert "council" in data
     assert "peasant" in data
+    # prompts section is stripped when all values are empty defaults
     # Check defaults
     assert "claude" in data["agents"]
     assert data["peasant"]["agent"] == "claude"

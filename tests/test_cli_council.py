@@ -276,7 +276,41 @@ class TestCouncilShow:
             assert result.exit_code == 0
             assert thread_id in result.output
 
-    def test_show_no_thread_errors(self) -> None:
+    def test_show_defaults_to_most_recent_thread(self) -> None:
+        """When current_thread is cleared, council show should fall back to the most recently created thread."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create two threads with explicit timestamps so ordering is deterministic
+            create_thread(base, BRANCH, "council-old", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-old", from_="king", to="all", body="Old topic")
+            add_message(base, BRANCH, "council-old", from_="claude", to="king", body="Old response")
+
+            # Patch created_at on the second thread to be later
+            create_thread(base, BRANCH, "council-new", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-new", from_="king", to="all", body="New topic")
+            add_message(base, BRANCH, "council-new", from_="claude", to="king", body="New response")
+
+            from kingdom.thread import threads_root
+
+            new_meta = json.loads((threads_root(base, BRANCH) / "council-new" / "thread.json").read_text())
+            new_meta["created_at"] = "2099-01-01T00:00:00Z"
+            (threads_root(base, BRANCH) / "council-new" / "thread.json").write_text(json.dumps(new_meta))
+
+            # Clear the current_thread pointer
+            set_current_thread(base, BRANCH, None)
+
+            result = runner.invoke(cli.app, ["council", "show"])
+
+            assert result.exit_code == 0
+            # Should show the most recently created thread, not the older one
+            assert "council-new" in result.output
+            assert "New topic" in result.output
+
+    def test_show_no_threads_at_all_errors(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -284,7 +318,6 @@ class TestCouncilShow:
             result = runner.invoke(cli.app, ["council", "show"])
 
             assert result.exit_code == 1
-            assert "No current council thread" in result.output
 
     def test_show_legacy_run_fallback(self) -> None:
         with runner.isolated_filesystem():
@@ -633,6 +666,148 @@ class TestCouncilMentions:
             current = get_current_thread(base, BRANCH)
             messages = list_messages(base, BRANCH, current)
             assert messages[1].from_ == "claude"
+
+
+class TestCouncilStatus:
+    def test_status_shows_all_responded(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Test question"])
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "complete" in result.output
+            assert "claude: responded" in result.output
+            assert "codex: responded" in result.output
+            assert "cursor: responded" in result.output
+
+    def test_status_shows_pending_members(self) -> None:
+        """When some members haven't responded, status shows them as pending."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create thread manually with only one response
+            create_thread(base, BRANCH, "council-test", ["king", "claude", "codex", "cursor"], "council")
+            set_current_thread(base, BRANCH, "council-test")
+            add_message(base, BRANCH, "council-test", from_="king", to="all", body="Question")
+            add_message(base, BRANCH, "council-test", from_="claude", to="king", body="My answer")
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "waiting" in result.output
+            assert "claude: responded" in result.output
+            assert "codex: pending" in result.output
+            assert "cursor: pending" in result.output
+
+    def test_status_specific_thread(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Test"])
+
+            thread_id = get_current_thread(base, BRANCH)
+            result = runner.invoke(cli.app, ["council", "status", thread_id])
+
+            assert result.exit_code == 0
+            assert thread_id in result.output
+
+    def test_status_all_threads(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Topic 1"])
+                runner.invoke(cli.app, ["council", "ask", "--new-thread", "Topic 2"])
+
+            result = runner.invoke(cli.app, ["council", "status", "--all"])
+
+            assert result.exit_code == 0
+            # Should show status for both threads
+            assert result.output.count("complete") == 2
+
+    def test_status_verbose_shows_log_paths(self) -> None:
+        """--verbose flag shows log file paths for each member."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-test", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-test")
+            add_message(base, BRANCH, "council-test", from_="king", to="all", body="Q")
+            add_message(base, BRANCH, "council-test", from_="claude", to="king", body="A")
+
+            # Create a log file for claude
+            from kingdom.state import logs_root
+
+            log_dir = logs_root(base, BRANCH)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / "council-claude.log").write_text("some log output")
+
+            result = runner.invoke(cli.app, ["council", "status", "--verbose"])
+
+            assert result.exit_code == 0
+            assert "thread:" in result.output
+            assert "council-test" in result.output
+            assert "council-claude.log" in result.output
+            assert "(no log file)" in result.output  # codex has no log
+
+    def test_status_no_threads_errors(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 1
+
+    def test_status_falls_back_to_most_recent(self) -> None:
+        """When current_thread is unset, status uses most recent thread."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-old", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-old", from_="king", to="all", body="Old")
+            add_message(base, BRANCH, "council-old", from_="claude", to="king", body="Reply")
+
+            create_thread(base, BRANCH, "council-recent", ["king", "codex"], "council")
+            add_message(base, BRANCH, "council-recent", from_="king", to="all", body="New")
+
+            # Ensure council-recent sorts last
+            import json
+
+            from kingdom.thread import threads_root
+
+            meta_path = threads_root(base, BRANCH) / "council-recent" / "thread.json"
+            meta = json.loads(meta_path.read_text())
+            meta["created_at"] = "2099-01-01T00:00:00Z"
+            meta_path.write_text(json.dumps(meta))
+
+            set_current_thread(base, BRANCH, None)
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "council-recent" in result.output
+            assert "codex: pending" in result.output
 
 
 class TestCouncilReset:

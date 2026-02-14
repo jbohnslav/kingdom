@@ -12,6 +12,8 @@ compatibility: Requires Python 3.10+, kd CLI (uv tool install kingdom), git
 
 You assist the developer (the "King") using the `kd` CLI for AI-assisted software development.
 
+**Important:** This document is a reference guide. Only run state-modifying `kd` commands (creating tickets, starting/closing tickets, approving designs, etc.) when the King explicitly asks you to. Read-only commands like `kd status`, `kd tk list`, `kd tk show`, and `kd design show` are always safe.
+
 ## Prerequisites
 
 Install the kd CLI:
@@ -80,6 +82,8 @@ Check status anytime with `kd status`.
 | `kd council ask --async "prompt"` | Dispatch in background, then watch |
 | `kd council show <thread-id>` | Display a thread |
 | `kd council list` | List all threads |
+| `kd council status [thread-id]` | Show per-member response status |
+| `kd council status --all` | Show status for all threads |
 | `kd council watch <thread-id>` | Watch for incoming responses |
 | `kd council reset` | Clear all sessions |
 
@@ -124,13 +128,15 @@ Check status anytime with `kd status`.
 
 ## Working Tickets
 
-- **One at a time**: start a ticket (`kd tk start`), do the work, close it (`kd tk close`), commit, then move to the next.
-- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go.
-- **Acceptance criteria**: only close a ticket when all acceptance criteria are met.
-- **Decisions**: ask the King or consult the council (`kd council ask`) for difficult design decisions — don't guess.
+When the King asks you to work a ticket, the workflow is:
+
+- **One at a time**: the agent starts a ticket (`kd tk start`), does the work, closes it (`kd tk close`), commits, then moves to the next.
+- **Worklog**: progress notes are appended to the ticket's `## Worklog` section as work proceeds.
+- **Acceptance criteria**: a ticket should only be closed when all acceptance criteria are met.
+- **Decisions**: difficult design decisions should be raised with the King or the council (`kd council ask`) — don't guess.
 - **Green suite**: the full test suite must pass before closing a ticket. "Pre-existing failure" is not an excuse — fix it or raise it with the King.
-- **Bugs from this branch**: immediately write a failing test that reproduces it, then fix.
-- **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create` + `kd tk move <id> backlog`) and move on.
+- **Bugs from this branch**: write a failing test that reproduces it, then fix.
+- **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create --backlog "title"`) and move on.
 - **Commit often**: commit `.kd/` changes (ticket closures, worklogs, threads) and code changes as you go.
 
 ## Council Guidelines

@@ -19,6 +19,51 @@ from kingdom.state import (
 from kingdom.ticket import Ticket, write_ticket
 
 
+def test_done_shows_summary_with_ticket_count() -> None:
+    """kd done should show how many tickets were closed."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        tickets_dir = branch_dir / "tickets"
+
+        # Create 3 closed tickets
+        for i in range(3):
+            write_ticket(
+                Ticket(id=f"t{i:03d}", status="closed", title=f"Ticket {i}", created=datetime.now(UTC)),
+                tickets_dir / f"t{i:03d}.md",
+            )
+
+        result = runner.invoke(cli.app, ["done"])
+
+        assert result.exit_code == 0
+        assert "3 tickets closed" in result.output
+        assert "Session cleared" in result.output
+
+
+def test_done_shows_push_reminder_when_unpushed() -> None:
+    """kd done should remind to push if there are unpushed commits."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+
+        ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+
+        # No remote set up, so commits are "unpushed"
+        result = runner.invoke(cli.app, ["done"])
+
+        assert result.exit_code == 0
+        assert "push" in result.output.lower()
+
+
 def test_done_marks_state_and_clears_current() -> None:
     """kd done sets status=done in state.json and clears current pointer."""
     runner = CliRunner()
@@ -60,6 +105,7 @@ def test_done_errors_without_active_run() -> None:
 
         assert result.exit_code == 1
         assert "No active session" in result.output
+        assert "kd done <branch>" in result.output
 
 
 def test_done_with_explicit_feature() -> None:
