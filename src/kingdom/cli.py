@@ -208,6 +208,7 @@ def start(
 @app.command(help="Mark the current session as done.")
 def done(
     feature: Annotated[str | None, typer.Argument(help="Branch name (defaults to current session).")] = None,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Close even if open tickets remain.")] = False,
 ) -> None:
     """Mark a session as done (status transition only, no file moves)."""
     from datetime import datetime
@@ -234,6 +235,17 @@ def done(
             source_dir = legacy_dir
         else:
             typer.echo(f"Error: Branch '{feature}' not found.")
+            raise typer.Exit(code=1)
+
+    # Check for open tickets
+    if not force:
+        tickets_dir = source_dir / "tickets"
+        open_tickets = [t for t in list_tickets(tickets_dir) if t.status != "closed"]
+        if open_tickets:
+            typer.echo(f"Error: {len(open_tickets)} open ticket(s) on '{feature}':")
+            for t in open_tickets:
+                typer.echo(f"  {t.id} [{t.status}] {t.title}")
+            typer.echo("\nClose tickets, move them to backlog with `kd tk move`, or use --force.")
             raise typer.Exit(code=1)
 
     # Update state.json with status and timestamp
