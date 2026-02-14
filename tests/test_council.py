@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kingdom.agent import DEFAULT_AGENTS, AgentConfig
+from kingdom.agent import AgentConfig, resolve_agent
+from kingdom.config import DEFAULT_AGENTS
 from kingdom.council.base import AgentResponse, CouncilMember
 from kingdom.council.council import Council
 from kingdom.session import AgentState, get_agent_state, session_path, set_agent_state
@@ -19,7 +20,7 @@ PREAMBLE = CouncilMember.COUNCIL_PREAMBLE
 
 def make_member(name: str) -> CouncilMember:
     """Create a CouncilMember from default agent config."""
-    return CouncilMember(config=DEFAULT_AGENTS[name])
+    return CouncilMember(config=resolve_agent(name, DEFAULT_AGENTS[name]))
 
 
 def mock_popen(stdout: str = "", stderr: str = "", returncode: int = 0):
@@ -310,43 +311,141 @@ class TestCouncilMemberQueryConfigErrors:
 
 
 class TestCouncilCreateValidation:
-    """Test that Council.create() validates agent configs."""
+    """Test that Council.create() builds from config."""
 
-    def test_create_uses_defaults_when_no_agents_dir(self, tmp_path: Path) -> None:
-        """No .kd/agents/ dir should use defaults without error."""
+    def test_create_uses_defaults_when_no_config(self, tmp_path: Path) -> None:
+        """No .kd/config.json should use defaults without error."""
+        (tmp_path / ".kd").mkdir(parents=True, exist_ok=True)
         council = Council.create(base=tmp_path)
         assert len(council.members) == 3
         names = {m.name for m in council.members}
         assert names == {"claude", "codex", "cursor"}
 
-    def test_create_uses_agent_files(self, tmp_path: Path) -> None:
-        """Valid agent files should be loaded."""
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
-        (agents_dir / "myagent.md").write_text(
-            "---\nname: myagent\nbackend: claude_code\ncli: claude --print\nresume_flag: --resume\n---\n"
-        )
+    def test_create_respects_council_members_config(self, tmp_path: Path) -> None:
+        """Council should only include agents listed in config.council.members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        (kd / "config.json").write_text(json.dumps({"council": {"members": ["claude", "codex"]}}))
 
         council = Council.create(base=tmp_path)
-        assert len(council.members) == 1
-        assert council.members[0].name == "myagent"
+        assert len(council.members) == 2
+        names = {m.name for m in council.members}
+        assert names == {"claude", "codex"}
 
-    def test_create_raises_when_all_agent_files_broken(self, tmp_path: Path) -> None:
-        """If agent files exist but all fail to parse, raise ValueError."""
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
-        (agents_dir / "broken.md").write_text("not valid frontmatter")
+    def test_create_uses_config_timeout(self, tmp_path: Path) -> None:
+        """Council timeout should come from config."""
+        import json
 
-        with pytest.raises(ValueError, match="none could be parsed"):
-            Council.create(base=tmp_path)
-
-    def test_create_uses_defaults_when_agents_dir_empty(self, tmp_path: Path) -> None:
-        """Empty .kd/agents/ dir should use defaults without error."""
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        (kd / "config.json").write_text(json.dumps({"council": {"timeout": 120}}))
 
         council = Council.create(base=tmp_path)
-        assert len(council.members) == 3
+        assert council.timeout == 120
+
+    def test_create_passes_global_phase_prompt(self, tmp_path: Path) -> None:
+        """Global council prompt should be set on members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "prompts": {"council": "Analyze only, no implementation."},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        assert council.members[0].phase_prompt == "Analyze only, no implementation."
+
+    def test_create_agent_phase_prompt_overrides_global(self, tmp_path: Path) -> None:
+        """Agent-specific council prompt overrides global."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "agents": {
+                "claude": {
+                    "backend": "claude_code",
+                    "prompts": {"council": "Focus on architecture."},
+                }
+            },
+            "prompts": {"council": "Global prompt."},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        assert council.members[0].phase_prompt == "Focus on architecture."
+
+    def test_create_passes_agent_prompt(self, tmp_path: Path) -> None:
+        """Agent prompt (always additive) should be set on members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "agents": {"claude": {"backend": "claude_code", "prompt": "Be concise."}},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        assert council.members[0].agent_prompt == "Be concise."
+
+
+class TestPromptMerging:
+    """Test prompt merge order in CouncilMember.build_command()."""
+
+    def test_preamble_only(self) -> None:
+        """With no config prompts, just preamble + user prompt."""
+        member = make_member("claude")
+        cmd = member.build_command("What do you think?")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith(CouncilMember.COUNCIL_PREAMBLE)
+        assert prompt.endswith("What do you think?")
+
+    def test_phase_prompt_inserted(self) -> None:
+        """Phase prompt appears between preamble and user prompt."""
+        member = make_member("claude")
+        member.phase_prompt = "Analyze only."
+        cmd = member.build_command("What do you think?")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert "Analyze only." in prompt
+        assert prompt.index(CouncilMember.COUNCIL_PREAMBLE) < prompt.index("Analyze only.")
+        assert prompt.index("Analyze only.") < prompt.index("What do you think?")
+
+    def test_agent_prompt_inserted(self) -> None:
+        """Agent prompt appears between preamble and user prompt."""
+        member = make_member("claude")
+        member.agent_prompt = "Be concise."
+        cmd = member.build_command("What do you think?")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert "Be concise." in prompt
+        assert prompt.index("Be concise.") < prompt.index("What do you think?")
+
+    def test_full_merge_order(self) -> None:
+        """Preamble + phase + agent + user in correct order."""
+        member = make_member("claude")
+        member.phase_prompt = "Phase instruction."
+        member.agent_prompt = "Agent personality."
+        cmd = member.build_command("User question?")
+        prompt = cmd[cmd.index("-p") + 1]
+        preamble_end = prompt.index(CouncilMember.COUNCIL_PREAMBLE) + len(CouncilMember.COUNCIL_PREAMBLE)
+        phase_idx = prompt.index("Phase instruction.")
+        agent_idx = prompt.index("Agent personality.")
+        user_idx = prompt.index("User question?")
+        assert preamble_end <= phase_idx < agent_idx < user_idx
+
+    def test_no_prompts_is_same_as_before(self) -> None:
+        """Empty prompts should produce same result as old behavior."""
+        member = make_member("claude")
+        cmd = member.build_command("hello")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt == CouncilMember.COUNCIL_PREAMBLE + "hello"
 
 
 BRANCH = "feature/test-council"

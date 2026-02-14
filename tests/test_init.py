@@ -16,7 +16,6 @@ def test_ensure_base_layout_creates_structure(tmp_path: Path) -> None:
     assert (tmp_path / ".kd").is_dir()
     assert (tmp_path / ".kd" / "runs").is_dir()
     assert (tmp_path / ".kd" / "worktrees").is_dir()
-    assert (tmp_path / ".kd" / "config.json").exists()
     assert (tmp_path / ".kd" / ".gitignore").exists()
     init_script = tmp_path / ".kd" / "init-worktree.sh"
     assert init_script.exists()
@@ -72,11 +71,6 @@ def test_cli_init_creates_structure() -> None:
         assert (base / ".kd" / "worktrees").is_dir()
         assert (base / ".kd" / "config.json").exists()
         assert (base / ".kd" / ".gitignore").exists()
-        # Agent config files
-        assert (base / ".kd" / "agents").is_dir()
-        assert (base / ".kd" / "agents" / "claude.md").exists()
-        assert (base / ".kd" / "agents" / "codex.md").exists()
-        assert (base / ".kd" / "agents" / "cursor.md").exists()
 
 
 def test_cli_init_requires_git_repo() -> None:
@@ -142,6 +136,52 @@ def test_gitignore_content_matches_spec() -> None:
         assert "*.jsonl" in gitignore
         assert "**/logs/" in gitignore
         assert "worktrees/" in gitignore
+        assert "!config.json" in gitignore
+
+
+def test_cli_init_creates_config_with_defaults() -> None:
+    """kd init creates config.json with default agent definitions."""
+    import json
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        runner.invoke(cli.app, ["init"])
+
+        config_path = base / ".kd" / "config.json"
+        assert config_path.exists()
+        data = json.loads(config_path.read_text())
+        assert "agents" in data
+        assert "claude" in data["agents"]
+        assert "codex" in data["agents"]
+        assert "cursor" in data["agents"]
+        assert data["council"]["members"] == ["claude", "codex", "cursor"]
+        assert data["peasant"]["agent"] == "claude"
+
+
+def test_cli_init_does_not_overwrite_existing_config() -> None:
+    """kd init preserves existing config.json."""
+    import json
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        # First init
+        runner.invoke(cli.app, ["init"])
+        config_path = base / ".kd" / "config.json"
+
+        # Modify config
+        custom = {"agents": {"claude": {"backend": "claude_code", "model": "opus-4-6"}}}
+        config_path.write_text(json.dumps(custom))
+
+        # Second init should not overwrite
+        runner.invoke(cli.app, ["init"])
+        data = json.loads(config_path.read_text())
+        assert data == custom
 
 
 def test_cli_start_auto_init_requires_git_repo() -> None:

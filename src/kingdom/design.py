@@ -117,7 +117,11 @@ def build_design_update_prompt(
     instruction: str,
     design_text: str,
     responses: dict[str, AgentResponse],
+    member_names: list[str] | None = None,
 ) -> str:
+    if member_names is None:
+        member_names = list(responses)
+
     parts: list[str] = [
         f"Feature: {feature}",
         "",
@@ -134,7 +138,7 @@ def build_design_update_prompt(
         "Council input:",
     ]
 
-    for name in ["claude", "codex", "agent"]:
+    for name in member_names:
         resp = responses.get(name)
         parts.append(f"\n=== {name.title()} ===")
         if resp and resp.text:

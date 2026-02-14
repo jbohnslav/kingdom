@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from kingdom.council.base import AgentResponse
 from kingdom.design import (
+    build_design_update_prompt,
     ensure_design_initialized,
     parse_design_update_response,
     read_design,
@@ -47,3 +49,24 @@ def test_parse_design_update_response_extracts_blocks() -> None:
 def test_parse_design_update_response_missing_block_raises() -> None:
     with pytest.raises(ValueError, match="Missing <DESIGN_MD>"):
         parse_design_update_response("<SUMMARY>ok</SUMMARY>")
+
+
+def test_build_design_update_prompt_custom_members() -> None:
+    responses = {
+        "alice": AgentResponse(name="alice", text="Alice's input", elapsed=1.0),
+        "bob": AgentResponse(name="bob", text="Bob's input", elapsed=1.0),
+    }
+    prompt = build_design_update_prompt("feat", "do it", "# Design", responses, member_names=["alice", "bob"])
+    assert "=== Alice ===" in prompt
+    assert "=== Bob ===" in prompt
+    assert "Alice's input" in prompt
+    assert "Bob's input" in prompt
+
+
+def test_build_design_update_prompt_default_members_from_responses() -> None:
+    responses = {
+        "claude": AgentResponse(name="claude", text="Claude says", elapsed=1.0),
+    }
+    prompt = build_design_update_prompt("feat", "do it", "# Design", responses)
+    assert "=== Claude ===" in prompt
+    assert "Claude says" in prompt

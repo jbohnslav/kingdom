@@ -60,39 +60,55 @@ def ticket_path(project: Path) -> Path:
 class TestBuildPrompt:
     def test_basic_prompt(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
-        prompt = build_prompt(ticket_path, "", [], 1)
+        prompt = build_prompt(ticket_path, "", [], 1, 50)
         assert str(ticket_path) in prompt
-        assert "iteration 1" in prompt
+        assert "iteration 1 of 50" in prompt
         assert "STATUS: DONE" in prompt
         assert "STATUS: BLOCKED" in prompt
         assert "STATUS: CONTINUE" in prompt
 
     def test_prompt_does_not_contain_ticket_body(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
-        prompt = build_prompt(ticket_path, "", [], 1)
+        prompt = build_prompt(ticket_path, "", [], 1, 50)
         assert "Do the thing" not in prompt
         assert str(ticket_path) in prompt
 
     def test_prompt_with_worklog(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
-        prompt = build_prompt(ticket_path, "- Did step 1", [], 2)
+        prompt = build_prompt(ticket_path, "- Did step 1", [], 2, 50)
         assert "Current Worklog" in prompt
         assert "Did step 1" in prompt
 
     def test_prompt_with_directives(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
-        prompt = build_prompt(ticket_path, "", ["Focus on tests", "Use pytest"], 3)
+        prompt = build_prompt(ticket_path, "", ["Focus on tests", "Use pytest"], 3, 50)
         assert "Directives from Lead" in prompt
         assert "Focus on tests" in prompt
         assert "Use pytest" in prompt
 
     def test_prompt_with_all(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
-        prompt = build_prompt(ticket_path, "- Done A", ["Do B"], 5)
+        prompt = build_prompt(ticket_path, "- Done A", ["Do B"], 5, 50)
         assert str(ticket_path) in prompt
         assert "Done A" in prompt
         assert "Do B" in prompt
-        assert "iteration 5" in prompt
+        assert "iteration 5 of 50" in prompt
+
+    def test_prompt_with_phase_prompt(self) -> None:
+        ticket_path = Path("/project/tickets/kin-001.md")
+        prompt = build_prompt(ticket_path, "", [], 1, 50, phase_prompt="Always write tests first.")
+        assert prompt.startswith("Always write tests first.")
+        assert "peasant agent" in prompt
+
+    def test_prompt_without_phase_prompt(self) -> None:
+        ticket_path = Path("/project/tickets/kin-001.md")
+        prompt = build_prompt(ticket_path, "", [], 1, 50)
+        assert prompt.startswith("You are a peasant agent")
+
+    def test_prompt_custom_max_iterations(self) -> None:
+        ticket_path = Path("/project/tickets/kin-001.md")
+        prompt = build_prompt(ticket_path, "", [], 3, 10)
+        assert "iteration 3 of 10" in prompt
 
 
 class TestParseStatus:

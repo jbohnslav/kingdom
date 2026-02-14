@@ -1,0 +1,22 @@
+{
+  "agents": {
+    "claude": {
+      "backend": "claude_code"
+    },
+    "codex": {
+      "backend": "codex"
+    },
+    "cursor": {
+      "backend": "cursor"
+    }
+  },
+  "council": {
+    "members": ["claude", "codex", "cursor"],
+    "timeout": 600
+  },
+  "peasant": {
+    "agent": "claude",
+    "timeout": 900,
+    "max_iterations": 50
+  }
+}

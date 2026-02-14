@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kingdom.agent import DEFAULT_AGENTS, AgentConfig, agents_root, list_agents
+from kingdom.agent import resolve_all_agents
+from kingdom.config import default_config
 from kingdom.session import get_agent_state, update_agent_state
 
 from .base import AgentResponse, CouncilMember
@@ -24,33 +25,36 @@ class Council:
     def create(cls, logs_dir: Path | None = None, base: Path | None = None) -> Council:
         """Create a council with configured or default members.
 
-        If ``base`` is provided and ``.kd/agents/`` contains agent files,
-        those are used. Otherwise falls back to built-in defaults.
-
-        Raises:
-            ValueError: If agent files exist but none could be parsed.
+        Loads agent definitions from config and resolves them into runtime
+        AgentConfigs.  Falls back to built-in defaults when no config exists.
         """
-        configs: list[AgentConfig] = []
-        if base is not None:
-            configs = list_agents(base)
-            if not configs:
-                root = agents_root(base)
-                if root.exists() and any(root.glob("*.md")):
-                    raise ValueError(
-                        f"Agent files in {root} exist but none could be parsed. "
-                        "Check .kd/agents/*.md for syntax errors."
-                    )
+        from kingdom.config import load_config
 
-        if not configs:
-            configs = list(DEFAULT_AGENTS.values())
+        cfg = load_config(base) if base is not None else default_config()
+        agent_configs = resolve_all_agents(cfg.agents)
 
-        members: list[CouncilMember] = [CouncilMember(config=c) for c in configs]
+        # Only include agents listed in council.members
+        members: list[CouncilMember] = []
+        for name in cfg.council.members:
+            ac = agent_configs.get(name)
+            if ac is None:
+                continue
+            agent_def = cfg.agents[name]
+            # Resolve phase prompt: agent-specific overrides global
+            phase_prompt = agent_def.prompts.get("council", "") or cfg.prompts.council
+            members.append(
+                CouncilMember(
+                    config=ac,
+                    agent_prompt=agent_def.prompt,
+                    phase_prompt=phase_prompt,
+                )
+            )
 
         if logs_dir:
             for member in members:
                 member.log_path = logs_dir / f"council-{member.name}.log"
 
-        return cls(members=members)
+        return cls(members=members, timeout=cfg.council.timeout)
 
     def query(self, prompt: str) -> dict[str, AgentResponse]:
         """Query all members in parallel and return responses."""

@@ -4,26 +4,33 @@ from __future__ import annotations
 
 from kingdom.council.base import AgentResponse
 
-COUNCIL_ORDER = ["claude", "codex", "agent"]
 
-
-def build_synthesis_prompt(user_prompt: str, responses: dict[str, AgentResponse]) -> str:
+def build_synthesis_prompt(
+    user_prompt: str,
+    responses: dict[str, AgentResponse],
+    member_names: list[str] | None = None,
+) -> str:
     """Build a prompt for the Hand to synthesize council responses.
 
     Args:
         user_prompt: The original user question/request
         responses: Dict mapping member name to their AgentResponse
+        member_names: Ordered list of council member names. If None,
+            uses the keys from responses in iteration order.
 
     Returns:
         A prompt string for the Hand to synthesize
     """
+    if member_names is None:
+        member_names = list(responses)
+
     parts = [
         f'The user asked: "{user_prompt}"',
         "",
         "I consulted my advisors. Here are their responses:",
     ]
 
-    for name in COUNCIL_ORDER:
+    for name in member_names:
         resp = responses.get(name)
         parts.append(f"\n=== {name.title()} ===")
         if resp and resp.text:

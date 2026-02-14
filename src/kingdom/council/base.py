@@ -31,6 +31,8 @@ class CouncilMember:
     config: AgentConfig
     session_id: str | None = None
     log_path: Path | None = None
+    agent_prompt: str = ""  # agent.prompt from config (always additive)
+    phase_prompt: str = ""  # resolved phase prompt (agent-specific or global)
 
     @property
     def name(self) -> str:
@@ -48,9 +50,18 @@ class CouncilMember:
         """Build the CLI command to execute.
 
         Council queries are read-only, so skip_permissions is False.
-        The prompt is prefixed with council constraints.
+
+        Prompt merge order:
+            safety preamble (hardcoded) + phase prompt (agent-specific or global)
+            + agent prompt (always additive) + user prompt
         """
-        full_prompt = self.COUNCIL_PREAMBLE + prompt
+        parts = [self.COUNCIL_PREAMBLE]
+        if self.phase_prompt:
+            parts.append(self.phase_prompt + "\n\n")
+        if self.agent_prompt:
+            parts.append(self.agent_prompt + "\n\n")
+        parts.append(prompt)
+        full_prompt = "".join(parts)
         return agent_build_command(self.config, full_prompt, self.session_id, skip_permissions=False)
 
     def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:

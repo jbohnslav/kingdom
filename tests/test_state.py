@@ -193,7 +193,7 @@ class TestEnsureBaseLayout:
         assert "archive_root" in result
         assert "worktrees_root" in result
         assert "runs_root" in result
-        assert "config_json" in result
+        assert "gitignore" in result
 
     def test_idempotent(self, tmp_path: Path) -> None:
         """ensure_base_layout can be called multiple times safely."""

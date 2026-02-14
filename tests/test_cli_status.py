@@ -56,7 +56,10 @@ def test_status_human_readable_with_tickets() -> None:
         assert "\nReady:" not in result.output
 
 
-def test_status_json_still_includes_design_breakdown() -> None:
+def test_status_json_still_includes_design_breakdown(monkeypatch) -> None:
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("KD_ROLE", raising=False)
+    monkeypatch.delenv("KD_AGENT_NAME", raising=False)
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"

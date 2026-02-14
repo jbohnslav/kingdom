@@ -126,9 +126,26 @@ def init(
         raise typer.Exit(code=1)
 
     paths = ensure_base_layout(base, create_gitignore=not no_gitignore)
-    from kingdom.agent import create_default_agent_files
 
-    create_default_agent_files(base)
+    # Scaffold config.json with defaults (idempotent)
+    from kingdom.config import default_config
+
+    config_path = paths["state_root"] / "config.json"
+    if not config_path.exists():
+        import json
+
+        cfg = default_config()
+        data = {
+            "agents": {name: {"backend": a.backend} for name, a in cfg.agents.items()},
+            "council": {"members": cfg.council.members, "timeout": cfg.council.timeout},
+            "peasant": {
+                "agent": cfg.peasant.agent,
+                "timeout": cfg.peasant.timeout,
+                "max_iterations": cfg.peasant.max_iterations,
+            },
+        }
+        config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
     typer.echo(f"Initialized: {paths['state_root']}")
 
 
@@ -299,7 +316,7 @@ def council_ask(
         bool, typer.Option("--async", help="Dispatch in background, then watch for responses.")
     ] = False,
     no_watch: Annotated[bool, typer.Option("--no-watch", help="With --async, dispatch only without watching.")] = False,
-    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 600,
+    timeout: Annotated[int | None, typer.Option("--timeout", help="Per-model timeout in seconds.")] = None,
 ) -> None:
     """Query council members via threaded conversations.
 
@@ -321,7 +338,9 @@ def council_ask(
     console = Console()
 
     c = Council.create(logs_dir=logs_dir, base=base)
-    c.timeout = timeout
+    if timeout is not None:
+        c.timeout = timeout
+    timeout = c.timeout
     c.load_sessions(base, feature)
 
     # Parse @mentions from prompt (kin-09c9)
@@ -426,7 +445,7 @@ def council_ask(
             "--prompt",
             prompt,
             "--timeout",
-            str(timeout),
+            str(timeout if timeout is not None else c.timeout),
         ]
         if to:
             worker_cmd.extend(["--to", to])
@@ -1094,15 +1113,21 @@ def launch_work_background(
 @peasant_app.command("start", help="Launch a peasant agent on a ticket.")
 def peasant_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
-    agent: Annotated[str, typer.Option("--agent", help="Agent to use.")] = "claude",
+    agent: Annotated[str | None, typer.Option("--agent", help="Agent to use (default: from config).")] = None,
     hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
+    from kingdom.config import load_config
     from kingdom.session import update_agent_state
     from kingdom.thread import create_thread
 
     ctx = resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
+
+    # Default agent from config if not specified on CLI
+    if agent is None:
+        cfg = load_config(base)
+        agent = cfg.peasant.agent
 
     session_name = f"peasant-{full_ticket_id}"
     thread_id = f"{full_ticket_id}-work"
@@ -1699,7 +1724,7 @@ def peasant_review(
 @app.command("work", help="Run autonomous agent loop on a ticket.")
 def work(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
-    agent: Annotated[str, typer.Option("--agent", help="Agent name.")] = "claude",
+    agent: Annotated[str | None, typer.Option("--agent", help="Agent name (default: from config).")] = None,
     worktree: Annotated[str | None, typer.Option("--worktree", help="Worktree path (internal).")] = None,
     thread: Annotated[str | None, typer.Option("--thread", help="Thread ID (internal).")] = None,
     session: Annotated[str | None, typer.Option("--session", help="Session name (internal).")] = None,
@@ -1712,6 +1737,7 @@ def work(
     """
     import logging
 
+    from kingdom.config import load_config
     from kingdom.harness import run_agent_loop
 
     logging.basicConfig(
@@ -1726,6 +1752,11 @@ def work(
     except RuntimeError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
+
+    # Default agent from config if not specified on CLI
+    if agent is None:
+        cfg = load_config(base)
+        agent = cfg.peasant.agent
 
     # Resolve ticket context if not provided (interactive mode)
     if not (worktree and thread and session):
@@ -1908,16 +1939,47 @@ def check_cli(command: list[str]) -> tuple[bool, str | None]:
         return (False, "Command timed out")
 
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+config_app = typer.Typer(name="config", help="View and manage configuration.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("show", help="Print the effective configuration.")
+def config_show() -> None:
+    """Print the merged config (defaults + user overrides) as JSON."""
+    import dataclasses
+
+    from kingdom.config import load_config
+
+    base = Path.cwd()
+    try:
+        cfg = load_config(base)
+    except ValueError as e:
+        typer.secho(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from None
+    print(json.dumps(dataclasses.asdict(cfg), indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Doctor
+# ---------------------------------------------------------------------------
+
+
 def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
     """Build doctor checks from agent configs."""
     import shlex
 
-    from kingdom.agent import DEFAULT_AGENTS, list_agents
+    from kingdom.agent import resolve_all_agents
+    from kingdom.config import load_config
 
-    agents = list_agents(base) or list(DEFAULT_AGENTS.values())
+    cfg = load_config(base)
+    agents = resolve_all_agents(cfg.agents)
 
     checks: list[dict[str, str | list[str]]] = []
-    for agent in agents:
+    for agent in agents.values():
         version_cmd = agent.version_command or f"{shlex.split(agent.cli)[0]} --version"
         checks.append(
             {
@@ -1929,41 +1991,89 @@ def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
     return checks
 
 
-@app.command(help="Check if agent CLIs are installed.")
+def check_config(base: Path) -> tuple[bool, str | None]:
+    """Validate .kd/config.json and return (ok, error_message).
+
+    Returns (True, None) if config is valid or doesn't exist.
+    Returns (False, message) if config has errors.
+    """
+    from kingdom.config import load_config
+    from kingdom.state import state_root
+
+    config_path = state_root(base) / "config.json"
+    if not config_path.exists():
+        return True, None
+
+    try:
+        load_config(base)
+        return True, None
+    except ValueError as e:
+        return False, str(e)
+
+
+@app.command(help="Check config and agent CLIs.")
 def doctor(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
-    """Verify agent CLIs are installed and provide guidance."""
-    base = Path.cwd()
-    doctor_checks = get_doctor_checks(base)
-    results: dict[str, dict[str, bool | str | None]] = {}
-    issues: list[dict[str, str]] = []
+    """Validate config and verify agent CLIs are installed."""
+    from kingdom.state import state_root
 
-    for check in doctor_checks:
-        installed, error = check_cli(check["command"])
-        results[check["name"]] = {"installed": installed, "error": error}
-        if not installed:
-            issues.append({"name": check["name"], "hint": check["install_hint"]})
+    base = Path.cwd()
+    has_issues = False
+
+    # 1. Config validation
+    config_path = state_root(base) / "config.json"
+    config_ok, config_error = check_config(base)
+
+    if not config_ok:
+        has_issues = True
 
     if output_json:
-        print(json.dumps(results, indent=2))
+        config_result = {"exists": config_path.exists(), "valid": config_ok, "error": config_error}
     else:
-        typer.echo("\nAgent CLIs:")
-        for check in doctor_checks:
-            name = check["name"]
-            result = results[name]
-            if result["installed"]:
-                typer.secho(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
-            else:
-                typer.secho(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
+        typer.echo("\nConfig:")
+        if not config_path.exists():
+            typer.secho("  ○ No config.json (using defaults)", fg=typer.colors.YELLOW)
+        elif config_ok:
+            typer.secho("  ✓ config.json valid", fg=typer.colors.GREEN)
+        else:
+            typer.secho(f"  ✗ config.json: {config_error}", fg=typer.colors.RED)
 
-        if issues:
-            typer.echo("\nIssues found:")
-            for issue in issues:
-                typer.echo(f"  {issue['name']}: {issue['hint']}")
+    # 2. Agent CLI checks (skip if config is invalid — can't resolve agents)
+    cli_results: dict[str, dict[str, bool | str | None]] = {}
+    cli_issues: list[dict[str, str]] = []
+
+    if config_ok:
+        doctor_checks = get_doctor_checks(base)
+        for check in doctor_checks:
+            installed, error = check_cli(check["command"])
+            cli_results[check["name"]] = {"installed": installed, "error": error}
+            if not installed:
+                cli_issues.append({"name": check["name"], "hint": check["install_hint"]})
+
+    if output_json:
+        print(json.dumps({"config": config_result, "agents": cli_results}, indent=2))
+    else:
+        if not config_ok:
+            typer.echo("\nAgent CLIs:")
+            typer.secho("  ○ Skipped (fix config first)", fg=typer.colors.YELLOW)
+        else:
+            typer.echo("\nAgent CLIs:")
+            for check in doctor_checks:
+                name = check["name"]
+                result = cli_results[name]
+                if result["installed"]:
+                    typer.secho(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
+                else:
+                    typer.secho(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
+
+            if cli_issues:
+                typer.echo("\nIssues found:")
+                for issue in cli_issues:
+                    typer.echo(f"  {issue['name']}: {issue['hint']}")
         typer.echo()
 
-    if issues:
+    if has_issues or cli_issues:
         raise typer.Exit(code=1)
 
 
