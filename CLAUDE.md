@@ -9,3 +9,9 @@
 ## Setup
 
 After cloning, run `pre-commit install` to enable git hooks.
+
+## Agent Timeouts
+
+Council queries can take several minutes. Set bash timeout to 5 minutes:
+
+BASH_DEFAULT_TIMEOUT_MS=300000

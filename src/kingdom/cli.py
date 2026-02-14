@@ -54,6 +54,16 @@ from kingdom.ticket import (
     write_ticket,
 )
 
+
+def is_branch_done(branch_dir: Path) -> bool:
+    """Check if a branch directory has status 'done' in its state.json."""
+    state_path = branch_dir / "state.json"
+    if state_path.exists():
+        state = read_json(state_path)
+        return state.get("status") == "done"
+    return False
+
+
 app = typer.Typer(
     name="kd",
     help="Kingdom CLI.",
@@ -190,12 +200,11 @@ def start(
     typer.echo(f"Location: {branch_dir}")
 
 
-@app.command(help="Mark the current session as done and archive it.")
+@app.command(help="Mark the current session as done.")
 def done(
     feature: Annotated[str | None, typer.Argument(help="Branch name (defaults to current session).")] = None,
 ) -> None:
-    """Mark a session as complete, archive it, and clear the current session pointer."""
-    import shutil
+    """Mark a session as done (status transition only, no file moves)."""
     from datetime import datetime
 
     base = Path.cwd()
@@ -212,7 +221,7 @@ def done(
     normalized = normalize_branch_name(feature)
     source_dir = branch_root(base, feature)
 
-    # Check if it exists in new structure
+    # Check if it exists
     if not source_dir.exists():
         # Fall back to legacy runs structure
         legacy_dir = state_root(base) / "runs" / feature
@@ -222,7 +231,7 @@ def done(
             typer.echo(f"Error: Branch '{feature}' not found.")
             raise typer.Exit(code=1)
 
-    # Update state.json with status and timestamp before moving
+    # Update state.json with status and timestamp
     state_path = source_dir / "state.json"
     if state_path.exists():
         state = read_json(state_path)
@@ -232,23 +241,9 @@ def done(
     state["done_at"] = datetime.now(UTC).isoformat()
     write_json(state_path, state)
 
-    # Determine archive destination
-    archive_base = state_root(base) / "archive"
-    archive_base.mkdir(parents=True, exist_ok=True)
-    archive_dest = archive_base / normalized
-
-    # Handle collision: add timestamp suffix if destination exists
-    if archive_dest.exists():
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-        archive_dest = archive_base / f"{normalized}-{timestamp}"
-
-    # Move branch folder to archive
-    shutil.move(str(source_dir), str(archive_dest))
-
     # Clean up associated worktrees
     worktree_dir = state_root(base) / "worktrees" / normalized
     if worktree_dir.exists():
-        # Remove git worktree first
         for worktree in worktree_dir.iterdir():
             if worktree.is_dir():
                 result = subprocess.run(
@@ -258,7 +253,6 @@ def done(
                 )
                 if result.returncode != 0:
                     typer.echo(f"Warning: Failed to remove worktree {worktree.name}: {result.stderr.strip()}")
-        # Remove the parent worktree directory if empty
         try:
             worktree_dir.rmdir()
         except OSError as e:
@@ -271,7 +265,7 @@ def done(
         if current_feature == normalized:
             clear_current_run(base)
 
-    typer.echo(f"Archived '{feature}' to {archive_dest.relative_to(base)}")
+    typer.echo(f"Done: '{feature}'")
 
 
 council_app = typer.Typer(name="council", help="Query council members.")
@@ -284,18 +278,21 @@ def council_ask(
     to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
     new_thread: Annotated[bool, typer.Option("--new-thread", help="Start a fresh thread.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
-    sync: Annotated[bool, typer.Option("--sync", help="Block until all responses arrive (old behavior).")] = False,
-    no_watch: Annotated[bool, typer.Option("--no-watch", help="Dispatch only, don't wait for responses.")] = False,
+    async_mode: Annotated[
+        bool, typer.Option("--async", help="Dispatch in background, then watch for responses.")
+    ] = False,
+    no_watch: Annotated[bool, typer.Option("--no-watch", help="With --async, dispatch only without watching.")] = False,
     timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 300,
 ) -> None:
     """Query council members via threaded conversations.
 
-    Default: dispatches agents in background, then watches for responses
-    as Rich panels (returns instantly, never gets backgrounded by TUI hosts).
-    Use --sync to block in-process until all responses arrive (old behavior).
-    Use --no-watch to dispatch and return immediately without watching.
+    Default: blocks in-process until all responses arrive, rendering as they come.
+    Use --async to dispatch agents in background and watch for responses.
+    Use --async --no-watch to dispatch and return immediately.
     Use --json for machine-readable batch output.
     """
+    import re
+
     from kingdom.thread import add_message, create_thread, thread_dir
 
     base = Path.cwd()
@@ -310,14 +307,34 @@ def council_ask(
     c.timeout = timeout
     c.load_sessions(base, feature)
 
+    # Parse @mentions from prompt (kin-09c9)
+    available_names = {m.name for m in c.members}
+    if not to:
+        mentions = re.findall(r"(?<!\w)@(\w+)", prompt)
+        if mentions:
+            if "all" in mentions:
+                # @all = query everyone, strip @all from prompt
+                prompt = re.sub(r"(?<!\w)@all\b\s*", "", prompt).strip()
+            else:
+                unknown = [m for m in mentions if m not in available_names]
+                if unknown:
+                    typer.echo(f"Unknown @mention(s): {', '.join(unknown)}")
+                    typer.echo(f"Available: {', '.join(sorted(available_names))}")
+                    raise typer.Exit(code=1)
+                # Use mentioned members as targets
+                to = mentions[0] if len(mentions) == 1 else None
+                target_members = [m for m in mentions if m in available_names]
+                if len(target_members) > 1:
+                    # Multiple @mentions: filter council to just those members
+                    c.members = [m for m in c.members if m.name in set(target_members)]
+
     # Validate --to target
     member = None
     if to:
         member = c.get_member(to)
         if member is None:
-            available = [m.name for m in c.members]
             typer.echo(f"Unknown member: {to}")
-            typer.echo(f"Available: {', '.join(available)}")
+            typer.echo(f"Available: {', '.join(sorted(available_names))}")
             raise typer.Exit(code=1)
 
     # Determine thread: continue current, or create new
@@ -331,7 +348,10 @@ def council_ask(
 
     if start_new:
         thread_id = f"council-{secrets.token_hex(2)}"
-        member_names = [to] if to else [m.name for m in c.members]
+        if to:
+            member_names = [to]
+        else:
+            member_names = [m.name for m in c.members]
         create_thread(base, feature, thread_id, ["king", *member_names], "council")
         set_current_thread(base, feature, thread_id)
     else:
@@ -370,73 +390,73 @@ def council_ask(
         print(json.dumps(output, indent=2))
         return
 
-    # --sync mode: block in-process until all responses arrive (old default)
-    if sync:
+    # --async mode: dispatch agents in background, then watch
+    if async_mode:
         member_names_str = to if to else ", ".join(m.name for m in c.members)
         console.print(f"[dim]Thread: {thread_id}[/dim]")
         console.print(f"[dim]Querying: {member_names_str}...[/dim]\n")
 
-        if to and member:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-                transient=True,
-            ) as progress:
-                task = progress.add_task(f"Querying {to}...", total=None)
-                response = member.query(prompt, timeout)
-                progress.update(task, description="Done")
-            body = response.text if response.text else f"*Error: {response.error}*"
-            add_message(base, feature, thread_id, from_=to, to="king", body=body)
-            render_response(response, console)
-        else:
+        worker_cmd = [
+            sys.executable,
+            "-m",
+            "kingdom.council.worker",
+            "--base",
+            str(base),
+            "--feature",
+            feature,
+            "--thread-id",
+            thread_id,
+            "--prompt",
+            prompt,
+            "--timeout",
+            str(timeout),
+        ]
+        if to:
+            worker_cmd.extend(["--to", to])
 
-            def on_response(name, response):
-                render_response(response, console)
+        subprocess.Popen(
+            worker_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
-            c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
+        if no_watch:
+            typer.echo(f"Dispatched. Use `kd council watch {thread_id}` to see responses.")
+            return
 
-        c.save_sessions(base, feature)
+        # Fall through to watch — poll thread dir and render panels as they arrive
+        ask_expected = {to} if to else {m.name for m in c.members}
+        watch_thread(thread_id=thread_id, timeout=timeout + 30, expected=ask_expected)
         return
 
-    # Default: dispatch agents in background, then watch for responses
+    # Default: block in-process until all responses arrive
     member_names_str = to if to else ", ".join(m.name for m in c.members)
     console.print(f"[dim]Thread: {thread_id}[/dim]")
     console.print(f"[dim]Querying: {member_names_str}...[/dim]\n")
 
-    worker_cmd = [
-        sys.executable,
-        "-m",
-        "kingdom.council.worker",
-        "--base",
-        str(base),
-        "--feature",
-        feature,
-        "--thread-id",
-        thread_id,
-        "--prompt",
-        prompt,
-        "--timeout",
-        str(timeout),
-    ]
-    if to:
-        worker_cmd.extend(["--to", to])
+    if to and member:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task(f"Querying {to}...", total=None)
+            response = member.query(prompt, timeout)
+            progress.update(task, description="Done")
+        body = response.text if response.text else f"*Error: {response.error}*"
+        add_message(base, feature, thread_id, from_=to, to="king", body=body)
+        render_response(response, console)
+    else:
 
-    subprocess.Popen(
-        worker_cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+        def on_response(name, response):
+            render_response(response, console)
 
-    if no_watch:
-        typer.echo(f"Dispatched. Use `kd council watch {thread_id}` to see responses.")
-        return
+        c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
 
-    # Fall through to watch — poll thread dir and render panels as they arrive
-    ask_expected = {to} if to else {m.name for m in c.members}
-    watch_thread(thread_id=thread_id, timeout=timeout + 30, expected=ask_expected)
+    c.save_sessions(base, feature)
 
 
 @council_app.command("reset", help="Clear all council sessions.")
@@ -623,26 +643,43 @@ def watch_thread(
         console.print("[dim]All members have responded.[/dim]")
         return
 
-    # Poll for new messages
+    # Poll for new messages with progress indicator
     start_time = time.monotonic()
     try:
-        while time.monotonic() - start_time < timeout:
-            time.sleep(0.5)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            waiting = sorted(expected_members - responded_members)
+            ptask = progress.add_task(f"[0s] Waiting for: {', '.join(waiting)}...", total=None)
 
-            messages = list_messages(base, feature, thread_id)
-            for msg in messages:
-                if msg.sequence in seen_sequences:
-                    continue
-                seen_sequences.add(msg.sequence)
+            while time.monotonic() - start_time < timeout:
+                time.sleep(0.5)
 
-                if msg.from_ != "king" and msg.from_ in expected_members:
-                    responded_members.add(msg.from_)
-                    response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)
-                    render_response(response, console)
+                messages = list_messages(base, feature, thread_id)
+                for msg in messages:
+                    if msg.sequence in seen_sequences:
+                        continue
+                    seen_sequences.add(msg.sequence)
 
-            if responded_members >= expected_members:
-                console.print("[dim]All members have responded.[/dim]")
-                return
+                    if msg.from_ != "king" and msg.from_ in expected_members:
+                        responded_members.add(msg.from_)
+                        # Hide spinner before rendering response
+                        progress.update(ptask, visible=False)
+                        response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)
+                        render_response(response, console)
+                        progress.update(ptask, visible=True)
+
+                if responded_members >= expected_members:
+                    progress.update(ptask, visible=False)
+                    console.print("[dim]All members have responded.[/dim]")
+                    return
+
+                elapsed = int(time.monotonic() - start_time)
+                waiting = sorted(expected_members - responded_members)
+                progress.update(ptask, description=f"[{elapsed}s] Waiting for: {', '.join(waiting)}...")
     except KeyboardInterrupt:
         console.print("\n[dim]Watch interrupted.[/dim]")
         return
@@ -1133,6 +1170,10 @@ def peasant_start(
         except RuntimeError as exc:
             typer.echo(str(exc))
             raise typer.Exit(code=1) from None
+
+    # Auto-assign ticket to the peasant session
+    ticket.assignee = session_name
+    write_ticket(ticket, ctx.ticket_path)
 
     # 2. Create work thread (ignore if already exists)
     with contextlib.suppress(FileExistsError):
@@ -1828,12 +1869,16 @@ def status(
         if all_deps_closed:
             ready_count += 1
 
+    # Design approved status
+    design_approved = state.get("design_approved", False)
+
     # Build output structure
     output = {
         "branch": original_branch,
         "normalized_branch": normalized,
         "design_path": design_path_str,
         "design_status": design_status,
+        "design_approved": design_approved,
         "breakdown_status": breakdown_status,
         "tickets": status_counts,
         "ready_count": ready_count,
@@ -1845,7 +1890,8 @@ def status(
         # Human-readable output
         typer.echo(f"Branch: {original_branch}")
         if design_path_str:
-            typer.echo(f"Design: {design_path_str}")
+            approved_str = " (approved)" if design_approved else ""
+            typer.echo(f"Design: {design_path_str}{approved_str}")
         typer.echo()
         total = sum(status_counts.values())
         typer.echo(
@@ -1921,6 +1967,97 @@ def doctor(
 
     if issues:
         raise typer.Exit(code=1)
+
+
+@app.command(help="Migrate legacy kin-XXXX ticket IDs to short XXXX format.")
+def migrate(
+    apply: Annotated[bool, typer.Option("--apply", help="Apply changes (default is dry-run).")] = False,
+) -> None:
+    """Rename ticket files and rewrite frontmatter IDs, deps, and parent refs to drop 'kin-' prefix.
+
+    By default shows what would change (dry-run). Use --apply to execute.
+    """
+    import re
+
+    base = Path.cwd()
+    dry_run = not apply
+
+    # Collect all ticket files across backlog, branches, and archive
+    ticket_dirs: list[Path] = []
+
+    backlog_tickets = backlog_root(base) / "tickets"
+    if backlog_tickets.exists():
+        ticket_dirs.append(backlog_tickets)
+
+    bdir = branches_root(base)
+    if bdir.exists():
+        for branch_dir in bdir.iterdir():
+            if branch_dir.is_dir():
+                td = branch_dir / "tickets"
+                if td.exists():
+                    ticket_dirs.append(td)
+
+    adir = archive_root(base)
+    if adir.exists():
+        for archive_item in adir.iterdir():
+            if archive_item.is_dir():
+                td = archive_item / "tickets"
+                if td.exists():
+                    ticket_dirs.append(td)
+
+    renamed = 0
+    rewritten = 0
+    collisions: list[str] = []
+
+    # Preflight: check for collisions before any renames
+    for td in ticket_dirs:
+        for ticket_file in sorted(td.glob("kin-*.md")):
+            new_name = ticket_file.name[4:]  # Remove "kin-" prefix
+            new_path = ticket_file.parent / new_name
+            if new_path.exists():
+                collisions.append(str(ticket_file.relative_to(base)))
+
+    if collisions:
+        typer.echo("Error: collision detected — target files already exist:")
+        for c in collisions:
+            typer.echo(f"  {c}")
+        raise typer.Exit(code=1)
+
+    # Pass 1: rename files (git mv for history preservation)
+    for td in ticket_dirs:
+        for ticket_file in sorted(td.glob("kin-*.md")):
+            new_name = ticket_file.name[4:]
+            new_path = ticket_file.parent / new_name
+
+            if dry_run:
+                typer.echo(f"  rename: {ticket_file.relative_to(base)} → {new_name}")
+            else:
+                # Use git mv if in a git repo, fall back to plain rename
+                result = subprocess.run(
+                    ["git", "mv", str(ticket_file), str(new_path)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    ticket_file.rename(new_path)
+                renamed += 1
+
+    # Pass 2: rewrite frontmatter in all ticket files
+    for td in ticket_dirs:
+        for ticket_file in sorted(td.glob("*.md")):
+            content = ticket_file.read_text(encoding="utf-8")
+            new_content = re.sub(r"\bkin-([0-9a-f]{4})\b", r"\1", content)
+            if new_content != content:
+                if dry_run:
+                    typer.echo(f"  rewrite: {ticket_file.relative_to(base)}")
+                else:
+                    ticket_file.write_text(new_content, encoding="utf-8")
+                    rewritten += 1
+
+    if dry_run:
+        typer.echo("\nDry run complete. Run with --apply to execute.")
+    else:
+        typer.echo(f"Migrated: {renamed} files renamed, {rewritten} files rewritten")
 
 
 # Ticket subcommand group
@@ -2002,6 +2139,9 @@ def ticket_create(
 @ticket_app.command("list", help="List tickets.")
 def ticket_list(
     all_tickets: Annotated[bool, typer.Option("--all", "-a", help="List all tickets across all locations.")] = False,
+    include_done: Annotated[
+        bool, typer.Option("--include-done", help="Include tickets from done branches (with --all).")
+    ] = False,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
@@ -2030,7 +2170,8 @@ def ticket_list(
                 typer.echo("No backlog tickets.")
                 return
             for ticket in tickets:
-                typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}] - {ticket.title}")
+                assignee_str = f" @{ticket.assignee}" if ticket.assignee else ""
+                typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}")
         return
 
     if all_tickets:
@@ -2041,7 +2182,7 @@ def ticket_list(
         branches_dir = branches_root(base)
         if branches_dir.exists():
             for branch_dir in branches_dir.iterdir():
-                if branch_dir.is_dir():
+                if branch_dir.is_dir() and (include_done or not is_branch_done(branch_dir)):
                     tickets_dir = branch_dir / "tickets"
                     if tickets_dir.exists():
                         locations.append((f"branch:{branch_dir.name}", tickets_dir))
@@ -2050,15 +2191,6 @@ def ticket_list(
         backlog_tickets = backlog_root(base) / "tickets"
         if backlog_tickets.exists():
             locations.append(("backlog", backlog_tickets))
-
-        # archive/*/tickets/
-        archive_dir = archive_root(base)
-        if archive_dir.exists():
-            for archive_item in archive_dir.iterdir():
-                if archive_item.is_dir():
-                    tickets_dir = archive_item / "tickets"
-                    if tickets_dir.exists():
-                        locations.append((f"archive:{archive_item.name}", tickets_dir))
 
         all_results: list[dict] = []
         for location_name, tickets_dir in locations:
@@ -2101,16 +2233,36 @@ def ticket_list(
                 typer.echo("No tickets found.")
                 return
             for ticket in tickets:
-                typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}] - {ticket.title}")
+                assignee_str = f" @{ticket.assignee}" if ticket.assignee else ""
+                typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}")
 
 
 @ticket_app.command("show", help="Show a ticket.")
 def ticket_show(
-    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    ticket_id: Annotated[
+        str | None, typer.Argument(help="Ticket ID (full or partial). Omit to show ticket assigned to 'hand'.")
+    ] = None,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
-    """Display a ticket by ID (supports partial matching)."""
+    """Display a ticket by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
     base = Path.cwd()
+
+    if ticket_id is None:
+        # Find ticket assigned to "hand" on the current branch
+        try:
+            feature = resolve_current_run(base)
+        except RuntimeError:
+            typer.echo("No active session. Use `kd start` first.")
+            raise typer.Exit(code=1) from None
+        tickets_dir = branch_root(base, feature) / "tickets"
+        if tickets_dir.exists():
+            for t in list_tickets(tickets_dir):
+                if t.assignee == "hand":
+                    ticket_id = t.id
+                    break
+        if ticket_id is None:
+            typer.echo("No ticket assigned to 'hand'. Use `kd tk assign <id> hand`.")
+            raise typer.Exit(code=1)
 
     try:
         result = find_ticket(base, ticket_id)
@@ -2271,12 +2423,12 @@ def ticket_undep(
     write_ticket(ticket, ticket_path)
 
 
-@ticket_app.command("move", help="Move a ticket to another branch.")
-def ticket_move(
+@ticket_app.command("assign", help="Assign a ticket to an agent.")
+def ticket_assign(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
-    target: Annotated[str | None, typer.Argument(help="Target branch name or 'backlog' (defaults to current).")] = None,
+    agent: Annotated[str, typer.Argument(help="Agent name or 'hand' for current agent.")],
 ) -> None:
-    """Move a ticket to a different branch or backlog."""
+    """Set the assignee field on a ticket."""
     base = Path.cwd()
 
     try:
@@ -2290,13 +2442,66 @@ def ticket_move(
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
+    ticket.assignee = agent
+    write_ticket(ticket, ticket_path)
+    typer.echo(f"{ticket.id} assigned to {agent}")
+
+
+@ticket_app.command("unassign", help="Clear ticket assignment.")
+def ticket_unassign(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+) -> None:
+    """Clear the assignee field on a ticket."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+    ticket.assignee = None
+    write_ticket(ticket, ticket_path)
+    typer.echo(f"{ticket.id} unassigned")
+
+
+@ticket_app.command("move", help="Move a ticket to another branch.")
+def ticket_move(
+    ticket_ids: Annotated[list[str], typer.Argument(help="Ticket ID(s) (full or partial).")],
+    to_target: Annotated[str | None, typer.Option("--to", help="Target branch name or 'backlog'.")] = None,
+) -> None:
+    """Move ticket(s) to a different branch or backlog.
+
+    Single ticket: `kd tk move <id> --to <branch>` or `kd tk move <id>` (to current branch).
+    Multiple tickets: `kd tk move <id1> <id2> --to <branch>`.
+    """
+    base = Path.cwd()
+
+    target = to_target
+    # Backwards compat: if exactly 2 positional args and no --to, treat second as target
+    if target is None and len(ticket_ids) == 2:
+        # Check if the second arg looks like a branch name (not a ticket ID)
+        second = ticket_ids[1]
+        try:
+            result = find_ticket(base, second)
+        except AmbiguousTicketMatch:
+            result = "ambiguous"
+        if result is None:
+            # Second arg is not a ticket, treat as target
+            target = second
+            ticket_ids = ticket_ids[:1]
 
     # Determine destination
     if target is None:
         try:
             target = resolve_current_run(base)
         except RuntimeError:
-            typer.echo("Error: No current branch active. Please specify a target branch or run `kd start` first.")
+            typer.echo("Error: No current branch active. Use --to <branch> or run `kd start` first.")
             raise typer.Exit(code=1) from None
 
     if target.lower() == "backlog":
@@ -2307,13 +2512,29 @@ def ticket_move(
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check if already in destination
-    if ticket_path.parent.resolve() == dest_dir.resolve():
-        typer.echo(f"Ticket {ticket.id} is already in {dest_dir.parent.name}")
-        return
+    # Pass 1: validate all tickets
+    validated: list[tuple[Ticket, Path]] = []
+    for tid in ticket_ids:
+        try:
+            result = find_ticket(base, tid)
+        except AmbiguousTicketMatch as e:
+            typer.echo(f"Error: {e}")
+            raise typer.Exit(code=1) from None
 
-    new_path = move_ticket(ticket_path, dest_dir)
-    typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name}")
+        if result is None:
+            typer.echo(f"Ticket not found: {tid}")
+            raise typer.Exit(code=1)
+
+        ticket, ticket_path = result
+        if ticket_path.parent.resolve() == dest_dir.resolve():
+            typer.echo(f"Ticket {ticket.id} is already in {dest_dir.parent.name}")
+            continue
+        validated.append((ticket, ticket_path))
+
+    # Pass 2: move all validated tickets
+    for ticket, ticket_path in validated:
+        new_path = move_ticket(ticket_path, dest_dir)
+        typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name}")
 
 
 @ticket_app.command("pull", help="Pull backlog tickets into the current branch.")
@@ -2340,9 +2561,12 @@ def ticket_pull(
     validated: list[tuple[Ticket, Path]] = []
     seen_ids: set[str] = set()
     for tid in ticket_ids:
-        normalized = tid if tid.startswith("kin-") else f"kin-{tid}"
-        ticket_path = backlog_tickets / f"{normalized}.md"
-
+        # Support both legacy kin-XXXX and new XXXX formats
+        clean_id = tid[4:] if tid.startswith("kin-") else tid
+        ticket_path = backlog_tickets / f"{clean_id}.md"
+        if not ticket_path.exists():
+            # Fall back to legacy kin- format
+            ticket_path = backlog_tickets / f"kin-{clean_id}.md"
         if not ticket_path.exists():
             typer.echo(f"Ticket not found in backlog: {tid}")
             raise typer.Exit(code=1)
@@ -2370,11 +2594,11 @@ def ticket_ready(
     # Collect all tickets to build status lookup
     all_tickets: list[tuple[Ticket, str]] = []  # (ticket, location)
 
-    # branches/*/tickets/
+    # branches/*/tickets/ (skip done branches)
     branches_dir = branches_root(base)
     if branches_dir.exists():
         for branch_dir in branches_dir.iterdir():
-            if branch_dir.is_dir():
+            if branch_dir.is_dir() and not is_branch_done(branch_dir):
                 tickets_dir = branch_dir / "tickets"
                 if tickets_dir.exists():
                     for t in list_tickets(tickets_dir):

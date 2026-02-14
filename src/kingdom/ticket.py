@@ -70,28 +70,27 @@ def clamp_priority(value: int | str | None) -> int:
 
 
 def generate_ticket_id(tickets_dir: Path | None = None) -> str:
-    """Generate a unique ticket ID in the format 'kin-XXXX'.
+    """Generate a unique ticket ID as a 4-char hex string.
 
     Args:
         tickets_dir: Optional path to tickets directory to check for collisions.
                     If provided, will regenerate ID if collision detected.
 
     Returns:
-        A ticket ID string like 'kin-a1b2'.
+        A ticket ID string like 'a1b2'.
     """
     max_attempts = 100
 
     for _ in range(max_attempts):
         # Generate 4 hex chars from timestamp + PID + random bytes
         entropy = f"{os.getpid()}{datetime.now().timestamp()}{os.urandom(4).hex()}"
-        hash_bytes = hashlib.sha256(entropy.encode()).hexdigest()[:4]
-        ticket_id = f"kin-{hash_bytes}"
+        ticket_id = hashlib.sha256(entropy.encode()).hexdigest()[:4]
 
-        # Check for collisions if tickets_dir provided
-        if tickets_dir is not None:
-            ticket_path = tickets_dir / f"{ticket_id}.md"
-            if ticket_path.exists():
-                continue  # Collision, try again
+        # Check for collisions if tickets_dir provided (both new and legacy formats)
+        if tickets_dir is not None and (
+            (tickets_dir / f"{ticket_id}.md").exists() or (tickets_dir / f"kin-{ticket_id}.md").exists()
+        ):
+            continue  # Collision, try again
 
         return ticket_id
 

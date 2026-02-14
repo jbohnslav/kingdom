@@ -69,7 +69,7 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                result = runner.invoke(cli.app, ["council", "ask", "--sync", "What is caching?"])
+                result = runner.invoke(cli.app, ["council", "ask", "What is caching?"])
 
             assert result.exit_code == 0, result.output
             assert "Thread:" in result.output
@@ -92,8 +92,8 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "First question"])
-                result = runner.invoke(cli.app, ["council", "ask", "--sync", "Follow up"])
+                runner.invoke(cli.app, ["council", "ask", "First question"])
+                result = runner.invoke(cli.app, ["council", "ask", "Follow up"])
 
             assert result.exit_code == 0
 
@@ -111,10 +111,10 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "First topic"])
+                runner.invoke(cli.app, ["council", "ask", "First topic"])
                 first_thread = get_current_thread(base, BRANCH)
 
-                runner.invoke(cli.app, ["council", "ask", "--sync", "--new-thread", "New topic"])
+                runner.invoke(cli.app, ["council", "ask", "--new-thread", "New topic"])
                 second_thread = get_current_thread(base, BRANCH)
 
             assert first_thread != second_thread
@@ -135,7 +135,7 @@ class TestCouncilAsk:
             mock_result.returncode = 0
 
             with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
-                result = runner.invoke(cli.app, ["council", "ask", "--sync", "--to", "codex", "Tell me more"])
+                result = runner.invoke(cli.app, ["council", "ask", "--to", "codex", "Tell me more"])
 
             assert result.exit_code == 0
 
@@ -160,7 +160,7 @@ class TestCouncilAsk:
             mock_result.returncode = 0
 
             with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "--to", "codex", "Hello"])
+                runner.invoke(cli.app, ["council", "ask", "--to", "codex", "Hello"])
 
             current = get_current_thread(base, BRANCH)
             meta = get_thread(base, BRANCH, current)
@@ -171,7 +171,7 @@ class TestCouncilAsk:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(cli.app, ["council", "ask", "--sync", "--to", "unknown", "Hello"])
+            result = runner.invoke(cli.app, ["council", "ask", "--to", "unknown", "Hello"])
 
             assert result.exit_code == 1
             assert "Unknown member" in result.output
@@ -187,7 +187,7 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                result = runner.invoke(cli.app, ["council", "ask", "--sync", "After stale"])
+                result = runner.invoke(cli.app, ["council", "ask", "After stale"])
 
             assert result.exit_code == 0
 
@@ -203,7 +203,7 @@ class TestCouncilAsk:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query(responses):
-                result = runner.invoke(cli.app, ["council", "ask", "--sync", "--json", "Test"])
+                result = runner.invoke(cli.app, ["council", "ask", "--json", "Test"])
 
             assert result.exit_code == 0
             data = json.loads(result.output)
@@ -218,7 +218,7 @@ class TestCouncilAsk:
 
             responses = make_responses("claude")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "Test"])
+                runner.invoke(cli.app, ["council", "ask", "Test"])
 
             from kingdom.session import get_agent_state
 
@@ -237,7 +237,7 @@ class TestCouncilShow:
             # Create a thread with messages
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "What is caching?"])
+                runner.invoke(cli.app, ["council", "ask", "What is caching?"])
 
             result = runner.invoke(cli.app, ["council", "show"])
 
@@ -252,7 +252,7 @@ class TestCouncilShow:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "Question 1"])
+                runner.invoke(cli.app, ["council", "ask", "Question 1"])
                 thread_id = get_current_thread(base, BRANCH)
 
             result = runner.invoke(cli.app, ["council", "show", thread_id])
@@ -321,8 +321,8 @@ class TestCouncilList:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "Topic 1"])
-                runner.invoke(cli.app, ["council", "ask", "--sync", "--new-thread", "Topic 2"])
+                runner.invoke(cli.app, ["council", "ask", "Topic 1"])
+                runner.invoke(cli.app, ["council", "ask", "--new-thread", "Topic 2"])
 
             result = runner.invoke(cli.app, ["council", "list"])
 
@@ -338,7 +338,7 @@ class TestCouncilList:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "A question"])
+                runner.invoke(cli.app, ["council", "ask", "A question"])
 
             result = runner.invoke(cli.app, ["council", "list"])
 
@@ -368,7 +368,7 @@ class TestCouncilAskAsync:
 
             with _patch_async_dispatch() as stack:
                 mock_popen = _enter_async_patches(stack)
-                result = runner.invoke(cli.app, ["council", "ask", "--no-watch", "Test async"])
+                result = runner.invoke(cli.app, ["council", "ask", "--async", "--no-watch", "Test async"])
 
             assert result.exit_code == 0
             assert "Dispatched" in result.output
@@ -386,7 +386,7 @@ class TestCouncilAskAsync:
 
             with _patch_async_dispatch() as stack:
                 _enter_async_patches(stack)
-                runner.invoke(cli.app, ["council", "ask", "--no-watch", "Async question"])
+                runner.invoke(cli.app, ["council", "ask", "--async", "--no-watch", "Async question"])
 
             current = get_current_thread(base, BRANCH)
             assert current is not None
@@ -405,7 +405,7 @@ class TestCouncilAskAsync:
 
             with _patch_async_dispatch() as stack:
                 mock_popen = _enter_async_patches(stack)
-                runner.invoke(cli.app, ["council", "ask", "--no-watch", "--to", "codex", "Test targeted"])
+                runner.invoke(cli.app, ["council", "ask", "--async", "--no-watch", "--to", "codex", "Test targeted"])
 
             # Verify --to flag is passed to the worker subprocess
             mock_popen.assert_called_once()
@@ -423,7 +423,7 @@ class TestCouncilWatch:
             # Create a thread with responses already written
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "Test question"])
+                runner.invoke(cli.app, ["council", "ask", "Test question"])
 
             current = get_current_thread(base, BRANCH)
             result = runner.invoke(cli.app, ["council", "watch", current])
@@ -458,7 +458,7 @@ class TestCouncilWatch:
 
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "Test"])
+                runner.invoke(cli.app, ["council", "ask", "Test"])
 
             current = get_current_thread(base, BRANCH)
             result = runner.invoke(cli.app, ["council", "watch", current])
@@ -481,7 +481,7 @@ class TestCouncilWatch:
             mock_result.returncode = 0
 
             with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "--to", "codex", "Targeted question"])
+                runner.invoke(cli.app, ["council", "ask", "--to", "codex", "Targeted question"])
 
             current = get_current_thread(base, BRANCH)
             result = runner.invoke(cli.app, ["council", "watch", current, "--timeout", "1"])
@@ -505,7 +505,7 @@ class TestCouncilWatch:
             # Round 1: ask + all members respond
             responses = make_responses("claude", "codex", "cursor")
             with mock_council_query_to_thread(responses):
-                runner.invoke(cli.app, ["council", "ask", "--sync", "First question"])
+                runner.invoke(cli.app, ["council", "ask", "First question"])
 
             current = get_current_thread(base, BRANCH)
 
@@ -532,6 +532,91 @@ class TestCouncilShowLast:
 
             assert result.exit_code == 1
             assert "No council history found" in result.output
+
+
+class TestCouncilMentions:
+    def test_single_mention_targets_member(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            mock_result = MagicMock()
+            mock_result.stdout = '{"result": "Codex reply", "session_id": "s1"}'
+            mock_result.stderr = ""
+            mock_result.returncode = 0
+
+            with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+                result = runner.invoke(cli.app, ["council", "ask", "@codex what do you think?"])
+
+            assert result.exit_code == 0
+
+            current = get_current_thread(base, BRANCH)
+            messages = list_messages(base, BRANCH, current)
+            # 1 king + 1 codex = 2
+            assert len(messages) == 2
+            assert messages[1].from_ == "codex"
+
+    def test_multiple_mentions_filters_council(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex")
+            with mock_council_query_to_thread(responses):
+                result = runner.invoke(cli.app, ["council", "ask", "@claude @codex thoughts?"])
+
+            assert result.exit_code == 0
+
+            current = get_current_thread(base, BRANCH)
+            messages = list_messages(base, BRANCH, current)
+            # 1 king + 2 responses = 3 (cursor excluded)
+            assert len(messages) == 3
+            names = {m.from_ for m in messages if m.from_ != "king"}
+            assert names == {"claude", "codex"}
+
+    def test_at_all_queries_everyone(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                result = runner.invoke(cli.app, ["council", "ask", "@all what do you think?"])
+
+            assert result.exit_code == 0
+
+            current = get_current_thread(base, BRANCH)
+            messages = list_messages(base, BRANCH, current)
+            assert len(messages) == 4  # king + 3 responses
+
+    def test_unknown_mention_fails(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "ask", "@nobody what?"])
+
+            assert result.exit_code == 1
+            assert "Unknown @mention" in result.output
+
+    def test_to_flag_overrides_mentions(self) -> None:
+        """--to flag takes precedence over @mentions in prompt."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            mock_result = MagicMock()
+            mock_result.stdout = '{"result": "Claude reply", "session_id": "s1"}'
+            mock_result.stderr = ""
+            mock_result.returncode = 0
+
+            with patch("kingdom.council.base.subprocess.run", return_value=mock_result):
+                result = runner.invoke(cli.app, ["council", "ask", "--to", "claude", "@codex what?"])
+
+            assert result.exit_code == 0
+            current = get_current_thread(base, BRANCH)
+            messages = list_messages(base, BRANCH, current)
+            assert messages[1].from_ == "claude"
 
 
 class TestCouncilReset:

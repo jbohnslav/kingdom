@@ -75,16 +75,10 @@ class TestGenerateTicketId:
     """Tests for generate_ticket_id function."""
 
     def test_format(self) -> None:
-        """Generated ID has correct format."""
+        """Generated ID is a 4-char hex string."""
         ticket_id = generate_ticket_id()
-        assert ticket_id.startswith("kin-")
-        assert len(ticket_id) == 8  # kin- + 4 hex chars
-
-    def test_hex_suffix(self) -> None:
-        """ID suffix is valid hex."""
-        ticket_id = generate_ticket_id()
-        hex_part = ticket_id[4:]  # Remove 'kin-' prefix
-        int(hex_part, 16)  # Should not raise
+        assert len(ticket_id) == 4
+        int(ticket_id, 16)  # Should not raise — valid hex
 
     def test_unique(self) -> None:
         """Multiple calls generate different IDs."""
