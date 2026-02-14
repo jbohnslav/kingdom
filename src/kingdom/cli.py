@@ -2247,6 +2247,7 @@ def ticket_create(
     priority: Annotated[int, typer.Option("-p", "--priority", help="Priority (1-3, 1 is highest).")] = 2,
     ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
+    dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
 ) -> None:
     """Create a new ticket in the current branch or backlog."""
     from datetime import datetime
@@ -2264,6 +2265,20 @@ def ticket_create(
     tickets_dir = get_tickets_dir(base, backlog=backlog)
     tickets_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve dependency IDs
+    resolved_deps: list[str] = []
+    if dep:
+        for dep_id in dep:
+            try:
+                dep_result = find_ticket(base, dep_id)
+            except AmbiguousTicketMatch as e:
+                typer.echo(f"Error: {e}")
+                raise typer.Exit(code=1) from None
+            if dep_result is None:
+                typer.echo(f"Dependency ticket not found: {dep_id}")
+                raise typer.Exit(code=1)
+            resolved_deps.append(dep_result[0].id)
+
     # Generate unique ID
     ticket_id = generate_ticket_id(tickets_dir)
 
@@ -2276,7 +2291,7 @@ def ticket_create(
     ticket = Ticket(
         id=ticket_id,
         status="open",
-        deps=[],
+        deps=resolved_deps,
         links=[],
         created=datetime.now(UTC),
         type=ticket_type,

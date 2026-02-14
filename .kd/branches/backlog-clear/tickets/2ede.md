@@ -1,6 +1,6 @@
 ---
-id: 2ede
-status: open
+id: "2ede"
+status: closed
 deps: []
 links: []
 created: 2026-02-14T14:24:13Z
