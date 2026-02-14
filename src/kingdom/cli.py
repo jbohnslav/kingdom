@@ -1862,6 +1862,25 @@ def status(
 
     if output_json:
         typer.echo(json.dumps(output, indent=2))
+    # Group tickets by assignee
+    import os
+
+    role = os.environ.get("KD_ROLE", "")
+    agent_name = os.environ.get("KD_AGENT_NAME", "")
+    if not role:
+        role = "hand" if os.environ.get("CLAUDECODE") else "king"
+
+    assigned: dict[str, list[Ticket]] = {}
+    for ticket in tickets:
+        if ticket.assignee:
+            assigned.setdefault(ticket.assignee, []).append(ticket)
+
+    output["role"] = role
+    output["agent_name"] = agent_name
+    output["assignments"] = {k: [t.id for t in v] for k, v in assigned.items()}
+
+    if output_json:
+        typer.echo(json.dumps(output, indent=2))
     else:
         # Human-readable output
         typer.echo(f"Branch: {original_branch}")
@@ -1873,6 +1892,13 @@ def status(
         typer.echo(
             f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, {status_counts['closed']} closed, {ready_count} ready ({total} total)"
         )
+
+        if assigned:
+            typer.echo()
+            typer.echo("Assignments:")
+            for assignee, assignee_tickets in assigned.items():
+                for t in assignee_tickets:
+                    typer.echo(f"  {assignee}: {t.id} [{t.status}] {t.title}")
 
 
 def check_cli(command: list[str]) -> tuple[bool, str | None]:
