@@ -37,8 +37,18 @@ class Council:
         members: list[CouncilMember] = []
         for name in cfg.council.members:
             ac = agent_configs.get(name)
-            if ac is not None:
-                members.append(CouncilMember(config=ac))
+            if ac is None:
+                continue
+            agent_def = cfg.agents[name]
+            # Resolve phase prompt: agent-specific overrides global
+            phase_prompt = agent_def.prompts.get("council", "") or cfg.prompts.council
+            members.append(
+                CouncilMember(
+                    config=ac,
+                    agent_prompt=agent_def.prompt,
+                    phase_prompt=phase_prompt,
+                )
+            )
 
         if logs_dir:
             for member in members:

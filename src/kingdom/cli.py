@@ -317,7 +317,7 @@ def council_ask(
         bool, typer.Option("--async", help="Dispatch in background, then watch for responses.")
     ] = False,
     no_watch: Annotated[bool, typer.Option("--no-watch", help="With --async, dispatch only without watching.")] = False,
-    timeout: Annotated[int, typer.Option("--timeout", help="Per-model timeout in seconds.")] = 600,
+    timeout: Annotated[int | None, typer.Option("--timeout", help="Per-model timeout in seconds.")] = None,
 ) -> None:
     """Query council members via threaded conversations.
 
@@ -339,7 +339,8 @@ def council_ask(
     console = Console()
 
     c = Council.create(logs_dir=logs_dir, base=base)
-    c.timeout = timeout
+    if timeout is not None:
+        c.timeout = timeout
     c.load_sessions(base, feature)
 
     # Parse @mentions from prompt (kin-09c9)
@@ -444,7 +445,7 @@ def council_ask(
             "--prompt",
             prompt,
             "--timeout",
-            str(timeout),
+            str(timeout if timeout is not None else c.timeout),
         ]
         if to:
             worker_cmd.extend(["--to", to])

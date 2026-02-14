@@ -345,6 +345,108 @@ class TestCouncilCreateValidation:
         council = Council.create(base=tmp_path)
         assert council.timeout == 120
 
+    def test_create_passes_global_phase_prompt(self, tmp_path: Path) -> None:
+        """Global council prompt should be set on members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "prompts": {"council": "Analyze only, no implementation."},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        assert council.members[0].phase_prompt == "Analyze only, no implementation."
+
+    def test_create_agent_phase_prompt_overrides_global(self, tmp_path: Path) -> None:
+        """Agent-specific council prompt overrides global."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "agents": {
+                "claude": {
+                    "backend": "claude_code",
+                    "prompts": {"council": "Focus on architecture."},
+                }
+            },
+            "prompts": {"council": "Global prompt."},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        assert council.members[0].phase_prompt == "Focus on architecture."
+
+    def test_create_passes_agent_prompt(self, tmp_path: Path) -> None:
+        """Agent prompt (always additive) should be set on members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "agents": {"claude": {"backend": "claude_code", "prompt": "Be concise."}},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        assert council.members[0].agent_prompt == "Be concise."
+
+
+class TestPromptMerging:
+    """Test prompt merge order in CouncilMember.build_command()."""
+
+    def test_preamble_only(self) -> None:
+        """With no config prompts, just preamble + user prompt."""
+        member = make_member("claude")
+        cmd = member.build_command("What do you think?")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith(CouncilMember.COUNCIL_PREAMBLE)
+        assert prompt.endswith("What do you think?")
+
+    def test_phase_prompt_inserted(self) -> None:
+        """Phase prompt appears between preamble and user prompt."""
+        member = make_member("claude")
+        member.phase_prompt = "Analyze only."
+        cmd = member.build_command("What do you think?")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert "Analyze only." in prompt
+        assert prompt.index(CouncilMember.COUNCIL_PREAMBLE) < prompt.index("Analyze only.")
+        assert prompt.index("Analyze only.") < prompt.index("What do you think?")
+
+    def test_agent_prompt_inserted(self) -> None:
+        """Agent prompt appears between preamble and user prompt."""
+        member = make_member("claude")
+        member.agent_prompt = "Be concise."
+        cmd = member.build_command("What do you think?")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert "Be concise." in prompt
+        assert prompt.index("Be concise.") < prompt.index("What do you think?")
+
+    def test_full_merge_order(self) -> None:
+        """Preamble + phase + agent + user in correct order."""
+        member = make_member("claude")
+        member.phase_prompt = "Phase instruction."
+        member.agent_prompt = "Agent personality."
+        cmd = member.build_command("User question?")
+        prompt = cmd[cmd.index("-p") + 1]
+        preamble_end = prompt.index(CouncilMember.COUNCIL_PREAMBLE) + len(CouncilMember.COUNCIL_PREAMBLE)
+        phase_idx = prompt.index("Phase instruction.")
+        agent_idx = prompt.index("Agent personality.")
+        user_idx = prompt.index("User question?")
+        assert preamble_end <= phase_idx < agent_idx < user_idx
+
+    def test_no_prompts_is_same_as_before(self) -> None:
+        """Empty prompts should produce same result as old behavior."""
+        member = make_member("claude")
+        cmd = member.build_command("hello")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt == CouncilMember.COUNCIL_PREAMBLE + "hello"
+
 
 BRANCH = "feature/test-council"
 
