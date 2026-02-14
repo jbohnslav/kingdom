@@ -123,6 +123,16 @@ Check status anytime with `kd status`.
 |---------|-------------|
 | `kd work <id>` | Run autonomous agent loop on a ticket |
 
+## Working Tickets
+
+- **One at a time**: start a ticket (`kd tk start`), do the work, close it (`kd tk close`), commit, then move to the next.
+- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go.
+- **Acceptance criteria**: only close a ticket when all acceptance criteria are met.
+- **Decisions**: ask the King or consult the council (`kd council ask`) for difficult design decisions — don't guess.
+- **Bugs from this branch**: immediately write a failing test that reproduces it, then fix.
+- **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create` + `kd tk move <id> backlog`) and move on.
+- **Commit often**: commit `.kd/` changes (ticket closures, worklogs, threads) and code changes as you go.
+
 ## Council Guidelines
 
 - **When to consult**: major architectural decisions, technology choices with trade-offs, design patterns that could go multiple ways, when uncertain about an approach.

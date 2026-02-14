@@ -24,7 +24,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
 from kingdom.council import Council
-from kingdom.design import build_design_template
+from kingdom.design import build_design_template, ensure_design_initialized
 from kingdom.session import get_current_thread, set_current_thread
 from kingdom.state import (
     archive_root,
@@ -187,6 +187,10 @@ def start(
     # Create branch layout
     branch_dir = ensure_branch_layout(base, branch)
 
+    # Initialize design doc with template
+    design_path = branch_dir / "design.md"
+    ensure_design_initialized(design_path, branch)
+
     # Write .kd/current with normalized name
     set_current_run(base, normalized)
 
@@ -198,6 +202,7 @@ def start(
 
     typer.echo(f"Started session for branch: {branch}")
     typer.echo(f"Location: {branch_dir}")
+    typer.echo(f"Design: {design_path}")
 
 
 @app.command(help="Mark the current session as done.")
