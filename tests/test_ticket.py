@@ -825,6 +825,58 @@ class TestMoveTicket:
         with pytest.raises(FileNotFoundError):
             move_ticket(tmp_path / "nonexistent.md", dest_dir)
 
+    def test_move_cross_filesystem_fallback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """move_ticket falls back to copy+delete when rename raises OSError."""
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        dest_dir = tmp_path / "dest"
+
+        ticket = Ticket(
+            id="kin-xfs",
+            status="open",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+            title="Cross FS",
+        )
+        source_path = source_dir / "kin-xfs.md"
+        write_ticket(ticket, source_path)
+
+        # Force Path.rename to raise OSError (simulating cross-filesystem)
+        def fake_rename(self, target):
+            raise OSError("Invalid cross-device link")
+
+        monkeypatch.setattr(Path, "rename", fake_rename)
+
+        new_path = move_ticket(source_path, dest_dir)
+
+        assert new_path == dest_dir / "kin-xfs.md"
+        assert new_path.exists()
+        assert not source_path.exists()
+
+        moved_ticket = read_ticket(new_path)
+        assert moved_ticket.id == "kin-xfs"
+
+    def test_move_destination_exists(self, tmp_path: Path) -> None:
+        """move_ticket raises FileExistsError when destination already has the file."""
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        dest_dir = tmp_path / "dest"
+        dest_dir.mkdir()
+
+        ticket = Ticket(
+            id="kin-dup",
+            status="open",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+            title="Duplicate",
+        )
+        source_path = source_dir / "kin-dup.md"
+        write_ticket(ticket, source_path)
+        # Pre-create destination
+        dest_path = dest_dir / "kin-dup.md"
+        dest_path.write_text("existing")
+
+        with pytest.raises(FileExistsError):
+            move_ticket(source_path, dest_dir)
+
 
 class TestGetTicketLocation:
     """Tests for get_ticket_location function."""

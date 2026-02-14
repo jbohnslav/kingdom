@@ -415,6 +415,8 @@ class TestTicketMove:
             assert "Moved" in result.output
             branch_tickets = branch_root(base, BRANCH) / "tickets" / "kin-mv01.md"
             assert branch_tickets.exists()
+            # Source must be removed (no duplicate in backlog)
+            assert not (backlog_dir / "kin-mv01.md").exists()
 
     def test_move_already_in_destination(self) -> None:
         with runner.isolated_filesystem():

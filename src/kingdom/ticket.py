@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -379,7 +380,12 @@ def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
     new_path = dest_dir / ticket_path.name
     if new_path.exists():
         raise FileExistsError(f"Destination already exists: {new_path}")
-    ticket_path.rename(new_path)
+    try:
+        ticket_path.rename(new_path)
+    except OSError:
+        # Cross-filesystem rename; fall back to copy-then-delete
+        shutil.copy2(str(ticket_path), str(new_path))
+        ticket_path.unlink()
     return new_path
 
 
