@@ -739,6 +739,32 @@ class TestCouncilStatus:
             # Should show status for both threads
             assert result.output.count("complete") == 2
 
+    def test_status_verbose_shows_log_paths(self) -> None:
+        """--verbose flag shows log file paths for each member."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-test", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-test")
+            add_message(base, BRANCH, "council-test", from_="king", to="all", body="Q")
+            add_message(base, BRANCH, "council-test", from_="claude", to="king", body="A")
+
+            # Create a log file for claude
+            from kingdom.state import logs_root
+
+            log_dir = logs_root(base, BRANCH)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / "council-claude.log").write_text("some log output")
+
+            result = runner.invoke(cli.app, ["council", "status", "--verbose"])
+
+            assert result.exit_code == 0
+            assert "council-claude.log" in result.output
+            assert "(no log file)" in result.output  # codex has no log
+
     def test_status_no_threads_errors(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

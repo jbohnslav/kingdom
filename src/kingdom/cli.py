@@ -648,6 +648,7 @@ def council_list() -> None:
 def council_status(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current/most recent).")] = None,
     all_threads: Annotated[bool, typer.Option("--all", help="Show status for all threads.")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show log file paths.")] = False,
 ) -> None:
     """Show which councillors have responded and which are still pending."""
     from kingdom.thread import list_threads, thread_response_status
@@ -663,7 +664,7 @@ def council_status(
             return
         for t in council_threads:
             status = thread_response_status(base, feature, t.id)
-            _print_thread_status(status)
+            _print_thread_status(status, base, feature, verbose)
             typer.echo()
         return
 
@@ -680,10 +681,10 @@ def council_status(
                 raise typer.Exit(code=1)
 
     status = thread_response_status(base, feature, thread_id)
-    _print_thread_status(status)
+    _print_thread_status(status, base, feature, verbose)
 
 
-def _print_thread_status(status) -> None:
+def _print_thread_status(status, base: Path, feature: str, verbose: bool = False) -> None:
     """Print response status for a single thread."""
     from kingdom.thread import ThreadStatus
 
@@ -696,9 +697,16 @@ def _print_thread_status(status) -> None:
     typer.echo(f"{status.thread_id}  [{state}]")
     for name in sorted(status.expected):
         if name in status.responded:
-            typer.echo(f"  {name}: responded")
+            line = f"  {name}: responded"
         else:
-            typer.echo(f"  {name}: pending")
+            line = f"  {name}: pending"
+        if verbose:
+            log_file = logs_root(base, feature) / f"council-{name}.log"
+            if log_file.exists():
+                line += f"  {log_file}"
+            else:
+                line += "  (no log file)"
+        typer.echo(line)
 
 
 def watch_thread(
