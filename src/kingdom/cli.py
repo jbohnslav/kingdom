@@ -2291,6 +2291,7 @@ def ticket_create(
     typer.echo(f"Created {ticket_id}: {title}")
 
 
+@ticket_app.command("ls", help="List tickets.", hidden=True)
 @ticket_app.command("list", help="List tickets.")
 def ticket_list(
     all_tickets: Annotated[bool, typer.Option("--all", "-a", help="List all tickets across all locations.")] = False,
