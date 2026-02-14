@@ -1,6 +1,6 @@
 ---
 id: c5cb
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-13T22:47:40Z
@@ -27,3 +27,13 @@ Strip the current breakdown command of all its ticket-parsing/creation logic (pa
 - The `state.json` breakdown_id → ticket_id mapping can be removed if nothing reads it downstream
 - Don't break `design_show()` or `design_approve()` which share `get_branch_paths()`
 - Do this before 3860 (config file) so config doesn't need a breakdown prompt section
+
+## Worklog
+
+- Rewrote `breakdown()` CLI command: removed `--apply` flag, `parse_breakdown_tickets` import, two-pass create+link, state.json mapping
+- New command reads design.md and prints an agent-ready prompt with instructions to use `kd tk create` and `kd tk dep`
+- Includes relative path to design doc in the prompt
+- Cleaned `breakdown.py`: removed `parse_breakdown_tickets`, `build_breakdown_council_prompt`, `build_breakdown_update_prompt`, `extract_tagged_block`, `parse_breakdown_update_response`, `BreakdownUpdate`, `AgentResponse` import
+- Kept `build_breakdown_template`, `read_breakdown`, `write_breakdown`, `ensure_breakdown_initialized`
+- Updated tests: removed `parse_breakdown_tickets` test, updated CLI test assertions
+- 483 tests pass (3 fewer — removed tests for deleted functions)

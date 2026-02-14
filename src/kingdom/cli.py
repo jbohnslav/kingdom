@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from kingdom.breakdown import build_breakdown_template, parse_breakdown_tickets
+from kingdom.breakdown import build_breakdown_template
 from kingdom.council import Council
 from kingdom.design import build_design_template, ensure_design_initialized
 from kingdom.session import get_current_thread, set_current_thread
@@ -843,84 +843,43 @@ def design_approve() -> None:
 
 
 @app.command(help="Draft or iterate the current breakdown.")
-def breakdown(
-    apply: bool = typer.Option(False, "--apply", help="Create tickets from breakdown.md."),
-) -> None:
-    from datetime import datetime
-
+def breakdown() -> None:
     base = Path.cwd()
     feature = resolve_current_run(base)
-    _, _, breakdown_path, state_path = get_branch_paths(base, feature)
+    _, design_path, breakdown_path, _ = get_branch_paths(base, feature)
 
+    # Ensure breakdown template exists
     if not breakdown_path.exists() or not breakdown_path.read_text(encoding="utf-8").strip():
         breakdown_path.parent.mkdir(parents=True, exist_ok=True)
         breakdown_path.write_text(build_breakdown_template(feature), encoding="utf-8")
-        typer.echo(f"Created breakdown template at {breakdown_path.relative_to(base)}")
-        return
 
-    if not apply:
-        typer.echo(f"Breakdown already exists at {breakdown_path.relative_to(base)}")
-        typer.echo("Use --apply to create tickets from the breakdown.")
-        return
+    # Read design doc for context
+    design_text = ""
+    if design_path.exists():
+        design_text = design_path.read_text(encoding="utf-8").strip()
 
-    parsed_tickets = parse_breakdown_tickets(breakdown_path.read_text(encoding="utf-8"))
-    if not parsed_tickets:
-        raise RuntimeError("No tickets found in breakdown.md")
+    prompt = "\n".join(
+        [
+            f"# Ticket Breakdown: {feature}",
+            "",
+            "Read the design doc below, then create tickets using the `kd` CLI.",
+            "",
+            "## Instructions",
+            "",
+            f"1. Read the design doc at `{design_path.relative_to(base)}`.",
+            '2. Create tickets: `kd tk create "<title>"` — then edit the ticket file to add description and acceptance criteria.',
+            "3. Set dependencies: `kd tk dep <id> <dep-id>`",
+            "4. Review: `kd tk list` to verify.",
+            "",
+            "## Design Doc",
+            "",
+            "```markdown",
+            design_text or "(empty — write the design first with `kd design`)",
+            "```",
+        ]
+    )
 
-    # Get tickets directory for current branch
-    tickets_dir = get_tickets_dir(base)
-    tickets_dir.mkdir(parents=True, exist_ok=True)
-
-    created: dict[str, str] = {}
-    for parsed in parsed_tickets:
-        # Build ticket body from description and acceptance criteria
-        body_parts = []
-        if parsed["description"]:
-            body_parts.append(parsed["description"])
-        if parsed["acceptance"]:
-            body_parts.append("\n## Acceptance Criteria\n")
-            for item in parsed["acceptance"]:
-                body_parts.append(f"- [ ] {item}")
-        body = "\n".join(body_parts) if body_parts else ""
-
-        # Create ticket using internal module
-        ticket_id = generate_ticket_id(tickets_dir)
-        ticket = Ticket(
-            id=ticket_id,
-            status="open",
-            deps=[],  # Dependencies added in second pass
-            links=[],
-            created=datetime.now(UTC),
-            type="task",
-            priority=parsed["priority"],
-            title=parsed["title"],
-            body=body,
-        )
-
-        ticket_path = tickets_dir / f"{ticket_id}.md"
-        write_ticket(ticket, ticket_path)
-        created[parsed["breakdown_id"]] = ticket_id
-        typer.echo(f"Created ticket {ticket_id} for {parsed['breakdown_id']}")
-
-    # Second pass: add dependencies
-    for parsed in parsed_tickets:
-        ticket_id = created.get(parsed["breakdown_id"])
-        if not ticket_id:
-            continue
-        deps_to_add = []
-        for dep in parsed["depends_on"]:
-            dep_id = created.get(dep, dep)  # Use mapped ID or original if external
-            deps_to_add.append(dep_id)
-
-        if deps_to_add:
-            ticket_path = tickets_dir / f"{ticket_id}.md"
-            ticket = read_ticket(ticket_path)
-            ticket.deps = deps_to_add
-            write_ticket(ticket, ticket_path)
-
-    state = read_json(state_path) if state_path.exists() else {}
-    state["tickets"] = {**state.get("tickets", {}), **created}
-    write_json(state_path, state)
+    typer.echo(prompt)
 
 
 peasant_app = typer.Typer(name="peasant", help="Manage peasant agents.")
