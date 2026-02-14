@@ -1860,11 +1860,7 @@ def status(
         "ready_count": ready_count,
     }
 
-    if output_json:
-        typer.echo(json.dumps(output, indent=2))
     # Group tickets by assignee
-    import os
-
     role = os.environ.get("KD_ROLE", "")
     agent_name = os.environ.get("KD_AGENT_NAME", "")
     if not role:
