@@ -50,6 +50,8 @@ def test_done_shows_push_reminder_when_unpushed() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         subprocess.run(["git", "init", "-q"], check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], check=True)
         subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], check=True, capture_output=True)
 
         ensure_branch_layout(base, "test-feature")
