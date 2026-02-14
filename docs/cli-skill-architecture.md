@@ -219,7 +219,7 @@ King: kd council ask "Break this design into tickets with dependencies: [design.
 King (to Hand): "Create the breakdown using Gemini's structure but add
                  the dependency GPT identified between auth and storage"
 
-Hand: Updates breakdown.md, runs kd breakdown --apply
+Hand: Runs kd breakdown, uses output to create tickets with kd tk create
 ```
 
 The King sees multiple perspectives on how to structure the work, then directs the Hand.
@@ -253,8 +253,7 @@ description: Multi-model design and development workflow
 - `kd council <member> "prompt"` — Follow up with specific council member
 - `kd council critique` — Have members evaluate each other's responses
 - `kd design show` — View current design
-- `kd breakdown show` — View current breakdown
-- `kd breakdown --apply` — Create tickets from breakdown
+- `kd breakdown` — Print agent prompt to create tickets from design
 - `kd status` — See current phase, tickets, state
 
 ## Design Mode
@@ -413,13 +412,9 @@ Print current design.md contents.
 
 Mark design as approved, transition to breakdown phase.
 
-### `kd breakdown show`
+### `kd breakdown`
 
-Print current breakdown.md contents.
-
-### `kd breakdown --apply [--yes]`
-
-Create tickets from breakdown.md. Prompts for confirmation unless `--yes`.
+Print agent prompt to create tickets from the design doc.
 
 ### `kd status [--json]`
 
