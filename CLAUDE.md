@@ -29,6 +29,10 @@ Rules
     - Deliver a minimal, well-named module with docstrings, type hints, and a tiny usage example/test.
     - No functions beginning with underscores! Private functions are fake in python. Bad: `_send_to_agent()`: good: `send_to_agent()`.
 
+## Tooling
+
+When working with Python, invoke the relevant /astral:<skill> for uv, ty, and ruff to ensure best practices are followed.
+
 ## Agent Timeouts
 
 Council queries can take several minutes. Set bash timeout to 5 minutes:
