@@ -276,7 +276,41 @@ class TestCouncilShow:
             assert result.exit_code == 0
             assert thread_id in result.output
 
-    def test_show_no_thread_errors(self) -> None:
+    def test_show_defaults_to_most_recent_thread(self) -> None:
+        """When current_thread is cleared, council show should fall back to the most recently created thread."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create two threads with explicit timestamps so ordering is deterministic
+            create_thread(base, BRANCH, "council-old", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-old", from_="king", to="all", body="Old topic")
+            add_message(base, BRANCH, "council-old", from_="claude", to="king", body="Old response")
+
+            # Patch created_at on the second thread to be later
+            create_thread(base, BRANCH, "council-new", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-new", from_="king", to="all", body="New topic")
+            add_message(base, BRANCH, "council-new", from_="claude", to="king", body="New response")
+
+            from kingdom.thread import threads_root
+
+            new_meta = json.loads((threads_root(base, BRANCH) / "council-new" / "thread.json").read_text())
+            new_meta["created_at"] = "2099-01-01T00:00:00Z"
+            (threads_root(base, BRANCH) / "council-new" / "thread.json").write_text(json.dumps(new_meta))
+
+            # Clear the current_thread pointer
+            set_current_thread(base, BRANCH, None)
+
+            result = runner.invoke(cli.app, ["council", "show"])
+
+            assert result.exit_code == 0
+            # Should show the most recently created thread, not the older one
+            assert "council-new" in result.output
+            assert "New topic" in result.output
+
+    def test_show_no_threads_at_all_errors(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -284,7 +318,6 @@ class TestCouncilShow:
             result = runner.invoke(cli.app, ["council", "show"])
 
             assert result.exit_code == 1
-            assert "No current council thread" in result.output
 
     def test_show_legacy_run_fallback(self) -> None:
         with runner.isolated_filesystem():

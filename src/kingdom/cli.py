@@ -545,18 +545,24 @@ def council_show(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
 ) -> None:
     """Display a council thread's message history."""
-    from kingdom.thread import list_messages, thread_dir
+    from kingdom.thread import list_messages, list_threads, thread_dir
 
     base = Path.cwd()
     feature = resolve_current_run(base)
     console = Console()
 
-    # Resolve thread_id: argument, current thread, or error
+    # Resolve thread_id: argument, current thread, most recent, or error
     if thread_id is None:
         thread_id = get_current_thread(base, feature)
         if thread_id is None:
-            typer.echo("No current council thread. Use `kd council ask` first.")
-            raise typer.Exit(code=1)
+            # Fall back to most recently created council thread
+            threads = list_threads(base, feature)
+            council_threads = [t for t in threads if t.pattern == "council"]
+            if council_threads:
+                thread_id = council_threads[-1].id  # sorted by created_at asc
+            else:
+                typer.echo("No council threads. Use `kd council ask` first.")
+                raise typer.Exit(code=1)
 
     # Try as a thread first
     tdir = thread_dir(base, feature, thread_id)
