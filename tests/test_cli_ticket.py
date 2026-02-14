@@ -16,7 +16,7 @@ from kingdom.state import (
     ensure_run_layout,
     set_current_run,
 )
-from kingdom.ticket import Ticket, read_ticket, write_ticket
+from kingdom.ticket import Ticket, find_ticket, write_ticket
 
 runner = CliRunner()
 
@@ -43,7 +43,7 @@ def create_ticket_in(directory: Path, ticket_id: str = "kin-t001") -> Path:
 
 
 class TestTicketCreate:
-    def test_create_prints_relative_path(self) -> None:
+    def test_create_echoes_id_and_title(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -52,11 +52,10 @@ class TestTicketCreate:
 
             assert result.exit_code == 0, result.output
             output = result.output.strip()
-            assert output.startswith(".kd/")
-            assert output.endswith(".md")
-            assert Path(output).exists()
+            assert output.startswith("Created ")
+            assert "My new ticket" in output
 
-    def test_create_backlog_prints_path(self) -> None:
+    def test_create_backlog_echoes_id_and_title(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -65,8 +64,8 @@ class TestTicketCreate:
 
             assert result.exit_code == 0, result.output
             output = result.output.strip()
-            assert "backlog" in output
-            assert Path(output).exists()
+            assert output.startswith("Created ")
+            assert "Backlog ticket" in output
 
     def test_create_accepts_description_and_type_flags(self) -> None:
         with runner.isolated_filesystem():
@@ -79,7 +78,11 @@ class TestTicketCreate:
             )
 
             assert result.exit_code == 0, result.output
-            created_ticket = read_ticket(Path(result.stdout.strip()))
+            # Extract ticket ID from "Created <id>: <title>"
+            ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
+            found = find_ticket(base, ticket_id)
+            assert found is not None
+            created_ticket, _ = found
             assert created_ticket.body == "Body from flag"
             assert created_ticket.type == "bug"
 
@@ -91,15 +94,17 @@ class TestTicketCreate:
             result = runner.invoke(cli.app, ["tk", "create", "Bad priority", "-p", "5"])
 
             assert result.exit_code == 0
-            path_output = result.stdout.strip()
-            assert path_output.endswith(".md")
-            assert Path(path_output).exists()
+            output = result.output.strip()
+            assert output.startswith("Created ")
 
             # Warning should be on stderr so stdout stays script-friendly.
             assert "Warning: Priority 5 outside valid range" in result.stderr
             assert "Warning: Priority 5 outside valid range" not in result.stdout
 
-            created_ticket = read_ticket(Path(path_output))
+            ticket_id = output.split(":")[0].replace("Created ", "")
+            found = find_ticket(base, ticket_id)
+            assert found is not None
+            created_ticket, _ = found
             assert created_ticket.priority == 3
 
 
@@ -199,8 +204,8 @@ class TestTicketPull:
             result = runner.invoke(cli.app, ["tk", "pull", "kin-pull"])
 
             assert result.exit_code == 0, result.output
-            output = result.output.strip()
-            assert output.endswith("kin-pull.md")
+            assert "Pulled kin-pull:" in result.output
+            assert "Test ticket" in result.output
             # Should be on branch now
             branch_path = branch_root(base, BRANCH) / "tickets" / "kin-pull.md"
             assert branch_path.exists()
@@ -335,7 +340,7 @@ class TestTicketPull:
             assert result.exit_code == 0, result.output
             legacy_ticket_path = base / ".kd" / "runs" / legacy_run / "tickets" / "kin-legacy.md"
             assert legacy_ticket_path.exists()
-            assert str(legacy_ticket_path.resolve()) in result.stdout
+            assert "Pulled kin-legacy:" in result.output
 
     def test_pull_already_on_branch_errors(self) -> None:
         """Pulling a ticket that's already on the current branch should error."""

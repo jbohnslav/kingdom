@@ -2258,7 +2258,7 @@ def ticket_create(
     ticket_path = tickets_dir / f"{ticket_id}.md"
     write_ticket(ticket, ticket_path)
 
-    typer.echo(str(ticket_path.relative_to(base)))
+    typer.echo(f"Created {ticket_id}: {title}")
 
 
 @ticket_app.command("list", help="List tickets.")
@@ -2453,7 +2453,7 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
     if new_status in ("open", "in_progress") and ticket_path.parent.resolve() == archive_backlog_tickets.resolve():
         ticket_path = move_ticket(ticket_path, backlog_tickets)
 
-    typer.echo(f"{ticket.id}: {old_status} → {new_status}")
+    typer.echo(f"{ticket.id}: {old_status} → {new_status} — {ticket.title}")
 
 
 @ticket_app.command("start", help="Mark a ticket as in_progress.")
@@ -2659,7 +2659,7 @@ def ticket_move(
     # Pass 2: move all validated tickets
     for ticket, ticket_path in validated:
         new_path = move_ticket(ticket_path, dest_dir)
-        typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name}")
+        typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name} — {ticket.title}")
 
 
 @ticket_app.command("pull", help="Pull backlog tickets into the current branch.")
@@ -2704,9 +2704,9 @@ def ticket_pull(
         validated.append((ticket, ticket_path))
 
     # Pass 2: move all validated tickets
-    for _, ticket_path in validated:
-        new_path = move_ticket(ticket_path, dest_dir)
-        typer.echo(str(new_path.resolve()))
+    for ticket, ticket_path in validated:
+        move_ticket(ticket_path, dest_dir)
+        typer.echo(f"Pulled {ticket.id}: {ticket.title}")
 
 
 @ticket_app.command("ready", help="List tickets ready to work on.")
