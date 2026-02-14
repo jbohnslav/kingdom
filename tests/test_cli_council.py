@@ -762,6 +762,8 @@ class TestCouncilStatus:
             result = runner.invoke(cli.app, ["council", "status", "--verbose"])
 
             assert result.exit_code == 0
+            assert "thread:" in result.output
+            assert "council-test" in result.output
             assert "council-claude.log" in result.output
             assert "(no log file)" in result.output  # codex has no log
 
