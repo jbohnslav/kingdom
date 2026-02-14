@@ -82,6 +82,8 @@ Check status anytime with `kd status`.
 | `kd council ask --async "prompt"` | Dispatch in background, then watch |
 | `kd council show <thread-id>` | Display a thread |
 | `kd council list` | List all threads |
+| `kd council status [thread-id]` | Show per-member response status |
+| `kd council status --all` | Show status for all threads |
 | `kd council watch <thread-id>` | Watch for incoming responses |
 | `kd council reset` | Clear all sessions |
 
