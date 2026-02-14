@@ -1939,6 +1939,31 @@ def check_cli(command: list[str]) -> tuple[bool, str | None]:
         return (False, "Command timed out")
 
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+config_app = typer.Typer(name="config", help="View and manage configuration.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("show", help="Print the effective configuration.")
+def config_show() -> None:
+    """Print the merged config (defaults + user overrides) as JSON."""
+    import dataclasses
+
+    from kingdom.config import load_config
+
+    base = Path.cwd()
+    cfg = load_config(base)
+    print(json.dumps(dataclasses.asdict(cfg), indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Doctor
+# ---------------------------------------------------------------------------
+
+
 def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
     """Build doctor checks from agent configs."""
     import shlex

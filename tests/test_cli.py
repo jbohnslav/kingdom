@@ -129,3 +129,36 @@ def test_doctor_json_invalid_config() -> None:
         data = json.loads(result.output)
         assert data["config"]["valid"] is False
         assert "bad cross-reference" in data["config"]["error"]
+
+
+# -- kd config show ---
+
+
+def test_config_show_defaults() -> None:
+    """Test kd config show prints default config as valid JSON."""
+    result = runner.invoke(cli.app, ["config", "show"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert "agents" in data
+    assert "prompts" in data
+    assert "council" in data
+    assert "peasant" in data
+    # Check defaults
+    assert "claude" in data["agents"]
+    assert data["peasant"]["agent"] == "claude"
+    assert data["council"]["timeout"] == 600
+
+
+def test_config_show_with_overrides(tmp_path) -> None:
+    """Test kd config show reflects user overrides."""
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config = {"council": {"timeout": 300}, "peasant": {"agent": "codex"}}
+    (kd_dir / "config.json").write_text(json.dumps(config))
+
+    with patch("kingdom.config.state_root", return_value=kd_dir):
+        result = runner.invoke(cli.app, ["config", "show"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["council"]["timeout"] == 300
+        assert data["peasant"]["agent"] == "codex"
