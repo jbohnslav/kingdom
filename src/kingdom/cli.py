@@ -2395,16 +2395,45 @@ def ticket_list(
 
 @ticket_app.command("show", help="Show a ticket.")
 def ticket_show(
-    ticket_id: Annotated[
-        str | None, typer.Argument(help="Ticket ID (full or partial). Omit to show ticket assigned to 'hand'.")
+    ticket_ids: Annotated[
+        list[str] | None, typer.Argument(help="Ticket ID(s) (full or partial). Omit to show ticket assigned to 'hand'.")
     ] = None,
+    all_tickets: Annotated[bool, typer.Option("--all", "-a", help="Show all tickets on the current branch.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
-    """Display a ticket by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
+    """Display one or more tickets by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
     base = Path.cwd()
 
-    if ticket_id is None:
-        # Find ticket assigned to "hand" on the current branch
+    # Resolve tickets to show as (Ticket, Path) pairs
+    pairs: list[tuple[Ticket, Path]] = []
+
+    if all_tickets:
+        try:
+            feature = resolve_current_run(base)
+        except RuntimeError:
+            typer.echo("No active session. Use `kd start` first.")
+            raise typer.Exit(code=1) from None
+        tickets_dir = branch_root(base, feature) / "tickets"
+        if tickets_dir.exists():
+            for ticket_file in sorted(tickets_dir.glob("*.md")):
+                with contextlib.suppress(ValueError, FileNotFoundError):
+                    pairs.append((read_ticket(ticket_file), ticket_file))
+        if not pairs:
+            typer.echo("No tickets on this branch.")
+            raise typer.Exit(code=0)
+    elif ticket_ids:
+        for tid in ticket_ids:
+            try:
+                result = find_ticket(base, tid)
+            except AmbiguousTicketMatch as e:
+                typer.echo(f"Error: {e}")
+                raise typer.Exit(code=1) from None
+            if result is None:
+                typer.echo(f"Ticket not found: {tid}")
+                raise typer.Exit(code=1)
+            pairs.append(result)
+    else:
+        # No args: find ticket assigned to "hand"
         try:
             feature = resolve_current_run(base)
         except RuntimeError:
@@ -2414,45 +2443,41 @@ def ticket_show(
         if tickets_dir.exists():
             for t in list_tickets(tickets_dir):
                 if t.assignee == "hand":
-                    ticket_id = t.id
+                    result = find_ticket(base, t.id)
+                    if result:
+                        pairs.append(result)
                     break
-        if ticket_id is None:
+        if not pairs:
             typer.echo("No ticket assigned to 'hand'. Use `kd tk assign <id> hand`.")
             raise typer.Exit(code=1)
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
-
+    # Render
     if output_json:
-        output = {
-            "id": ticket.id,
-            "status": ticket.status,
-            "priority": ticket.priority,
-            "type": ticket.type,
-            "title": ticket.title,
-            "body": ticket.body,
-            "deps": ticket.deps,
-            "links": ticket.links,
-            "created": ticket.created.isoformat(),
-            "assignee": ticket.assignee,
-            "path": str(ticket_path),
-        }
-        typer.echo(json.dumps(output, indent=2))
+        results_json = [
+            {
+                "id": ticket.id,
+                "status": ticket.status,
+                "priority": ticket.priority,
+                "type": ticket.type,
+                "title": ticket.title,
+                "body": ticket.body,
+                "deps": ticket.deps,
+                "links": ticket.links,
+                "created": ticket.created.isoformat(),
+                "assignee": ticket.assignee,
+                "path": str(ticket_path),
+            }
+            for ticket, ticket_path in pairs
+        ]
+        typer.echo(json.dumps(results_json if len(results_json) > 1 else results_json[0], indent=2))
     else:
-        # Read and display the raw file content for human-readable output
-        content = ticket_path.read_text(encoding="utf-8")
-        console = Console()
-        console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
-        console.print(Markdown(content))
+        for i, (_ticket, ticket_path) in enumerate(pairs):
+            if i > 0:
+                typer.echo("")  # separator between tickets
+            content = ticket_path.read_text(encoding="utf-8")
+            console = Console()
+            console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
+            console.print(Markdown(content))
 
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:
