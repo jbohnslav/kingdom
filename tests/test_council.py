@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kingdom.agent import DEFAULT_AGENTS, AgentConfig
+from kingdom.agent import AgentConfig, resolve_agent
+from kingdom.config import DEFAULT_AGENTS
 from kingdom.council.base import AgentResponse, CouncilMember
 from kingdom.council.council import Council
 from kingdom.session import AgentState, get_agent_state, session_path, set_agent_state
@@ -19,7 +20,7 @@ PREAMBLE = CouncilMember.COUNCIL_PREAMBLE
 
 def make_member(name: str) -> CouncilMember:
     """Create a CouncilMember from default agent config."""
-    return CouncilMember(config=DEFAULT_AGENTS[name])
+    return CouncilMember(config=resolve_agent(name, DEFAULT_AGENTS[name]))
 
 
 def mock_popen(stdout: str = "", stderr: str = "", returncode: int = 0):
@@ -310,43 +311,39 @@ class TestCouncilMemberQueryConfigErrors:
 
 
 class TestCouncilCreateValidation:
-    """Test that Council.create() validates agent configs."""
+    """Test that Council.create() builds from config."""
 
-    def test_create_uses_defaults_when_no_agents_dir(self, tmp_path: Path) -> None:
-        """No .kd/agents/ dir should use defaults without error."""
+    def test_create_uses_defaults_when_no_config(self, tmp_path: Path) -> None:
+        """No .kd/config.json should use defaults without error."""
+        (tmp_path / ".kd").mkdir(parents=True, exist_ok=True)
         council = Council.create(base=tmp_path)
         assert len(council.members) == 3
         names = {m.name for m in council.members}
         assert names == {"claude", "codex", "cursor"}
 
-    def test_create_uses_agent_files(self, tmp_path: Path) -> None:
-        """Valid agent files should be loaded."""
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
-        (agents_dir / "myagent.md").write_text(
-            "---\nname: myagent\nbackend: claude_code\ncli: claude --print\nresume_flag: --resume\n---\n"
-        )
+    def test_create_respects_council_members_config(self, tmp_path: Path) -> None:
+        """Council should only include agents listed in config.council.members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        (kd / "config.json").write_text(json.dumps({"council": {"members": ["claude", "codex"]}}))
 
         council = Council.create(base=tmp_path)
-        assert len(council.members) == 1
-        assert council.members[0].name == "myagent"
+        assert len(council.members) == 2
+        names = {m.name for m in council.members}
+        assert names == {"claude", "codex"}
 
-    def test_create_raises_when_all_agent_files_broken(self, tmp_path: Path) -> None:
-        """If agent files exist but all fail to parse, raise ValueError."""
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
-        (agents_dir / "broken.md").write_text("not valid frontmatter")
+    def test_create_uses_config_timeout(self, tmp_path: Path) -> None:
+        """Council timeout should come from config."""
+        import json
 
-        with pytest.raises(ValueError, match="none could be parsed"):
-            Council.create(base=tmp_path)
-
-    def test_create_uses_defaults_when_agents_dir_empty(self, tmp_path: Path) -> None:
-        """Empty .kd/agents/ dir should use defaults without error."""
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        (kd / "config.json").write_text(json.dumps({"council": {"timeout": 120}}))
 
         council = Council.create(base=tmp_path)
-        assert len(council.members) == 3
+        assert council.timeout == 120
 
 
 BRANCH = "feature/test-council"

@@ -1,172 +1,96 @@
-"""Agent configuration model.
+"""Agent configuration and command building.
 
-Agent definitions are markdown files with YAML frontmatter, stored at
-``.kd/agents/<name>.md``. Each agent specifies a backend (claude_code, codex,
-cursor), CLI command, and session resume flag.
-
-Example agent file::
-
-    ---
-    name: claude
-    backend: claude_code
-    cli: claude --print --output-format json
-    resume_flag: --resume
-    version_command: claude --version
-    install_hint: Install Claude Code: https://docs.anthropic.com/en/docs/claude-code
-    ---
+Each agent has a backend (claude_code, codex, cursor) whose CLI invocation
+details live in ``BACKEND_DEFAULTS``.  User-facing config (model, prompts,
+extra flags) comes from ``config.py``'s ``AgentDef``.  The two are merged at
+runtime into an ``AgentConfig`` that command builders consume.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import shlex
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Any
 
-from kingdom.parsing import parse_frontmatter
-from kingdom.state import state_root
+from kingdom.config import AgentDef
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Backend defaults — CLI invocation details that live in code, not config
+# ---------------------------------------------------------------------------
+
+BACKEND_DEFAULTS: dict[str, dict[str, str]] = {
+    "claude_code": {
+        "cli": "claude --print --output-format json",
+        "resume_flag": "--resume",
+        "version_command": "claude --version",
+        "install_hint": "Install Claude Code: https://docs.anthropic.com/en/docs/claude-code",
+    },
+    "codex": {
+        "cli": "codex exec --json",
+        "resume_flag": "resume",
+        "version_command": "codex --version",
+        "install_hint": "Install Codex CLI: npm install -g @openai/codex",
+    },
+    "cursor": {
+        "cli": "agent --print --output-format json",
+        "resume_flag": "--resume",
+        "version_command": "agent --version",
+        "install_hint": "Install Cursor Agent: https://docs.cursor.com/agent",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Runtime agent config (merges backend defaults + user config)
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class AgentConfig:
-    """Configuration for an agent, loaded from .kd/agents/<name>.md."""
+    """Runtime agent configuration, merging BACKEND_DEFAULTS with user AgentDef."""
 
     name: str
-    backend: str  # claude_code, codex, cursor
-    cli: str  # base CLI command (e.g., "claude --print --output-format json")
-    resume_flag: str  # session resume mechanism (e.g., "--resume" or "resume")
-    version_command: str = ""  # command for `kd doctor` checks
-    install_hint: str = ""  # help text when CLI is missing
+    backend: str
+    cli: str
+    resume_flag: str
+    version_command: str = ""
+    install_hint: str = ""
+    model: str = ""
+    extra_flags: list[str] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------------
-
-
-def agents_root(base: Path) -> Path:
-    """Return path to .kd/agents/."""
-    return state_root(base) / "agents"
-
-
-# ---------------------------------------------------------------------------
-# Config file I/O
-# ---------------------------------------------------------------------------
-
-
-def parse_agent_file(content: str) -> AgentConfig:
-    """Parse an agent .md file (YAML frontmatter) into AgentConfig.
+def resolve_agent(name: str, agent_def: AgentDef) -> AgentConfig:
+    """Merge backend defaults with a user-facing AgentDef into a runtime AgentConfig.
 
     Raises:
-        ValueError: If frontmatter is missing or required fields are absent.
+        ValueError: If the backend is not in BACKEND_DEFAULTS.
     """
-    fm, _ = parse_frontmatter(content)
-
-    name = fm.get("name")
-    backend = fm.get("backend")
-    cli = fm.get("cli")
-
-    if not name or not backend or not cli:
-        raise ValueError("Agent file must have name, backend, and cli fields")
-
+    defaults = BACKEND_DEFAULTS.get(agent_def.backend)
+    if defaults is None:
+        raise ValueError(
+            f"Unknown backend '{agent_def.backend}' for agent '{name}'. "
+            f"Known backends: {', '.join(sorted(BACKEND_DEFAULTS))}"
+        )
     return AgentConfig(
-        name=str(name),
-        backend=str(backend),
-        cli=str(cli),
-        resume_flag=str(fm.get("resume_flag", "") or ""),
-        version_command=str(fm.get("version_command", "") or ""),
-        install_hint=str(fm.get("install_hint", "") or ""),
+        name=name,
+        backend=agent_def.backend,
+        cli=defaults["cli"],
+        resume_flag=defaults["resume_flag"],
+        version_command=defaults["version_command"],
+        install_hint=defaults["install_hint"],
+        model=agent_def.model,
+        extra_flags=list(agent_def.extra_flags),
     )
 
 
-def serialize_agent_file(config: AgentConfig) -> str:
-    """Serialize an AgentConfig to .md file format."""
-    lines = ["---"]
-    lines.append(f"name: {config.name}")
-    lines.append(f"backend: {config.backend}")
-    lines.append(f"cli: {config.cli}")
-    lines.append(f"resume_flag: {config.resume_flag}")
-    if config.version_command:
-        lines.append(f"version_command: {config.version_command}")
-    if config.install_hint:
-        lines.append(f"install_hint: {config.install_hint}")
-    lines.append("---")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def load_agent(name: str, base: Path) -> AgentConfig:
-    """Load an agent config from .kd/agents/<name>.md.
-
-    Raises:
-        FileNotFoundError: If the agent file doesn't exist.
-    """
-    path = agents_root(base) / f"{name}.md"
-    if not path.exists():
-        raise FileNotFoundError(f"Agent config not found: {path}")
-    content = path.read_text(encoding="utf-8")
-    return parse_agent_file(content)
-
-
-def list_agents(base: Path) -> list[AgentConfig]:
-    """List all registered agent configs from .kd/agents/."""
-    root = agents_root(base)
-    if not root.exists():
-        return []
-
-    configs: list[AgentConfig] = []
-    for path in sorted(root.glob("*.md")):
-        try:
-            configs.append(parse_agent_file(path.read_text(encoding="utf-8")))
-        except (ValueError, FileNotFoundError):
-            continue
-    return configs
-
-
-# ---------------------------------------------------------------------------
-# Default agent configurations
-# ---------------------------------------------------------------------------
-
-DEFAULT_AGENTS: dict[str, AgentConfig] = {
-    "claude": AgentConfig(
-        name="claude",
-        backend="claude_code",
-        cli="claude --print --output-format json",
-        resume_flag="--resume",
-        version_command="claude --version",
-        install_hint="Install Claude Code: https://docs.anthropic.com/en/docs/claude-code",
-    ),
-    "codex": AgentConfig(
-        name="codex",
-        backend="codex",
-        cli="codex exec --json",
-        resume_flag="resume",
-        version_command="codex --version",
-        install_hint="Install Codex CLI: npm install -g @openai/codex",
-    ),
-    "cursor": AgentConfig(
-        name="cursor",
-        backend="cursor",
-        cli="agent --print --output-format json",
-        resume_flag="--resume",
-        version_command="agent --version",
-        install_hint="Install Cursor Agent: https://docs.cursor.com/agent",
-    ),
-}
-
-
-def create_default_agent_files(base: Path) -> list[Path]:
-    """Create default agent .md files in .kd/agents/. Idempotent."""
-    root = agents_root(base)
-    root.mkdir(parents=True, exist_ok=True)
-
-    paths: list[Path] = []
-    for config in DEFAULT_AGENTS.values():
-        path = root / f"{config.name}.md"
-        if not path.exists():
-            path.write_text(serialize_agent_file(config), encoding="utf-8")
-        paths.append(path)
-    return paths
+def resolve_all_agents(agents: dict[str, AgentDef]) -> dict[str, AgentConfig]:
+    """Resolve all agent definitions from config into runtime AgentConfigs."""
+    return {name: resolve_agent(name, adef) for name, adef in agents.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +166,7 @@ def parse_cursor_response(stdout: str, stderr: str, code: int) -> tuple[str, str
         return stdout.strip(), None, raw
 
 
-RESPONSE_PARSERS = {
+RESPONSE_PARSERS: dict[str, Any] = {
     "claude_code": parse_claude_response,
     "codex": parse_codex_response,
     "cursor": parse_cursor_response,
@@ -259,7 +183,7 @@ def build_claude_command(
 ) -> list[str]:
     """Build claude CLI command.
 
-    Format: ``claude [--dangerously-skip-permissions] --print --output-format json [--resume SESSION] -p PROMPT``
+    Format: ``claude [--dangerously-skip-permissions] [--model MODEL] --print --output-format json [--resume SESSION] -p PROMPT``
 
     When skip_permissions is False (council queries), restricts to read-only tools.
     """
@@ -268,6 +192,10 @@ def build_claude_command(
         cmd.insert(1, "--dangerously-skip-permissions")
     else:
         cmd.extend(["--allowedTools", "Bash", "Read", "Glob", "Grep", "WebFetch", "WebSearch"])
+    if config.model:
+        cmd.extend(["--model", config.model])
+    if config.extra_flags:
+        cmd.extend(config.extra_flags)
     if session_id:
         cmd.extend([config.resume_flag, session_id])
     cmd.extend(["-p", prompt])
@@ -288,6 +216,10 @@ def build_codex_command(
         parts.insert(1, "--dangerously-bypass-approvals-and-sandbox")
     else:
         parts.extend(["-c", 'sandbox_permissions=["disk-full-read-access"]'])
+    if config.model:
+        parts.extend(["--model", config.model])
+    if config.extra_flags:
+        parts.extend(config.extra_flags)
     if session_id:
         try:
             exec_idx = parts.index("exec")
@@ -305,7 +237,7 @@ def build_cursor_command(
 ) -> list[str]:
     """Build cursor agent CLI command.
 
-    Format: ``agent [--force --sandbox disabled] --print --output-format json PROMPT [--resume SESSION]``
+    Format: ``agent [--force --sandbox disabled] [--model MODEL] --print --output-format json PROMPT [--resume SESSION]``
 
     When skip_permissions is False (council queries), uses --mode ask for read-only.
     """
@@ -316,13 +248,17 @@ def build_cursor_command(
         cmd.insert(3, "disabled")
     else:
         cmd.extend(["--mode", "ask"])
+    if config.model:
+        cmd.extend(["--model", config.model])
+    if config.extra_flags:
+        cmd.extend(config.extra_flags)
     cmd.append(prompt)
     if session_id:
         cmd.extend([config.resume_flag, session_id])
     return cmd
 
 
-COMMAND_BUILDERS = {
+COMMAND_BUILDERS: dict[str, Any] = {
     "claude_code": build_claude_command,
     "codex": build_codex_command,
     "cursor": build_cursor_command,
@@ -353,13 +289,6 @@ def build_command(
     """Build a CLI command for an agent.
 
     Dispatches to backend-specific command builder.
-
-    Args:
-        config: Agent configuration.
-        prompt: The prompt text.
-        session_id: Optional session ID for resume.
-        skip_permissions: If True (default), insert flags to bypass permission prompts.
-            Set to False for read-only council queries.
 
     Raises:
         ValueError: If the backend is unknown.

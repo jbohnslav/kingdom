@@ -72,11 +72,6 @@ def test_cli_init_creates_structure() -> None:
         assert (base / ".kd" / "worktrees").is_dir()
         assert (base / ".kd" / "config.json").exists()
         assert (base / ".kd" / ".gitignore").exists()
-        # Agent config files
-        assert (base / ".kd" / "agents").is_dir()
-        assert (base / ".kd" / "agents" / "claude.md").exists()
-        assert (base / ".kd" / "agents" / "codex.md").exists()
-        assert (base / ".kd" / "agents" / "cursor.md").exists()
 
 
 def test_cli_init_requires_git_repo() -> None:

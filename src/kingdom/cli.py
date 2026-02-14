@@ -126,9 +126,6 @@ def init(
         raise typer.Exit(code=1)
 
     paths = ensure_base_layout(base, create_gitignore=not no_gitignore)
-    from kingdom.agent import create_default_agent_files
-
-    create_default_agent_files(base)
     typer.echo(f"Initialized: {paths['state_root']}")
 
 
@@ -1912,12 +1909,14 @@ def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
     """Build doctor checks from agent configs."""
     import shlex
 
-    from kingdom.agent import DEFAULT_AGENTS, list_agents
+    from kingdom.agent import resolve_all_agents
+    from kingdom.config import load_config
 
-    agents = list_agents(base) or list(DEFAULT_AGENTS.values())
+    cfg = load_config(base)
+    agents = resolve_all_agents(cfg.agents)
 
     checks: list[dict[str, str | list[str]]] = []
-    for agent in agents:
+    for agent in agents.values():
         version_cmd = agent.version_command or f"{shlex.split(agent.cli)[0]} --version"
         checks.append(
             {

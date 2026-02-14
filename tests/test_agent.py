@@ -1,24 +1,71 @@
-"""Tests for agent configuration model."""
-
-from pathlib import Path
+"""Tests for agent configuration and command building."""
 
 import pytest
 
 from kingdom.agent import (
-    DEFAULT_AGENTS,
+    BACKEND_DEFAULTS,
     AgentConfig,
-    agents_root,
     build_command,
-    create_default_agent_files,
-    list_agents,
-    load_agent,
-    parse_agent_file,
     parse_claude_response,
     parse_codex_response,
     parse_cursor_response,
     parse_response,
-    serialize_agent_file,
+    resolve_agent,
+    resolve_all_agents,
 )
+from kingdom.config import DEFAULT_AGENTS, AgentDef
+
+
+class TestBackendDefaults:
+    def test_all_backends_defined(self) -> None:
+        assert set(BACKEND_DEFAULTS) == {"claude_code", "codex", "cursor"}
+
+    def test_claude_code_defaults(self) -> None:
+        d = BACKEND_DEFAULTS["claude_code"]
+        assert "claude" in d["cli"]
+        assert d["resume_flag"] == "--resume"
+        assert d["version_command"] == "claude --version"
+        assert d["install_hint"]
+
+    def test_codex_defaults(self) -> None:
+        d = BACKEND_DEFAULTS["codex"]
+        assert "codex" in d["cli"]
+        assert d["resume_flag"] == "resume"
+        assert d["version_command"] == "codex --version"
+
+    def test_cursor_defaults(self) -> None:
+        d = BACKEND_DEFAULTS["cursor"]
+        assert "agent" in d["cli"]
+        assert d["resume_flag"] == "--resume"
+        assert d["version_command"] == "agent --version"
+
+
+class TestResolveAgent:
+    def test_resolve_claude(self) -> None:
+        config = resolve_agent("claude", AgentDef(backend="claude_code"))
+        assert config.name == "claude"
+        assert config.backend == "claude_code"
+        assert "claude" in config.cli
+        assert config.resume_flag == "--resume"
+
+    def test_resolve_with_model(self) -> None:
+        config = resolve_agent("claude", AgentDef(backend="claude_code", model="opus-4-6"))
+        assert config.model == "opus-4-6"
+
+    def test_resolve_with_extra_flags(self) -> None:
+        config = resolve_agent("claude", AgentDef(backend="claude_code", extra_flags=["--verbose"]))
+        assert config.extra_flags == ["--verbose"]
+
+    def test_resolve_unknown_backend_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown backend 'fake'"):
+            resolve_agent("test", AgentDef(backend="fake"))
+
+    def test_resolve_all_defaults(self) -> None:
+        configs = resolve_all_agents(DEFAULT_AGENTS)
+        assert set(configs) == {"claude", "codex", "cursor"}
+        assert configs["claude"].backend == "claude_code"
+        assert configs["codex"].backend == "codex"
+        assert configs["cursor"].backend == "cursor"
 
 
 class TestAgentConfig:
@@ -35,6 +82,8 @@ class TestAgentConfig:
         assert config.resume_flag == "--resume"
         assert config.version_command == ""
         assert config.install_hint == ""
+        assert config.model == ""
+        assert config.extra_flags == []
 
     def test_optional_fields(self) -> None:
         config = AgentConfig(
@@ -44,194 +93,23 @@ class TestAgentConfig:
             resume_flag="--resume",
             version_command="test --version",
             install_hint="Install test",
+            model="opus-4-6",
+            extra_flags=["--verbose"],
         )
         assert config.version_command == "test --version"
         assert config.install_hint == "Install test"
+        assert config.model == "opus-4-6"
+        assert config.extra_flags == ["--verbose"]
 
 
-class TestParseAgentFile:
-    def test_parse_minimal(self) -> None:
-        content = "---\nname: myagent\nbackend: claude_code\ncli: claude --print\nresume_flag: --resume\n---\n"
-        config = parse_agent_file(content)
-        assert config.name == "myagent"
-        assert config.backend == "claude_code"
-        assert config.cli == "claude --print"
-        assert config.resume_flag == "--resume"
-
-    def test_parse_all_fields(self) -> None:
-        content = (
-            "---\n"
-            "name: claude\n"
-            "backend: claude_code\n"
-            "cli: claude --print --output-format json\n"
-            "resume_flag: --resume\n"
-            "version_command: claude --version\n"
-            "install_hint: Install Claude Code: https://docs.anthropic.com\n"
-            "---\n"
-        )
-        config = parse_agent_file(content)
-        assert config.name == "claude"
-        assert config.backend == "claude_code"
-        assert config.cli == "claude --print --output-format json"
-        assert config.resume_flag == "--resume"
-        assert config.version_command == "claude --version"
-        assert config.install_hint == "Install Claude Code: https://docs.anthropic.com"
-
-    def test_parse_missing_frontmatter(self) -> None:
-        with pytest.raises(ValueError, match="must start with YAML frontmatter"):
-            parse_agent_file("no frontmatter here")
-
-    def test_parse_missing_closing(self) -> None:
-        with pytest.raises(ValueError, match="missing closing"):
-            parse_agent_file("---\nname: test\n")
-
-    def test_parse_missing_required_fields(self) -> None:
-        with pytest.raises(ValueError, match="must have name, backend, and cli"):
-            parse_agent_file("---\nname: test\n---\n")
-
-    def test_parse_empty_resume_flag(self) -> None:
-        content = "---\nname: test\nbackend: test\ncli: test --flag\n---\n"
-        config = parse_agent_file(content)
-        assert config.resume_flag == ""
-
-    def test_parse_with_body_content(self) -> None:
-        """Body content after frontmatter is ignored."""
-        content = "---\nname: test\nbackend: test\ncli: test\nresume_flag: --r\n---\nSome body text here.\n"
-        config = parse_agent_file(content)
-        assert config.name == "test"
-
-
-class TestSerializeAgentFile:
-    def test_roundtrip(self) -> None:
-        config = AgentConfig(
-            name="claude",
-            backend="claude_code",
-            cli="claude --print --output-format json",
-            resume_flag="--resume",
-            version_command="claude --version",
-            install_hint="Install Claude Code",
-        )
-        serialized = serialize_agent_file(config)
-        parsed = parse_agent_file(serialized)
-        assert parsed.name == config.name
-        assert parsed.backend == config.backend
-        assert parsed.cli == config.cli
-        assert parsed.resume_flag == config.resume_flag
-        assert parsed.version_command == config.version_command
-        assert parsed.install_hint == config.install_hint
-
-    def test_omits_empty_optional_fields(self) -> None:
-        config = AgentConfig(name="test", backend="test", cli="test", resume_flag="--r")
-        serialized = serialize_agent_file(config)
-        assert "version_command" not in serialized
-        assert "install_hint" not in serialized
-
-
-class TestLoadAgent:
-    def test_load_existing(self, tmp_path: Path) -> None:
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
-        content = "---\nname: claude\nbackend: claude_code\ncli: claude --print\nresume_flag: --resume\n---\n"
-        (agents_dir / "claude.md").write_text(content)
-
-        config = load_agent("claude", tmp_path)
-        assert config.name == "claude"
-        assert config.backend == "claude_code"
-
-    def test_load_missing(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            load_agent("nonexistent", tmp_path)
-
-
-class TestListAgents:
-    def test_list_empty(self, tmp_path: Path) -> None:
-        assert list_agents(tmp_path) == []
-
-    def test_list_agents(self, tmp_path: Path) -> None:
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
-
-        for name in ["alpha", "beta"]:
-            content = f"---\nname: {name}\nbackend: test\ncli: {name} --run\nresume_flag: --r\n---\n"
-            (agents_dir / f"{name}.md").write_text(content)
-
-        agents = list_agents(tmp_path)
-        assert len(agents) == 2
-        assert agents[0].name == "alpha"
-        assert agents[1].name == "beta"
-
-    def test_list_skips_invalid_files(self, tmp_path: Path) -> None:
-        agents_dir = tmp_path / ".kd" / "agents"
-        agents_dir.mkdir(parents=True)
-
-        # Valid file
-        (agents_dir / "good.md").write_text("---\nname: good\nbackend: test\ncli: good\n---\n")
-        # Invalid file (no frontmatter)
-        (agents_dir / "bad.md").write_text("not a valid agent file")
-
-        agents = list_agents(tmp_path)
-        assert len(agents) == 1
-        assert agents[0].name == "good"
-
-
-class TestDefaultAgents:
-    def test_default_agents_defined(self) -> None:
-        assert "claude" in DEFAULT_AGENTS
-        assert "codex" in DEFAULT_AGENTS
-        assert "cursor" in DEFAULT_AGENTS
-
-    def test_claude_defaults(self) -> None:
-        c = DEFAULT_AGENTS["claude"]
-        assert c.backend == "claude_code"
-        assert "claude" in c.cli
-        assert c.resume_flag == "--resume"
-
-    def test_codex_defaults(self) -> None:
-        c = DEFAULT_AGENTS["codex"]
-        assert c.backend == "codex"
-        assert "codex" in c.cli
-        assert c.resume_flag == "resume"
-
-    def test_cursor_defaults(self) -> None:
-        c = DEFAULT_AGENTS["cursor"]
-        assert c.backend == "cursor"
-        assert "agent" in c.cli
-        assert c.resume_flag == "--resume"
-
-
-class TestCreateDefaultAgentFiles:
-    def test_creates_files(self, tmp_path: Path) -> None:
-        (tmp_path / ".kd").mkdir()
-        paths = create_default_agent_files(tmp_path)
-        assert len(paths) == 3
-        for path in paths:
-            assert path.exists()
-            assert path.suffix == ".md"
-
-    def test_idempotent(self, tmp_path: Path) -> None:
-        (tmp_path / ".kd").mkdir()
-        create_default_agent_files(tmp_path)
-        # Modify a file
-        claude_path = tmp_path / ".kd" / "agents" / "claude.md"
-        original = claude_path.read_text()
-        claude_path.write_text("---\nname: claude\nbackend: claude_code\ncli: custom\nresume_flag: --r\n---\n")
-
-        # Should not overwrite
-        create_default_agent_files(tmp_path)
-        assert claude_path.read_text() != original  # custom content preserved
-
-    def test_created_files_are_loadable(self, tmp_path: Path) -> None:
-        (tmp_path / ".kd").mkdir()
-        create_default_agent_files(tmp_path)
-        agents = list_agents(tmp_path)
-        assert len(agents) == 3
-        names = {a.name for a in agents}
-        assert names == {"claude", "codex", "cursor"}
+def make_config(name: str) -> AgentConfig:
+    """Resolve a default agent into an AgentConfig for tests."""
+    return resolve_agent(name, DEFAULT_AGENTS[name])
 
 
 class TestBuildCommand:
     def test_claude_without_session(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["claude"], "hello world")
+        cmd = build_command(make_config("claude"), "hello world")
         assert cmd == [
             "claude",
             "--dangerously-skip-permissions",
@@ -243,7 +121,7 @@ class TestBuildCommand:
         ]
 
     def test_claude_with_session(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["claude"], "hello", session_id="abc123")
+        cmd = build_command(make_config("claude"), "hello", session_id="abc123")
         assert cmd == [
             "claude",
             "--dangerously-skip-permissions",
@@ -257,7 +135,7 @@ class TestBuildCommand:
         ]
 
     def test_codex_without_session(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["codex"], "hello world")
+        cmd = build_command(make_config("codex"), "hello world")
         assert cmd == [
             "codex",
             "--dangerously-bypass-approvals-and-sandbox",
@@ -267,7 +145,7 @@ class TestBuildCommand:
         ]
 
     def test_codex_with_session(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["codex"], "hello", session_id="thread-123")
+        cmd = build_command(make_config("codex"), "hello", session_id="thread-123")
         assert cmd == [
             "codex",
             "--dangerously-bypass-approvals-and-sandbox",
@@ -279,7 +157,7 @@ class TestBuildCommand:
         ]
 
     def test_cursor_without_session(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["cursor"], "hello world")
+        cmd = build_command(make_config("cursor"), "hello world")
         assert cmd == [
             "agent",
             "--force",
@@ -292,7 +170,7 @@ class TestBuildCommand:
         ]
 
     def test_cursor_with_session(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["cursor"], "hello", session_id="conv-456")
+        cmd = build_command(make_config("cursor"), "hello", session_id="conv-456")
         assert cmd == [
             "agent",
             "--force",
@@ -317,9 +195,63 @@ class TestBuildCommand:
             build_command(config, "hello", session_id="thread-1")
 
 
+class TestBuildCommandModel:
+    def test_claude_with_model(self) -> None:
+        config = resolve_agent("claude", AgentDef(backend="claude_code", model="opus-4-6"))
+        cmd = build_command(config, "hello")
+        assert "--model" in cmd
+        model_idx = cmd.index("--model")
+        assert cmd[model_idx + 1] == "opus-4-6"
+
+    def test_codex_with_model(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", model="o3"))
+        cmd = build_command(config, "hello")
+        assert "--model" in cmd
+        model_idx = cmd.index("--model")
+        assert cmd[model_idx + 1] == "o3"
+
+    def test_cursor_with_model(self) -> None:
+        config = resolve_agent("cursor", AgentDef(backend="cursor", model="llama-3.1"))
+        cmd = build_command(config, "hello")
+        assert "--model" in cmd
+        model_idx = cmd.index("--model")
+        assert cmd[model_idx + 1] == "llama-3.1"
+
+    def test_no_model_no_flag(self) -> None:
+        config = make_config("claude")
+        cmd = build_command(config, "hello")
+        assert "--model" not in cmd
+
+
+class TestBuildCommandExtraFlags:
+    def test_claude_extra_flags(self) -> None:
+        config = resolve_agent("claude", AgentDef(backend="claude_code", extra_flags=["--verbose", "--no-cache"]))
+        cmd = build_command(config, "hello")
+        assert "--verbose" in cmd
+        assert "--no-cache" in cmd
+        # Extra flags should come before the prompt
+        prompt_idx = cmd.index("-p")
+        verbose_idx = cmd.index("--verbose")
+        assert verbose_idx < prompt_idx
+
+    def test_codex_extra_flags(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", extra_flags=["--debug"]))
+        cmd = build_command(config, "hello")
+        assert "--debug" in cmd
+
+    def test_cursor_extra_flags(self) -> None:
+        config = resolve_agent("cursor", AgentDef(backend="cursor", extra_flags=["--debug"]))
+        cmd = build_command(config, "hello")
+        assert "--debug" in cmd
+        # Extra flags before prompt (positional)
+        prompt_idx = cmd.index("hello")
+        debug_idx = cmd.index("--debug")
+        assert debug_idx < prompt_idx
+
+
 class TestBuildCommandSkipPermissions:
     def test_claude_skip_permissions_false(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["claude"], "hello world", skip_permissions=False)
+        cmd = build_command(make_config("claude"), "hello world", skip_permissions=False)
         assert "--dangerously-skip-permissions" not in cmd
         assert "--allowedTools" in cmd
         assert "Read" in cmd
@@ -330,12 +262,12 @@ class TestBuildCommandSkipPermissions:
         assert "Bash" in cmd
 
     def test_codex_skip_permissions_false(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["codex"], "hello world", skip_permissions=False)
+        cmd = build_command(make_config("codex"), "hello world", skip_permissions=False)
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         assert "disk-full-read-access" in " ".join(cmd)
 
     def test_cursor_skip_permissions_false(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["cursor"], "hello world", skip_permissions=False)
+        cmd = build_command(make_config("cursor"), "hello world", skip_permissions=False)
         assert "--force" not in cmd
         assert "--sandbox" not in cmd
         assert "disabled" not in cmd
@@ -343,19 +275,19 @@ class TestBuildCommandSkipPermissions:
         assert "ask" in cmd
 
     def test_claude_skip_permissions_true_is_default(self) -> None:
-        cmd_default = build_command(DEFAULT_AGENTS["claude"], "hello")
-        cmd_explicit = build_command(DEFAULT_AGENTS["claude"], "hello", skip_permissions=True)
+        cmd_default = build_command(make_config("claude"), "hello")
+        cmd_explicit = build_command(make_config("claude"), "hello", skip_permissions=True)
         assert cmd_default == cmd_explicit
         assert "--dangerously-skip-permissions" in cmd_default
 
     def test_codex_skip_permissions_false_with_session(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["codex"], "hello", session_id="t-1", skip_permissions=False)
+        cmd = build_command(make_config("codex"), "hello", session_id="t-1", skip_permissions=False)
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         assert "resume" in cmd
         assert "t-1" in cmd
 
     def test_cursor_skip_permissions_false_with_session(self) -> None:
-        cmd = build_command(DEFAULT_AGENTS["cursor"], "hello", session_id="c-1", skip_permissions=False)
+        cmd = build_command(make_config("cursor"), "hello", session_id="c-1", skip_permissions=False)
         assert "--force" not in cmd
         assert "--resume" in cmd
         assert "c-1" in cmd
@@ -429,7 +361,7 @@ class TestParseCursorResponse:
 
 class TestParseResponseDispatch:
     def test_dispatches_to_claude(self) -> None:
-        config = DEFAULT_AGENTS["claude"]
+        config = make_config("claude")
         stdout = '{"result": "test", "session_id": "s1"}'
         text, session_id, _ = parse_response(config, stdout, "", 0)
         assert text == "test"
@@ -440,8 +372,3 @@ class TestParseResponseDispatch:
         text, session_id, _ = parse_response(config, "raw output", "", 0)
         assert text == "raw output"
         assert session_id is None
-
-
-class TestAgentsRoot:
-    def test_path(self, tmp_path: Path) -> None:
-        assert agents_root(tmp_path) == tmp_path / ".kd" / "agents"

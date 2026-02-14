@@ -22,7 +22,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kingdom.agent import build_command, clean_agent_env, load_agent, parse_response
+from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.thread import add_message, list_messages
 from kingdom.ticket import find_ticket, read_ticket, write_ticket
@@ -243,16 +243,15 @@ def run_agent_loop(
     Returns:
         Final status: "done", "blocked", "failed", or "stopped".
     """
-    # Load agent config
-    try:
-        agent_config = load_agent(agent_name, base)
-    except FileNotFoundError:
-        from kingdom.agent import DEFAULT_AGENTS
+    # Load agent config from config system
+    from kingdom.config import load_config
 
-        agent_config = DEFAULT_AGENTS.get(agent_name)
-        if agent_config is None:
-            logger.error("Unknown agent: %s", agent_name)
-            return "failed"
+    cfg = load_config(base)
+    agent_def = cfg.agents.get(agent_name)
+    if agent_def is None:
+        logger.error("Unknown agent: %s", agent_name)
+        return "failed"
+    agent_config = resolve_agent(agent_name, agent_def)
 
     # Find ticket
     result = find_ticket(base, ticket_id)
