@@ -69,7 +69,6 @@ kd done   # Archive branch folder, clear current
 │   └── feature-oauth-refresh/   # Normalized from feature/oauth-refresh
 │       ├── design.md            # Design document (tracked)
 │       ├── breakdown.md         # Ticket breakdown (tracked)
-│       ├── learnings.md         # Notes and patterns (tracked)
 │       ├── tickets/             # Branch-specific tickets (tracked)
 │       │   ├── kin-a1b2.md
 │       │   └── kin-c3d4.md

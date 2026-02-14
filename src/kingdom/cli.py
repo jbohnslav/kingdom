@@ -664,7 +664,7 @@ def council_status(
             return
         for t in council_threads:
             status = thread_response_status(base, feature, t.id)
-            _print_thread_status(status, base, feature, verbose)
+            print_thread_status(status, base, feature, verbose)
             typer.echo()
         return
 
@@ -681,10 +681,10 @@ def council_status(
                 raise typer.Exit(code=1)
 
     status = thread_response_status(base, feature, thread_id)
-    _print_thread_status(status, base, feature, verbose)
+    print_thread_status(status, base, feature, verbose)
 
 
-def _print_thread_status(status, base: Path, feature: str, verbose: bool = False) -> None:
+def print_thread_status(status, base: Path, feature: str, verbose: bool = False) -> None:
     """Print response status for a single thread."""
     from kingdom.thread import ThreadStatus, thread_dir
 
