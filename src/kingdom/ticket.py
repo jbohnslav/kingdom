@@ -169,7 +169,7 @@ def serialize_ticket(ticket: Ticket) -> str:
     lines = ["---"]
 
     # Required fields in standard order
-    lines.append(f"id: {ticket.id}")
+    lines.append(f'id: "{ticket.id}"')
     lines.append(f"status: {ticket.status}")
     lines.append(f"deps: {serialize_yaml_value(ticket.deps)}")
     lines.append(f"links: {serialize_yaml_value(ticket.links)}")

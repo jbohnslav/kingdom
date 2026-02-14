@@ -515,7 +515,7 @@ class TestMigrate:
             # Content should have kin- prefix removed
             content = (tickets_dir / "ab12.md").read_text()
             assert "kin-ab12" not in content
-            assert "id: ab12" in content
+            assert 'id: "ab12"' in content
             assert "kin-cd34" not in content
             assert "cd34" in content
 

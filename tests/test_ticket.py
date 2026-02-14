@@ -357,7 +357,7 @@ class TestSerializeTicket:
         # Verify structure
         assert content.startswith("---\n")
         assert "\n---\n" in content
-        assert "id: kin-a1b2" in content
+        assert 'id: "kin-a1b2"' in content
         assert "status: open" in content
         assert "deps: []" in content
         assert "created: 2026-02-04T16:00:00Z" in content
@@ -552,6 +552,23 @@ class TestParseExistingTickets:
 
         assert ticket.id == "kin-d0b5"
         assert "kin-ac22" in ticket.deps
+
+
+class TestTicketIdRoundtrip:
+    """IDs with leading zeros must survive write/read roundtrip."""
+
+    def test_leading_zero_id_preserved(self, tmp_path: Path) -> None:
+        ticket = Ticket(
+            id="0817",
+            status="open",
+            title="Leading zero ticket",
+            body="test",
+            created=datetime.now(UTC),
+        )
+        path = tmp_path / "0817.md"
+        write_ticket(ticket, path)
+        loaded = read_ticket(path)
+        assert loaded.id == "0817"
 
 
 class TestListTickets:
