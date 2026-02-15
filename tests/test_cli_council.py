@@ -515,7 +515,21 @@ class TestCouncilList:
             # Should show current thread marker
             assert "*" in result.output
 
-    def test_list_shows_message_count(self) -> None:
+    def test_list_shows_topic_summary(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Should we use Redis or Memcached?"])
+
+            result = runner.invoke(cli.app, ["council", "list"])
+
+            assert result.exit_code == 0
+            assert "Should we use Redis or Memcached?" in result.output
+
+    def test_list_shows_member_status(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -527,7 +541,46 @@ class TestCouncilList:
             result = runner.invoke(cli.app, ["council", "list"])
 
             assert result.exit_code == 0
-            assert "4 msgs" in result.output
+            # All members responded — should show check marks
+            assert "claude" in result.output
+            assert "codex" in result.output
+            assert "cursor" in result.output
+
+    def test_list_shows_mixed_member_states(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-mixed", ["king", "claude", "codex"], "council")
+            add_message(base, BRANCH, "council-mixed", from_="king", to="all", body="Question?")
+            add_message(base, BRANCH, "council-mixed", from_="claude", to="king", body="Good answer")
+            # codex has not responded — pending
+
+            result = runner.invoke(cli.app, ["council", "list"])
+
+            assert result.exit_code == 0
+            assert "claude" in result.output
+            assert "codex" in result.output
+
+    def test_list_shows_errored_member(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-err", ["king", "claude", "codex"], "council")
+            add_message(base, BRANCH, "council-err", from_="king", to="all", body="Question?")
+            add_message(base, BRANCH, "council-err", from_="claude", to="king", body="Good answer")
+            add_message(base, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*")
+
+            result = runner.invoke(cli.app, ["council", "list"])
+
+            assert result.exit_code == 0
+            assert "claude" in result.output
+            assert "codex" in result.output
 
 
 def _patch_async_dispatch():

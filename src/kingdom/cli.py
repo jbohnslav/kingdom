@@ -704,12 +704,22 @@ def council_show(
 
 @council_app.command("list", help="List all council threads.")
 def council_list() -> None:
-    """Show all council threads with message counts."""
-    from kingdom.thread import list_threads, next_message_number, thread_dir
+    """Show all council threads with topic summary and member status."""
+    from kingdom.thread import (
+        MEMBER_ERRORED,
+        MEMBER_PENDING,
+        MEMBER_RESPONDED,
+        MEMBER_RUNNING,
+        MEMBER_TIMED_OUT,
+        list_messages,
+        list_threads,
+        thread_response_status,
+    )
 
     base = Path.cwd()
     feature = resolve_current_run(base)
     current = get_current_thread(base, feature)
+    console = Console()
 
     threads = list_threads(base, feature)
     council_threads = [t for t in threads if t.pattern == "council"]
@@ -718,12 +728,48 @@ def council_list() -> None:
         typer.echo("No council threads.")
         return
 
+    state_symbols = {
+        MEMBER_RESPONDED: "[green]\u2713[/green]",
+        MEMBER_RUNNING: "[yellow]\u25cb[/yellow]",
+        MEMBER_ERRORED: "[red]\u2717[/red]",
+        MEMBER_TIMED_OUT: "[red]\u29d6[/red]",
+        MEMBER_PENDING: "[dim]\u2026[/dim]",
+    }
+
     for t in council_threads:
-        tdir = thread_dir(base, feature, t.id)
-        msg_count = next_message_number(tdir) - 1
+        marker = "[bold] *[/bold]" if t.id == current else ""
         created = t.created_at.strftime("%Y-%m-%d %H:%M")
-        marker = " *" if t.id == current else ""
-        typer.echo(f"{t.id}  {created}  {msg_count} msgs{marker}")
+
+        # Get topic from first king message
+        messages = list_messages(base, feature, t.id)
+        topic = ""
+        for msg in messages:
+            if msg.from_ == "king":
+                first_line = msg.body.strip().split("\n", 1)[0]
+                topic = first_line[:60] + ("\u2026" if len(first_line) > 60 else "")
+                break
+
+        # Get per-member status
+        status = thread_response_status(base, feature, t.id)
+        member_parts = []
+        for name in sorted(status.member_states):
+            ms = status.member_states[name]
+            symbol = state_symbols.get(ms.state, "?")
+            member_parts.append(f"{symbol} {name}")
+        members_str = "  ".join(member_parts) if member_parts else ""
+
+        console.print(f"[bold]{t.id}[/bold]  [dim]{created}[/dim]{marker}")
+        if topic:
+            console.print(f"  {topic}")
+        if members_str:
+            console.print(f"  {members_str}")
+        console.print()
+
+
+@council_app.command("ls", hidden=True)
+def council_ls() -> None:
+    """Alias for 'council list'."""
+    council_list()
 
 
 @council_app.command("status", help="Show response status for council threads.")
