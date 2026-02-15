@@ -122,8 +122,7 @@ class Council:
                 responses[member.name] = response
 
                 # Write to thread
-                body = response.text if response.text else f"*Error: {response.error}*"
-                add_message(base, branch, thread_id, from_=member.name, to="king", body=body)
+                add_message(base, branch, thread_id, from_=member.name, to="king", body=response.thread_body())
 
                 # Cleanup stream file
                 if stream_path.exists():

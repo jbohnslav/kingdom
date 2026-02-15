@@ -229,7 +229,7 @@ class TestCouncilMemberQuery:
         stream_path = tmp_path / "stream.md"
 
         with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
-            response = member.query("test prompt", timeout=0, stream_path=stream_path)
+            response = member.query("test prompt", timeout=0, stream_path=stream_path, max_retries=0)
 
         assert response.error is not None
         assert "Timeout" in response.error
@@ -253,7 +253,7 @@ class TestCouncilMemberQuery:
         proc = mock_popen(stdout="", stderr="Error: API key not set\n", returncode=1)
 
         with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
-            response = member.query("test prompt", timeout=30)
+            response = member.query("test prompt", timeout=30, max_retries=0)
 
             assert response.error == "Error: API key not set"
 
@@ -732,3 +732,126 @@ class TestCouncilWorker:
         # Sessions should have been saved
         state = get_agent_state(project, BRANCH, "claude")
         assert state.name == "claude"
+
+
+class TestAgentResponseThreadBody:
+    """Tests for AgentResponse.thread_body()."""
+
+    def test_text_response(self) -> None:
+        r = AgentResponse(name="claude", text="Hello world")
+        assert r.thread_body() == "Hello world"
+
+    def test_error_response(self) -> None:
+        r = AgentResponse(name="claude", text="", error="Timeout after 600s")
+        assert r.thread_body() == "*Error: Timeout after 600s*"
+
+    def test_empty_response(self) -> None:
+        r = AgentResponse(name="claude", text="", error=None)
+        assert "Empty response" in r.thread_body()
+
+    def test_text_takes_priority_over_error(self) -> None:
+        r = AgentResponse(name="claude", text="some output", error="also had error")
+        assert r.thread_body() == "some output"
+
+
+class TestQueryRetry:
+    """Tests for automatic retry in CouncilMember.query()."""
+
+    def test_no_retry_on_success(self) -> None:
+        """Successful query should not retry."""
+        member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc) as mock_cls:
+            response = member.query("test", timeout=30)
+
+        assert response.text == "ok"
+        assert response.error is None
+        assert mock_cls.call_count == 1
+
+    def test_no_retry_on_command_not_found(self) -> None:
+        """Command not found should not retry (non-retriable)."""
+        member = make_member("claude")
+
+        with patch("kingdom.council.base.subprocess.Popen", side_effect=FileNotFoundError()) as mock_cls:
+            response = member.query("test", timeout=30)
+
+        assert "Command not found" in response.error
+        assert mock_cls.call_count == 1
+
+    def test_no_retry_on_invalid_config(self) -> None:
+        """Invalid agent config should not retry (non-retriable)."""
+        config = AgentConfig(name="bad", backend="unknown", cli="bad", resume_flag="")
+        member = CouncilMember(config=config)
+
+        # query_once raises ValueError for unknown backend, returns non-retriable error
+        response = member.query("test", timeout=30)
+        assert "Invalid agent config" in response.error
+
+    def test_retry_on_exit_code_error(self) -> None:
+        """Non-zero exit should retry and succeed on second attempt."""
+        member = make_member("claude")
+        fail_proc = mock_popen(stdout="", stderr="transient error\n", returncode=1)
+        ok_proc = mock_popen(stdout='{"result": "recovered"}\n')
+
+        call_count = 0
+
+        def make_proc(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return fail_proc if call_count == 1 else ok_proc
+
+        with patch("kingdom.council.base.subprocess.Popen", side_effect=make_proc):
+            response = member.query("test", timeout=30)
+
+        assert response.text == "recovered"
+        assert response.error is None
+        assert call_count == 2
+
+    def test_retry_resets_session_on_third_attempt(self) -> None:
+        """Third attempt should reset session."""
+        member = make_member("claude")
+        member.session_id = "old-session"
+
+        fail_proc1 = mock_popen(stdout="", stderr="error1\n", returncode=1)
+        fail_proc2 = mock_popen(stdout="", stderr="error2\n", returncode=1)
+        ok_proc = mock_popen(stdout='{"result": "ok", "session_id": "new-sess"}\n')
+
+        call_count = 0
+
+        def make_proc(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return fail_proc1
+            if call_count == 2:
+                return fail_proc2
+            return ok_proc
+
+        with patch("kingdom.council.base.subprocess.Popen", side_effect=make_proc):
+            response = member.query("test", timeout=30)
+
+        assert response.text == "ok"
+        assert call_count == 3
+
+    def test_max_retries_zero_disables_retry(self) -> None:
+        """max_retries=0 should not retry."""
+        member = make_member("claude")
+        fail_proc = mock_popen(stdout="", stderr="error\n", returncode=1)
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=fail_proc) as mock_cls:
+            response = member.query("test", timeout=30, max_retries=0)
+
+        assert response.error is not None
+        assert mock_cls.call_count == 1
+
+    def test_empty_response_detects_error(self) -> None:
+        """Exit code 0 with no extracted text should set meaningful error."""
+        member = make_member("claude")
+        proc = mock_popen(stdout="", returncode=0)
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            response = member.query("test", timeout=30, max_retries=0)
+
+        assert response.error is not None
+        assert "Empty response" in response.error

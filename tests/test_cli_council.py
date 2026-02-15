@@ -819,4 +819,107 @@ class TestCouncilReset:
             result = runner.invoke(cli.app, ["council", "reset"])
 
             assert result.exit_code == 0
-            assert "Sessions cleared" in result.output
+            assert "sessions cleared" in result.output.lower()
+
+    def test_reset_single_member(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset", "--member", "claude"])
+
+            assert result.exit_code == 0
+            assert "claude" in result.output.lower()
+            assert "cleared" in result.output.lower()
+
+    def test_reset_unknown_member(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset", "--member", "nonexistent"])
+
+            assert result.exit_code == 1
+            assert "Unknown member" in result.output
+
+
+class TestCouncilRetry:
+    def test_retry_no_thread(self) -> None:
+        """Retry with no current thread should error."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 1
+            assert "No current council thread" in result.output
+
+    def test_retry_all_ok(self) -> None:
+        """Retry when all members responded successfully should say nothing to retry."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            thread_id = "council-retry-test"
+            create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="all", body="test question")
+            add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Good response")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="Also good")
+
+            result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 0
+            assert "Nothing to retry" in result.output
+
+    def test_retry_failed_members(self) -> None:
+        """Retry should re-query members that failed."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            thread_id = "council-retry-fail"
+            create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="all", body="test question")
+            add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Good response")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="*Error: Timeout after 600s*")
+
+            # Mock query_to_thread to handle the retry
+            retry_responses = {
+                "codex": AgentResponse(name="codex", text="Recovered response", elapsed=5.0),
+            }
+            with mock_council_query_to_thread(retry_responses):
+                result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 0
+            assert "codex" in result.output.lower()
+
+    def test_retry_missing_members(self) -> None:
+        """Retry should re-query members that never responded."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            thread_id = "council-retry-miss"
+            create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="all", body="test question")
+            add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Good response")
+            # codex never responded
+
+            retry_responses = {
+                "codex": AgentResponse(name="codex", text="Late response", elapsed=5.0),
+            }
+            with mock_council_query_to_thread(retry_responses):
+                result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 0
+            assert "codex" in result.output.lower()

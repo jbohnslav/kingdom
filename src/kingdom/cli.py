@@ -432,13 +432,11 @@ def council_ask(
         if to and member:
             response = member.query(prompt, timeout)
             responses = {to: response}
-            body = response.text if response.text else f"*Error: {response.error}*"
-            add_message(base, feature, thread_id, from_=to, to="king", body=body)
+            add_message(base, feature, thread_id, from_=to, to="king", body=response.thread_body())
         else:
             responses = query_with_progress(c, prompt, json_output, console)
             for name, resp in responses.items():
-                body = resp.text if resp.text else f"*Error: {resp.error}*"
-                add_message(base, feature, thread_id, from_=name, to="king", body=body)
+                add_message(base, feature, thread_id, from_=name, to="king", body=resp.thread_body())
 
         c.save_sessions(base, feature)
 
@@ -512,8 +510,7 @@ def council_ask(
             task = progress.add_task(f"Querying {to}...", total=None)
             response = member.query(prompt, timeout)
             progress.update(task, description="Done")
-        body = response.text if response.text else f"*Error: {response.error}*"
-        add_message(base, feature, thread_id, from_=to, to="king", body=body)
+        add_message(base, feature, thread_id, from_=to, to="king", body=response.thread_body())
         render_response(response, console)
     else:
 
@@ -525,9 +522,11 @@ def council_ask(
     c.save_sessions(base, feature)
 
 
-@council_app.command("reset", help="Clear all council sessions.")
-def council_reset() -> None:
-    """Clear all council member sessions."""
+@council_app.command("reset", help="Clear council sessions.")
+def council_reset(
+    member_name: Annotated[str | None, typer.Option("--member", help="Reset only this member's session.")] = None,
+) -> None:
+    """Clear council member sessions. Use --member to reset a single member."""
     base = Path.cwd()
     feature = resolve_current_run(base)
 
@@ -538,9 +537,21 @@ def council_reset() -> None:
 
     c = Council.create(logs_dir=logs_dir, base=base)
     c.load_sessions(base, feature)
-    c.reset_sessions()
-    c.save_sessions(base, feature)
-    typer.echo("Sessions cleared.")
+
+    if member_name:
+        m = c.get_member(member_name)
+        if m is None:
+            available = ", ".join(sorted(mem.name for mem in c.members))
+            typer.echo(f"Unknown member: {member_name}")
+            typer.echo(f"Available: {available}")
+            raise typer.Exit(code=1)
+        m.reset_session()
+        c.save_sessions(base, feature)
+        typer.echo(f"Session cleared for {member_name}.")
+    else:
+        c.reset_sessions()
+        c.save_sessions(base, feature)
+        typer.echo("All sessions cleared.")
 
 
 @council_app.command("show", help="Display a council thread.")
@@ -719,7 +730,11 @@ def watch_thread(
     timeout: int = 300,
     expected: set[str] | None = None,
 ) -> None:
-    """Core watch logic — poll a thread and render responses as Rich panels.
+    """Core watch logic — poll a thread, tail stream files, and render responses.
+
+    While waiting for members to respond, tails .stream-{member}.jsonl files
+    and displays incremental text as it arrives. When the finalized message file
+    lands, renders the full response panel.
 
     Args:
         thread_id: Thread to watch (defaults to current).
@@ -728,6 +743,11 @@ def watch_thread(
     """
     import time
 
+    from rich.live import Live
+    from rich.text import Text
+
+    from kingdom.agent import extract_stream_text, resolve_all_agents
+    from kingdom.config import load_config
     from kingdom.council.base import AgentResponse
     from kingdom.thread import get_thread, list_messages, thread_dir
 
@@ -753,6 +773,15 @@ def watch_thread(
     else:
         meta = get_thread(base, feature, thread_id)
         expected_members = {m for m in meta.members if m != "king"}
+
+    # Load agent configs for stream text extraction
+    cfg = load_config(base)
+    agent_configs = resolve_all_agents(cfg.agents)
+    member_backends: dict[str, str] = {}
+    for name in expected_members:
+        ac = agent_configs.get(name)
+        if ac:
+            member_backends[name] = ac.backend
 
     console.print(f"[bold]Watching: {thread_id}[/bold]")
     console.print(f"[dim]Expecting: {', '.join(sorted(expected_members))}[/dim]\n")
@@ -782,21 +811,77 @@ def watch_thread(
         console.print("[dim]All members have responded.[/dim]")
         return
 
-    # Poll for new messages with progress indicator
+    # Stream tracking state
+    stream_positions: dict[str, int] = {}  # member -> file byte offset
+    accumulated_text: dict[str, str] = {}  # member -> accumulated streamed text
+    streaming_members: set[str] = set()  # members with active stream files
+
+    def build_status_display() -> Text:
+        """Build a multi-line status display for the live area."""
+        elapsed = int(time.monotonic() - start_time)
+        lines: list[str] = []
+        waiting = expected_members - responded_members
+
+        for name in sorted(waiting):
+            if name in streaming_members and name in accumulated_text:
+                chars = len(accumulated_text[name])
+                # Show last ~60 chars as preview
+                preview = accumulated_text[name][-60:].replace("\n", " ")
+                if len(accumulated_text[name]) > 60:
+                    preview = "..." + preview
+                lines.append(f"  {name}: streaming ({chars} chars) {preview}")
+            else:
+                lines.append(f"  {name}: waiting...")
+
+        header = f"[{elapsed}s] Waiting for {len(waiting)} member(s):"
+        return Text("\n".join([header, *lines]))
+
+    def read_stream_files() -> None:
+        """Read new lines from .stream-{member}.jsonl files."""
+        for name in expected_members - responded_members:
+            stream_file = tdir / f".stream-{name}.jsonl"
+            if not stream_file.exists():
+                if name in streaming_members:
+                    # Stream file was deleted (member finished) — will pick up final message
+                    streaming_members.discard(name)
+                continue
+
+            streaming_members.add(name)
+            backend = member_backends.get(name, "")
+            pos = stream_positions.get(name, 0)
+
+            try:
+                with open(stream_file, encoding="utf-8") as f:
+                    f.seek(pos)
+                    new_data = f.read()
+                    new_pos = f.tell()
+            except OSError:
+                continue
+
+            if not new_data or new_pos == pos:
+                continue
+
+            stream_positions[name] = new_pos
+            # Process complete lines only
+            for line in new_data.splitlines():
+                if not line.strip():
+                    continue
+                text = extract_stream_text(line, backend)
+                if text:
+                    accumulated_text.setdefault(name, "")
+                    accumulated_text[name] += text
+
+    # Poll for new messages with live streaming display
     start_time = time.monotonic()
     try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            waiting = sorted(expected_members - responded_members)
-            ptask = progress.add_task(f"[0s] Waiting for: {', '.join(waiting)}...", total=None)
-
+        with Live(build_status_display(), console=console, refresh_per_second=4) as live:
             while time.monotonic() - start_time < timeout:
-                time.sleep(0.5)
+                time.sleep(0.25)
 
+                # Read stream files for live text
+                read_stream_files()
+
+                # Check for finalized messages
                 messages = list_messages(base, feature, thread_id)
                 for msg in messages:
                     if msg.sequence in seen_sequences:
@@ -805,20 +890,20 @@ def watch_thread(
 
                     if msg.from_ != "king" and msg.from_ in expected_members:
                         responded_members.add(msg.from_)
-                        # Hide spinner before rendering response
-                        progress.update(ptask, visible=False)
+                        streaming_members.discard(msg.from_)
+                        accumulated_text.pop(msg.from_, None)
+                        stream_positions.pop(msg.from_, None)
+                        # Print final response above the live area
                         response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)
-                        render_response(response, console)
-                        progress.update(ptask, visible=True)
+                        live.console.print()
+                        render_response(response, live.console)
 
                 if responded_members >= expected_members:
-                    progress.update(ptask, visible=False)
-                    console.print("[dim]All members have responded.[/dim]")
+                    live.update(Text(""))
+                    live.console.print("[dim]All members have responded.[/dim]")
                     return
 
-                elapsed = int(time.monotonic() - start_time)
-                waiting = sorted(expected_members - responded_members)
-                progress.update(ptask, description=f"[{elapsed}s] Waiting for: {', '.join(waiting)}...")
+                live.update(build_status_display())
     except KeyboardInterrupt:
         console.print("\n[dim]Watch interrupted.[/dim]")
         return
@@ -836,6 +921,88 @@ def council_watch(
 ) -> None:
     """Watch a council thread and render agent responses as they arrive."""
     watch_thread(thread_id=thread_id, timeout=timeout)
+
+
+@council_app.command("retry", help="Re-query failed or missing members in a thread.")
+def council_retry(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
+    timeout: Annotated[int | None, typer.Option("--timeout", help="Per-model timeout in seconds.")] = None,
+) -> None:
+    """Re-query only the members that failed or didn't respond in the last round.
+
+    Uses the original prompt from the most recent king message in the thread.
+    """
+    from kingdom.thread import get_thread, list_messages, thread_dir
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    console = Console()
+
+    # Resolve thread_id
+    if thread_id is None:
+        thread_id = get_current_thread(base, feature)
+        if thread_id is None:
+            typer.echo("No current council thread. Use `kd council ask` first.")
+            raise typer.Exit(code=1)
+
+    tdir = thread_dir(base, feature, thread_id)
+    if not tdir.exists():
+        typer.echo(f"Thread not found: {thread_id}")
+        raise typer.Exit(code=1)
+
+    meta = get_thread(base, feature, thread_id)
+    expected = {m for m in meta.members if m != "king"}
+    messages = list_messages(base, feature, thread_id)
+
+    # Find the most recent king message (the prompt to retry)
+    last_king_msg = None
+    for msg in messages:
+        if msg.from_ == "king":
+            last_king_msg = msg
+    if last_king_msg is None:
+        typer.echo("No king message found in thread.")
+        raise typer.Exit(code=1)
+
+    prompt = last_king_msg.body
+
+    # Find members that responded successfully (no error marker) after the last ask
+    ok_members: set[str] = set()
+    for msg in messages:
+        if (
+            msg.sequence > last_king_msg.sequence
+            and msg.from_ in expected
+            and not msg.body.startswith("*Error:")
+            and not msg.body.startswith("*Empty response")
+        ):
+            ok_members.add(msg.from_)
+
+    failed = expected - ok_members
+    if not failed:
+        typer.echo("All members responded successfully. Nothing to retry.")
+        return
+
+    # Set up council filtered to failed members only
+    logs_dir = logs_root(base, feature)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    c = Council.create(logs_dir=logs_dir, base=base)
+    if timeout is not None:
+        c.timeout = timeout
+    c.load_sessions(base, feature)
+    c.members = [m for m in c.members if m.name in failed]
+
+    if not c.members:
+        typer.echo(f"Failed members ({', '.join(sorted(failed))}) not found in council config.")
+        raise typer.Exit(code=1)
+
+    member_names_str = ", ".join(m.name for m in c.members)
+    console.print(f"[dim]Thread: {thread_id}[/dim]")
+    console.print(f"[dim]Retrying: {member_names_str}[/dim]\n")
+
+    def on_response(name, response):
+        render_response(response, console)
+
+    c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
+    c.save_sessions(base, feature)
 
 
 def render_response(response, console):
