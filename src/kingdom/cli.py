@@ -2736,6 +2736,7 @@ def ticket_list(
     include_done: Annotated[
         bool, typer.Option("--include-done", help="Include tickets from done branches (with --all).")
     ] = False,
+    include_closed: Annotated[bool, typer.Option("--include-closed", help="Include closed tickets in output.")] = False,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
@@ -2789,6 +2790,8 @@ def ticket_list(
         all_results: list[dict] = []
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
+            if not include_closed:
+                tickets = [t for t in tickets if t.status != "closed"]
             for ticket in tickets:
                 all_results.append(
                     {
@@ -2810,6 +2813,8 @@ def ticket_list(
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
         tickets = list_tickets(tickets_dir)
+        if not include_closed:
+            tickets = [t for t in tickets if t.status != "closed"]
 
         if output_json:
             results = [

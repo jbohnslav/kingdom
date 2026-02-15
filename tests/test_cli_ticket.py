@@ -450,6 +450,66 @@ class TestTicketMove:
             assert "kd start" in result.output
 
 
+class TestTicketList:
+    def test_list_hides_closed_by_default(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            # Create one open and one closed ticket
+            open_ticket = Ticket(id="aaaa", status="open", title="Open ticket", body="", created=datetime.now(UTC))
+            closed_ticket = Ticket(
+                id="bbbb", status="closed", title="Closed ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(closed_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "Open ticket" in result.output
+            assert "Closed ticket" not in result.output
+
+    def test_list_include_closed_shows_all(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            open_ticket = Ticket(id="aaaa", status="open", title="Open ticket", body="", created=datetime.now(UTC))
+            closed_ticket = Ticket(
+                id="bbbb", status="closed", title="Closed ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(closed_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--include-closed"])
+
+            assert result.exit_code == 0
+            assert "Open ticket" in result.output
+            assert "Closed ticket" in result.output
+
+    def test_list_all_hides_closed_by_default(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            open_ticket = Ticket(id="aaaa", status="open", title="Open ticket", body="", created=datetime.now(UTC))
+            closed_ticket = Ticket(
+                id="bbbb", status="closed", title="Closed ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(closed_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--all"])
+
+            assert result.exit_code == 0
+            assert "Open ticket" in result.output
+            assert "Closed ticket" not in result.output
+
+
 class TestTicketShow:
     def test_show_displays_file_path(self) -> None:
         with runner.isolated_filesystem():
