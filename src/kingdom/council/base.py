@@ -62,7 +62,7 @@ class CouncilMember:
             parts.append(self.agent_prompt + "\n\n")
         parts.append(prompt)
         full_prompt = "".join(parts)
-        return agent_build_command(self.config, full_prompt, self.session_id, skip_permissions=False)
+        return agent_build_command(self.config, full_prompt, self.session_id, skip_permissions=False, streaming=True)
 
     def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse response from CLI output.

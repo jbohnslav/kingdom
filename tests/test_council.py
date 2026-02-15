@@ -71,6 +71,11 @@ class TestClaudeMember:
         assert "-p" in cmd
         assert PREAMBLE + "hello world" in cmd
         assert "--dangerously-skip-permissions" not in cmd
+        # Council uses streaming=True
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "stream-json"
+        assert "--verbose" in cmd
+        assert "--include-partial-messages" in cmd
 
     def test_build_command_with_session(self) -> None:
         member = make_member("claude")
@@ -80,6 +85,8 @@ class TestClaudeMember:
         assert "abc123" in cmd
         assert "--allowedTools" in cmd
         assert PREAMBLE + "hello" in cmd
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "stream-json"
 
 
 class TestCodexMember:
@@ -128,7 +135,8 @@ class TestCursorAgentMember:
         assert cmd[0] == "agent"
         assert "--print" in cmd  # required for non-interactive use
         assert "--output-format" in cmd
-        assert "json" in cmd
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "stream-json"
         assert PREAMBLE + "hello world" in cmd
         # prompt is positional, not with -p flag
         assert "-p" not in cmd

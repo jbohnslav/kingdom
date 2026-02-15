@@ -108,8 +108,8 @@ class Council:
         with ThreadPoolExecutor(max_workers=len(self.members)) as executor:
             futures = {}
             for member in self.members:
-                # Stream to .stream-{member}.md
-                stream_path = tdir / f".stream-{member.name}.md"
+                # Stream to .stream-{member}.jsonl
+                stream_path = tdir / f".stream-{member.name}.jsonl"
                 futures[executor.submit(member.query, prompt, self.timeout, stream_path)] = (member, stream_path)
 
             for future in as_completed(futures):
