@@ -288,3 +288,99 @@ class TestEndToEnd:
         threads = list_threads(project, BRANCH)
         assert len(threads) == 1
         assert threads[0].id == "council-caching-debate"
+
+
+class TestThreadResponseStatus:
+    """Tests for thread_response_status() with rich per-member states."""
+
+    def test_all_responded(self, project: Path) -> None:
+        from kingdom.thread import (
+            MEMBER_RESPONDED,
+            thread_response_status,
+        )
+
+        create_thread(project, BRANCH, "council-ok", ["king", "claude", "codex"], "council")
+        add_message(project, BRANCH, "council-ok", from_="king", to="all", body="Question")
+        add_message(project, BRANCH, "council-ok", from_="claude", to="king", body="Good answer")
+        add_message(project, BRANCH, "council-ok", from_="codex", to="king", body="Also good")
+
+        status = thread_response_status(project, BRANCH, "council-ok")
+
+        assert status.responded == {"claude", "codex"}
+        assert status.pending == set()
+        assert status.member_states["claude"].state == MEMBER_RESPONDED
+        assert status.member_states["codex"].state == MEMBER_RESPONDED
+
+    def test_pending_member(self, project: Path) -> None:
+        from kingdom.thread import MEMBER_PENDING, MEMBER_RESPONDED, thread_response_status
+
+        create_thread(project, BRANCH, "council-wait", ["king", "claude", "codex"], "council")
+        add_message(project, BRANCH, "council-wait", from_="king", to="all", body="Question")
+        add_message(project, BRANCH, "council-wait", from_="claude", to="king", body="My answer")
+
+        status = thread_response_status(project, BRANCH, "council-wait")
+
+        assert status.member_states["claude"].state == MEMBER_RESPONDED
+        assert status.member_states["codex"].state == MEMBER_PENDING
+        assert "codex" in status.pending
+
+    def test_errored_member(self, project: Path) -> None:
+        from kingdom.thread import MEMBER_ERRORED, MEMBER_RESPONDED, thread_response_status
+
+        create_thread(project, BRANCH, "council-err", ["king", "claude", "codex"], "council")
+        add_message(project, BRANCH, "council-err", from_="king", to="all", body="Question")
+        add_message(project, BRANCH, "council-err", from_="claude", to="king", body="Good answer")
+        add_message(project, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*")
+
+        status = thread_response_status(project, BRANCH, "council-err")
+
+        assert status.member_states["claude"].state == MEMBER_RESPONDED
+        assert status.member_states["codex"].state == MEMBER_ERRORED
+        assert status.member_states["codex"].error is not None
+        assert "Exit code" in status.member_states["codex"].error
+
+    def test_timed_out_member(self, project: Path) -> None:
+        from kingdom.thread import MEMBER_RESPONDED, MEMBER_TIMED_OUT, thread_response_status
+
+        create_thread(project, BRANCH, "council-to", ["king", "claude", "codex"], "council")
+        add_message(project, BRANCH, "council-to", from_="king", to="all", body="Question")
+        add_message(project, BRANCH, "council-to", from_="claude", to="king", body="Good answer")
+        add_message(project, BRANCH, "council-to", from_="codex", to="king", body="*Error: Timeout after 600s*")
+
+        status = thread_response_status(project, BRANCH, "council-to")
+
+        assert status.member_states["claude"].state == MEMBER_RESPONDED
+        assert status.member_states["codex"].state == MEMBER_TIMED_OUT
+
+    def test_running_member_with_stream_file(self, project: Path) -> None:
+        from kingdom.thread import MEMBER_RUNNING, thread_response_status
+
+        create_thread(project, BRANCH, "council-run", ["king", "claude", "codex"], "council")
+        add_message(project, BRANCH, "council-run", from_="king", to="all", body="Question")
+
+        # Simulate an active stream file (agent is running)
+        tdir = thread_dir(project, BRANCH, "council-run")
+        (tdir / ".stream-claude.jsonl").write_text('{"type":"stream_event"}\n')
+
+        status = thread_response_status(project, BRANCH, "council-run")
+
+        assert status.member_states["claude"].state == MEMBER_RUNNING
+        assert "claude" in status.pending  # still counted as pending (no message yet)
+
+    def test_empty_response_member(self, project: Path) -> None:
+        from kingdom.thread import MEMBER_ERRORED, thread_response_status
+
+        create_thread(project, BRANCH, "council-empty", ["king", "claude"], "council")
+        add_message(project, BRANCH, "council-empty", from_="king", to="all", body="Question")
+        add_message(
+            project,
+            BRANCH,
+            "council-empty",
+            from_="claude",
+            to="king",
+            body="*Empty response — no text or error returned.*",
+        )
+
+        status = thread_response_status(project, BRANCH, "council-empty")
+
+        assert status.member_states["claude"].state == MEMBER_ERRORED

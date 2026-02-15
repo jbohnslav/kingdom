@@ -764,7 +764,8 @@ class TestCouncilStatus:
             assert "thread:" in result.output
             assert "council-test" in result.output
             assert "council-claude.log" in result.output
-            assert "(no log file)" in result.output  # codex has no log
+            # codex has no log — log path only shown when file exists
+            assert "council-codex.log" not in result.output
 
     def test_status_no_threads_errors(self) -> None:
         with runner.isolated_filesystem():
@@ -806,6 +807,70 @@ class TestCouncilStatus:
 
             assert result.exit_code == 0
             assert "council-recent" in result.output
+            assert "codex: pending" in result.output
+
+    def test_status_shows_errored_member(self) -> None:
+        """Status should show 'errored' for members that responded with an error."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-err", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-err")
+            add_message(base, BRANCH, "council-err", from_="king", to="all", body="Q")
+            add_message(base, BRANCH, "council-err", from_="claude", to="king", body="Good")
+            add_message(base, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*")
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "errors" in result.output
+            assert "claude: responded" in result.output
+            assert "codex: errored" in result.output
+
+    def test_status_shows_timed_out_member(self) -> None:
+        """Status should show 'timed out' for members that timed out."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-to", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-to")
+            add_message(base, BRANCH, "council-to", from_="king", to="all", body="Q")
+            add_message(base, BRANCH, "council-to", from_="claude", to="king", body="Good")
+            add_message(base, BRANCH, "council-to", from_="codex", to="king", body="*Error: Timeout after 600s*")
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "claude: responded" in result.output
+            assert "codex: timed out" in result.output
+
+    def test_status_shows_running_member(self) -> None:
+        """Status should show 'running' for members with active stream files."""
+        from kingdom.thread import add_message, create_thread, thread_dir
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-run", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-run")
+            add_message(base, BRANCH, "council-run", from_="king", to="all", body="Q")
+
+            # Simulate active stream file for claude
+            tdir = thread_dir(base, BRANCH, "council-run")
+            (tdir / ".stream-claude.jsonl").write_text('{"type":"event"}\n')
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "running" in result.output
+            assert "claude: running" in result.output
             assert "codex: pending" in result.output
 
 

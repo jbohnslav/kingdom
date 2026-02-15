@@ -699,30 +699,63 @@ def council_status(
 
 
 def print_thread_status(status: ThreadStatus, base: Path, feature: str, verbose: bool = False) -> None:
-    """Print response status for a single thread."""
-    from kingdom.thread import thread_dir
+    """Print response status for a single thread with rich per-member states."""
+    from kingdom.thread import (
+        MEMBER_ERRORED,
+        MEMBER_PENDING,
+        MEMBER_RESPONDED,
+        MEMBER_RUNNING,
+        MEMBER_TIMED_OUT,
+        thread_dir,
+    )
 
-    if status.pending:
-        state = "waiting"
+    # Overall thread state
+    has_errors = any(ms.state in (MEMBER_ERRORED, MEMBER_TIMED_OUT) for ms in status.member_states.values())
+    has_running = any(ms.state == MEMBER_RUNNING for ms in status.member_states.values())
+
+    if not status.pending and not has_errors:
+        state_label = "[green]complete[/green]"
+    elif has_running:
+        state_label = "[blue]running[/blue]"
+    elif has_errors and not status.pending:
+        state_label = "[red]errors[/red]"
     else:
-        state = "complete"
+        state_label = "[yellow]waiting[/yellow]"
 
-    typer.echo(f"{status.thread_id}  [{state}]")
+    console = Console(soft_wrap=True)
+    console.print(f"{status.thread_id}  [{state_label}]")
+
     if verbose:
         tdir = thread_dir(base, feature, status.thread_id)
-        typer.echo(f"  thread: {tdir.relative_to(base)}")
+        console.print(f"  [dim]thread: {tdir.relative_to(base)}[/dim]")
+
+    STATE_STYLES = {
+        MEMBER_RESPONDED: "[green]responded[/green]",
+        MEMBER_RUNNING: "[blue]running[/blue]",
+        MEMBER_ERRORED: "[red]errored[/red]",
+        MEMBER_TIMED_OUT: "[red]timed out[/red]",
+        MEMBER_PENDING: "[yellow]pending[/yellow]",
+    }
+
     for name in sorted(status.expected):
-        if name in status.responded:
-            line = f"  {name}: responded"
+        ms = status.member_states.get(name)
+        if ms:
+            styled = STATE_STYLES.get(ms.state, ms.state)
+            line = f"  {name}: {styled}"
+            if verbose and ms.error:
+                # Show truncated error detail
+                err_preview = ms.error.replace("\n", " ")[:80]
+                line += f"  [dim]{err_preview}[/dim]"
         else:
-            line = f"  {name}: pending"
+            # Fallback for missing member_states (backward compat)
+            line = f"  {name}: {'responded' if name in status.responded else 'pending'}"
+
         if verbose:
             log_file = logs_root(base, feature) / f"council-{name}.log"
             if log_file.exists():
-                line += f"  log={log_file.relative_to(base)}"
-            else:
-                line += "  (no log file)"
-        typer.echo(line)
+                line += f"  [dim]log={log_file.relative_to(base)}[/dim]"
+
+        console.print(line)
 
 
 def watch_thread(

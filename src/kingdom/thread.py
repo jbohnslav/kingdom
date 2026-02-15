@@ -327,6 +327,22 @@ def parse_message(path: Path) -> Message:
     )
 
 
+# Member state constants for ThreadStatus
+MEMBER_RESPONDED = "responded"
+MEMBER_RUNNING = "running"
+MEMBER_ERRORED = "errored"
+MEMBER_TIMED_OUT = "timed_out"
+MEMBER_PENDING = "pending"
+
+
+@dataclass
+class MemberState:
+    """Rich status for a single member in a thread round."""
+
+    state: str  # One of the MEMBER_* constants
+    error: str | None = None  # Error detail for errored/timed_out states
+
+
 @dataclass
 class ThreadStatus:
     """Response status for the most recent round in a thread."""
@@ -335,18 +351,24 @@ class ThreadStatus:
     expected: set[str]
     responded: set[str]
     pending: set[str]
+    member_states: dict[str, MemberState] = field(default_factory=dict)
 
 
 def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadStatus:
-    """Compute who has responded to the most recent king ask in a thread.
+    """Compute per-member status for the most recent king ask in a thread.
 
-    Only considers responses after the latest king message. Earlier rounds
-    in the same thread are ignored.
+    States derived from concrete runtime signals:
+      - responded: message exists with no error marker
+      - errored: message exists with ``*Error:`` marker (non-timeout)
+      - timed_out: message exists with ``*Error: Timeout`` marker
+      - running: no message yet but ``.stream-{member}.jsonl`` file exists
+      - pending: no message and no stream file
 
-    Returns a ThreadStatus with expected, responded, and pending member sets.
+    Only considers responses after the latest king message.
     """
     meta = get_thread(base, branch, thread_id)
     expected = {m for m in meta.members if m != "king"}
+    tdir = thread_dir(base, branch, thread_id)
 
     messages = list_messages(base, branch, thread_id)
 
@@ -356,17 +378,38 @@ def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadSta
         if msg.from_ == "king":
             last_ask_seq = msg.sequence
 
-    # Collect responses after it
-    responded = set()
+    # Classify each member's response
+    responded: set[str] = set()
+    member_states: dict[str, MemberState] = {}
+
+    # First pass: check responses after the last ask
+    response_bodies: dict[str, str] = {}
     for msg in messages:
         if msg.sequence > last_ask_seq and msg.from_ in expected:
             responded.add(msg.from_)
+            response_bodies[msg.from_] = msg.body
+
+    # Classify each expected member
+    for name in expected:
+        if name in responded:
+            body = response_bodies[name]
+            if body.startswith("*Error: Timeout"):
+                member_states[name] = MemberState(state=MEMBER_TIMED_OUT, error=body)
+            elif body.startswith("*Error:") or body.startswith("*Empty response"):
+                member_states[name] = MemberState(state=MEMBER_ERRORED, error=body)
+            else:
+                member_states[name] = MemberState(state=MEMBER_RESPONDED)
+        elif (tdir / f".stream-{name}.jsonl").exists():
+            member_states[name] = MemberState(state=MEMBER_RUNNING)
+        else:
+            member_states[name] = MemberState(state=MEMBER_PENDING)
 
     return ThreadStatus(
         thread_id=thread_id,
         expected=expected,
         responded=responded,
         pending=expected - responded,
+        member_states=member_states,
     )
 
 
