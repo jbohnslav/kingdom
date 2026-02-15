@@ -554,9 +554,50 @@ def council_reset(
         typer.echo("All sessions cleared.")
 
 
+def group_messages_into_turns(messages: list) -> list[list]:
+    """Group messages into conversational turns.
+
+    A turn = one king message + all member responses before the next king message.
+    Messages before the first king message (if any) form turn 0.
+    """
+    if not messages:
+        return []
+
+    turns: list[list] = []
+    current_turn: list = []
+
+    for msg in messages:
+        if msg.from_ == "king" and current_turn:
+            turns.append(current_turn)
+            current_turn = []
+        current_turn.append(msg)
+
+    if current_turn:
+        turns.append(current_turn)
+
+    return turns
+
+
+def print_turn(console: Console, turn_msgs: list, turn_number: int, total_turns: int) -> None:
+    """Print a single conversational turn with header and separator."""
+    first_msg = turn_msgs[0]
+    ts = first_msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    console.print(f"[bold cyan]── Turn {turn_number}/{total_turns} ── {ts} ──[/bold cyan]")
+    console.print()
+
+    for msg in turn_msgs:
+        msg_ts = msg.timestamp.strftime("%H:%M:%S")
+        subtitle = f"{msg_ts} · to {msg.to}"
+        header = f"## [{subtitle}] {msg.from_}"
+        console.print(Markdown(f"{header}\n\n{msg.body}"))
+        console.print()
+
+
 @council_app.command("show", help="Display a council thread.")
 def council_show(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
+    last_n: Annotated[int | None, typer.Option("--last", help="Show last N turns.")] = None,
+    show_all: Annotated[bool, typer.Option("--all", help="Show full thread history.")] = False,
 ) -> None:
     """Display a council thread's message history."""
     from kingdom.thread import list_messages, list_threads, thread_dir
@@ -586,17 +627,44 @@ def council_show(
             typer.echo(f"Thread {thread_id}: no messages.")
             raise typer.Exit(code=1)
 
+        turns = group_messages_into_turns(messages)
+        total_turns = len(turns)
+        total_msgs = len(messages)
+
+        # Determine which turns to show
+        if show_all:
+            visible_turns = turns
+            start_index = 0
+        elif last_n is not None:
+            n = min(last_n, total_turns)
+            visible_turns = turns[-n:]
+            start_index = total_turns - n
+        else:
+            # Default: show only the latest turn
+            visible_turns = turns[-1:]
+            start_index = total_turns - 1
+
+        visible_msgs = sum(len(t) for t in visible_turns)
+        hidden_turns = total_turns - len(visible_turns)
+
+        def pl(n: int, word: str) -> str:
+            return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
         console.print(f"[bold]Thread: {thread_id}[/bold]")
-        console.print(f"[dim]{len(messages)} messages[/dim]\n")
+        if hidden_turns > 0:
+            console.print(
+                f"[dim]Showing {pl(len(visible_turns), 'turn')} of {total_turns} "
+                f"({pl(visible_msgs, 'message')} of {total_msgs}). "
+                f"Use --all for full history.[/dim]"
+            )
+        else:
+            console.print(f"[dim]{pl(total_turns, 'turn')}, {pl(total_msgs, 'message')}[/dim]")
+        console.print()
 
-        for msg in messages:
-            ts = msg.timestamp.strftime("%H:%M:%S")
-            subtitle = f"{ts} · to {msg.to}"
+        for i, turn_msgs in enumerate(visible_turns):
+            turn_number = start_index + i + 1
+            print_turn(console, turn_msgs, turn_number, total_turns)
 
-            # Use H2 for sender, italic for metadata
-            header = f"## [{subtitle}] {msg.from_}"
-            console.print(Markdown(f"{header}\n\n{msg.body}"))
-            console.print()
         return
 
     # Fall back to legacy run bundle in logs/council/

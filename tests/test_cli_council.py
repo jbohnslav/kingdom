@@ -351,6 +351,142 @@ class TestCouncilShow:
             assert "not found" in result.output
 
 
+def setup_multi_turn_thread(base: Path) -> str:
+    """Create a thread with 3 turns for pagination tests. Returns thread ID."""
+    from kingdom.thread import add_message, create_thread
+
+    thread_id = "council-multi-turn"
+    create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+
+    # Turn 1
+    add_message(base, BRANCH, thread_id, from_="king", to="all", body="Question one?")
+    add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Answer 1 from claude")
+    add_message(base, BRANCH, thread_id, from_="codex", to="king", body="Answer 1 from codex")
+
+    # Turn 2
+    add_message(base, BRANCH, thread_id, from_="king", to="all", body="Question two?")
+    add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Answer 2 from claude")
+    add_message(base, BRANCH, thread_id, from_="codex", to="king", body="Answer 2 from codex")
+
+    # Turn 3
+    add_message(base, BRANCH, thread_id, from_="king", to="all", body="Question three?")
+    add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Answer 3 from claude")
+    add_message(base, BRANCH, thread_id, from_="codex", to="king", body="Answer 3 from codex")
+
+    return thread_id
+
+
+class TestCouncilShowPagination:
+    def test_default_shows_latest_turn_only(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id])
+
+            assert result.exit_code == 0
+            assert "Turn 3/3" in result.output
+            assert "Question three?" in result.output
+            assert "Answer 3 from claude" in result.output
+            # Earlier turns should NOT appear
+            assert "Question one?" not in result.output
+            assert "Question two?" not in result.output
+
+    def test_default_shows_hidden_summary(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id])
+
+            assert result.exit_code == 0
+            assert "1 turn of 3" in result.output
+            assert "3 messages of 9" in result.output
+            assert "--all" in result.output
+
+    def test_last_n_shows_requested_turns(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id, "--last", "2"])
+
+            assert result.exit_code == 0
+            assert "Turn 2/3" in result.output
+            assert "Turn 3/3" in result.output
+            assert "Question two?" in result.output
+            assert "Question three?" in result.output
+            # Turn 1 should NOT appear
+            assert "Question one?" not in result.output
+            assert "2 turns of 3" in result.output
+
+    def test_all_shows_every_turn(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id, "--all"])
+
+            assert result.exit_code == 0
+            assert "Turn 1/3" in result.output
+            assert "Turn 2/3" in result.output
+            assert "Turn 3/3" in result.output
+            assert "Question one?" in result.output
+            assert "Question two?" in result.output
+            assert "Question three?" in result.output
+            # No hidden summary when showing all
+            assert "--all" not in result.output
+
+    def test_single_turn_shows_no_hidden_summary(self) -> None:
+        """A single-turn thread should show all messages with no 'Use --all' hint."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Single question"])
+
+            result = runner.invoke(cli.app, ["council", "show"])
+
+            assert result.exit_code == 0
+            assert "Turn 1/1" in result.output
+            assert "--all" not in result.output
+
+    def test_turn_header_shows_timestamp(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id])
+
+            assert result.exit_code == 0
+            # Turn header includes a timestamp pattern (YYYY-MM-DD HH:MM:SS)
+            import re
+
+            assert re.search(r"Turn 3/3.*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", result.output)
+
+    def test_last_n_clamped_to_total(self) -> None:
+        """--last 100 on a 3-turn thread shows all 3 turns."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id, "--last", "100"])
+
+            assert result.exit_code == 0
+            assert "Turn 1/3" in result.output
+            assert "Turn 3/3" in result.output
+            # No hidden summary — all turns visible
+            assert "--all" not in result.output
+
+
 class TestCouncilList:
     def test_list_no_threads(self) -> None:
         with runner.isolated_filesystem():
