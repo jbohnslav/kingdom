@@ -43,8 +43,7 @@ def mock_council_query_to_thread(responses: dict[str, AgentResponse]):
         from kingdom.thread import add_message
 
         for name, resp in responses.items():
-            body = resp.text if resp.text else f"*Error: {resp.error}*"
-            add_message(base, branch, thread_id, from_=name, to="king", body=body)
+            add_message(base, branch, thread_id, from_=name, to="king", body=resp.thread_body())
             if callback:
                 callback(name, resp)
         return responses
@@ -352,6 +351,142 @@ class TestCouncilShow:
             assert "not found" in result.output
 
 
+def setup_multi_turn_thread(base: Path) -> str:
+    """Create a thread with 3 turns for pagination tests. Returns thread ID."""
+    from kingdom.thread import add_message, create_thread
+
+    thread_id = "council-multi-turn"
+    create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+
+    # Turn 1
+    add_message(base, BRANCH, thread_id, from_="king", to="all", body="Question one?")
+    add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Answer 1 from claude")
+    add_message(base, BRANCH, thread_id, from_="codex", to="king", body="Answer 1 from codex")
+
+    # Turn 2
+    add_message(base, BRANCH, thread_id, from_="king", to="all", body="Question two?")
+    add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Answer 2 from claude")
+    add_message(base, BRANCH, thread_id, from_="codex", to="king", body="Answer 2 from codex")
+
+    # Turn 3
+    add_message(base, BRANCH, thread_id, from_="king", to="all", body="Question three?")
+    add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Answer 3 from claude")
+    add_message(base, BRANCH, thread_id, from_="codex", to="king", body="Answer 3 from codex")
+
+    return thread_id
+
+
+class TestCouncilShowPagination:
+    def test_default_shows_latest_turn_only(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id])
+
+            assert result.exit_code == 0
+            assert "Turn 3/3" in result.output
+            assert "Question three?" in result.output
+            assert "Answer 3 from claude" in result.output
+            # Earlier turns should NOT appear
+            assert "Question one?" not in result.output
+            assert "Question two?" not in result.output
+
+    def test_default_shows_hidden_summary(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id])
+
+            assert result.exit_code == 0
+            assert "1 turn of 3" in result.output
+            assert "3 messages of 9" in result.output
+            assert "--all" in result.output
+
+    def test_last_n_shows_requested_turns(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id, "--last", "2"])
+
+            assert result.exit_code == 0
+            assert "Turn 2/3" in result.output
+            assert "Turn 3/3" in result.output
+            assert "Question two?" in result.output
+            assert "Question three?" in result.output
+            # Turn 1 should NOT appear
+            assert "Question one?" not in result.output
+            assert "2 turns of 3" in result.output
+
+    def test_all_shows_every_turn(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id, "--all"])
+
+            assert result.exit_code == 0
+            assert "Turn 1/3" in result.output
+            assert "Turn 2/3" in result.output
+            assert "Turn 3/3" in result.output
+            assert "Question one?" in result.output
+            assert "Question two?" in result.output
+            assert "Question three?" in result.output
+            # No hidden summary when showing all
+            assert "--all" not in result.output
+
+    def test_single_turn_shows_no_hidden_summary(self) -> None:
+        """A single-turn thread should show all messages with no 'Use --all' hint."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Single question"])
+
+            result = runner.invoke(cli.app, ["council", "show"])
+
+            assert result.exit_code == 0
+            assert "Turn 1/1" in result.output
+            assert "--all" not in result.output
+
+    def test_turn_header_shows_timestamp(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id])
+
+            assert result.exit_code == 0
+            # Turn header includes a timestamp pattern (YYYY-MM-DD HH:MM:SS)
+            import re
+
+            assert re.search(r"Turn 3/3.*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", result.output)
+
+    def test_last_n_clamped_to_total(self) -> None:
+        """--last 100 on a 3-turn thread shows all 3 turns."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = setup_multi_turn_thread(base)
+
+            result = runner.invoke(cli.app, ["council", "show", thread_id, "--last", "100"])
+
+            assert result.exit_code == 0
+            assert "Turn 1/3" in result.output
+            assert "Turn 3/3" in result.output
+            # No hidden summary — all turns visible
+            assert "--all" not in result.output
+
+
 class TestCouncilList:
     def test_list_no_threads(self) -> None:
         with runner.isolated_filesystem():
@@ -380,7 +515,21 @@ class TestCouncilList:
             # Should show current thread marker
             assert "*" in result.output
 
-    def test_list_shows_message_count(self) -> None:
+    def test_list_shows_topic_summary(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Should we use Redis or Memcached?"])
+
+            result = runner.invoke(cli.app, ["council", "list"])
+
+            assert result.exit_code == 0
+            assert "Should we use Redis or Memcached?" in result.output
+
+    def test_list_shows_member_status(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -392,7 +541,46 @@ class TestCouncilList:
             result = runner.invoke(cli.app, ["council", "list"])
 
             assert result.exit_code == 0
-            assert "4 msgs" in result.output
+            # All members responded — should show check marks
+            assert "claude" in result.output
+            assert "codex" in result.output
+            assert "cursor" in result.output
+
+    def test_list_shows_mixed_member_states(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-mixed", ["king", "claude", "codex"], "council")
+            add_message(base, BRANCH, "council-mixed", from_="king", to="all", body="Question?")
+            add_message(base, BRANCH, "council-mixed", from_="claude", to="king", body="Good answer")
+            # codex has not responded — pending
+
+            result = runner.invoke(cli.app, ["council", "list"])
+
+            assert result.exit_code == 0
+            assert "claude" in result.output
+            assert "codex" in result.output
+
+    def test_list_shows_errored_member(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-err", ["king", "claude", "codex"], "council")
+            add_message(base, BRANCH, "council-err", from_="king", to="all", body="Question?")
+            add_message(base, BRANCH, "council-err", from_="claude", to="king", body="Good answer")
+            add_message(base, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*")
+
+            result = runner.invoke(cli.app, ["council", "list"])
+
+            assert result.exit_code == 0
+            assert "claude" in result.output
+            assert "codex" in result.output
 
 
 def _patch_async_dispatch():
@@ -765,7 +953,8 @@ class TestCouncilStatus:
             assert "thread:" in result.output
             assert "council-test" in result.output
             assert "council-claude.log" in result.output
-            assert "(no log file)" in result.output  # codex has no log
+            # codex has no log — log path only shown when file exists
+            assert "council-codex.log" not in result.output
 
     def test_status_no_threads_errors(self) -> None:
         with runner.isolated_filesystem():
@@ -809,6 +998,70 @@ class TestCouncilStatus:
             assert "council-recent" in result.output
             assert "codex: pending" in result.output
 
+    def test_status_shows_errored_member(self) -> None:
+        """Status should show 'errored' for members that responded with an error."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-err", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-err")
+            add_message(base, BRANCH, "council-err", from_="king", to="all", body="Q")
+            add_message(base, BRANCH, "council-err", from_="claude", to="king", body="Good")
+            add_message(base, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*")
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "errors" in result.output
+            assert "claude: responded" in result.output
+            assert "codex: errored" in result.output
+
+    def test_status_shows_timed_out_member(self) -> None:
+        """Status should show 'timed out' for members that timed out."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-to", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-to")
+            add_message(base, BRANCH, "council-to", from_="king", to="all", body="Q")
+            add_message(base, BRANCH, "council-to", from_="claude", to="king", body="Good")
+            add_message(base, BRANCH, "council-to", from_="codex", to="king", body="*Error: Timeout after 600s*")
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "claude: responded" in result.output
+            assert "codex: timed out" in result.output
+
+    def test_status_shows_running_member(self) -> None:
+        """Status should show 'running' for members with active stream files."""
+        from kingdom.thread import add_message, create_thread, thread_dir
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-run", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-run")
+            add_message(base, BRANCH, "council-run", from_="king", to="all", body="Q")
+
+            # Simulate active stream file for claude
+            tdir = thread_dir(base, BRANCH, "council-run")
+            (tdir / ".stream-claude.jsonl").write_text('{"type":"event"}\n')
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "running" in result.output
+            assert "claude: running" in result.output
+            assert "codex: pending" in result.output
+
 
 class TestCouncilReset:
     def test_reset_clears_sessions(self) -> None:
@@ -819,4 +1072,132 @@ class TestCouncilReset:
             result = runner.invoke(cli.app, ["council", "reset"])
 
             assert result.exit_code == 0
-            assert "Sessions cleared" in result.output
+            assert "sessions cleared" in result.output.lower()
+
+    def test_reset_single_member(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset", "--member", "claude"])
+
+            assert result.exit_code == 0
+            assert "claude" in result.output.lower()
+            assert "cleared" in result.output.lower()
+
+    def test_reset_unknown_member(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset", "--member", "nonexistent"])
+
+            assert result.exit_code == 1
+            assert "Unknown member" in result.output
+
+
+class TestCouncilRetry:
+    def test_retry_no_thread(self) -> None:
+        """Retry with no current thread should error."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 1
+            assert "No current council thread" in result.output
+
+    def test_retry_all_ok(self) -> None:
+        """Retry when all members responded successfully should say nothing to retry."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            thread_id = "council-retry-test"
+            create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="all", body="test question")
+            add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Good response")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="Also good")
+
+            result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 0
+            assert "Nothing to retry" in result.output
+
+    def test_retry_failed_members(self) -> None:
+        """Retry should re-query members that failed."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            thread_id = "council-retry-fail"
+            create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="all", body="test question")
+            add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Good response")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="*Error: Timeout after 600s*")
+
+            # Mock query_to_thread to handle the retry
+            retry_responses = {
+                "codex": AgentResponse(name="codex", text="Recovered response", elapsed=5.0),
+            }
+            with mock_council_query_to_thread(retry_responses):
+                result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 0
+            assert "codex" in result.output
+
+    def test_retry_missing_members(self) -> None:
+        """Retry should re-query members that never responded."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            thread_id = "council-retry-miss"
+            create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="all", body="test question")
+            add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Good response")
+            # codex never responded
+
+            retry_responses = {
+                "codex": AgentResponse(name="codex", text="Late response", elapsed=5.0),
+            }
+            with mock_council_query_to_thread(retry_responses):
+                result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 0
+            assert "codex" in result.output.lower()
+
+    def test_retry_respects_targeted_ask(self) -> None:
+        """Retry after --to codex should only retry codex, not other members."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Thread has all members, but last ask was targeted to codex only
+            thread_id = "council-retry-target"
+            create_thread(base, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="codex", body="targeted question")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="*Error: Timeout after 600s*")
+
+            retry_responses = {
+                "codex": AgentResponse(name="codex", text="Recovered", elapsed=5.0),
+            }
+            with mock_council_query_to_thread(retry_responses):
+                result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 0
+            # Should only retry codex, not claude or cursor
+            assert "Retrying: codex" in result.output

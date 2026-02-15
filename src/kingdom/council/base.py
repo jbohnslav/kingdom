@@ -23,6 +23,20 @@ class AgentResponse:
     elapsed: float = 0.0
     raw: str = ""
 
+    def thread_body(self) -> str:
+        """Format response for writing to a thread message file.
+
+        Note: partial timeout responses (text + error) return just the text.
+        This means retry won't detect them as failures. Acceptable because
+        timeouts are non-retriable and users see the timeout in watch output.
+        See backlog ticket 9124 for frontmatter metadata approach.
+        """
+        if self.text:
+            return self.text
+        if self.error:
+            return f"*Error: {self.error}*"
+        return "*Empty response — no text or error returned.*"
+
 
 @dataclass
 class CouncilMember:
@@ -62,7 +76,7 @@ class CouncilMember:
             parts.append(self.agent_prompt + "\n\n")
         parts.append(prompt)
         full_prompt = "".join(parts)
-        return agent_build_command(self.config, full_prompt, self.session_id, skip_permissions=False)
+        return agent_build_command(self.config, full_prompt, self.session_id, skip_permissions=False, streaming=True)
 
     def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse response from CLI output.
@@ -72,13 +86,56 @@ class CouncilMember:
         """
         return agent_parse_response(self.config, stdout, stderr, code)
 
-    def query(self, prompt: str, timeout: int = 600, stream_path: Path | None = None) -> AgentResponse:
-        """Execute a query and return the response.
+    # Errors where retrying won't help — broken CLI, bad config, or slow model
+    NON_RETRIABLE_PREFIXES = ("Command not found:", "Invalid agent config:", "Timeout after")
 
-        If stream_path is provided, stdout is tee'd to that file line-by-line
-        as it arrives. On timeout, whatever was captured is preserved both in
-        the stream file and in the returned AgentResponse.
+    def query(
+        self,
+        prompt: str,
+        timeout: int = 600,
+        stream_path: Path | None = None,
+        max_retries: int = 2,
+    ) -> AgentResponse:
+        """Execute a query with automatic retry on failure.
+
+        Retry strategy (when max_retries >= 2):
+          1. First attempt with current session.
+          2. If retriable error: retry once with same session.
+          3. If still failing: reset session and retry once more.
+
+        Non-retriable errors (command not found, invalid config) fail immediately.
+
+        Args:
+            prompt: The query prompt.
+            timeout: Per-attempt timeout in seconds.
+            stream_path: If set, stdout is tee'd to this file line-by-line.
+            max_retries: Max retry attempts (0 = no retries, default 2).
         """
+        response = self.query_once(prompt, timeout, stream_path)
+        if not response.error or max_retries < 1:
+            return response
+
+        # Don't retry non-retriable errors
+        if any(response.error.startswith(prefix) for prefix in self.NON_RETRIABLE_PREFIXES):
+            return response
+
+        # Retry 1: same session
+        if stream_path and stream_path.exists():
+            stream_path.unlink()
+        self.log_retry(prompt, response, reset_session=False)
+        response = self.query_once(prompt, timeout, stream_path)
+        if not response.error or max_retries < 2:
+            return response
+
+        # Retry 2: reset session
+        if stream_path and stream_path.exists():
+            stream_path.unlink()
+        self.log_retry(prompt, response, reset_session=True)
+        self.reset_session()
+        return self.query_once(prompt, timeout, stream_path)
+
+    def query_once(self, prompt: str, timeout: int = 600, stream_path: Path | None = None) -> AgentResponse:
+        """Execute a single query attempt and return the response."""
         start = time.monotonic()
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
@@ -138,6 +195,12 @@ class CouncilMember:
             error = None
             if process.returncode != 0 and not text:
                 error = stderr.strip() or f"Exit code {process.returncode}"
+            elif not text and process.returncode == 0:
+                # Process exited cleanly but produced no extractable text
+                snippet = stderr.strip()[:200] if stderr.strip() else stdout.strip()[:200]
+                error = f"Empty response from {self.name}"
+                if snippet:
+                    error += f": {snippet}"
 
             response = AgentResponse(
                 name=self.name,
@@ -203,6 +266,16 @@ class CouncilMember:
     def reset_session(self) -> None:
         """Clear the session ID."""
         self.session_id = None
+
+    def log_retry(self, prompt: str, failed: AgentResponse, reset_session: bool) -> None:
+        """Log a retry attempt."""
+        if not self.log_path:
+            return
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        action = "retry with session reset" if reset_session else "retry with same session"
+        with self.log_path.open("a", encoding="utf-8") as f:
+            f.write(f"\n[{timestamp}] RETRY ({action}) — previous error: {failed.error}\n")
 
     def log(self, prompt: str, text: str, error: str | None, elapsed: float) -> None:
         """Log the interaction to the log file."""

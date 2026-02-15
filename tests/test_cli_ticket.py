@@ -107,6 +107,22 @@ class TestTicketCreate:
             created_ticket, _ = found
             assert created_ticket.priority == 3
 
+    def test_create_no_trailing_whitespace(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "create", "Whitespace check"])
+
+            assert result.exit_code == 0
+            ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
+            found = find_ticket(base, ticket_id)
+            assert found is not None
+            _, ticket_path = found
+            content = ticket_path.read_text()
+            for i, line in enumerate(content.splitlines(), 1):
+                assert line == line.rstrip(), f"Line {i} has trailing whitespace: {line!r}"
+
 
 class TestTicketCloseArchive:
     def test_close_backlog_ticket_archives(self) -> None:
@@ -450,6 +466,66 @@ class TestTicketMove:
             assert "kd start" in result.output
 
 
+class TestTicketList:
+    def test_list_hides_closed_by_default(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            # Create one open and one closed ticket
+            open_ticket = Ticket(id="aaaa", status="open", title="Open ticket", body="", created=datetime.now(UTC))
+            closed_ticket = Ticket(
+                id="bbbb", status="closed", title="Closed ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(closed_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "Open ticket" in result.output
+            assert "Closed ticket" not in result.output
+
+    def test_list_include_closed_shows_all(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            open_ticket = Ticket(id="aaaa", status="open", title="Open ticket", body="", created=datetime.now(UTC))
+            closed_ticket = Ticket(
+                id="bbbb", status="closed", title="Closed ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(closed_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--include-closed"])
+
+            assert result.exit_code == 0
+            assert "Open ticket" in result.output
+            assert "Closed ticket" in result.output
+
+    def test_list_all_hides_closed_by_default(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            open_ticket = Ticket(id="aaaa", status="open", title="Open ticket", body="", created=datetime.now(UTC))
+            closed_ticket = Ticket(
+                id="bbbb", status="closed", title="Closed ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(closed_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--all"])
+
+            assert result.exit_code == 0
+            assert "Open ticket" in result.output
+            assert "Closed ticket" not in result.output
+
+
 class TestTicketShow:
     def test_show_displays_file_path(self) -> None:
         with runner.isolated_filesystem():
@@ -463,6 +539,55 @@ class TestTicketShow:
             assert result.exit_code == 0, result.output
             assert ".kd/" in result.output
             assert "kin-sh01.md" in result.output
+
+    def test_show_structured_header(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="ab12",
+                status="open",
+                title="Fix the bug",
+                body="Details here",
+                priority=1,
+                type="bug",
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "ab12.md")
+
+            result = runner.invoke(cli.app, ["tk", "show", "ab12"])
+
+            assert result.exit_code == 0
+            # Structured header — no raw frontmatter
+            assert "ab12" in result.output
+            assert "open" in result.output
+            assert "P1" in result.output
+            assert "bug" in result.output
+            assert "Fix the bug" in result.output
+            # Should NOT contain raw YAML delimiters
+            assert "---" not in result.output
+
+    def test_show_no_raw_frontmatter(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="cd34",
+                status="in_progress",
+                title="Add feature",
+                body="## AC\n\n- [ ] Done",
+                deps=["ab12"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "cd34.md")
+
+            result = runner.invoke(cli.app, ["tk", "show", "cd34"])
+
+            assert result.exit_code == 0
+            assert "deps:" in result.output  # structured deps display
+            assert "ab12" in result.output
 
 
 class TestMigrate:

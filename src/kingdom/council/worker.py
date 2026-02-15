@@ -49,11 +49,17 @@ def main(argv: list[str] | None = None) -> None:
 
         tdir = thread_dir(args.base, args.feature, args.thread_id)
         tdir.mkdir(parents=True, exist_ok=True)
-        stream_path = tdir / f".stream-{member.name}.md"
+        stream_path = tdir / f".stream-{member.name}.jsonl"
 
         response = member.query(args.prompt, args.timeout, stream_path=stream_path)
-        body = response.text if response.text else f"*Error: {response.error}*"
-        add_message(args.base, args.feature, args.thread_id, from_=args.to_member, to="king", body=body)
+        add_message(
+            args.base,
+            args.feature,
+            args.thread_id,
+            from_=args.to_member,
+            to="king",
+            body=response.thread_body(),
+        )
 
         if stream_path.exists():
             stream_path.unlink()

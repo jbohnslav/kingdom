@@ -99,22 +99,78 @@ def resolve_all_agents(agents: dict[str, AgentDef]) -> dict[str, AgentConfig]:
 
 
 def parse_claude_response(stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
-    """Parse claude CLI JSON output.
+    """Parse claude CLI JSON or NDJSON (stream-json) output.
 
-    Expected format::
+    Single-JSON format (``--output-format json``)::
 
         {"result": "response text", "session_id": "abc123"}
+
+    NDJSON format (``--output-format stream-json``): one JSON object per line.
+    With ``--include-partial-messages``, token deltas are wrapped::
+
+        {"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}, "session_id":"..."}
+
+    Without partial messages, complete text comes via::
+
+        {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}, "session_id":"..."}
+
+    The ``result`` event always carries the final text and session_id.
     """
     raw = stdout
-    try:
-        data = json.loads(stdout)
-        if not isinstance(data, dict):
+    lines = [ln for ln in stdout.strip().split("\n") if ln.strip()]
+
+    # Single-line: use original single-JSON parser
+    if len(lines) <= 1:
+        try:
+            data = json.loads(stdout)
+            if not isinstance(data, dict):
+                return stdout.strip(), None, raw
+            text = data.get("result", "")
+            session_id = data.get("session_id")
+            return text, session_id, raw
+        except json.JSONDecodeError:
             return stdout.strip(), None, raw
-        text = data.get("result", "")
-        session_id = data.get("session_id")
-        return text, session_id, raw
-    except json.JSONDecodeError:
-        return stdout.strip(), None, raw
+
+    # Multi-line: parse as NDJSON (stream-json)
+    text_parts: list[str] = []
+    session_id = None
+
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+
+        # Token-level deltas wrapped in stream_event (--include-partial-messages)
+        if event_type == "stream_event":
+            inner = event.get("event", {})
+            if inner.get("type") == "content_block_delta":
+                delta = inner.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text_parts.append(delta.get("text", ""))
+            if not session_id:
+                session_id = event.get("session_id")
+        # Complete assistant message (without --include-partial-messages)
+        elif event_type == "assistant":
+            if not text_parts:
+                message = event.get("message", {})
+                for block in message.get("content", []):
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+            if not session_id:
+                session_id = event.get("session_id")
+        elif event_type == "result":
+            session_id = event.get("session_id")
+            # result event also carries the final text as fallback
+            result_text = event.get("result")
+            if result_text and not text_parts:
+                text_parts.append(result_text)
+
+    return "".join(text_parts), session_id, raw
 
 
 def parse_codex_response(stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
@@ -153,17 +209,78 @@ def parse_codex_response(stdout: str, stderr: str, code: int) -> tuple[str, str 
 
 
 def parse_cursor_response(stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
-    """Parse cursor agent CLI JSON output."""
+    """Parse cursor agent CLI JSON or NDJSON (stream-json) output.
+
+    Single-JSON format: ``{"result": "...", "session_id": "..."}``
+
+    NDJSON format: handles ``stream_event``-wrapped deltas, top-level
+    ``content_block_delta``, and ``assistant`` message events.
+    """
     raw = stdout
-    try:
-        data = json.loads(stdout)
-        if not isinstance(data, dict):
+    lines = [ln for ln in stdout.strip().split("\n") if ln.strip()]
+
+    # Single-line: use original single-JSON parser
+    if len(lines) <= 1:
+        try:
+            data = json.loads(stdout)
+            if not isinstance(data, dict):
+                return stdout.strip(), None, raw
+            text = data.get("result") or data.get("text") or data.get("response") or ""
+            session_id = data.get("session_id") or data.get("conversation_id")
+            return text, session_id, raw
+        except json.JSONDecodeError:
             return stdout.strip(), None, raw
-        text = data.get("result") or data.get("text") or data.get("response") or ""
-        session_id = data.get("session_id") or data.get("conversation_id")
-        return text, session_id, raw
-    except json.JSONDecodeError:
-        return stdout.strip(), None, raw
+
+    # Multi-line: parse as NDJSON (stream-json)
+    text_parts: list[str] = []
+    session_id = None
+
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+
+        # Token-level deltas wrapped in stream_event
+        if event_type == "stream_event":
+            inner = event.get("event", {})
+            if inner.get("type") == "content_block_delta":
+                delta = inner.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text_parts.append(delta.get("text", ""))
+            if not session_id:
+                session_id = event.get("session_id")
+        # Top-level content_block_delta (flat format)
+        elif event_type == "content_block_delta":
+            delta = event.get("delta", {})
+            if delta.get("type") == "text_delta":
+                text_parts.append(delta.get("text", ""))
+        # Complete assistant message — only use if no deltas collected
+        elif event_type == "assistant":
+            if not text_parts:
+                message = event.get("message", {})
+                if isinstance(message, dict):
+                    for block in message.get("content", []):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                # Flat text field fallback
+                if not text_parts:
+                    text = event.get("text", "")
+                    if text:
+                        text_parts.append(text)
+            if not session_id:
+                session_id = event.get("session_id") or event.get("conversation_id")
+        elif event_type == "result":
+            session_id = event.get("session_id") or event.get("conversation_id")
+            result_text = event.get("result")
+            if result_text and not text_parts:
+                text_parts.append(result_text)
+
+    return "".join(text_parts), session_id, raw
 
 
 RESPONSE_PARSERS: dict[str, Any] = {
@@ -179,15 +296,28 @@ RESPONSE_PARSERS: dict[str, Any] = {
 
 
 def build_claude_command(
-    config: AgentConfig, prompt: str, session_id: str | None, skip_permissions: bool = True
+    config: AgentConfig,
+    prompt: str,
+    session_id: str | None,
+    skip_permissions: bool = True,
+    streaming: bool = False,
 ) -> list[str]:
     """Build claude CLI command.
 
     Format: ``claude [--dangerously-skip-permissions] [--model MODEL] --print --output-format json [--resume SESSION] -p PROMPT``
 
     When skip_permissions is False (council queries), restricts to read-only tools.
+    When streaming is True, replaces ``--output-format json`` with ``stream-json``
+    and appends ``--verbose`` and ``--include-partial-messages``.
     """
     cmd = shlex.split(config.cli)
+    if streaming:
+        try:
+            fmt_idx = cmd.index("--output-format")
+            cmd[fmt_idx + 1] = "stream-json"
+        except (ValueError, IndexError):
+            pass
+        cmd.extend(["--verbose", "--include-partial-messages"])
     if skip_permissions:
         cmd.insert(1, "--dangerously-skip-permissions")
     else:
@@ -203,13 +333,18 @@ def build_claude_command(
 
 
 def build_codex_command(
-    config: AgentConfig, prompt: str, session_id: str | None, skip_permissions: bool = True
+    config: AgentConfig,
+    prompt: str,
+    session_id: str | None,
+    skip_permissions: bool = True,
+    streaming: bool = False,
 ) -> list[str]:
     """Build codex CLI command.
 
     Codex uses subcommand-style resume: ``codex exec resume <id> --json <prompt>``
 
     When skip_permissions is False (council queries), uses read-only sandbox.
+    The streaming parameter is accepted but ignored — codex already outputs NDJSON.
     """
     parts = shlex.split(config.cli)
     if skip_permissions:
@@ -233,15 +368,26 @@ def build_codex_command(
 
 
 def build_cursor_command(
-    config: AgentConfig, prompt: str, session_id: str | None, skip_permissions: bool = True
+    config: AgentConfig,
+    prompt: str,
+    session_id: str | None,
+    skip_permissions: bool = True,
+    streaming: bool = False,
 ) -> list[str]:
     """Build cursor agent CLI command.
 
     Format: ``agent [--force --sandbox disabled] [--model MODEL] --print --output-format json PROMPT [--resume SESSION]``
 
     When skip_permissions is False (council queries), uses --mode ask for read-only.
+    When streaming is True, replaces ``--output-format json`` with ``stream-json``.
     """
     cmd = shlex.split(config.cli)
+    if streaming:
+        try:
+            fmt_idx = cmd.index("--output-format")
+            cmd[fmt_idx + 1] = "stream-json"
+        except (ValueError, IndexError):
+            pass
     if skip_permissions:
         cmd.insert(1, "--force")
         cmd.insert(2, "--sandbox")
@@ -284,7 +430,11 @@ def clean_agent_env(role: str | None = None, agent_name: str | None = None) -> d
 
 
 def build_command(
-    config: AgentConfig, prompt: str, session_id: str | None = None, skip_permissions: bool = True
+    config: AgentConfig,
+    prompt: str,
+    session_id: str | None = None,
+    skip_permissions: bool = True,
+    streaming: bool = False,
 ) -> list[str]:
     """Build a CLI command for an agent.
 
@@ -296,7 +446,7 @@ def build_command(
     builder = COMMAND_BUILDERS.get(config.backend)
     if builder is None:
         raise ValueError(f"Unknown backend: {config.backend}")
-    return builder(config, prompt, session_id, skip_permissions)
+    return builder(config, prompt, session_id, skip_permissions, streaming=streaming)
 
 
 def parse_response(config: AgentConfig, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
@@ -309,3 +459,88 @@ def parse_response(config: AgentConfig, stdout: str, stderr: str, code: int) -> 
     if parser is None:
         return stdout.strip(), None, stdout
     return parser(stdout, stderr, code)
+
+
+# ---------------------------------------------------------------------------
+# Stream text extractors — extract text from individual NDJSON lines
+# ---------------------------------------------------------------------------
+
+
+def extract_claude_stream_text(line: str) -> str | None:
+    """Extract text from a single Claude stream-json NDJSON line.
+
+    Handles both the ``stream_event`` wrapper (``--include-partial-messages``)
+    and bare ``content_block_delta`` events.  Returns None for non-text events.
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    # Unwrap stream_event wrapper
+    if event.get("type") == "stream_event":
+        event = event.get("event", {})
+    if event.get("type") == "content_block_delta":
+        delta = event.get("delta", {})
+        if delta.get("type") == "text_delta":
+            return delta.get("text")
+    return None
+
+
+def extract_codex_stream_text(line: str) -> str | None:
+    """Extract text from a single Codex NDJSON line.
+
+    Returns agent message text from ``item.completed`` events, or None.
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "item.completed":
+        item = event.get("item", {})
+        if item.get("type") == "agent_message":
+            return item.get("text")
+    return None
+
+
+def extract_cursor_stream_text(line: str) -> str | None:
+    """Extract text from a single Cursor stream-json NDJSON line.
+
+    Handles ``stream_event`` wrapper and bare ``content_block_delta`` events.
+    Returns None for non-text events.
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    # Unwrap stream_event wrapper
+    if event.get("type") == "stream_event":
+        event = event.get("event", {})
+    if event.get("type") == "content_block_delta":
+        delta = event.get("delta", {})
+        if delta.get("type") == "text_delta":
+            return delta.get("text")
+    return None
+
+
+STREAM_TEXT_EXTRACTORS: dict[str, Any] = {
+    "claude_code": extract_claude_stream_text,
+    "codex": extract_codex_stream_text,
+    "cursor": extract_cursor_stream_text,
+}
+
+
+def extract_stream_text(line: str, backend: str) -> str | None:
+    """Extract text from a single NDJSON line for the given backend.
+
+    Returns None for non-text events or unknown backends.
+    """
+    extractor = STREAM_TEXT_EXTRACTORS.get(backend)
+    if extractor is None:
+        return None
+    return extractor(line)

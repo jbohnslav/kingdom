@@ -6,6 +6,7 @@ from kingdom.agent import (
     BACKEND_DEFAULTS,
     AgentConfig,
     build_command,
+    extract_stream_text,
     parse_claude_response,
     parse_codex_response,
     parse_cursor_response,
@@ -372,3 +373,198 @@ class TestParseResponseDispatch:
         text, session_id, _ = parse_response(config, "raw output", "", 0)
         assert text == "raw output"
         assert session_id is None
+
+
+class TestBuildCommandStreaming:
+    def test_claude_streaming_replaces_output_format(self) -> None:
+        cmd = build_command(make_config("claude"), "hello", streaming=True)
+        assert "--output-format" in cmd
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "stream-json"
+        assert "--verbose" in cmd
+        assert "--include-partial-messages" in cmd
+
+    def test_claude_streaming_false_keeps_json(self) -> None:
+        cmd = build_command(make_config("claude"), "hello", streaming=False)
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "json"
+        assert "--verbose" not in cmd
+        assert "--include-partial-messages" not in cmd
+
+    def test_cursor_streaming_replaces_output_format(self) -> None:
+        cmd = build_command(make_config("cursor"), "hello", streaming=True)
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "stream-json"
+
+    def test_cursor_streaming_false_keeps_json(self) -> None:
+        cmd = build_command(make_config("cursor"), "hello", streaming=False)
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "json"
+
+    def test_codex_streaming_unchanged(self) -> None:
+        cmd_normal = build_command(make_config("codex"), "hello", streaming=False)
+        cmd_stream = build_command(make_config("codex"), "hello", streaming=True)
+        assert cmd_normal == cmd_stream
+
+
+class TestParseClaudeResponseNDJSON:
+    def test_ndjson_stream_event_wrapped_deltas(self) -> None:
+        """Real Claude stream-json format: deltas wrapped in stream_event."""
+        stdout = (
+            '{"type":"system","subtype":"init","session_id":"s1"}\n'
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}},"session_id":"sess-abc"}\n'
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" world"}},"session_id":"sess-abc"}\n'
+            '{"type":"result","result":"Hello world","session_id":"sess-abc"}\n'
+        )
+        text, session_id, _ = parse_claude_response(stdout, "", 0)
+        assert text == "Hello world"
+        assert session_id == "sess-abc"
+
+    def test_ndjson_assistant_message_without_partial(self) -> None:
+        """Without --include-partial-messages, text comes via assistant event."""
+        stdout = (
+            '{"type":"system","subtype":"init","session_id":"s1"}\n'
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]},"session_id":"sess-1"}\n'
+            '{"type":"result","result":"hello","session_id":"sess-1"}\n'
+        )
+        text, session_id, _ = parse_claude_response(stdout, "", 0)
+        assert text == "hello"
+        assert session_id == "sess-1"
+
+    def test_ndjson_deltas_preferred_over_assistant(self) -> None:
+        """When both stream_event deltas and assistant are present, deltas win."""
+        stdout = (
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}},"session_id":"s1"}\n'
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]},"session_id":"s1"}\n'
+            '{"type":"result","result":"hi","session_id":"s1"}\n'
+        )
+        text, session_id, _ = parse_claude_response(stdout, "", 0)
+        assert text == "hi"
+        assert session_id == "s1"
+
+    def test_ndjson_result_fallback_text(self) -> None:
+        """When no deltas or assistant events, fall back to result event text."""
+        stdout = '{"type":"result","result":"Final answer","session_id":"s1"}\n{"type":"system","status":"done"}\n'
+        text, session_id, _ = parse_claude_response(stdout, "", 0)
+        assert text == "Final answer"
+        assert session_id == "s1"
+
+    def test_single_json_still_works(self) -> None:
+        stdout = '{"result": "hello", "session_id": "sess-123"}'
+        text, session_id, _ = parse_claude_response(stdout, "", 0)
+        assert text == "hello"
+        assert session_id == "sess-123"
+
+    def test_ndjson_skips_non_text_events(self) -> None:
+        stdout = (
+            '{"type":"tool_use","name":"Read"}\n'
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"answer"}},"session_id":"s2"}\n'
+            '{"type":"result","session_id":"s2"}\n'
+        )
+        text, session_id, _ = parse_claude_response(stdout, "", 0)
+        assert text == "answer"
+        assert session_id == "s2"
+
+    def test_ndjson_invalid_json_lines_skipped(self) -> None:
+        stdout = 'not json\n{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}},"session_id":"s1"}\n'
+        text, _, _ = parse_claude_response(stdout, "", 0)
+        assert text == "ok"
+
+
+class TestParseCursorResponseNDJSON:
+    def test_ndjson_stream_event_wrapped_deltas(self) -> None:
+        """stream_event-wrapped content_block_delta events."""
+        stdout = (
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}},"session_id":"conv-1"}\n'
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" there"}},"session_id":"conv-1"}\n'
+            '{"type":"result","session_id":"conv-1"}\n'
+        )
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "Hi there"
+        assert session_id == "conv-1"
+
+    def test_ndjson_flat_content_block_delta(self) -> None:
+        """Top-level content_block_delta (no stream_event wrapper)."""
+        stdout = (
+            '{"type":"content_block_delta","delta":{"type":"text_delta","text":"flat"}}\n'
+            '{"type":"result","session_id":"c-1"}\n'
+        )
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "flat"
+        assert session_id == "c-1"
+
+    def test_ndjson_assistant_message_format(self) -> None:
+        """Assistant event with message.content blocks."""
+        stdout = (
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"response"}]},"session_id":"c-2"}\n'
+            '{"type":"result","session_id":"c-2"}\n'
+        )
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "response"
+        assert session_id == "c-2"
+
+    def test_ndjson_assistant_flat_text_fallback(self) -> None:
+        """Assistant event with flat text field (no message.content)."""
+        stdout = '{"type":"assistant","text":"response text"}\n{"type":"result","conversation_id":"c-3"}\n'
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "response text"
+        assert session_id == "c-3"
+
+    def test_ndjson_deltas_preferred_over_assistant(self) -> None:
+        """Deltas collected first means assistant block is skipped."""
+        stdout = (
+            '{"type":"content_block_delta","delta":{"type":"text_delta","text":"from deltas"}}\n'
+            '{"type":"assistant","text":"from assistant"}\n'
+            '{"type":"result","session_id":"c-4"}\n'
+        )
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "from deltas"
+        assert session_id == "c-4"
+
+    def test_single_json_still_works(self) -> None:
+        stdout = '{"result":"OK","session_id":"abc123"}'
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "OK"
+        assert session_id == "abc123"
+
+
+class TestExtractStreamText:
+    def test_claude_stream_event_wrapped(self) -> None:
+        """Real format: text_delta wrapped in stream_event."""
+        line = (
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}}'
+        )
+        assert extract_stream_text(line, "claude_code") == "hi"
+
+    def test_claude_bare_content_block_delta(self) -> None:
+        """Also handles bare content_block_delta for compatibility."""
+        line = '{"type":"content_block_delta","delta":{"type":"text_delta","text":"bare"}}'
+        assert extract_stream_text(line, "claude_code") == "bare"
+
+    def test_claude_non_text_event(self) -> None:
+        line = '{"type":"stream_event","event":{"type":"message_start"}}'
+        assert extract_stream_text(line, "claude_code") is None
+
+    def test_codex_item_completed(self) -> None:
+        line = '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
+        assert extract_stream_text(line, "codex") == "done"
+
+    def test_codex_non_message_event(self) -> None:
+        line = '{"type":"turn.started"}'
+        assert extract_stream_text(line, "codex") is None
+
+    def test_cursor_stream_event_wrapped(self) -> None:
+        line = (
+            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"yo"}}}'
+        )
+        assert extract_stream_text(line, "cursor") == "yo"
+
+    def test_cursor_bare_content_block_delta(self) -> None:
+        line = '{"type":"content_block_delta","delta":{"type":"text_delta","text":"bare"}}'
+        assert extract_stream_text(line, "cursor") == "bare"
+
+    def test_unknown_backend(self) -> None:
+        assert extract_stream_text('{"type":"foo"}', "unknown") is None
+
+    def test_invalid_json(self) -> None:
+        assert extract_stream_text("not json", "claude_code") is None

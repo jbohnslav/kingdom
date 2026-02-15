@@ -24,6 +24,7 @@ import typer
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.rule import Rule
 
 from kingdom.breakdown import build_breakdown_template
 from kingdom.council import Council
@@ -432,13 +433,11 @@ def council_ask(
         if to and member:
             response = member.query(prompt, timeout)
             responses = {to: response}
-            body = response.text if response.text else f"*Error: {response.error}*"
-            add_message(base, feature, thread_id, from_=to, to="king", body=body)
+            add_message(base, feature, thread_id, from_=to, to="king", body=response.thread_body())
         else:
             responses = query_with_progress(c, prompt, json_output, console)
             for name, resp in responses.items():
-                body = resp.text if resp.text else f"*Error: {resp.error}*"
-                add_message(base, feature, thread_id, from_=name, to="king", body=body)
+                add_message(base, feature, thread_id, from_=name, to="king", body=resp.thread_body())
 
         c.save_sessions(base, feature)
 
@@ -512,8 +511,7 @@ def council_ask(
             task = progress.add_task(f"Querying {to}...", total=None)
             response = member.query(prompt, timeout)
             progress.update(task, description="Done")
-        body = response.text if response.text else f"*Error: {response.error}*"
-        add_message(base, feature, thread_id, from_=to, to="king", body=body)
+        add_message(base, feature, thread_id, from_=to, to="king", body=response.thread_body())
         render_response(response, console)
     else:
 
@@ -525,9 +523,11 @@ def council_ask(
     c.save_sessions(base, feature)
 
 
-@council_app.command("reset", help="Clear all council sessions.")
-def council_reset() -> None:
-    """Clear all council member sessions."""
+@council_app.command("reset", help="Clear council sessions.")
+def council_reset(
+    member_name: Annotated[str | None, typer.Option("--member", help="Reset only this member's session.")] = None,
+) -> None:
+    """Clear council member sessions. Use --member to reset a single member."""
     base = Path.cwd()
     feature = resolve_current_run(base)
 
@@ -538,14 +538,67 @@ def council_reset() -> None:
 
     c = Council.create(logs_dir=logs_dir, base=base)
     c.load_sessions(base, feature)
-    c.reset_sessions()
-    c.save_sessions(base, feature)
-    typer.echo("Sessions cleared.")
+
+    if member_name:
+        m = c.get_member(member_name)
+        if m is None:
+            available = ", ".join(sorted(mem.name for mem in c.members))
+            typer.echo(f"Unknown member: {member_name}")
+            typer.echo(f"Available: {available}")
+            raise typer.Exit(code=1)
+        m.reset_session()
+        c.save_sessions(base, feature)
+        typer.echo(f"Session cleared for {member_name}.")
+    else:
+        c.reset_sessions()
+        c.save_sessions(base, feature)
+        typer.echo("All sessions cleared.")
+
+
+def group_messages_into_turns(messages: list) -> list[list]:
+    """Group messages into conversational turns.
+
+    A turn = one king message + all member responses before the next king message.
+    Messages before the first king message (if any) form turn 0.
+    """
+    if not messages:
+        return []
+
+    turns: list[list] = []
+    current_turn: list = []
+
+    for msg in messages:
+        if msg.from_ == "king" and current_turn:
+            turns.append(current_turn)
+            current_turn = []
+        current_turn.append(msg)
+
+    if current_turn:
+        turns.append(current_turn)
+
+    return turns
+
+
+def print_turn(console: Console, turn_msgs: list, turn_number: int, total_turns: int) -> None:
+    """Print a single conversational turn with header and separator."""
+    first_msg = turn_msgs[0]
+    ts = first_msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    console.print(f"[bold cyan]── Turn {turn_number}/{total_turns} ── {ts} ──[/bold cyan]")
+    console.print()
+
+    for msg in turn_msgs:
+        msg_ts = msg.timestamp.strftime("%H:%M:%S")
+        subtitle = f"{msg_ts} · to {msg.to}"
+        header = f"## [{subtitle}] {msg.from_}"
+        console.print(Markdown(f"{header}\n\n{msg.body}"))
+        console.print()
 
 
 @council_app.command("show", help="Display a council thread.")
 def council_show(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
+    last_n: Annotated[int | None, typer.Option("--last", help="Show last N turns.")] = None,
+    show_all: Annotated[bool, typer.Option("--all", help="Show full thread history.")] = False,
 ) -> None:
     """Display a council thread's message history."""
     from kingdom.thread import list_messages, list_threads, thread_dir
@@ -575,17 +628,44 @@ def council_show(
             typer.echo(f"Thread {thread_id}: no messages.")
             raise typer.Exit(code=1)
 
+        turns = group_messages_into_turns(messages)
+        total_turns = len(turns)
+        total_msgs = len(messages)
+
+        # Determine which turns to show
+        if show_all:
+            visible_turns = turns
+            start_index = 0
+        elif last_n is not None:
+            n = min(last_n, total_turns)
+            visible_turns = turns[-n:]
+            start_index = total_turns - n
+        else:
+            # Default: show only the latest turn
+            visible_turns = turns[-1:]
+            start_index = total_turns - 1
+
+        visible_msgs = sum(len(t) for t in visible_turns)
+        hidden_turns = total_turns - len(visible_turns)
+
+        def pl(n: int, word: str) -> str:
+            return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
         console.print(f"[bold]Thread: {thread_id}[/bold]")
-        console.print(f"[dim]{len(messages)} messages[/dim]\n")
+        if hidden_turns > 0:
+            console.print(
+                f"[dim]Showing {pl(len(visible_turns), 'turn')} of {total_turns} "
+                f"({pl(visible_msgs, 'message')} of {total_msgs}). "
+                f"Use --all for full history.[/dim]"
+            )
+        else:
+            console.print(f"[dim]{pl(total_turns, 'turn')}, {pl(total_msgs, 'message')}[/dim]")
+        console.print()
 
-        for msg in messages:
-            ts = msg.timestamp.strftime("%H:%M:%S")
-            subtitle = f"{ts} · to {msg.to}"
+        for i, turn_msgs in enumerate(visible_turns):
+            turn_number = start_index + i + 1
+            print_turn(console, turn_msgs, turn_number, total_turns)
 
-            # Use H2 for sender, italic for metadata
-            header = f"## [{subtitle}] {msg.from_}"
-            console.print(Markdown(f"{header}\n\n{msg.body}"))
-            console.print()
         return
 
     # Fall back to legacy run bundle in logs/council/
@@ -625,12 +705,22 @@ def council_show(
 
 @council_app.command("list", help="List all council threads.")
 def council_list() -> None:
-    """Show all council threads with message counts."""
-    from kingdom.thread import list_threads, next_message_number, thread_dir
+    """Show all council threads with topic summary and member status."""
+    from kingdom.thread import (
+        MEMBER_ERRORED,
+        MEMBER_PENDING,
+        MEMBER_RESPONDED,
+        MEMBER_RUNNING,
+        MEMBER_TIMED_OUT,
+        list_messages,
+        list_threads,
+        thread_response_status,
+    )
 
     base = Path.cwd()
     feature = resolve_current_run(base)
     current = get_current_thread(base, feature)
+    console = Console()
 
     threads = list_threads(base, feature)
     council_threads = [t for t in threads if t.pattern == "council"]
@@ -639,12 +729,48 @@ def council_list() -> None:
         typer.echo("No council threads.")
         return
 
+    state_symbols = {
+        MEMBER_RESPONDED: "[green]\u2713[/green]",
+        MEMBER_RUNNING: "[yellow]\u25cb[/yellow]",
+        MEMBER_ERRORED: "[red]\u2717[/red]",
+        MEMBER_TIMED_OUT: "[red]\u29d6[/red]",
+        MEMBER_PENDING: "[dim]\u2026[/dim]",
+    }
+
     for t in council_threads:
-        tdir = thread_dir(base, feature, t.id)
-        msg_count = next_message_number(tdir) - 1
+        marker = "[bold] *[/bold]" if t.id == current else ""
         created = t.created_at.strftime("%Y-%m-%d %H:%M")
-        marker = " *" if t.id == current else ""
-        typer.echo(f"{t.id}  {created}  {msg_count} msgs{marker}")
+
+        # Get topic from first king message
+        messages = list_messages(base, feature, t.id)
+        topic = ""
+        for msg in messages:
+            if msg.from_ == "king":
+                first_line = msg.body.strip().split("\n", 1)[0]
+                topic = first_line[:60] + ("\u2026" if len(first_line) > 60 else "")
+                break
+
+        # Get per-member status
+        status = thread_response_status(base, feature, t.id)
+        member_parts = []
+        for name in sorted(status.member_states):
+            ms = status.member_states[name]
+            symbol = state_symbols.get(ms.state, "?")
+            member_parts.append(f"{symbol} {name}")
+        members_str = "  ".join(member_parts) if member_parts else ""
+
+        console.print(f"[bold]{t.id}[/bold]  [dim]{created}[/dim]{marker}")
+        if topic:
+            console.print(f"  {topic}")
+        if members_str:
+            console.print(f"  {members_str}")
+        console.print()
+
+
+@council_app.command("ls", hidden=True)
+def council_ls() -> None:
+    """Alias for 'council list'."""
+    council_list()
 
 
 @council_app.command("status", help="Show response status for council threads.")
@@ -688,30 +814,63 @@ def council_status(
 
 
 def print_thread_status(status: ThreadStatus, base: Path, feature: str, verbose: bool = False) -> None:
-    """Print response status for a single thread."""
-    from kingdom.thread import thread_dir
+    """Print response status for a single thread with rich per-member states."""
+    from kingdom.thread import (
+        MEMBER_ERRORED,
+        MEMBER_PENDING,
+        MEMBER_RESPONDED,
+        MEMBER_RUNNING,
+        MEMBER_TIMED_OUT,
+        thread_dir,
+    )
 
-    if status.pending:
-        state = "waiting"
+    # Overall thread state
+    has_errors = any(ms.state in (MEMBER_ERRORED, MEMBER_TIMED_OUT) for ms in status.member_states.values())
+    has_running = any(ms.state == MEMBER_RUNNING for ms in status.member_states.values())
+
+    if not status.pending and not has_errors:
+        state_label = "[green]complete[/green]"
+    elif has_running:
+        state_label = "[blue]running[/blue]"
+    elif has_errors and not status.pending:
+        state_label = "[red]errors[/red]"
     else:
-        state = "complete"
+        state_label = "[yellow]waiting[/yellow]"
 
-    typer.echo(f"{status.thread_id}  [{state}]")
+    console = Console(soft_wrap=True)
+    console.print(f"{status.thread_id}  [{state_label}]")
+
     if verbose:
         tdir = thread_dir(base, feature, status.thread_id)
-        typer.echo(f"  thread: {tdir.relative_to(base)}")
+        console.print(f"  [dim]thread: {tdir.relative_to(base)}[/dim]")
+
+    STATE_STYLES = {
+        MEMBER_RESPONDED: "[green]responded[/green]",
+        MEMBER_RUNNING: "[blue]running[/blue]",
+        MEMBER_ERRORED: "[red]errored[/red]",
+        MEMBER_TIMED_OUT: "[red]timed out[/red]",
+        MEMBER_PENDING: "[yellow]pending[/yellow]",
+    }
+
     for name in sorted(status.expected):
-        if name in status.responded:
-            line = f"  {name}: responded"
+        ms = status.member_states.get(name)
+        if ms:
+            styled = STATE_STYLES.get(ms.state, ms.state)
+            line = f"  {name}: {styled}"
+            if verbose and ms.error:
+                # Show truncated error detail
+                err_preview = ms.error.replace("\n", " ")[:80]
+                line += f"  [dim]{err_preview}[/dim]"
         else:
-            line = f"  {name}: pending"
+            # Fallback for missing member_states (backward compat)
+            line = f"  {name}: {'responded' if name in status.responded else 'pending'}"
+
         if verbose:
             log_file = logs_root(base, feature) / f"council-{name}.log"
             if log_file.exists():
-                line += f"  log={log_file.relative_to(base)}"
-            else:
-                line += "  (no log file)"
-        typer.echo(line)
+                line += f"  [dim]log={log_file.relative_to(base)}[/dim]"
+
+        console.print(line)
 
 
 def watch_thread(
@@ -719,7 +878,11 @@ def watch_thread(
     timeout: int = 300,
     expected: set[str] | None = None,
 ) -> None:
-    """Core watch logic — poll a thread and render responses as Rich panels.
+    """Core watch logic — poll a thread, tail stream files, and render responses.
+
+    While waiting for members to respond, tails .stream-{member}.jsonl files
+    and displays incremental text as it arrives. When the finalized message file
+    lands, renders the full response panel.
 
     Args:
         thread_id: Thread to watch (defaults to current).
@@ -728,6 +891,11 @@ def watch_thread(
     """
     import time
 
+    from rich.live import Live
+    from rich.text import Text
+
+    from kingdom.agent import extract_stream_text, resolve_all_agents
+    from kingdom.config import load_config
     from kingdom.council.base import AgentResponse
     from kingdom.thread import get_thread, list_messages, thread_dir
 
@@ -753,6 +921,19 @@ def watch_thread(
     else:
         meta = get_thread(base, feature, thread_id)
         expected_members = {m for m in meta.members if m != "king"}
+
+    # Load agent configs for stream text extraction (best-effort — bad config
+    # shouldn't prevent watching for finalized messages)
+    member_backends: dict[str, str] = {}
+    try:
+        cfg = load_config(base)
+        agent_configs = resolve_all_agents(cfg.agents)
+        for name in expected_members:
+            ac = agent_configs.get(name)
+            if ac:
+                member_backends[name] = ac.backend
+    except Exception:
+        pass  # Streaming preview won't work, but final messages still display
 
     console.print(f"[bold]Watching: {thread_id}[/bold]")
     console.print(f"[dim]Expecting: {', '.join(sorted(expected_members))}[/dim]\n")
@@ -782,21 +963,89 @@ def watch_thread(
         console.print("[dim]All members have responded.[/dim]")
         return
 
-    # Poll for new messages with progress indicator
+    # Stream tracking state
+    stream_positions: dict[str, int] = {}  # member -> file byte offset
+    accumulated_text: dict[str, str] = {}  # member -> accumulated streamed text
+    streaming_members: set[str] = set()  # members with active stream files
+
+    def build_status_display() -> Text:
+        """Build a multi-line status display for the live area."""
+        elapsed = int(time.monotonic() - start_time)
+        lines: list[str] = []
+        waiting = expected_members - responded_members
+
+        for name in sorted(waiting):
+            if name in streaming_members and name in accumulated_text:
+                chars = len(accumulated_text[name])
+                # Show last ~60 chars as preview
+                preview = accumulated_text[name][-60:].replace("\n", " ")
+                if len(accumulated_text[name]) > 60:
+                    preview = "..." + preview
+                lines.append(f"  {name}: streaming ({chars} chars) {preview}")
+            else:
+                lines.append(f"  {name}: waiting...")
+
+        header = f"[{elapsed}s] Waiting for {len(waiting)} member(s):"
+        return Text("\n".join([header, *lines]))
+
+    def read_stream_files() -> None:
+        """Read new lines from .stream-{member}.jsonl files."""
+        for name in expected_members - responded_members:
+            stream_file = tdir / f".stream-{name}.jsonl"
+            if not stream_file.exists():
+                if name in streaming_members:
+                    # Stream file was deleted (member finished or retry) — reset tracking
+                    streaming_members.discard(name)
+                    stream_positions.pop(name, None)
+                continue
+
+            streaming_members.add(name)
+            backend = member_backends.get(name, "")
+            pos = stream_positions.get(name, 0)
+
+            # Detect file recreation: during retry, the old stream file is deleted
+            # and a new one created. If the new file is smaller than our saved offset,
+            # reset to read from the beginning.
+            try:
+                file_size = stream_file.stat().st_size
+                if file_size < pos:
+                    pos = 0
+                    accumulated_text.pop(name, None)
+            except OSError:
+                continue
+
+            try:
+                with open(stream_file, encoding="utf-8") as f:
+                    f.seek(pos)
+                    new_data = f.read()
+                    new_pos = f.tell()
+            except OSError:
+                continue
+
+            if not new_data or new_pos == pos:
+                continue
+
+            stream_positions[name] = new_pos
+            # Process complete lines only
+            for line in new_data.splitlines():
+                if not line.strip():
+                    continue
+                text = extract_stream_text(line, backend)
+                if text:
+                    accumulated_text.setdefault(name, "")
+                    accumulated_text[name] += text
+
+    # Poll for new messages with live streaming display
     start_time = time.monotonic()
     try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            waiting = sorted(expected_members - responded_members)
-            ptask = progress.add_task(f"[0s] Waiting for: {', '.join(waiting)}...", total=None)
-
+        with Live(build_status_display(), console=console, refresh_per_second=4) as live:
             while time.monotonic() - start_time < timeout:
-                time.sleep(0.5)
+                time.sleep(0.25)
 
+                # Read stream files for live text
+                read_stream_files()
+
+                # Check for finalized messages
                 messages = list_messages(base, feature, thread_id)
                 for msg in messages:
                     if msg.sequence in seen_sequences:
@@ -805,20 +1054,20 @@ def watch_thread(
 
                     if msg.from_ != "king" and msg.from_ in expected_members:
                         responded_members.add(msg.from_)
-                        # Hide spinner before rendering response
-                        progress.update(ptask, visible=False)
+                        streaming_members.discard(msg.from_)
+                        accumulated_text.pop(msg.from_, None)
+                        stream_positions.pop(msg.from_, None)
+                        # Print final response above the live area
                         response = AgentResponse(name=msg.from_, text=msg.body, elapsed=0.0)
-                        render_response(response, console)
-                        progress.update(ptask, visible=True)
+                        live.console.print()
+                        render_response(response, live.console)
 
                 if responded_members >= expected_members:
-                    progress.update(ptask, visible=False)
-                    console.print("[dim]All members have responded.[/dim]")
+                    live.update(Text(""))
+                    live.console.print("[dim]All members have responded.[/dim]")
                     return
 
-                elapsed = int(time.monotonic() - start_time)
-                waiting = sorted(expected_members - responded_members)
-                progress.update(ptask, description=f"[{elapsed}s] Waiting for: {', '.join(waiting)}...")
+                live.update(build_status_display())
     except KeyboardInterrupt:
         console.print("\n[dim]Watch interrupted.[/dim]")
         return
@@ -836,6 +1085,90 @@ def council_watch(
 ) -> None:
     """Watch a council thread and render agent responses as they arrive."""
     watch_thread(thread_id=thread_id, timeout=timeout)
+
+
+@council_app.command("retry", help="Re-query failed or missing members in a thread.")
+def council_retry(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
+    timeout: Annotated[int | None, typer.Option("--timeout", help="Per-model timeout in seconds.")] = None,
+) -> None:
+    """Re-query only the members that failed or didn't respond in the last round.
+
+    Uses the original prompt from the most recent king message in the thread.
+    """
+    from kingdom.thread import get_thread, is_error_response, list_messages, thread_dir
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    console = Console()
+
+    # Resolve thread_id
+    if thread_id is None:
+        thread_id = get_current_thread(base, feature)
+        if thread_id is None:
+            typer.echo("No current council thread. Use `kd council ask` first.")
+            raise typer.Exit(code=1)
+
+    tdir = thread_dir(base, feature, thread_id)
+    if not tdir.exists():
+        typer.echo(f"Thread not found: {thread_id}")
+        raise typer.Exit(code=1)
+
+    meta = get_thread(base, feature, thread_id)
+    all_members = {m for m in meta.members if m != "king"}
+    messages = list_messages(base, feature, thread_id)
+
+    # Find the most recent king message (the prompt to retry)
+    last_king_msg = None
+    for msg in messages:
+        if msg.from_ == "king":
+            last_king_msg = msg
+    if last_king_msg is None:
+        typer.echo("No king message found in thread.")
+        raise typer.Exit(code=1)
+
+    prompt = last_king_msg.body
+
+    # Derive expected members from the last ask's target (not thread-level members)
+    if last_king_msg.to == "all":
+        expected = all_members
+    else:
+        # Single or comma-separated targets
+        expected = {t.strip() for t in last_king_msg.to.split(",") if t.strip() != "king"} & all_members
+
+    # Find members that responded successfully after the last ask
+    ok_members: set[str] = set()
+    for msg in messages:
+        if msg.sequence > last_king_msg.sequence and msg.from_ in expected and not is_error_response(msg.body):
+            ok_members.add(msg.from_)
+
+    failed = expected - ok_members
+    if not failed:
+        typer.echo("All members responded successfully. Nothing to retry.")
+        return
+
+    # Set up council filtered to failed members only
+    logs_dir = logs_root(base, feature)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    c = Council.create(logs_dir=logs_dir, base=base)
+    if timeout is not None:
+        c.timeout = timeout
+    c.load_sessions(base, feature)
+    c.members = [m for m in c.members if m.name in failed]
+
+    if not c.members:
+        typer.echo(f"Failed members ({', '.join(sorted(failed))}) not found in council config.")
+        raise typer.Exit(code=1)
+
+    member_names_str = ", ".join(m.name for m in c.members)
+    console.print(f"[dim]Thread: {thread_id}[/dim]")
+    console.print(f"[dim]Retrying: {member_names_str}[/dim]\n")
+
+    def on_response(name, response):
+        render_response(response, console)
+
+    c.query_to_thread(prompt, base, feature, thread_id, callback=on_response)
+    c.save_sessions(base, feature)
 
 
 def render_response(response, console):
@@ -2369,7 +2702,7 @@ def ticket_create(
     # Build body with acceptance criteria section
     body = description or ""
     if not body:
-        body = "## Acceptance Criteria\n\n- [ ] "
+        body = "## Acceptance Criteria\n\n- [ ]"
 
     # Create ticket
     ticket = Ticket(
@@ -2398,6 +2731,7 @@ def ticket_list(
     include_done: Annotated[
         bool, typer.Option("--include-done", help="Include tickets from done branches (with --all).")
     ] = False,
+    include_closed: Annotated[bool, typer.Option("--include-closed", help="Include closed tickets in output.")] = False,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
@@ -2451,6 +2785,8 @@ def ticket_list(
         all_results: list[dict] = []
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
+            if not include_closed:
+                tickets = [t for t in tickets if t.status != "closed"]
             for ticket in tickets:
                 all_results.append(
                     {
@@ -2472,6 +2808,8 @@ def ticket_list(
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
         tickets = list_tickets(tickets_dir)
+        if not include_closed:
+            tickets = [t for t in tickets if t.status != "closed"]
 
         if output_json:
             results = [
@@ -2571,13 +2909,33 @@ def ticket_show(
         ]
         typer.echo(json.dumps(results_json if len(results_json) > 1 else results_json[0], indent=2))
     else:
-        for i, (_ticket, ticket_path) in enumerate(pairs):
+        console = Console()
+        for i, (ticket, ticket_path) in enumerate(pairs):
             if i > 0:
-                typer.echo("")  # separator between tickets
-            content = ticket_path.read_text(encoding="utf-8")
-            console = Console()
+                console.print()  # separator between tickets
             console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
-            console.print(Markdown(content))
+            console.print(Rule(style="dim"))
+
+            # Structured metadata header
+            status_colors = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
+            status_color = status_colors.get(ticket.status, "white")
+            console.print(
+                f"[bold]{ticket.id}[/bold]  "
+                f"[{status_color}]{ticket.status}[/{status_color}]  "
+                f"P{ticket.priority}  "
+                f"{ticket.type}"
+            )
+            if ticket.deps:
+                console.print(f"[dim]deps:[/dim] {', '.join(ticket.deps)}")
+            if ticket.links:
+                console.print(f"[dim]links:[/dim] {', '.join(ticket.links)}")
+            if ticket.assignee:
+                console.print(f"[dim]assignee:[/dim] {ticket.assignee}")
+            console.print(f"[dim]created:[/dim] {ticket.created.strftime('%Y-%m-%d')}")
+            console.print()
+
+            # Title + body as markdown
+            console.print(Markdown(f"# {ticket.title}\n\n{ticket.body}"))
 
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:
