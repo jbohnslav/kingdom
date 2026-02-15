@@ -774,14 +774,18 @@ def watch_thread(
         meta = get_thread(base, feature, thread_id)
         expected_members = {m for m in meta.members if m != "king"}
 
-    # Load agent configs for stream text extraction
-    cfg = load_config(base)
-    agent_configs = resolve_all_agents(cfg.agents)
+    # Load agent configs for stream text extraction (best-effort — bad config
+    # shouldn't prevent watching for finalized messages)
     member_backends: dict[str, str] = {}
-    for name in expected_members:
-        ac = agent_configs.get(name)
-        if ac:
-            member_backends[name] = ac.backend
+    try:
+        cfg = load_config(base)
+        agent_configs = resolve_all_agents(cfg.agents)
+        for name in expected_members:
+            ac = agent_configs.get(name)
+            if ac:
+                member_backends[name] = ac.backend
+    except Exception:
+        pass  # Streaming preview won't work, but final messages still display
 
     console.print(f"[bold]Watching: {thread_id}[/bold]")
     console.print(f"[dim]Expecting: {', '.join(sorted(expected_members))}[/dim]\n")
@@ -842,13 +846,23 @@ def watch_thread(
             stream_file = tdir / f".stream-{name}.jsonl"
             if not stream_file.exists():
                 if name in streaming_members:
-                    # Stream file was deleted (member finished) — will pick up final message
+                    # Stream file was deleted (member finished or retry) — reset tracking
                     streaming_members.discard(name)
+                    stream_positions.pop(name, None)
                 continue
 
             streaming_members.add(name)
             backend = member_backends.get(name, "")
             pos = stream_positions.get(name, 0)
+
+            # Detect file recreation (retry deleted and recreated it)
+            try:
+                file_size = stream_file.stat().st_size
+                if file_size < pos:
+                    pos = 0
+                    accumulated_text.pop(name, None)
+            except OSError:
+                continue
 
             try:
                 with open(stream_file, encoding="utf-8") as f:
@@ -923,6 +937,14 @@ def council_watch(
     watch_thread(thread_id=thread_id, timeout=timeout)
 
 
+def is_error_response(body: str) -> bool:
+    """Check if a thread message body represents an error response.
+
+    Matches the markers produced by AgentResponse.thread_body().
+    """
+    return body.startswith("*Error:") or body.startswith("*Empty response")
+
+
 @council_app.command("retry", help="Re-query failed or missing members in a thread.")
 def council_retry(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
@@ -951,7 +973,7 @@ def council_retry(
         raise typer.Exit(code=1)
 
     meta = get_thread(base, feature, thread_id)
-    expected = {m for m in meta.members if m != "king"}
+    all_members = {m for m in meta.members if m != "king"}
     messages = list_messages(base, feature, thread_id)
 
     # Find the most recent king message (the prompt to retry)
@@ -965,15 +987,17 @@ def council_retry(
 
     prompt = last_king_msg.body
 
-    # Find members that responded successfully (no error marker) after the last ask
+    # Derive expected members from the last ask's target (not thread-level members)
+    if last_king_msg.to == "all":
+        expected = all_members
+    else:
+        # Single or comma-separated targets
+        expected = {t.strip() for t in last_king_msg.to.split(",") if t.strip() != "king"} & all_members
+
+    # Find members that responded successfully after the last ask
     ok_members: set[str] = set()
     for msg in messages:
-        if (
-            msg.sequence > last_king_msg.sequence
-            and msg.from_ in expected
-            and not msg.body.startswith("*Error:")
-            and not msg.body.startswith("*Empty response")
-        ):
+        if msg.sequence > last_king_msg.sequence and msg.from_ in expected and not is_error_response(msg.body):
             ok_members.add(msg.from_)
 
     failed = expected - ok_members

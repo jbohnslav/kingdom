@@ -43,8 +43,7 @@ def mock_council_query_to_thread(responses: dict[str, AgentResponse]):
         from kingdom.thread import add_message
 
         for name, resp in responses.items():
-            body = resp.text if resp.text else f"*Error: {resp.error}*"
-            add_message(base, branch, thread_id, from_=name, to="king", body=body)
+            add_message(base, branch, thread_id, from_=name, to="king", body=resp.thread_body())
             if callback:
                 callback(name, resp)
         return responses
@@ -898,7 +897,7 @@ class TestCouncilRetry:
                 result = runner.invoke(cli.app, ["council", "retry"])
 
             assert result.exit_code == 0
-            assert "codex" in result.output.lower()
+            assert "codex" in result.output
 
     def test_retry_missing_members(self) -> None:
         """Retry should re-query members that never responded."""
@@ -923,3 +922,28 @@ class TestCouncilRetry:
 
             assert result.exit_code == 0
             assert "codex" in result.output.lower()
+
+    def test_retry_respects_targeted_ask(self) -> None:
+        """Retry after --to codex should only retry codex, not other members."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Thread has all members, but last ask was targeted to codex only
+            thread_id = "council-retry-target"
+            create_thread(base, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="codex", body="targeted question")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="*Error: Timeout after 600s*")
+
+            retry_responses = {
+                "codex": AgentResponse(name="codex", text="Recovered", elapsed=5.0),
+            }
+            with mock_council_query_to_thread(retry_responses):
+                result = runner.invoke(cli.app, ["council", "retry"])
+
+            assert result.exit_code == 0
+            # Should only retry codex, not claude or cursor
+            assert "Retrying: codex" in result.output

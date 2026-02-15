@@ -80,8 +80,8 @@ class CouncilMember:
         """
         return agent_parse_response(self.config, stdout, stderr, code)
 
-    # Errors that indicate the CLI itself is broken — don't retry
-    NON_RETRIABLE_PREFIXES = ("Command not found:", "Invalid agent config:")
+    # Errors where retrying won't help — broken CLI, bad config, or slow model
+    NON_RETRIABLE_PREFIXES = ("Command not found:", "Invalid agent config:", "Timeout after")
 
     def query(
         self,
