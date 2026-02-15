@@ -335,6 +335,19 @@ MEMBER_TIMED_OUT = "timed_out"
 MEMBER_PENDING = "pending"
 
 
+def is_error_response(body: str) -> bool:
+    """Check if a thread message body represents an error response.
+
+    Matches the markers produced by AgentResponse.thread_body().
+    """
+    return body.startswith("*Error:") or body.startswith("*Empty response")
+
+
+def is_timeout_response(body: str) -> bool:
+    """Check if a thread message body represents a timeout error."""
+    return body.startswith("*Error: Timeout")
+
+
 @dataclass
 class MemberState:
     """Rich status for a single member in a thread round."""
@@ -393,9 +406,9 @@ def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadSta
     for name in expected:
         if name in responded:
             body = response_bodies[name]
-            if body.startswith("*Error: Timeout"):
+            if is_timeout_response(body):
                 member_states[name] = MemberState(state=MEMBER_TIMED_OUT, error=body)
-            elif body.startswith("*Error:") or body.startswith("*Empty response"):
+            elif is_error_response(body):
                 member_states[name] = MemberState(state=MEMBER_ERRORED, error=body)
             else:
                 member_states[name] = MemberState(state=MEMBER_RESPONDED)

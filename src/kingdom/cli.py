@@ -1085,14 +1085,6 @@ def council_watch(
     watch_thread(thread_id=thread_id, timeout=timeout)
 
 
-def is_error_response(body: str) -> bool:
-    """Check if a thread message body represents an error response.
-
-    Matches the markers produced by AgentResponse.thread_body().
-    """
-    return body.startswith("*Error:") or body.startswith("*Empty response")
-
-
 @council_app.command("retry", help="Re-query failed or missing members in a thread.")
 def council_retry(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current).")] = None,
@@ -1102,7 +1094,7 @@ def council_retry(
 
     Uses the original prompt from the most recent king message in the thread.
     """
-    from kingdom.thread import get_thread, list_messages, thread_dir
+    from kingdom.thread import get_thread, is_error_response, list_messages, thread_dir
 
     base = Path.cwd()
     feature = resolve_current_run(base)
