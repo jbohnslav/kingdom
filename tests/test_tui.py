@@ -235,6 +235,23 @@ class TestChatAppHistory:
         assert len(messages) == 0
 
 
+class TestErrorDetection:
+    """Test that error messages from thread files are detected."""
+
+    def test_error_body_detected(self) -> None:
+        from kingdom.thread import is_error_response
+
+        assert is_error_response("*Error: Timeout after 600s*")
+        assert is_error_response("*Empty response — no text or error returned.*")
+        assert not is_error_response("Normal response text")
+
+    def test_timeout_body_detected(self) -> None:
+        from kingdom.thread import is_timeout_response
+
+        assert is_timeout_response("*Error: Timeout after 600s*")
+        assert not is_timeout_response("*Error: API key not set*")
+
+
 class TestChatAppLayout:
     """Test the widget layout of ChatApp."""
 

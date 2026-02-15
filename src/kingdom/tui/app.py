@@ -15,7 +15,7 @@ from textual.widgets import Static, TextArea
 from kingdom.agent import resolve_all_agents
 from kingdom.config import load_config
 from kingdom.council import Council
-from kingdom.thread import add_message, get_thread, list_messages, thread_dir
+from kingdom.thread import add_message, get_thread, is_error_response, is_timeout_response, list_messages, thread_dir
 
 from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThreadPoller
 from .widgets import ErrorPanel, MessagePanel, StreamingPanel, WaitingPanel
@@ -148,11 +148,20 @@ class ChatApp(App):
         log = self.query_one("#message-log", MessageLog)
 
         for msg in messages:
-            panel = MessagePanel(
-                sender=msg.from_,
-                body=msg.body,
-                id=f"msg-{msg.sequence}",
-            )
+            if msg.from_ != "king" and is_error_response(msg.body):
+                timed_out = is_timeout_response(msg.body)
+                panel = ErrorPanel(
+                    sender=msg.from_,
+                    error=msg.body,
+                    timed_out=timed_out,
+                    id=f"msg-{msg.sequence}",
+                )
+            else:
+                panel = MessagePanel(
+                    sender=msg.from_,
+                    body=msg.body,
+                    id=f"msg-{msg.sequence}",
+                )
             log.mount(panel)
 
         # Update poller so it doesn't re-report these messages
@@ -275,17 +284,27 @@ class ChatApp(App):
             log.scroll_end(animate=False)
 
     def handle_new_message(self, log: MessageLog, event: NewMessage) -> None:
-        """Add a finalized message panel to the log."""
+        """Add a finalized message panel (or error panel) to the log."""
         # Remove any existing streaming/waiting panel for this sender
         panel_id = f"panel-{event.sender}"
         for widget in log.query(f"#{panel_id}"):
             widget.remove()
 
-        panel = MessagePanel(
-            sender=event.sender,
-            body=event.body,
-            id=f"msg-{event.sequence}",
-        )
+        # Detect error responses from thread message body
+        if event.sender != "king" and is_error_response(event.body):
+            timed_out = is_timeout_response(event.body)
+            panel = ErrorPanel(
+                sender=event.sender,
+                error=event.body,
+                timed_out=timed_out,
+                id=f"msg-{event.sequence}",
+            )
+        else:
+            panel = MessagePanel(
+                sender=event.sender,
+                body=event.body,
+                id=f"msg-{event.sequence}",
+            )
         log.mount(panel)
 
     def handle_stream_started(self, log: MessageLog, event: StreamStarted) -> None:
