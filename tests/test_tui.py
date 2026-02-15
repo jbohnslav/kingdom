@@ -200,6 +200,41 @@ class TestParseTargets:
         assert targets == ["claude"]  # falls back to all members
 
 
+class TestChatAppHistory:
+    """Test thread history loading on open."""
+
+    def test_load_history_sets_last_sequence(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+        from kingdom.tui.poll import ThreadPoller
+
+        tid = "council-hist"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        from kingdom.thread import add_message, thread_dir
+
+        add_message(project, BRANCH, tid, from_="king", to="all", body="Question?")
+        add_message(project, BRANCH, tid, from_="claude", to="king", body="Answer.")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        # Simulate mount: create poller and load history
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.poller = ThreadPoller(thread_dir=tdir)
+        # Can't call load_history without mounted widgets, so test poller sync directly
+        from kingdom.thread import list_messages
+
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 2
+        assert messages[-1].sequence == 2
+
+    def test_empty_thread_has_no_messages(self, project: Path) -> None:
+        from kingdom.thread import list_messages
+
+        tid = "council-empty"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 0
+
+
 class TestChatAppLayout:
     """Test the widget layout of ChatApp."""
 

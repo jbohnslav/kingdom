@@ -15,7 +15,7 @@ from textual.widgets import Static, TextArea
 from kingdom.agent import resolve_all_agents
 from kingdom.config import load_config
 from kingdom.council import Council
-from kingdom.thread import add_message, get_thread, thread_dir
+from kingdom.thread import add_message, get_thread, list_messages, thread_dir
 
 from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThreadPoller
 from .widgets import ErrorPanel, MessagePanel, StreamingPanel, WaitingPanel
@@ -126,11 +126,41 @@ class ChatApp(App):
             member.base = self.base
             member.branch = self.branch
 
+        # Load existing messages from thread history
+        self.load_history()
+
         self.set_interval(0.1, self.poll_updates)
 
         # Focus the input area
         input_area = self.query_one("#input-area", TextArea)
         input_area.focus()
+
+    def load_history(self) -> None:
+        """Load existing messages and render them in the message log."""
+        try:
+            messages = list_messages(self.base, self.branch, self.thread_id)
+        except FileNotFoundError:
+            return
+
+        if not messages:
+            return
+
+        log = self.query_one("#message-log", MessageLog)
+
+        for msg in messages:
+            panel = MessagePanel(
+                sender=msg.from_,
+                body=msg.body,
+                id=f"msg-{msg.sequence}",
+            )
+            log.mount(panel)
+
+        # Update poller so it doesn't re-report these messages
+        if self.poller and messages:
+            self.poller.last_sequence = messages[-1].sequence
+
+        # Scroll to bottom after loading history
+        log.scroll_end(animate=False)
 
     def on_key(self, event) -> None:
         """Handle Enter to send, let Shift+Enter pass through for newline."""
