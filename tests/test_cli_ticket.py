@@ -107,6 +107,22 @@ class TestTicketCreate:
             created_ticket, _ = found
             assert created_ticket.priority == 3
 
+    def test_create_no_trailing_whitespace(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "create", "Whitespace check"])
+
+            assert result.exit_code == 0
+            ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
+            found = find_ticket(base, ticket_id)
+            assert found is not None
+            _, ticket_path = found
+            content = ticket_path.read_text()
+            for i, line in enumerate(content.splitlines(), 1):
+                assert line == line.rstrip(), f"Line {i} has trailing whitespace: {line!r}"
+
 
 class TestTicketCloseArchive:
     def test_close_backlog_ticket_archives(self) -> None:

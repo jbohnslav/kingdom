@@ -2708,7 +2708,7 @@ def ticket_create(
     # Build body with acceptance criteria section
     body = description or ""
     if not body:
-        body = "## Acceptance Criteria\n\n- [ ] "
+        body = "## Acceptance Criteria\n\n- [ ]"
 
     # Create ticket
     ticket = Ticket(
