@@ -101,7 +101,6 @@ The Council provides perspectives. The King decides. The Hand executes.
               │  .kd/runs/<feature>/           │
               │  ├── design.md      (tracked)  │
               │  ├── breakdown.md   (tracked)  │
-              │  ├── learnings.md   (tracked)  │
               │  ├── state.json    (ignored)   │
               │  └── tickets/                   │
               │      └── kin-*.md   (tracked)  │
@@ -289,7 +288,7 @@ Every council call writes a bundle to disk keyed by `run_id`. These live under `
 
 No `summary.md` or synthesis file—the King reads responses directly and synthesizes mentally.
 
-The durable record is the **result** of council consultation (updates to `design.md`, `breakdown.md`), not the raw council output. If you need to preserve insights from a council run, incorporate them into `design.md` or `learnings.md`.
+The durable record is the **result** of council consultation (updates to `design.md`, `breakdown.md`), not the raw council output. If you need to preserve insights from a council run, incorporate them into `design.md`.
 
 ### Session Continuity for Council Members
 
@@ -510,7 +509,6 @@ This keeps the repo clean while preserving an audit trail of what was decided an
     └── <feature>/                 # e.g., oauth-refresh
         ├── design.md              # tracked — design decisions
         ├── breakdown.md           # tracked — ticket breakdown
-        ├── learnings.md           # tracked — patterns discovered (append-only)
         ├── state.json             # gitignored — current phase, sessions
         │
         ├── logs/                  # gitignored — operational logs + transcripts
@@ -547,7 +545,6 @@ current
 |------|---------|--------------|
 | `design.md` | Design decisions, rationale | During design phase |
 | `breakdown.md` | Ticket structure, dependencies | During breakdown phase |
-| `learnings.md` | Codebase patterns discovered | Append-only during dev |
 | `tickets/*.md` | Ticket specs, acceptance, deps | During breakdown + execution |
 
 ### What Stays Local
@@ -608,7 +605,6 @@ main
    - `tickets/<id>/work-log.md` — only edit on that ticket's branch
 
 2. **Append-only where possible:**
-   - `learnings.md` — append patterns, never rewrite
    - `work-log.md` — append entries, never rewrite
 
 3. **JSON not tracked:**
@@ -623,7 +619,6 @@ When `feature/oauth-refresh` merges to main:
 main:.kd/runs/oauth-refresh/
 ├── design.md                    # What we decided to build
 ├── breakdown.md                 # How we broke it down
-├── learnings.md                 # What we learned
 └── tickets/
     ├── kin-a1b2/
     │   └── work-log.md          # What peasant did for this ticket
