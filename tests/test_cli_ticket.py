@@ -524,6 +524,55 @@ class TestTicketShow:
             assert ".kd/" in result.output
             assert "kin-sh01.md" in result.output
 
+    def test_show_structured_header(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="ab12",
+                status="open",
+                title="Fix the bug",
+                body="Details here",
+                priority=1,
+                type="bug",
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "ab12.md")
+
+            result = runner.invoke(cli.app, ["tk", "show", "ab12"])
+
+            assert result.exit_code == 0
+            # Structured header — no raw frontmatter
+            assert "ab12" in result.output
+            assert "open" in result.output
+            assert "P1" in result.output
+            assert "bug" in result.output
+            assert "Fix the bug" in result.output
+            # Should NOT contain raw YAML delimiters
+            assert "---" not in result.output
+
+    def test_show_no_raw_frontmatter(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="cd34",
+                status="in_progress",
+                title="Add feature",
+                body="## AC\n\n- [ ] Done",
+                deps=["ab12"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "cd34.md")
+
+            result = runner.invoke(cli.app, ["tk", "show", "cd34"])
+
+            assert result.exit_code == 0
+            assert "deps:" in result.output  # structured deps display
+            assert "ab12" in result.output
+
 
 class TestMigrate:
     def test_dry_run_shows_changes(self) -> None:

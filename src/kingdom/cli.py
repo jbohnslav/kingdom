@@ -24,6 +24,7 @@ import typer
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.rule import Rule
 
 from kingdom.breakdown import build_breakdown_template
 from kingdom.council import Council
@@ -2914,13 +2915,33 @@ def ticket_show(
         ]
         typer.echo(json.dumps(results_json if len(results_json) > 1 else results_json[0], indent=2))
     else:
-        for i, (_ticket, ticket_path) in enumerate(pairs):
+        console = Console()
+        for i, (ticket, ticket_path) in enumerate(pairs):
             if i > 0:
-                typer.echo("")  # separator between tickets
-            content = ticket_path.read_text(encoding="utf-8")
-            console = Console()
+                console.print()  # separator between tickets
             console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
-            console.print(Markdown(content))
+            console.print(Rule(style="dim"))
+
+            # Structured metadata header
+            status_colors = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
+            status_color = status_colors.get(ticket.status, "white")
+            console.print(
+                f"[bold]{ticket.id}[/bold]  "
+                f"[{status_color}]{ticket.status}[/{status_color}]  "
+                f"P{ticket.priority}  "
+                f"{ticket.type}"
+            )
+            if ticket.deps:
+                console.print(f"[dim]deps:[/dim] {', '.join(ticket.deps)}")
+            if ticket.links:
+                console.print(f"[dim]links:[/dim] {', '.join(ticket.links)}")
+            if ticket.assignee:
+                console.print(f"[dim]assignee:[/dim] {ticket.assignee}")
+            console.print(f"[dim]created:[/dim] {ticket.created.strftime('%Y-%m-%d')}")
+            console.print()
+
+            # Title + body as markdown
+            console.print(Markdown(f"# {ticket.title}\n\n{ticket.body}"))
 
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:
