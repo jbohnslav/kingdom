@@ -195,7 +195,7 @@ class CouncilMember:
             error = None
             if process.returncode != 0 and not text:
                 error = stderr.strip() or f"Exit code {process.returncode}"
-            elif not text and not process.returncode:
+            elif not text and process.returncode == 0:
                 # Process exited cleanly but produced no extractable text
                 snippet = stderr.strip()[:200] if stderr.strip() else stdout.strip()[:200]
                 error = f"Empty response from {self.name}"

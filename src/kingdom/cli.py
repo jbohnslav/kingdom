@@ -1003,7 +1003,9 @@ def watch_thread(
             backend = member_backends.get(name, "")
             pos = stream_positions.get(name, 0)
 
-            # Detect file recreation (retry deleted and recreated it)
+            # Detect file recreation: during retry, the old stream file is deleted
+            # and a new one created. If the new file is smaller than our saved offset,
+            # reset to read from the beginning.
             try:
                 file_size = stream_file.stat().st_size
                 if file_size < pos:
