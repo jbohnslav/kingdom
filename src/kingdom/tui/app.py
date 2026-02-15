@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 from pathlib import Path
 from typing import ClassVar
 
@@ -12,10 +14,11 @@ from textual.widgets import Static, TextArea
 
 from kingdom.agent import resolve_all_agents
 from kingdom.config import load_config
-from kingdom.thread import get_thread, thread_dir
+from kingdom.council import Council
+from kingdom.thread import add_message, get_thread, thread_dir
 
 from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThreadPoller
-from .widgets import MessagePanel, StreamingPanel
+from .widgets import ErrorPanel, MessagePanel, StreamingPanel, WaitingPanel
 
 
 class MessageLog(VerticalScroll):
@@ -78,6 +81,7 @@ class ChatApp(App):
         self.poller: ThreadPoller | None = None
         self.member_names: list[str] = []
         self.auto_scroll = True
+        self.council: Council | None = None
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -97,7 +101,7 @@ class ChatApp(App):
         yield InputArea(id="input-area")
 
     def on_mount(self) -> None:
-        """Initialize poller and start polling."""
+        """Initialize poller, council, and start polling."""
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
         # Resolve member backends for stream text extraction
@@ -114,11 +118,107 @@ class ChatApp(App):
             member_backends=member_backends,
         )
 
+        # Create Council for direct query dispatch
+        self.council = Council.create(base=self.base)
+        self.council.load_sessions(self.base, self.branch)
+        # Set base/branch on members for PID tracking
+        for member in self.council.members:
+            member.base = self.base
+            member.branch = self.branch
+
         self.set_interval(0.1, self.poll_updates)
 
         # Focus the input area
         input_area = self.query_one("#input-area", TextArea)
         input_area.focus()
+
+    def on_key(self, event) -> None:
+        """Handle Enter to send, let Shift+Enter pass through for newline."""
+        if event.key == "enter":
+            input_area = self.query_one("#input-area", TextArea)
+            if input_area.has_focus:
+                event.prevent_default()
+                self.send_message()
+
+    def send_message(self) -> None:
+        """Send the current input as a king message."""
+        input_area = self.query_one("#input-area", TextArea)
+        text = input_area.text.strip()
+        if not text:
+            return
+
+        input_area.clear()
+
+        # Parse @mentions
+        targets = self.parse_targets(text)
+
+        # Write king message to thread files
+        to = targets[0] if len(targets) == 1 else "all"
+        add_message(self.base, self.branch, self.thread_id, from_="king", to=to, body=text)
+
+        # Create waiting panels and dispatch queries
+        log = self.query_one("#message-log", MessageLog)
+        tdir = thread_dir(self.base, self.branch, self.thread_id)
+
+        for name in targets:
+            panel = WaitingPanel(sender=name, id=f"panel-{name}")
+            log.mount(panel)
+
+            # Launch query in background
+            member = self.council.get_member(name) if self.council else None
+            if member:
+                stream_path = tdir / f".stream-{name}.jsonl"
+                asyncio.get_event_loop().create_task(self.run_query(member, text, stream_path))
+
+        if self.auto_scroll:
+            log.scroll_end(animate=False)
+
+    async def run_query(self, member, prompt: str, stream_path: Path) -> None:
+        """Run a member query in a thread and handle errors."""
+        try:
+            timeout = self.council.timeout if self.council else 600
+            response = await asyncio.to_thread(member.query, prompt, timeout, stream_path)
+            if response.error and not response.text:
+                timed_out = "Timeout" in response.error
+                log = self.query_one("#message-log", MessageLog)
+                panel = ErrorPanel(
+                    sender=member.name,
+                    error=response.error,
+                    timed_out=timed_out,
+                    id=f"error-{member.name}",
+                )
+                # Remove waiting/streaming panel
+                panel_id = f"panel-{member.name}"
+                for existing in log.query(f"#{panel_id}"):
+                    existing.remove()
+                log.mount(panel)
+        except Exception as exc:
+            log = self.query_one("#message-log", MessageLog)
+            panel = ErrorPanel(
+                sender=member.name,
+                error=str(exc),
+                id=f"error-{member.name}",
+            )
+            log.mount(panel)
+
+    def parse_targets(self, text: str) -> list[str]:
+        """Parse @mentions from text to determine query targets.
+
+        Returns list of member names to query.
+        """
+        mentions = re.findall(r"(?<!\w)@(\w+)", text)
+
+        if not mentions:
+            return list(self.member_names)
+
+        if "all" in mentions:
+            return list(self.member_names)
+
+        # Filter to valid member names
+        valid = [m for m in mentions if m in self.member_names]
+        return valid if valid else list(self.member_names)
+
+    # -- Polling ----------------------------------------------------------
 
     def poll_updates(self) -> None:
         """Called every 100ms to check for new data."""
@@ -148,8 +248,7 @@ class ChatApp(App):
         """Add a finalized message panel to the log."""
         # Remove any existing streaming/waiting panel for this sender
         panel_id = f"panel-{event.sender}"
-        existing = log.query(f"#{panel_id}")
-        for widget in existing:
+        for widget in log.query(f"#{panel_id}"):
             widget.remove()
 
         panel = MessagePanel(
@@ -160,11 +259,9 @@ class ChatApp(App):
         log.mount(panel)
 
     def handle_stream_started(self, log: MessageLog, event: StreamStarted) -> None:
-        """Add a streaming panel for the member."""
+        """Replace waiting panel with streaming panel."""
         panel_id = f"panel-{event.member}"
-        # Remove waiting panel if present
-        existing = log.query(f"#{panel_id}")
-        for widget in existing:
+        for widget in log.query(f"#{panel_id}"):
             widget.remove()
 
         panel = StreamingPanel(sender=event.member, id=panel_id)

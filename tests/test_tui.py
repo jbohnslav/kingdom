@@ -151,6 +151,55 @@ class TestChatApp:
         assert app_instance.poller is None
 
 
+class TestParseTargets:
+    """Test @mention parsing for query dispatch."""
+
+    def test_no_mentions_broadcasts(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        create_thread(project, BRANCH, "council-tgt", ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id="council-tgt")
+        list(app_instance.compose())  # trigger member loading
+        targets = app_instance.parse_targets("What do you think?")
+        assert targets == ["claude", "codex"]
+
+    def test_at_member_targets_one(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        create_thread(project, BRANCH, "council-tgt2", ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id="council-tgt2")
+        list(app_instance.compose())
+        targets = app_instance.parse_targets("@claude What do you think?")
+        assert targets == ["claude"]
+
+    def test_at_all_broadcasts(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        create_thread(project, BRANCH, "council-tgt3", ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id="council-tgt3")
+        list(app_instance.compose())
+        targets = app_instance.parse_targets("@all What do you think?")
+        assert targets == ["claude", "codex"]
+
+    def test_multiple_mentions(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        create_thread(project, BRANCH, "council-tgt4", ["king", "claude", "codex", "cursor"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id="council-tgt4")
+        list(app_instance.compose())
+        targets = app_instance.parse_targets("@claude @codex What do you think?")
+        assert targets == ["claude", "codex"]
+
+    def test_unknown_mention_fallback_to_broadcast(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        create_thread(project, BRANCH, "council-tgt5", ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id="council-tgt5")
+        list(app_instance.compose())
+        targets = app_instance.parse_targets("@unknown What do you think?")
+        assert targets == ["claude"]  # falls back to all members
+
+
 class TestChatAppLayout:
     """Test the widget layout of ChatApp."""
 
