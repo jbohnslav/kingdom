@@ -270,6 +270,108 @@ class TestCouncilMemberQuery:
         assert stream_path.read_text() == '{"result": "streamed", "session_id": "s1"}\n'
 
 
+class TestCouncilMemberProcessHandle:
+    """Tests for self.process Popen handle lifecycle."""
+
+    def test_process_is_none_before_query(self) -> None:
+        member = make_member("claude")
+        assert member.process is None
+
+    def test_process_set_during_query(self) -> None:
+        """self.process should be set to the Popen instance during execution."""
+        member = make_member("claude")
+        captured_process = []
+
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        # Replace poll with a function that captures process before returning
+        poll_return = proc.returncode
+
+        def spy_poll():
+            if member.process is not None:
+                captured_process.append(member.process)
+            return poll_return
+
+        proc.poll = spy_poll
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            member.query("test", timeout=30, max_retries=0)
+
+        assert len(captured_process) > 0
+        assert captured_process[0] is proc
+
+    def test_process_none_after_query(self) -> None:
+        """self.process should be reset to None after query completes."""
+        member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            member.query("test", timeout=30)
+
+        assert member.process is None
+
+    def test_process_none_after_error(self) -> None:
+        """self.process should be reset even on error."""
+        member = make_member("claude")
+        proc = mock_popen(stdout="", stderr="error\n", returncode=1)
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            member.query("test", timeout=30, max_retries=0)
+
+        assert member.process is None
+
+    def test_process_none_after_command_not_found(self) -> None:
+        """self.process should be None when command is not found."""
+        member = make_member("claude")
+
+        with patch("kingdom.council.base.subprocess.Popen", side_effect=FileNotFoundError()):
+            member.query("test", timeout=30)
+
+        assert member.process is None
+
+    def test_process_terminatable_during_query(self) -> None:
+        """External code should be able to call member.process.terminate()."""
+        member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            # Simulate what TUI does: access process.terminate()
+            member.process = proc
+            member.process.terminate()
+            proc.terminate.assert_called_once()
+
+    def test_pid_written_to_agent_state(self, tmp_path: Path) -> None:
+        """When base/branch set, PID should be written to AgentState."""
+        branch = "test-branch"
+        ensure_branch_layout(tmp_path, branch)
+
+        member = make_member("claude")
+        member.base = tmp_path
+        member.branch = branch
+
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+        proc.pid = 12345
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            member.query("test", timeout=30)
+
+        state = get_agent_state(tmp_path, branch, "claude")
+        assert state.pid == 12345
+
+    def test_pid_not_written_without_base_branch(self) -> None:
+        """Without base/branch, query should still work without writing PID."""
+        member = make_member("claude")
+        assert member.base is None
+        assert member.branch is None
+
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            response = member.query("test", timeout=30)
+
+        assert response.text == "ok"
+
+
 class TestCouncilMemberQueryAllMembers:
     """Test that all member types pass stdin=DEVNULL."""
 
