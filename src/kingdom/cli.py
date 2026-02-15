@@ -1214,6 +1214,78 @@ def display_rich_panels(responses, thread_id, console):
     console.print(f"[dim]Thread: {thread_id}[/dim]")
 
 
+# ---------------------------------------------------------------------------
+# kd chat — TUI council chat
+# ---------------------------------------------------------------------------
+
+
+@app.command(help="Open council chat TUI.")
+def chat(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID to open.")] = None,
+    new: Annotated[bool, typer.Option("--new", help="Create a new thread.")] = False,
+) -> None:
+    """Open the council chat TUI.
+
+    Opens an existing thread, creates a new one, or lists recent threads.
+    """
+    try:
+        from kingdom.tui import require_textual
+
+        require_textual()
+    except SystemExit as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1) from e
+
+    from kingdom.config import load_config
+    from kingdom.thread import create_thread, list_threads
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    cfg = load_config(base)
+
+    if new:
+        tid = f"council-{secrets.token_hex(2)}"
+        member_names = cfg.council.members or list(cfg.agents)
+        create_thread(base, feature, tid, ["king", *member_names], "council")
+        set_current_thread(base, feature, tid)
+    elif thread_id:
+        tid = thread_id
+        from kingdom.thread import thread_dir
+
+        if not thread_dir(base, feature, tid).exists():
+            typer.echo(f"Thread not found: {tid}")
+            raise typer.Exit(code=1)
+    else:
+        current = get_current_thread(base, feature)
+        if current:
+            from kingdom.thread import thread_dir
+
+            if thread_dir(base, feature, current).exists():
+                tid = current
+            else:
+                set_current_thread(base, feature, None)
+                current = None
+
+        if not current:
+            threads = list_threads(base, feature)
+            if threads:
+                typer.echo("Recent threads:")
+                for t in threads[-5:]:
+                    created = t.created_at.strftime("%Y-%m-%d %H:%M")
+                    members = ", ".join(m for m in t.members if m != "king")
+                    typer.echo(f"  {t.id}  {created}  [{members}]")
+                typer.echo()
+                typer.echo("Usage: kd chat <thread-id>  or  kd chat --new")
+            else:
+                typer.echo("No threads found. Create one with: kd chat --new")
+            raise typer.Exit(code=0)
+
+    from kingdom.tui.app import ChatApp
+
+    app_instance = ChatApp(base=base, branch=feature, thread_id=tid)
+    app_instance.run()
+
+
 design_app = typer.Typer(name="design", help="Manage design documents.")
 app.add_typer(design_app, name="design")
 
