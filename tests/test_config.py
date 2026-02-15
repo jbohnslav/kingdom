@@ -27,6 +27,9 @@ class TestDefaultConfig:
         cfg = default_config()
         assert set(cfg.council.members) == {"claude", "codex", "cursor"}
         assert cfg.council.timeout == 600
+        assert cfg.council.auto_rounds == 3
+        assert cfg.council.mode == "broadcast"
+        assert cfg.council.preamble == ""
 
     def test_peasant_defaults(self) -> None:
         cfg = default_config()
@@ -93,6 +96,34 @@ class TestValidateConfig:
         cfg = validate_config(data)
         assert cfg.council.members == ["claude", "codex"]
         assert cfg.council.timeout == 300
+
+    def test_council_auto_rounds(self) -> None:
+        data = {"council": {"auto_rounds": 5}}
+        cfg = validate_config(data)
+        assert cfg.council.auto_rounds == 5
+
+    def test_council_mode_sequential(self) -> None:
+        data = {"council": {"mode": "sequential"}}
+        cfg = validate_config(data)
+        assert cfg.council.mode == "sequential"
+
+    def test_council_mode_broadcast(self) -> None:
+        data = {"council": {"mode": "broadcast"}}
+        cfg = validate_config(data)
+        assert cfg.council.mode == "broadcast"
+
+    def test_council_preamble(self) -> None:
+        data = {"council": {"preamble": "You are a helpful advisor."}}
+        cfg = validate_config(data)
+        assert cfg.council.preamble == "You are a helpful advisor."
+
+    def test_council_new_fields_preserved_when_members_defaulted(self) -> None:
+        data = {"council": {"auto_rounds": 7, "mode": "sequential", "preamble": "Custom."}}
+        cfg = validate_config(data)
+        assert set(cfg.council.members) == {"claude", "codex", "cursor"}
+        assert cfg.council.auto_rounds == 7
+        assert cfg.council.mode == "sequential"
+        assert cfg.council.preamble == "Custom."
 
     def test_council_members_default_to_all_agents(self) -> None:
         cfg = validate_config({})
@@ -197,6 +228,30 @@ class TestValidateConfigErrors:
     def test_council_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
             validate_config({"council": {"timeout": 0}})
+
+    def test_bad_council_auto_rounds_type(self) -> None:
+        with pytest.raises(ValueError, match="must be an integer"):
+            validate_config({"council": {"auto_rounds": "many"}})
+
+    def test_council_auto_rounds_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            validate_config({"council": {"auto_rounds": 0}})
+
+    def test_bad_council_mode_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            validate_config({"council": {"mode": 123}})
+
+    def test_bad_council_mode_value(self) -> None:
+        with pytest.raises(ValueError, match="must be one of"):
+            validate_config({"council": {"mode": "turbo"}})
+
+    def test_bad_council_preamble_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            validate_config({"council": {"preamble": 123}})
+
+    def test_council_preamble_must_be_nonempty(self) -> None:
+        with pytest.raises(ValueError, match="must be non-empty"):
+            validate_config({"council": {"preamble": ""}})
 
     def test_peasant_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):

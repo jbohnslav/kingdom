@@ -45,6 +45,9 @@ class CouncilConfig:
 
     members: list[str] = field(default_factory=list)
     timeout: int = 600
+    auto_rounds: int = 3
+    mode: str = "broadcast"
+    preamble: str = ""
 
 
 @dataclass
@@ -95,7 +98,7 @@ def default_config() -> KingdomConfig:
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
 VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
-VALID_COUNCIL_KEYS = {"members", "timeout"}
+VALID_COUNCIL_KEYS = {"members", "timeout", "auto_rounds", "mode", "preamble"}
 VALID_PEASANT_KEYS = {"agent", "timeout", "max_iterations"}
 VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant"}
 VALID_AGENT_PROMPT_PHASES = {"council", "design", "review", "peasant"}
@@ -188,7 +191,26 @@ def validate_council(data: dict) -> CouncilConfig:
     if timeout <= 0:
         raise ValueError(f"council.timeout must be positive, got {timeout}")
 
-    return CouncilConfig(members=members, timeout=timeout)
+    auto_rounds = data.get("auto_rounds", 3)
+    if not isinstance(auto_rounds, int):
+        raise ValueError(f"council.auto_rounds must be an integer, got {type(auto_rounds).__name__}")
+    if auto_rounds <= 0:
+        raise ValueError(f"council.auto_rounds must be positive, got {auto_rounds}")
+
+    valid_modes = {"broadcast", "sequential"}
+    mode = data.get("mode", "broadcast")
+    if not isinstance(mode, str):
+        raise ValueError(f"council.mode must be a string, got {type(mode).__name__}")
+    if mode not in valid_modes:
+        raise ValueError(f"council.mode must be one of {', '.join(sorted(valid_modes))}, got '{mode}'")
+
+    preamble = data.get("preamble", "")
+    if not isinstance(preamble, str):
+        raise ValueError(f"council.preamble must be a string, got {type(preamble).__name__}")
+    if "preamble" in data and not preamble:
+        raise ValueError("council.preamble must be non-empty if specified")
+
+    return CouncilConfig(members=members, timeout=timeout, auto_rounds=auto_rounds, mode=mode, preamble=preamble)
 
 
 def validate_peasant(data: dict) -> PeasantConfig:
@@ -258,7 +280,13 @@ def validate_config(data: dict) -> KingdomConfig:
 
     # Default council members to all agents if not specified
     if not council.members:
-        council = CouncilConfig(members=list(agents), timeout=council.timeout)
+        council = CouncilConfig(
+            members=list(agents),
+            timeout=council.timeout,
+            auto_rounds=council.auto_rounds,
+            mode=council.mode,
+            preamble=council.preamble,
+        )
 
     # Peasant
     peasant_data = data.get("peasant", {})
