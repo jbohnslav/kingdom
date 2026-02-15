@@ -20,6 +20,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [dependency-groups]
+chat = [
+    "textual>=7.5.0",
+]
 dev = [
     "pre-commit>=4.0.0",
     "pytest>=9.0.2",
