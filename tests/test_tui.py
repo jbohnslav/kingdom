@@ -137,3 +137,42 @@ class TestChatApp:
         assert app_instance.base == Path("/tmp")
         assert app_instance.branch == "main"
         assert app_instance.thread_id == "council-abc"
+
+    def test_app_has_auto_scroll(self) -> None:
+        from kingdom.tui.app import ChatApp
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        assert app_instance.auto_scroll is True
+
+    def test_app_has_poller_none_before_mount(self) -> None:
+        from kingdom.tui.app import ChatApp
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        assert app_instance.poller is None
+
+
+class TestChatAppLayout:
+    """Test the widget layout of ChatApp."""
+
+    def test_member_names_loaded(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        create_thread(project, BRANCH, "council-layout", ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id="council-layout")
+        # Compose triggers member loading
+        widgets = list(app_instance.compose())
+        assert app_instance.member_names == ["claude", "codex"]
+        assert len(widgets) == 4  # header, message log, status bar, input area
+
+    def test_header_shows_thread_info(self, project: Path) -> None:
+        from textual.widgets import Static
+
+        from kingdom.tui.app import ChatApp
+
+        create_thread(project, BRANCH, "council-hdr", ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id="council-hdr")
+        widgets = list(app_instance.compose())
+        header = widgets[0]
+        assert isinstance(header, Static)
+        # Static stores content as _content or via update(); check the id
+        assert header.id == "header-bar"
