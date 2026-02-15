@@ -235,6 +235,81 @@ class TestChatAppHistory:
         assert len(messages) == 0
 
 
+class TestPhase1SmokeTest:
+    """End-to-end smoke test for Phase 1 TUI lifecycle (without real Textual app)."""
+
+    def test_full_lifecycle_thread_to_poll(self, project: Path) -> None:
+        """Verify: create thread → add messages → poll detects → error detection."""
+        from kingdom.thread import add_message as add_msg
+        from kingdom.tui.poll import NewMessage, ThreadPoller
+
+        tid = "council-smoke"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+        tdir = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid
+
+        # Simulate king message + member responses
+        add_msg(project, BRANCH, tid, from_="king", to="all", body="What do you think?")
+        add_msg(project, BRANCH, tid, from_="claude", to="king", body="I think we should...")
+        add_msg(project, BRANCH, tid, from_="codex", to="king", body="*Error: Timeout after 600s*")
+
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"claude": "claude_code", "codex": "codex"})
+        events = poller.poll()
+
+        msgs = [e for e in events if isinstance(e, NewMessage)]
+        assert len(msgs) == 3
+        assert msgs[0].sender == "king"
+        assert msgs[1].sender == "claude"
+        assert msgs[2].sender == "codex"
+
+        # Error detection
+        from kingdom.thread import is_error_response, is_timeout_response
+
+        assert not is_error_response(msgs[1].body)
+        assert is_error_response(msgs[2].body)
+        assert is_timeout_response(msgs[2].body)
+
+    def test_chat_app_composes_with_thread(self, project: Path) -> None:
+        """Verify ChatApp composes correctly with a real thread."""
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-compose"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex", "cursor"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        widgets = list(app_instance.compose())
+
+        assert len(widgets) == 4
+        assert app_instance.member_names == ["claude", "codex", "cursor"]
+
+    def test_parse_targets_with_all_variants(self, project: Path) -> None:
+        """Verify @mention parsing handles all cases."""
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-targets"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex", "cursor"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Plain text → all members
+        assert app_instance.parse_targets("hello") == ["claude", "codex", "cursor"]
+        # @member → one member
+        assert app_instance.parse_targets("@claude hello") == ["claude"]
+        # @all → all members
+        assert app_instance.parse_targets("@all hello") == ["claude", "codex", "cursor"]
+        # Multiple @mentions → those members
+        assert app_instance.parse_targets("@claude @codex hello") == ["claude", "codex"]
+
+    def test_kd_chat_new_via_cli(self, project: Path) -> None:
+        """kd chat --new creates thread and would launch TUI."""
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run") as mock_run,
+        ):
+            result = runner.invoke(app, ["chat", "--new"])
+        assert result.exit_code == 0
+        mock_run.assert_called_once()
+
+
 class TestErrorDetection:
     """Test that error messages from thread files are detected."""
 
