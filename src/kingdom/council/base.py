@@ -24,7 +24,13 @@ class AgentResponse:
     raw: str = ""
 
     def thread_body(self) -> str:
-        """Format response for writing to a thread message file."""
+        """Format response for writing to a thread message file.
+
+        Note: partial timeout responses (text + error) return just the text.
+        This means retry won't detect them as failures. Acceptable because
+        timeouts are non-retriable and users see the timeout in watch output.
+        See backlog ticket 9124 for frontmatter metadata approach.
+        """
         if self.text:
             return self.text
         if self.error:
