@@ -34,9 +34,9 @@ Both Claude Code and Cursor support `--output-format stream-json` which emits ND
 
 ### What does NOT exist yet
 
-- `council.chat` and `council.auto_commit` config keys — not in schema, will fail validation if set
+- `council.auto_rounds`, `council.mode`, `council.preamble` config keys — not in schema yet, will fail validation if set
 - `kd chat` CLI command
-- Textual dependency (now added as `[dependency-groups] chat`)
+- ~~Textual dependency~~ (added: `[dependency-groups] chat` in pyproject.toml)
 - Thread-scoped session management (current sessions are per-branch+member, not per-thread)
 - Round/turn metadata for group chat (current status model only tracks responses to latest king message)
 
@@ -59,7 +59,7 @@ Both Claude Code and Cursor support `--output-format stream-json` which emits ND
 #### Input handling
 - **Enter** sends the message (like Slack, Discord, other chat TUIs)
 - **Shift+Enter** inserts a newline for multi-line input
-- **Escape** sends interrupt signal: cancels all currently-generating agents (kills subprocesses), prevents new auto-turns from scheduling
+- **Escape** sends interrupt signal: cancels all currently-generating agents **launched by this TUI process** (kills subprocesses via stored `self.process` handles), prevents new auto-turns from scheduling. Does not affect queries launched by other processes (e.g., `kd council ask` in another terminal).
 - Input area grows to accommodate multi-line text (up to a reasonable max)
 
 #### Slash commands (session-scoped, not persisted)
@@ -80,7 +80,7 @@ Both Claude Code and Cursor support `--output-format stream-json` which emits ND
 
 #### State and persistence
 - All state persists to standard thread files — crash-safe, `kd council show` compatible
-- The TUI is a view+input layer only; no state lives exclusively in the TUI process
+- The TUI is a view+input layer over thread files. **Conversation state** (messages, thread metadata) lives in thread files only. **Ephemeral UI state** (mute list, scroll position, in-progress subprocess handles) is TUI-process-scoped and resets on close — this is expected and fine.
 - Stream file finalization signal: **finalized message file exists** (not stream file deletion, since deletion also happens during retries)
 
 #### Dependencies
@@ -88,16 +88,23 @@ Both Claude Code and Cursor support `--output-format stream-json` which emits ND
 - `kd chat` shows install hint if textual not importable: `uv sync --group chat`
 - Import textual lazily — only when `kd chat` is invoked
 
+#### Query path
+- The TUI manages `Council` and `CouncilMember` instances directly (via `Council.create()`), not by shelling out to `kd council ask`
+- On user message: TUI writes the king message to thread files, then launches `member.query()` calls via `asyncio.to_thread()` (one per member for broadcast, sequential for auto-turns)
+- This reuses existing orchestration (config loading, agent resolution, thread message writing) while giving the TUI direct access to subprocess handles for cancellation
+- Agent availability errors (missing CLI) surface as `FileNotFoundError` from `query_once()` → rendered as error panels in the message log. No separate pre-flight check needed.
+
 #### Async bridge
-- Bridge Textual's asyncio event loop to blocking subprocess queries via `asyncio.to_thread()`
-- Expose subprocess handle for cancellation: when user hits Escape, kill running subprocesses via `process.terminate()` / `process.kill()`
-- Need a new async-aware query path or cancellation token pattern since current `query_once()` doesn't expose the Popen handle
+- Bridge Textual's asyncio event loop to blocking `member.query()` via `asyncio.to_thread()`
+- Subprocess handle stored as `self.process` on `CouncilMember` (set inside `query_once()` after `Popen`). TUI calls `member.process.terminate()` on Escape.
+- Also write PID to `AgentState` via `update_agent_state(..., pid=process.pid)` immediately after `Popen` — enables external monitoring even if the TUI crashes.
 
 ### Phase 2: Group chat mode
 
 #### Auto-turns
 - After initial broadcast round (parallel), councillors enter auto-mode (sequential round-robin)
 - Auto-turns are sequential within a round (one member at a time) for predictable message ordering
+- Round-robin order follows the `council.members` list order from config.json (user-controllable)
 - Stop conditions: `auto_rounds` reached (hard cap, simple and predictable)
 - **Escape interrupts auto-mode**: kills currently-generating agent, prevents next auto-turn from scheduling. User's next message resumes normal flow.
 
@@ -129,16 +136,38 @@ You are cursor. Continue the discussion. Respond to the points raised above.
 - When context gets too large for an agent's window, the **king notices** (the human user) and starts a new chat thread, possibly with a summary of the prior conversation
 - No automatic truncation or summarization in Phase 2 — keep it simple. The human manages context boundaries.
 
-#### Config (`council.chat` in config.json)
-- `auto_rounds`: max rounds without user input (default 3)
-- `mode`: `"broadcast"` (first round parallel, then sequential auto-turns) or `"sequential"` (round-robin from the start)
+#### Config (flat keys under `council` in config.json)
+- `council.auto_rounds`: max rounds without user input (default 3, positive int)
+- `council.mode`: `"broadcast"` (first round parallel, then sequential auto-turns) or `"sequential"` (round-robin from the start). Default: `"broadcast"`.
 
-Add these to `VALID_COUNCIL_KEYS` in `config.py` and validate accordingly.
+Add `auto_rounds`, `mode`, and `preamble` to `VALID_COUNCIL_KEYS` in `config.py`. Flat keys match the existing `council.members` / `council.timeout` pattern — no nested `chat` object.
+
+**Config JSON shape and validation:**
+```json
+{
+  "council": {
+    "members": ["claude", "codex", "cursor"],
+    "timeout": 600,
+    "auto_rounds": 3,
+    "mode": "broadcast",
+    "preamble": "You are a council advisor to the King. ..."
+  }
+}
+```
+
+| Key | Type | Default | Validation |
+|-----|------|---------|------------|
+| `auto_rounds` | int | `3` | Must be positive (> 0) |
+| `mode` | str | `"broadcast"` | Must be one of: `"broadcast"`, `"sequential"` |
+| `preamble` | str | current `COUNCIL_PREAMBLE` text | Non-empty string |
+
+Update `CouncilConfig` dataclass to include these three fields with defaults. Unknown keys continue to raise `ValueError` (existing behavior).
 
 #### Round/turn tracking
 - Current `thread_response_status()` only tracks responses to the latest king message — doesn't fit member-to-member auto-turns
 - Need explicit round/turn metadata: either persist round markers in thread state, or infer rounds from message sequence (messages between king messages form a round)
 - Decision: infer from message ordering. A "round" is a complete cycle of all (unmuted) members responding. King messages reset the round counter. Simple, no new metadata format.
+- **Edge cases**: `@member` directed messages don't count as a broadcast round — only the addressed member responds, no round counter increment. `/mute`-ed members are excluded from expected responders for that round. If a member errors or times out, skip them for that round (the round completes with the remaining members). Retries don't create duplicate round entries — a retry replaces the errored response at the same sequence position.
 
 ### Phase 3: Configurable preamble
 
@@ -146,8 +175,9 @@ The hardcoded `COUNCIL_PREAMBLE` in `CouncilMember` restricts agents to read-onl
 
 - Move preamble to config: `council.preamble` key in `config.json`
 - Default value: current `COUNCIL_PREAMBLE` text (backward compatible)
-- Per-agent override via existing `agents.<name>.prompts.council` (already supported for phase prompts; the preamble becomes the base layer that phase prompts build on)
+- Per-agent customization via existing `agents.<name>.prompts.council` — this is **additive** (appended after the preamble), not a replacement. To fully override the preamble for one agent, set `council.preamble` globally and use the agent's `prompts.council` to add agent-specific instructions on top.
 - Prompt merge order stays: preamble + phase prompt + agent prompt + user prompt (or thread history)
+- Add `preamble` to `VALID_COUNCIL_KEYS` in `config.py` alongside `auto_rounds` and `mode`
 
 ## TUI Architecture
 
@@ -203,7 +233,7 @@ ChatApp(App)
 
 - **Finalized messages**: Render body as Rich Markdown inside a bordered panel. Panel border color assigned per member (consistent across session). King messages use a distinct style (no border or different border).
 - **Streaming messages**: Same panel structure, but body updates every poll cycle. Show `(streaming · N chars)` in panel title. Append `▍` cursor at end of text. On finalization, re-render as full Markdown.
-- **Waiting placeholders**: Collapsed panel with `waiting...` in title. Expands when streaming starts.
+- **Waiting placeholders**: Collapsed panel with `waiting...` in title. Expands when streaming starts. In broadcast mode, create WaitingPanels for all members immediately when the user sends a message. In sequential auto-turns, show a WaitingPanel for the next member preemptively so the user knows more is coming.
 - **Errors**: Red-bordered panel with error text. Title shows `errored` or `timed out`.
 - **Code blocks**: Textual's Markdown widget handles syntax highlighting via Rich. No special handling needed.
 
@@ -216,6 +246,7 @@ ChatApp(App)
   3. Extract text deltas, append to in-progress panel
   4. If finalized message appeared for a streaming member, replace StreamingPanel with MessagePanel
 - Textual batches DOM updates automatically — 100ms polls won't cause flicker
+- **Auto-scroll**: scroll to bottom when new content arrives, but only if the user is already at the bottom. If the user has scrolled up to re-read, don't yank them back.
 
 ### Module structure
 
@@ -235,7 +266,7 @@ Both operate on the same thread files. They are interoperable:
 
 - **`kd council ask` then `kd chat`**: TUI shows full history including CLI-initiated messages. If async queries are still in flight, TUI picks up their stream files.
 - **`kd chat` then `kd council ask`**: CLI sees messages sent from the TUI. `kd council show` renders them normally.
-- **Concurrent use**: Both can be open on the same thread. The file-based source of truth handles this — messages use exclusive-create for sequence numbers, stream files are append-only. The TUI polls for new files; the CLI polls via `watch_thread()`. No conflicts.
+- **Concurrent use**: Both can be open on the same thread for reading. Messages use exclusive-create for sequence numbers, so concurrent writes are safe. However, **concurrent queries to the same member on the same thread will conflict** — stream files are `.stream-{member}.jsonl` (per-member, not per-request) and get deleted on completion/retry. Mitigation: don't query the same member from two processes simultaneously. The TUI should detect in-flight stream files from external queries and show them as read-only streaming panels rather than launching duplicate queries.
 - **Different threads**: `kd chat` and `kd council ask` can target different threads simultaneously. No interference.
 
 This is a natural consequence of the file-based architecture. No special handling needed.
@@ -268,17 +299,17 @@ This is a natural consequence of the file-based architecture. No special handlin
 - **Enter sends, Shift+Enter newlines**: Matches Slack, Discord, and other chat TUIs. Engineer-friendly multi-line input via Shift+Enter.
 - **Escape interrupts all agents**: Kills currently-generating subprocesses and prevents new auto-turns. Second Escape during `/quit` forces immediate exit.
 - **Inline streaming display**: Responses appear in the message log as growing panels (not a separate streaming area). Feels like real chat — messages appear where they'll live permanently.
-- **Configurable preamble**: Move `COUNCIL_PREAMBLE` to `council.preamble` config key. Default to current text. Per-agent override via `agents.<name>.prompts.council`.
+- **Configurable preamble**: Move `COUNCIL_PREAMBLE` to `council.preamble` config key. Default to current text. Per-agent `agents.<name>.prompts.council` is additive on top (not a replacement).
 - **All context by default**: Send full thread history in every auto-turn prompt. No truncation. When context fills up, the king starts a new thread manually.
 - **`/mute` skips, not hides**: Muting a member excludes them from queries (saves tokens). Session-scoped — resets when TUI closes.
-- **Config-driven group chat**: `council.chat.auto_rounds` and `council.chat.mode` in `config.json`.
+- **Config-driven group chat**: `council.auto_rounds` and `council.mode` as flat keys in `config.json` (matches existing pattern).
 - **Separate `kingdom/tui/` module**: cli.py is already large. TUI code lives in its own package.
+- **Thread-history-only, no session resume**: Drop `--resume` for group chat entirely. Council is read-only advisory — tool-use context across turns has near-zero value. Thread history injection provides full cross-agent awareness without duplicating the agent's own messages.
+- **Subprocess cancellation via `self.process`**: Store the `Popen` handle as `self.process` on `CouncilMember` (set inside `query_once()`). TUI calls `member.process.terminate()` on Escape. Also write PID to `AgentState` for external monitoring. Simplest approach — no file-based PID lookup races, no new async query method.
 
 ## Open Questions
 
 - **Cursor token-level streaming**: Does Cursor's `agent` CLI have `--include-partial-messages` equivalent? If not, streaming will be per-turn rather than token-level — still a big improvement.
-- **Session resume in group chat**: Drop session resume entirely and use only thread history injection? Or use both (session resume for per-agent tool context + thread history for cross-agent awareness)? Using both means the agent's own messages appear twice. Leaning toward thread-history-only for simplicity, but need to verify we don't lose important tool-use context.
-- **Subprocess cancellation mechanics**: `query_once()` doesn't expose the Popen handle. Need to either: (a) refactor to return/store the handle, (b) track PIDs externally via `AgentState.pid`, or (c) create a new async-aware query method. Option (b) is simplest since `pid` is already tracked in session state.
 - **Member colors**: Should member panel colors be configurable in `config.json`, or hardcoded per-member based on name hash? Hardcoded is simpler for Phase 1.
 
 ---
