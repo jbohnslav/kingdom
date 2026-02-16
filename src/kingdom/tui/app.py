@@ -101,7 +101,7 @@ class ChatApp(App):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        ("escape", "quit", "Quit"),
+        ("escape", "interrupt", "Interrupt/Quit"),
     ]
 
     def __init__(self, base: Path, branch: str, thread_id: str) -> None:
@@ -113,6 +113,7 @@ class ChatApp(App):
         self.member_names: list[str] = []
         self.auto_scroll = True
         self.council: Council | None = None
+        self.interrupted = False
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -128,7 +129,7 @@ class ChatApp(App):
             id="header-bar",
         )
         yield MessageLog(id="message-log")
-        yield StatusBar("Esc: quit · Enter: send · Shift+Enter: newline")
+        yield StatusBar("Esc: interrupt/quit · Enter: send · Shift+Enter: newline")
         yield InputArea(id="input-area")
 
     def on_mount(self) -> None:
@@ -166,6 +167,50 @@ class ChatApp(App):
         # Focus the input area
         input_area = self.query_one("#input-area", TextArea)
         input_area.focus()
+
+    def action_interrupt(self) -> None:
+        """Handle Escape: interrupt running queries or quit.
+
+        First Escape kills active queries and shows interrupted panels.
+        Second Escape (or Escape with nothing running) quits the app.
+        """
+        if not self.council:
+            self.exit()
+            return
+
+        # Second Escape after interrupt: force quit
+        if self.interrupted:
+            self.exit()
+            return
+
+        # Check for active queries
+        active = [m for m in self.council.members if m.process is not None]
+        if not active:
+            self.exit()
+            return
+
+        # Kill active processes
+        self.interrupted = True
+        for member in active:
+            if member.process:
+                member.process.terminate()
+
+        # Replace waiting/streaming panels with interrupted indicators immediately
+        log = self.query_one("#message-log", MessageLog)
+        for member in active:
+            for prefix in ("wait", "stream"):
+                panel_id = f"{prefix}-{member.name}"
+                try:
+                    panel = log.query_one(f"#{panel_id}")
+                    error_panel = ErrorPanel(
+                        sender=member.name,
+                        error="*Interrupted*",
+                        id=f"interrupted-{member.name}",
+                    )
+                    log.mount(error_panel, before=panel)
+                    panel.remove()
+                except Exception:
+                    pass
 
     def load_history(self) -> None:
         """Load existing messages and render them in the message log."""
@@ -223,6 +268,7 @@ class ChatApp(App):
             return
 
         input_area.clear()
+        self.interrupted = False
 
         # Parse @mentions
         targets = self.parse_targets(text)
@@ -262,12 +308,16 @@ class ChatApp(App):
             timeout = self.council.timeout if self.council else 600
             tdir = thread_dir(self.base, self.branch, self.thread_id)
             prompt_with_history = format_thread_history(tdir, member.name)
-            response = await asyncio.to_thread(member.query, prompt_with_history, timeout, stream_path)
+            response = await asyncio.to_thread(member.query, prompt_with_history, timeout, stream_path, max_retries=0)
+
+            # Use cleaner message for interrupted queries with no useful text
+            if self.interrupted and not response.text:
+                body = "*Interrupted*"
+            else:
+                body = response.thread_body()
 
             # Always persist response to thread files (source of truth)
-            add_message(
-                self.base, self.branch, self.thread_id, from_=member.name, to="king", body=response.thread_body()
-            )
+            add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=body)
 
         except Exception as exc:
             # Persist the exception as an error message
@@ -322,10 +372,15 @@ class ChatApp(App):
             log.scroll_end(animate=False)
 
     def handle_new_message(self, log: MessageLog, event: NewMessage) -> None:
-        """Replace waiting/streaming panel in-place with a finalized message."""
+        """Replace waiting/streaming/interrupted panel in-place with a finalized message."""
         waiting_id = f"wait-{event.sender}"
         streaming_id = f"stream-{event.sender}"
-        existing = list(log.query(f"#{waiting_id}")) + list(log.query(f"#{streaming_id}"))
+        interrupted_id = f"interrupted-{event.sender}"
+        existing = (
+            list(log.query(f"#{waiting_id}"))
+            + list(log.query(f"#{streaming_id}"))
+            + list(log.query(f"#{interrupted_id}"))
+        )
 
         # Detect error responses from thread message body
         if event.sender != "king" and is_error_response(event.body):
