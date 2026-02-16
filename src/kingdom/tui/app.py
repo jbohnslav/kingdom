@@ -303,17 +303,22 @@ class ChatApp(App):
         if self.poller:
             self.poller.last_sequence += 1
 
-        # Create waiting panels for initial round targets
         tdir = thread_dir(self.base, self.branch, self.thread_id)
-        for name in targets:
-            panel = WaitingPanel(sender=name, id=f"wait-{name}")
-            log.mount(panel)
 
         if to == "all":
-            # Broadcast: coordinator handles initial round + auto-turns
-            self.run_worker(self.run_chat_round(targets, gen, tdir), exclusive=False)
+            # Broadcast: coordinator handles initial round + auto-turns.
+            # Mount all WaitingPanels upfront for the first exchange (parallel
+            # broadcast).  For follow-ups the coordinator mounts them one at a
+            # time as sequential turns proceed.
+            prior_messages = list_messages(self.base, self.branch, self.thread_id)
+            is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
+            if is_first_exchange:
+                for name in targets:
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
         else:
             # Directed: single query, no auto-turns
+            log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
             member = self.council.get_member(targets[0]) if self.council else None
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
@@ -358,54 +363,42 @@ class ChatApp(App):
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         return stream_path.parent / f".debug-stream-{member_name}-{timestamp}.jsonl"
 
-    async def run_chat_round(self, targets: list[str], generation: int, tdir: Path) -> None:
-        """Coordinate initial broadcast + optional auto-turn messages.
+    async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
+        """Coordinate a chat round after the king sends a message.
 
-        Phase 1: Initial round — parallel (broadcast mode) or sequential.
-        Phase 2: Auto-turn messages — sequential round-robin, one member at a
-        time, up to a message budget. Skipped on the first king message in a
-        thread (no prior member responses yet).
+        First exchange: parallel broadcast — every member responds at once,
+        then we stop and wait for the king.
+
+        Follow-up exchanges: sequential round-robin — members take turns, one
+        at a time, up to a message budget. No broadcast.
         """
         if not self.council:
             return
 
-        mode = self.council.mode
-
-        # Determine if auto-turns should fire after the initial round.
-        # First king message in a thread (no prior member responses) → broadcast
-        # only, no auto-turns. Follow-up messages get round-robin discussion.
-        prior_messages = list_messages(self.base, self.branch, self.thread_id)
-        is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
-
-        # Phase 1: Initial round
-        if mode == "broadcast" and len(targets) > 1:
-            # Parallel broadcast — all members fire simultaneously
-            coros = []
-            for name in targets:
-                member = self.council.get_member(name)
-                if member:
-                    stream_path = tdir / f".stream-{name}.jsonl"
-                    coros.append(self.run_query(member, stream_path))
-            await asyncio.gather(*coros)
-            # Check for preemption after broadcast completes
-            if self.interrupted or self.generation != generation:
-                return
-        else:
-            # Sequential (mode="sequential" or single target)
-            for name in targets:
-                if self.interrupted or self.generation != generation:
-                    return
-                member = self.council.get_member(name)
-                if not member:
-                    continue
-                stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path)
-
-        # Phase 2: Auto-turn messages (sequential round-robin, message budget)
-        # Skip on first exchange — broadcast is just gathering initial positions.
         if is_first_exchange:
+            # Parallel broadcast (or sequential if configured).  WaitingPanels
+            # are already mounted by send_message().
+            mode = self.council.mode
+            if mode == "broadcast" and len(targets) > 1:
+                coros = []
+                for name in targets:
+                    member = self.council.get_member(name)
+                    if member:
+                        stream_path = tdir / f".stream-{name}.jsonl"
+                        coros.append(self.run_query(member, stream_path))
+                await asyncio.gather(*coros)
+            else:
+                for name in targets:
+                    if self.interrupted or self.generation != generation:
+                        return
+                    member = self.council.get_member(name)
+                    if not member:
+                        continue
+                    stream_path = tdir / f".stream-{name}.jsonl"
+                    await self.run_query(member, stream_path)
             return
 
+        # Follow-up: sequential round-robin, no broadcast.
         active = [n for n in self.member_names if n not in self.muted]
         budget = self.council.auto_messages
         if budget == 0:
@@ -428,7 +421,7 @@ class ChatApp(App):
                 member = self.council.get_member(name)
                 if not member:
                     continue
-                # Remove stale panel for this member, then mount fresh WaitingPanel
+                # Mount WaitingPanel for this member's turn
                 log = self.query_one("#message-log", MessageLog)
                 self.remove_member_panels(log, name)
                 log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))

@@ -1043,7 +1043,7 @@ class TestAutoTurns:
 
         return app_instance, fake_members
 
-    def test_first_message_no_auto_turns(self, project: Path) -> None:
+    def test_first_message_broadcast_only(self, project: Path) -> None:
         """First king message in a thread should broadcast only, no auto-turns."""
         import asyncio
 
@@ -1054,32 +1054,32 @@ class TestAutoTurns:
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
 
         # Only initial broadcast, no auto-turns
         for m in members:
             assert m.call_count == 1, f"{m.name} expected 1 query (broadcast only), got {m.call_count}"
 
-    def test_follow_up_gets_auto_turns(self, project: Path) -> None:
-        """Follow-up king messages should get auto-turn messages after broadcast."""
+    def test_follow_up_sequential_only(self, project: Path) -> None:
+        """Follow-up king messages should get sequential round-robin, no broadcast."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at1"
-        # auto_messages=-1 → len(members) = 2
+        # auto_messages=-1 → len(members) = 2 sequential messages
         app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"])
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Initial broadcast: 1 each + auto-turns: 2 messages total (1 each) = 2 each
+        # No broadcast — sequential only: 1 each
         for m in members:
-            assert m.call_count == 2, f"{m.name} expected 2 queries, got {m.call_count}"
+            assert m.call_count == 1, f"{m.name} expected 1 query (sequential), got {m.call_count}"
 
     def test_auto_messages_budget_limits_total(self, project: Path) -> None:
-        """auto_messages=3 with 2 members: 2 get one turn, 1 gets a second."""
+        """auto_messages=3 with 2 members: claude(1) codex(1) claude(1)."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1089,14 +1089,14 @@ class TestAutoTurns:
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Initial: 1 each. Auto-turns: budget=3, so claude(1) codex(1) claude(1) = 3 messages
-        assert members[0].call_count == 3  # claude: 1 initial + 2 auto
-        assert members[1].call_count == 2  # codex: 1 initial + 1 auto
+        # Sequential budget=3: claude(1) codex(1) claude(1)
+        assert members[0].call_count == 2  # claude: 2 turns
+        assert members[1].call_count == 1  # codex: 1 turn
 
     def test_auto_messages_zero_disables(self, project: Path) -> None:
-        """auto_messages=0 should run initial broadcast only, no auto-turns."""
+        """auto_messages=0 should produce no queries at all on follow-up."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1106,13 +1106,13 @@ class TestAutoTurns:
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
         for m in members:
-            assert m.call_count == 1, f"{m.name} expected 1 query (initial only), got {m.call_count}"
+            assert m.call_count == 0, f"{m.name} expected 0 queries (disabled), got {m.call_count}"
 
-    def test_interrupted_stops_auto_turns(self, project: Path) -> None:
-        """Setting interrupted=True during a query should stop further auto-turns."""
+    def test_interrupted_stops_sequential(self, project: Path) -> None:
+        """Setting interrupted=True during a query should stop further turns."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1120,28 +1120,26 @@ class TestAutoTurns:
         tid = "council-at3"
         app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
 
-        # Make claude set interrupted=True on its second call (first auto-turn)
+        # Make claude set interrupted=True on its first call
         real_query = members[0].query
 
         def interrupting_query(prompt, timeout, stream_path=None, max_retries=0):
             result = real_query(prompt, timeout, stream_path, max_retries)
-            if members[0].call_count >= 2:
-                app_instance.interrupted = True
+            app_instance.interrupted = True
             return result
 
         members[0].query = interrupting_query
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # claude: 1 initial + 1 auto-turn (sets interrupted) = 2
-        # codex: 1 initial + 0 auto-turns (interrupted before codex's turn) = 1
-        assert members[0].call_count == 2
-        assert members[1].call_count == 1
+        # claude: 1 (sets interrupted) → codex never queried
+        assert members[0].call_count == 1
+        assert members[1].call_count == 0
 
-    def test_generation_mismatch_stops_auto_turns(self, project: Path) -> None:
-        """Incrementing generation during auto-turns should stop further queries."""
+    def test_generation_mismatch_stops_sequential(self, project: Path) -> None:
+        """Incrementing generation should stop further sequential queries."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1149,27 +1147,26 @@ class TestAutoTurns:
         tid = "council-at4"
         app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
 
-        # Increment generation after initial broadcast completes
-        real_query = members[1].query
+        # Increment generation after claude's first query
+        real_query = members[0].query
 
         def preempting_query(prompt, timeout, stream_path=None, max_retries=0):
             result = real_query(prompt, timeout, stream_path, max_retries)
-            if members[1].call_count == 1:
-                app_instance.generation += 1  # Simulate new user message
+            app_instance.generation += 1  # Simulate new user message
             return result
 
-        members[1].query = preempting_query
+        members[0].query = preempting_query
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Both get initial round, then generation mismatch stops auto-turns
+        # claude: 1 (preempts) → codex never queried
         assert members[0].call_count == 1
-        assert members[1].call_count == 1
+        assert members[1].call_count == 0
 
-    def test_muted_members_skipped_in_auto_turns(self, project: Path) -> None:
-        """Muted members should be skipped in auto-turn messages."""
+    def test_muted_members_skipped_in_sequential(self, project: Path) -> None:
+        """Muted members should be skipped in sequential round-robin."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1181,13 +1178,12 @@ class TestAutoTurns:
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex", "cursor"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex", "cursor"], 1, tdir, is_first_exchange=False))
 
-        # Initial round: all 3 queried (targets decided by send_message)
-        # Auto-turns: budget=4, active=[claude, cursor] → claude, cursor, claude, cursor
-        assert members[0].call_count == 3  # claude: 1 initial + 2 auto
-        assert members[1].call_count == 1  # codex: 1 initial only
-        assert members[2].call_count == 3  # cursor: 1 initial + 2 auto
+        # Sequential budget=4, active=[claude, cursor] → claude, cursor, claude, cursor
+        assert members[0].call_count == 2  # claude
+        assert members[1].call_count == 0  # codex: muted, never queried
+        assert members[2].call_count == 2  # cursor
 
     def test_directed_message_skips_auto_turns(self, project: Path) -> None:
         """@member directed messages should not trigger auto-turns."""
@@ -1206,19 +1202,17 @@ class TestAutoTurns:
         assert to == "claude"
         assert to != "all"  # This means send_message won't use run_chat_round
 
-    def test_sequential_mode_queries_in_order(self, project: Path) -> None:
-        """mode='sequential' should query members one at a time, in order."""
+    def test_sequential_mode_first_exchange(self, project: Path) -> None:
+        """mode='sequential' first exchange should query members one at a time."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at7"
-        # auto_messages=2 → 2 sequential auto-turn messages after initial
         app_instance, members = self.make_app_with_council(
-            project, tid, ["claude", "codex"], auto_messages=2, mode="sequential"
+            project, tid, ["claude", "codex"], mode="sequential", first_exchange=True
         )
 
-        # Track ordering
         call_order = []
         for m in members:
             real_query = m.query
@@ -1236,38 +1230,66 @@ class TestAutoTurns:
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
 
-        # Sequential initial: claude then codex; auto-turns: claude then codex
-        assert call_order == ["claude", "codex", "claude", "codex"]
+        # Sequential first exchange: claude then codex, no auto-turns
+        assert call_order == ["claude", "codex"]
 
-    def test_error_in_auto_turn_continues_round(self, project: Path) -> None:
-        """An error from one member in auto-turns should not stop the next member."""
+    def test_follow_up_queries_in_round_robin_order(self, project: Path) -> None:
+        """Follow-up sequential turns should proceed in member order."""
         import asyncio
 
-        from kingdom.council.base import AgentResponse
+        from kingdom.thread import thread_dir
+
+        tid = "council-at7b"
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+
+        call_order = []
+        for m in members:
+            real_query = m.query
+            name = m.name
+
+            def make_ordered_query(real_fn, member_name):
+                def ordered_query(prompt, timeout, stream_path=None, max_retries=0):
+                    result = real_fn(prompt, timeout, stream_path, max_retries)
+                    call_order.append(member_name)
+                    return result
+
+                return ordered_query
+
+            m.query = make_ordered_query(real_query, name)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
+
+        # Sequential round-robin: claude, codex, claude, codex
+        assert call_order == ["claude", "codex", "claude", "codex"]
+
+    def test_error_in_sequential_continues_round(self, project: Path) -> None:
+        """An error from one member should not stop the next member."""
+        import asyncio
+
         from kingdom.thread import thread_dir
 
         tid = "council-at8"
         app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=2)
 
-        # Make claude raise an exception on auto-turn queries
+        # Make claude raise an exception
         def error_query(prompt, timeout, stream_path=None, max_retries=0):
             members[0].call_count += 1
-            if members[0].call_count > 1:
-                raise RuntimeError("API error")
-            return AgentResponse(name="claude", text="Initial response")
+            raise RuntimeError("API error")
 
         members[0].query = error_query
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # claude: 1 initial + 1 auto (error, consumes budget) = 2
-        assert members[0].call_count == 2
-        # codex: 1 initial + 1 auto = 2
-        assert members[1].call_count == 2
+        # claude: 1 (error, consumes budget)
+        assert members[0].call_count == 1
+        # codex: 1
+        assert members[1].call_count == 1
 
     def test_app_has_generation_counter(self) -> None:
         """ChatApp should have a generation counter initialized to 0."""
