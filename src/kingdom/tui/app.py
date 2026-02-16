@@ -195,8 +195,16 @@ class ChatApp(App):
         to = targets[0] if len(targets) == 1 else "all"
         add_message(self.base, self.branch, self.thread_id, from_="king", to=to, body=text)
 
-        # Create waiting panels and dispatch queries
+        # Render king message immediately (don't wait for poll cycle)
         log = self.query_one("#message-log", MessageLog)
+        king_panel = MessagePanel(sender="king", body=text, id=f"king-{id(text)}")
+        log.mount(king_panel)
+
+        # Update poller so it doesn't re-report this king message
+        if self.poller:
+            self.poller.last_sequence += 1
+
+        # Create waiting panels and dispatch queries
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
         for name in targets:
@@ -207,38 +215,30 @@ class ChatApp(App):
             member = self.council.get_member(name) if self.council else None
             if member:
                 stream_path = tdir / f".stream-{name}.jsonl"
-                asyncio.get_event_loop().create_task(self.run_query(member, text, stream_path))
+                self.run_worker(self.run_query(member, text, stream_path), exclusive=False)
 
         if self.auto_scroll:
             log.scroll_end(animate=False)
 
     async def run_query(self, member, prompt: str, stream_path: Path) -> None:
-        """Run a member query in a thread and handle errors."""
+        """Run a member query in a thread, persist the response, and clean up."""
         try:
             timeout = self.council.timeout if self.council else 600
             response = await asyncio.to_thread(member.query, prompt, timeout, stream_path)
-            if response.error and not response.text:
-                timed_out = "Timeout" in response.error
-                log = self.query_one("#message-log", MessageLog)
-                panel = ErrorPanel(
-                    sender=member.name,
-                    error=response.error,
-                    timed_out=timed_out,
-                    id=f"error-{member.name}",
-                )
-                # Remove waiting/streaming panel
-                panel_id = f"panel-{member.name}"
-                for existing in log.query(f"#{panel_id}"):
-                    existing.remove()
-                log.mount(panel)
-        except Exception as exc:
-            log = self.query_one("#message-log", MessageLog)
-            panel = ErrorPanel(
-                sender=member.name,
-                error=str(exc),
-                id=f"error-{member.name}",
+
+            # Always persist response to thread files (source of truth)
+            add_message(
+                self.base, self.branch, self.thread_id, from_=member.name, to="king", body=response.thread_body()
             )
-            log.mount(panel)
+
+        except Exception as exc:
+            # Persist the exception as an error message
+            error_body = f"*Error: {exc}*"
+            add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=error_body)
+        finally:
+            # Clean up stream file — the finalized message file is now the source of truth
+            if stream_path.exists():
+                stream_path.unlink()
 
     def parse_targets(self, text: str) -> list[str]:
         """Parse @mentions from text to determine query targets.

@@ -327,6 +327,130 @@ class TestErrorDetection:
         assert not is_timeout_response("*Error: API key not set*")
 
 
+class TestRunQuery:
+    """Test run_query persists responses and cleans up stream files."""
+
+    def test_run_query_persists_response_to_thread(self, project: Path) -> None:
+        """run_query must call add_message with the response body."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import list_messages
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-rq1"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Fake member that returns a successful response
+        fake_response = AgentResponse(name="claude", text="I think yes.")
+
+        class FakeMember:
+            name = "claude"
+
+            def query(self, prompt, timeout, stream_path=None):
+                return fake_response
+
+        stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+
+        # Response must be persisted as a thread message
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 1
+        assert messages[0].from_ == "claude"
+        assert messages[0].body == "I think yes."
+
+    def test_run_query_cleans_up_stream_file(self, project: Path) -> None:
+        """run_query must delete the stream file after completion."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-rq2"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        tdir = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid
+        stream_path = tdir / ".stream-claude.jsonl"
+        stream_path.write_text('{"type":"test"}\n', encoding="utf-8")
+
+        fake_response = AgentResponse(name="claude", text="Done.")
+
+        class FakeMember:
+            name = "claude"
+
+            def query(self, prompt, timeout, stream_path=None):
+                return fake_response
+
+        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+
+        assert not stream_path.exists(), "Stream file should be deleted after query"
+
+    def test_run_query_persists_error_response(self, project: Path) -> None:
+        """run_query must persist error-only responses to thread files."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import list_messages
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-rq3"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        fake_response = AgentResponse(name="claude", text="", error="Timeout after 600s")
+
+        class FakeMember:
+            name = "claude"
+
+            def query(self, prompt, timeout, stream_path=None):
+                return fake_response
+
+        stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 1
+        assert messages[0].body == "*Error: Timeout after 600s*"
+
+    def test_run_query_persists_partial_timeout(self, project: Path) -> None:
+        """Partial timeout (text + error) must still persist the text."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import list_messages
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-rq4"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        fake_response = AgentResponse(name="claude", text="Partial answer before timeout", error="Timeout after 600s")
+
+        class FakeMember:
+            name = "claude"
+
+            def query(self, prompt, timeout, stream_path=None):
+                return fake_response
+
+        stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 1
+        # thread_body() returns text when both text and error are present
+        assert messages[0].body == "Partial answer before timeout"
+
+
 class TestChatAppLayout:
     """Test the widget layout of ChatApp."""
 
