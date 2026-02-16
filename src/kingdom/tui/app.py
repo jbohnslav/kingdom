@@ -159,13 +159,11 @@ class ChatApp(App):
             member_backends=member_backends,
         )
 
-        # Create Council for direct query dispatch (no load_sessions — chat threads
-        # use format_thread_history() for context, not session resume IDs)
+        # Create Council for direct query dispatch.  Chat is stateless: no
+        # load_sessions, no base/branch on members (prevents PID writes to
+        # shared session files).  Context comes from thread history injection.
         self.council = Council.create(base=self.base)
-        # Set base/branch and chat-specific preamble on members
         for member in self.council.members:
-            member.base = self.base
-            member.branch = self.branch
             member.preamble = CHAT_PREAMBLE.format(name=member.name)
 
         # Load existing messages from thread history
@@ -349,6 +347,11 @@ class ChatApp(App):
             error_body = f"*Error: {exc}*"
             add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=error_body)
         finally:
+            # Chat is stateless — clear session_id so the next query doesn't
+            # pass --resume to the agent.  Thread history injection provides
+            # full context; accumulating session_id causes cross-talk (0f27).
+            member.session_id = None
+
             # Optionally preserve raw stream events for debugging before cleanup.
             if stream_path.exists() and self.debug_streams:
                 debug_path = self.build_debug_stream_path(stream_path, member.name)

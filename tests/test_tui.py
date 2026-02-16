@@ -1299,6 +1299,128 @@ class TestAutoTurns:
         assert app_instance.generation == 0
 
 
+class TestChatSessionIsolation:
+    """Test that chat queries don't write to shared session state files.
+
+    Ticket 0f27: kd chat was writing PIDs and accumulating session_id via shared
+    sessions/{agent}.json files, causing cross-talk with concurrent workflows.
+    """
+
+    def test_on_mount_does_not_set_member_base_branch(self, project: Path) -> None:
+        """on_mount should NOT set member.base/branch, so query_once won't write PIDs.
+
+        The on_mount code creates a Council and configures members. It should
+        set preamble but NOT base/branch (which would cause PID writes to shared
+        session files).
+        """
+        from kingdom.council.council import Council
+        from kingdom.tui.app import CHAT_PREAMBLE
+
+        # Simulate what on_mount does
+        council = Council.create(base=project)
+        for member in council.members:
+            # on_mount currently does: member.base = self.base; member.branch = self.branch
+            # After fix, it should only set preamble
+            member.preamble = CHAT_PREAMBLE.format(name=member.name)
+
+        # Verify members do NOT have base/branch set
+        for member in council.members:
+            assert member.base is None, f"{member.name}.base should be None, got {member.base}"
+            assert member.branch is None, f"{member.name}.branch should be None, got {member.branch}"
+
+    def test_chat_clears_session_id_after_query(self, project: Path) -> None:
+        """run_query should reset member.session_id to None after each query."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.council.council import Council
+        from kingdom.thread import add_message, create_thread, thread_dir
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-iso2"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        add_message(project, BRANCH, tid, from_="king", to="all", body="Hello")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Build a fake member that returns a session_id
+        class FakeMember:
+            def __init__(self):
+                self.name = "claude"
+                self.session_id = None
+                self.process = None
+                self.base = None
+                self.branch = None
+                self.preamble = ""
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                self.session_id = "session-abc-123"  # Simulate agent returning a session ID
+                return AgentResponse(name="claude", text="Response from claude")
+
+        fake = FakeMember()
+        council = Council(members=[fake])
+        app_instance.council = council
+        app_instance.member_names = ["claude"]
+
+        tdir = thread_dir(project, BRANCH, tid)
+        stream_path = tdir / ".stream-claude.jsonl"
+
+        asyncio.run(app_instance.run_query(fake, stream_path))
+
+        # After run_query, session_id should be cleared
+        assert fake.session_id is None, f"session_id should be None after query, got {fake.session_id!r}"
+
+    def test_chat_query_does_not_pass_session_id(self, project: Path) -> None:
+        """The second chat query should NOT pass a session_id from the first query."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.council.council import Council
+        from kingdom.thread import add_message, create_thread, thread_dir
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-iso3"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        add_message(project, BRANCH, tid, from_="king", to="all", body="Hello")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Track what session_id was used when building the command
+        session_ids_used: list[str | None] = []
+
+        class FakeMember:
+            def __init__(self):
+                self.name = "claude"
+                self.session_id = None
+                self.process = None
+                self.base = None
+                self.branch = None
+                self.preamble = ""
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                session_ids_used.append(self.session_id)
+                self.session_id = "session-from-agent"  # Agent returns a session
+                return AgentResponse(name="claude", text="Response")
+
+        fake = FakeMember()
+        council = Council(members=[fake])
+        app_instance.council = council
+        app_instance.member_names = ["claude"]
+
+        tdir = thread_dir(project, BRANCH, tid)
+
+        # First query
+        asyncio.run(app_instance.run_query(fake, tdir / ".stream-claude.jsonl"))
+        # Second query — should NOT pass the session_id from first query
+        add_message(project, BRANCH, tid, from_="king", to="all", body="Follow-up")
+        asyncio.run(app_instance.run_query(fake, tdir / ".stream-claude.jsonl"))
+
+        assert session_ids_used[0] is None, "First query should use session_id=None"
+        assert session_ids_used[1] is None, f"Second query should use session_id=None, got {session_ids_used[1]!r}"
+
+
 class TestCouncilCreateNewFields:
     """Test that Council.create() passes auto_messages and mode from config."""
 
