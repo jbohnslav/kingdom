@@ -146,6 +146,11 @@ class ChatApp(App):
         """Initialize poller, council, and start polling."""
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
+        # Clean up stale stream files from previous sessions so the poller
+        # doesn't replay them as ghost streams.
+        for stale in tdir.glob(".stream-*.jsonl"):
+            stale.unlink()
+
         # Load config for backends and thinking visibility
         cfg = load_config(self.base)
         self.thinking_visibility = cfg.council.thinking_visibility
@@ -354,14 +359,14 @@ class ChatApp(App):
             # full context; accumulating session_id causes cross-talk (0f27).
             member.session_id = None
 
-            # Optionally preserve raw stream events for debugging before cleanup.
+            # Optionally preserve raw stream events for debugging.
             if stream_path.exists() and self.debug_streams:
                 debug_path = self.build_debug_stream_path(stream_path, member.name)
                 stream_path.replace(debug_path)
 
-            # Clean up live stream file — finalized message file remains source of truth.
-            if stream_path.exists():
-                stream_path.unlink()
+            # Stream file is NOT deleted here — the poller needs to drain final
+            # events (thinking tokens, last text deltas) before cleanup.  Stale
+            # files are cleaned up on next session launch (on_mount).
 
     def build_debug_stream_path(self, stream_path: Path, member_name: str) -> Path:
         """Build a unique path for preserved stream debug artifacts."""
@@ -438,7 +443,7 @@ class ChatApp(App):
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove any existing wait/stream/thinking/interrupted panels for a member."""
-        for prefix in ("wait", "stream", "thinking", "interrupted"):
+        for prefix in ("wait", "stream", "interrupted"):
             for panel in list(log.query(f"#{prefix}-{name}")):
                 panel.remove()
 
@@ -572,9 +577,18 @@ class ChatApp(App):
         existing = (
             list(log.query(f"#{waiting_id}"))
             + list(log.query(f"#{streaming_id}"))
-            + list(log.query(f"#{thinking_id}"))
             + list(log.query(f"#{interrupted_id}"))
         )
+
+        # Handle thinking panel persistence
+        try:
+            thinking_panel = log.query_one(f"#{thinking_id}", ThinkingPanel)
+            if self.thinking_visibility == "auto":
+                thinking_panel.collapse()
+            # Rename to archive it, so next turn gets a new panel
+            thinking_panel.id = f"thinking-{event.sender}-{event.sequence}"
+        except Exception:
+            pass
 
         # Detect error responses from thread message body
         if event.sender != "king" and is_error_response(event.body):

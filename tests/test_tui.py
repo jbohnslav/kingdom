@@ -591,8 +591,8 @@ class TestRunQuery:
         assert messages[0].from_ == "claude"
         assert messages[0].body == "I think yes."
 
-    def test_run_query_cleans_up_stream_file(self, project: Path) -> None:
-        """run_query must delete the stream file after completion."""
+    def test_run_query_preserves_stream_file(self, project: Path) -> None:
+        """run_query must NOT delete the stream file — poller drains it."""
         import asyncio
 
         from kingdom.council.base import AgentResponse
@@ -618,7 +618,7 @@ class TestRunQuery:
 
         asyncio.run(app_instance.run_query(FakeMember(), stream_path))
 
-        assert not stream_path.exists(), "Stream file should be deleted after query"
+        assert stream_path.exists(), "Stream file should persist for poller to drain"
 
     def test_run_query_preserves_debug_stream_when_enabled(self, project: Path) -> None:
         """run_query should save a debug copy when debug streams are enabled."""
