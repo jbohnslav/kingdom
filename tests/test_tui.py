@@ -151,6 +151,49 @@ class TestChatApp:
         assert app_instance.poller is None
 
 
+class TestInputArea:
+    def test_enter_posts_submit_message(self) -> None:
+        import asyncio
+
+        from textual.events import Key
+
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea()
+        posted: list[str] = []
+        input_area.post_message = lambda message: posted.append(type(message).__name__)
+
+        asyncio.run(input_area._on_key(Key("enter", None)))
+
+        assert posted == ["Submit"]
+
+    def test_shift_enter_does_not_post_submit_message(self) -> None:
+        import asyncio
+
+        from textual.events import Key
+
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea()
+        posted: list[str] = []
+        input_area.post_message = lambda message: posted.append(type(message).__name__)
+
+        asyncio.run(input_area._on_key(Key("shift+enter", None)))
+
+        assert posted == []
+
+    def test_submit_event_triggers_send_message(self) -> None:
+        from kingdom.tui.app import ChatApp, InputArea
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        calls: list[str] = []
+        app_instance.send_message = lambda: calls.append("sent")
+
+        app_instance.on_input_area_submit(InputArea.Submit())
+
+        assert calls == ["sent"]
+
+
 class TestParseTargets:
     """Test @mention parsing for query dispatch."""
 

@@ -10,6 +10,7 @@ from typing import ClassVar
 from textual.app import App, ComposeResult
 from textual.binding import BindingType
 from textual.containers import VerticalScroll
+from textual.message import Message
 from textual.widgets import Static, TextArea
 
 from kingdom.agent import resolve_all_agents
@@ -46,7 +47,11 @@ class StatusBar(Static):
 
 
 class InputArea(TextArea):
-    """User input area at the bottom of the screen."""
+    """User input area at the bottom of the screen.
+
+    Enter sends the message (posts Submit to the app).
+    Shift+Enter inserts a newline.
+    """
 
     DEFAULT_CSS = """
     InputArea {
@@ -56,6 +61,17 @@ class InputArea(TextArea):
         max-height: 10;
     }
     """
+
+    class Submit(Message):
+        """Posted when the user presses Enter to send."""
+
+    async def _on_key(self, event) -> None:
+        if event.key == "enter" and "shift" not in event.key:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Submit())
+            return
+        await super()._on_key(event)
 
 
 class ChatApp(App):
@@ -179,6 +195,10 @@ class ChatApp(App):
                 event.prevent_default()
                 self.send_message()
 
+    def on_input_area_submit(self, _: InputArea.Submit) -> None:
+        """Handle submit events from the input widget."""
+        self.send_message()
+
     def send_message(self) -> None:
         """Send the current input as a king message."""
         input_area = self.query_one("#input-area", TextArea)
@@ -208,7 +228,7 @@ class ChatApp(App):
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
         for name in targets:
-            panel = WaitingPanel(sender=name, id=f"panel-{name}")
+            panel = WaitingPanel(sender=name, id=f"wait-{name}")
             log.mount(panel)
 
             # Launch query in background
@@ -284,11 +304,10 @@ class ChatApp(App):
             log.scroll_end(animate=False)
 
     def handle_new_message(self, log: MessageLog, event: NewMessage) -> None:
-        """Add a finalized message panel (or error panel) to the log."""
-        # Remove any existing streaming/waiting panel for this sender
-        panel_id = f"panel-{event.sender}"
-        for widget in log.query(f"#{panel_id}"):
-            widget.remove()
+        """Replace waiting/streaming panel in-place with a finalized message."""
+        waiting_id = f"wait-{event.sender}"
+        streaming_id = f"stream-{event.sender}"
+        existing = list(log.query(f"#{waiting_id}")) + list(log.query(f"#{streaming_id}"))
 
         # Detect error responses from thread message body
         if event.sender != "king" and is_error_response(event.body):
@@ -305,20 +324,32 @@ class ChatApp(App):
                 body=event.body,
                 id=f"msg-{event.sequence}",
             )
-        log.mount(panel)
+
+        if existing:
+            log.mount(panel, before=existing[0])
+            for w in existing:
+                w.remove()
+        else:
+            log.mount(panel)
 
     def handle_stream_started(self, log: MessageLog, event: StreamStarted) -> None:
-        """Replace waiting panel with streaming panel."""
-        panel_id = f"panel-{event.member}"
-        for widget in log.query(f"#{panel_id}"):
-            widget.remove()
+        """Replace waiting panel in-place with streaming panel."""
+        waiting_id = f"wait-{event.member}"
+        streaming_id = f"stream-{event.member}"
 
-        panel = StreamingPanel(sender=event.member, id=panel_id)
-        log.mount(panel)
+        existing = list(log.query(f"#{waiting_id}")) + list(log.query(f"#{streaming_id}"))
+
+        panel = StreamingPanel(sender=event.member, id=streaming_id)
+        if existing:
+            log.mount(panel, before=existing[0])
+            for w in existing:
+                w.remove()
+        else:
+            log.mount(panel)
 
     def handle_stream_delta(self, event: StreamDelta) -> None:
         """Update the streaming panel with new text."""
-        panel_id = f"panel-{event.member}"
+        panel_id = f"stream-{event.member}"
         try:
             panel = self.query_one(f"#{panel_id}", StreamingPanel)
             panel.update_content(event.full_text)
@@ -327,7 +358,7 @@ class ChatApp(App):
 
     def handle_stream_finished(self, event: StreamFinished) -> None:
         """Remove the streaming panel (finalized message replaces it)."""
-        panel_id = f"panel-{event.member}"
+        panel_id = f"stream-{event.member}"
         try:
             panel = self.query_one(f"#{panel_id}")
             panel.remove()
