@@ -1,6 +1,6 @@
 ---
 id: "ecf7"
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-16T12:13:12Z
