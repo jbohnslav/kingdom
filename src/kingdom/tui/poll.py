@@ -87,8 +87,9 @@ class ThreadPoller:
     def poll(self) -> list[PollEvent]:
         """Run one poll cycle. Returns a list of events (may be empty)."""
         events: list[PollEvent] = []
-        events.extend(self.poll_messages())
+        # Poll streams first to capture latest data before finalization
         events.extend(self.poll_streams())
+        events.extend(self.poll_messages())
         return events
 
     def poll_messages(self) -> list[PollEvent]:
@@ -118,20 +119,20 @@ class ThreadPoller:
             # If this member was streaming, mark as finished
             if sender in self.active_streams:
                 events.append(StreamFinished(member=sender))
-                self.active_streams.discard(sender)
-                self.stream_offsets.pop(sender, None)
-                self.stream_texts.pop(sender, None)
-                self.thinking_texts.pop(sender, None)
+                # Do NOT clear state here. Let poll_streams handle lifecycle
+                # when the file disappears.
 
         return events
 
     def poll_streams(self) -> list[PollEvent]:
         """Check for new data in stream files."""
         events: list[PollEvent] = []
+        found_members = set()
 
         for path in self.thread_dir.glob(".stream-*.jsonl"):
             # Parse member name from filename: .stream-claude.jsonl -> claude
             member = path.name.removeprefix(".stream-").removesuffix(".jsonl")
+            found_members.add(member)
 
             try:
                 file_size = path.stat().st_size
@@ -155,16 +156,36 @@ class ThreadPoller:
             if file_size > current_offset:
                 backend = self.member_backends.get(member, "claude_code")
                 new_text, new_thinking = tail_stream_file(path, current_offset, backend)
-                if new_text:
-                    accumulated = self.stream_texts.get(member, "") + new_text
-                    self.stream_texts[member] = accumulated
-                    events.append(StreamDelta(member=member, full_text=accumulated))
+
+                # Emit thinking before text so ThinkingPanel exists before
+                # auto-collapse fires on the first StreamDelta.
                 if new_thinking:
-                    accumulated_thinking = self.thinking_texts.get(member, "") + new_thinking
+                    prev_thinking = self.thinking_texts.get(member, "")
+                    if prev_thinking and backend == "codex":
+                        accumulated_thinking = prev_thinking + "\n" + new_thinking
+                    else:
+                        accumulated_thinking = prev_thinking + new_thinking
                     self.thinking_texts[member] = accumulated_thinking
                     events.append(ThinkingDelta(member=member, full_text=accumulated_thinking))
+                if new_text:
+                    prev = self.stream_texts.get(member, "")
+                    if backend == "cursor":
+                        accumulated = merge_assistant_snapshots([prev, new_text])
+                    else:
+                        accumulated = prev + new_text
+                    self.stream_texts[member] = accumulated
+                    events.append(StreamDelta(member=member, full_text=accumulated))
 
                 self.stream_offsets[member] = file_size
+
+        # Cleanup members whose stream files are gone
+        for member in list(self.active_streams):
+            if member not in found_members:
+                events.append(StreamFinished(member=member))
+                self.active_streams.discard(member)
+                self.stream_offsets.pop(member, None)
+                self.stream_texts.pop(member, None)
+                self.thinking_texts.pop(member, None)
 
         return events
 
@@ -172,6 +193,24 @@ class ThreadPoller:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def merge_assistant_snapshots(parts: list[str]) -> str:
+    """Merge Cursor assistant snapshot events into a single text.
+
+    Cursor emits cumulative assistant events — each chunk is a full snapshot
+    of the text so far, not a delta. This merges them by detecting when a
+    new part is a superset of the accumulated text.
+    """
+    merged = ""
+    for part in parts:
+        if part.startswith(merged):
+            merged = part  # cumulative snapshot (superset)
+        elif merged.endswith(part):
+            continue  # trailing fragment already included
+        else:
+            merged += part  # new fragment
+    return merged
 
 
 def read_message_body(path: Path) -> str:
@@ -213,4 +252,16 @@ def tail_stream_file(path: Path, offset: int, backend: str) -> tuple[str, str]:
         if thinking:
             thinking_parts.append(thinking)
 
-    return "".join(text_parts), "".join(thinking_parts)
+    # Cursor assistant events are cumulative snapshots, not deltas
+    if backend == "cursor":
+        text = merge_assistant_snapshots(text_parts)
+    else:
+        text = "".join(text_parts)
+
+    # Codex reasoning blocks are separate items — join with newlines
+    if backend == "codex":
+        thinking = "\n".join(thinking_parts)
+    else:
+        thinking = "".join(thinking_parts)
+
+    return text, thinking
