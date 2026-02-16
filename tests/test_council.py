@@ -491,6 +491,45 @@ class TestCouncilCreateValidation:
         council = Council.create(base=tmp_path)
         assert council.members[0].phase_prompt == "Focus on architecture."
 
+    def test_create_passes_council_preamble(self, tmp_path: Path) -> None:
+        """council.preamble from config should be set on all members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "council": {"preamble": "You are a helpful advisor.", "members": ["claude", "codex"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        for member in council.members:
+            assert member.preamble == "You are a helpful advisor."
+
+    def test_create_default_preamble_is_empty(self, tmp_path: Path) -> None:
+        """Without council.preamble in config, members get empty string (uses COUNCIL_PREAMBLE fallback)."""
+        (tmp_path / ".kd").mkdir(parents=True, exist_ok=True)
+        council = Council.create(base=tmp_path)
+        for member in council.members:
+            assert member.preamble == ""
+
+    def test_create_preamble_used_in_build_command(self, tmp_path: Path) -> None:
+        """Custom preamble should appear in the built command prompt."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "council": {"preamble": "Custom preamble text.\n\n", "members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        cmd = council.members[0].build_command("User question?")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith("Custom preamble text.")
+        assert CouncilMember.COUNCIL_PREAMBLE not in prompt
+
     def test_create_passes_agent_prompt(self, tmp_path: Path) -> None:
         """Agent prompt (always additive) should be set on members."""
         import json

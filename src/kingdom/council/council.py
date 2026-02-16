@@ -49,6 +49,7 @@ class Council:
                     config=ac,
                     agent_prompt=agent_def.prompt,
                     phase_prompt=phase_prompt,
+                    preamble=cfg.council.preamble,
                 )
             )
 
