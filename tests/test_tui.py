@@ -103,6 +103,24 @@ class TestChatCommand:
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
+    def test_debug_flag_passed_to_app(self, project: Path) -> None:
+        create_thread(project, BRANCH, "council-debug", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp") as mock_chat_app,
+        ):
+            result = runner.invoke(app, ["chat", "council-debug", "--debug"])
+        assert result.exit_code == 0
+        mock_chat_app.assert_called_once_with(
+            base=project,
+            branch=BRANCH,
+            thread_id="council-debug",
+            debug_streams=True,
+        )
+        mock_chat_app.return_value.run.assert_called_once()
+
     def test_resumes_current_thread(self, project: Path) -> None:
         create_thread(project, BRANCH, "council-resume", ["king", "claude"], "council")
         set_current_thread(project, BRANCH, "council-resume")
@@ -565,7 +583,7 @@ class TestRunQuery:
                 return fake_response
 
         stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
-        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
 
         # Response must be persisted as a thread message
         messages = list_messages(project, BRANCH, tid)
@@ -598,9 +616,43 @@ class TestRunQuery:
             def query(self, prompt, timeout, stream_path=None, max_retries=0):
                 return fake_response
 
-        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
 
         assert not stream_path.exists(), "Stream file should be deleted after query"
+
+    def test_run_query_preserves_debug_stream_when_enabled(self, project: Path) -> None:
+        """run_query should save a debug copy when debug streams are enabled."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-rq-debug"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid, debug_streams=True)
+        list(app_instance.compose())
+
+        tdir = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid
+        stream_path = tdir / ".stream-claude.jsonl"
+        stream_content = '{"type":"response.output_text.delta","delta":"hello"}\n'
+        stream_path.write_text(stream_content, encoding="utf-8")
+
+        fake_response = AgentResponse(name="claude", text="Done.")
+
+        class FakeMember:
+            name = "claude"
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                return fake_response
+
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
+
+        assert not stream_path.exists(), "Live stream file should still be cleaned up"
+
+        debug_files = sorted(tdir.glob(".debug-stream-claude-*.jsonl"))
+        assert len(debug_files) == 1
+        assert debug_files[0].read_text(encoding="utf-8") == stream_content
 
     def test_run_query_persists_error_response(self, project: Path) -> None:
         """run_query must persist error-only responses to thread files."""
@@ -625,7 +677,7 @@ class TestRunQuery:
                 return fake_response
 
         stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
-        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
 
         messages = list_messages(project, BRANCH, tid)
         assert len(messages) == 1
@@ -654,7 +706,7 @@ class TestRunQuery:
                 return fake_response
 
         stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
-        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
 
         messages = list_messages(project, BRANCH, tid)
         assert len(messages) == 1
@@ -689,7 +741,7 @@ class TestRunQuery:
                 return fake_response
 
         stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
-        asyncio.run(app_instance.run_query(FakeMember(), "latest message", stream_path))
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
 
         prompt = captured_prompt["value"]
         assert "[Previous conversation]" in prompt
@@ -864,7 +916,7 @@ class TestEscapeInterrupt:
                 return fake_response
 
         stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
-        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
 
         messages = list_messages(project, BRANCH, tid)
         assert len(messages) == 1
@@ -893,7 +945,7 @@ class TestEscapeInterrupt:
                 return fake_response
 
         stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
-        asyncio.run(app_instance.run_query(FakeMember(), "hello", stream_path))
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
 
         messages = list_messages(project, BRANCH, tid)
         assert len(messages) == 1
@@ -925,3 +977,355 @@ class TestChatAppLayout:
         assert isinstance(header, Static)
         # Static stores content as _content or via update(); check the id
         assert header.id == "header-bar"
+
+
+class TestAutoTurns:
+    """Test auto-turn round-robin scheduling after initial broadcast."""
+
+    def make_fake_member(self, name: str):
+        """Create a fake member that records query calls."""
+        from kingdom.council.base import AgentResponse
+
+        class FakeMember:
+            def __init__(self, member_name):
+                self.name = member_name
+                self.call_count = 0
+                self.process = None
+                self.base = None
+                self.branch = None
+                self.preamble = ""
+                self.session_id = None
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                self.call_count += 1
+                return AgentResponse(name=self.name, text=f"Response {self.call_count} from {self.name}")
+
+        return FakeMember(name)
+
+    def make_app_with_council(
+        self, project, tid, member_names, auto_messages=-1, mode="broadcast", first_exchange=False
+    ):
+        """Create a ChatApp with a fake council for testing run_chat_round.
+
+        By default sets up a follow-up conversation (prior member responses exist)
+        so auto-turns will fire. Set first_exchange=True to test the first-message
+        behavior (broadcast only, no auto-turns).
+        """
+        from unittest.mock import MagicMock
+
+        from kingdom.council.council import Council
+        from kingdom.thread import add_message
+        from kingdom.tui.app import ChatApp
+
+        create_thread(project, BRANCH, tid, ["king", *member_names], "council")
+
+        if first_exchange:
+            # Only a king message — no prior member responses
+            add_message(project, BRANCH, tid, from_="king", to="all", body="What do you think?")
+        else:
+            # Simulate an established conversation with prior exchange
+            add_message(project, BRANCH, tid, from_="king", to="all", body="First question")
+            for name in member_names:
+                add_message(project, BRANCH, tid, from_=name, to="king", body=f"Response from {name}")
+            add_message(project, BRANCH, tid, from_="king", to="all", body="Follow-up question")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Build fake council with fake members
+        fake_members = [self.make_fake_member(n) for n in member_names]
+        council = Council(members=fake_members, auto_messages=auto_messages, mode=mode)
+        app_instance.council = council
+
+        # Mock query_one for DOM operations in auto-turn WaitingPanel mounts
+        mock_log = MagicMock()
+        app_instance.query_one = MagicMock(return_value=mock_log)
+
+        return app_instance, fake_members
+
+    def test_first_message_no_auto_turns(self, project: Path) -> None:
+        """First king message in a thread should broadcast only, no auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-at0"
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], first_exchange=True)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+
+        # Only initial broadcast, no auto-turns
+        for m in members:
+            assert m.call_count == 1, f"{m.name} expected 1 query (broadcast only), got {m.call_count}"
+
+    def test_follow_up_gets_auto_turns(self, project: Path) -> None:
+        """Follow-up king messages should get auto-turn messages after broadcast."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-at1"
+        # auto_messages=-1 → len(members) = 2
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"])
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+
+        # Initial broadcast: 1 each + auto-turns: 2 messages total (1 each) = 2 each
+        for m in members:
+            assert m.call_count == 2, f"{m.name} expected 2 queries, got {m.call_count}"
+
+    def test_auto_messages_budget_limits_total(self, project: Path) -> None:
+        """auto_messages=3 with 2 members: 2 get one turn, 1 gets a second."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-at1b"
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=3)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+
+        # Initial: 1 each. Auto-turns: budget=3, so claude(1) codex(1) claude(1) = 3 messages
+        assert members[0].call_count == 3  # claude: 1 initial + 2 auto
+        assert members[1].call_count == 2  # codex: 1 initial + 1 auto
+
+    def test_auto_messages_zero_disables(self, project: Path) -> None:
+        """auto_messages=0 should run initial broadcast only, no auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-at2"
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=0)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+
+        for m in members:
+            assert m.call_count == 1, f"{m.name} expected 1 query (initial only), got {m.call_count}"
+
+    def test_interrupted_stops_auto_turns(self, project: Path) -> None:
+        """Setting interrupted=True during a query should stop further auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-at3"
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+
+        # Make claude set interrupted=True on its second call (first auto-turn)
+        real_query = members[0].query
+
+        def interrupting_query(prompt, timeout, stream_path=None, max_retries=0):
+            result = real_query(prompt, timeout, stream_path, max_retries)
+            if members[0].call_count >= 2:
+                app_instance.interrupted = True
+            return result
+
+        members[0].query = interrupting_query
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+
+        # claude: 1 initial + 1 auto-turn (sets interrupted) = 2
+        # codex: 1 initial + 0 auto-turns (interrupted before codex's turn) = 1
+        assert members[0].call_count == 2
+        assert members[1].call_count == 1
+
+    def test_generation_mismatch_stops_auto_turns(self, project: Path) -> None:
+        """Incrementing generation during auto-turns should stop further queries."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-at4"
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+
+        # Increment generation after initial broadcast completes
+        real_query = members[1].query
+
+        def preempting_query(prompt, timeout, stream_path=None, max_retries=0):
+            result = real_query(prompt, timeout, stream_path, max_retries)
+            if members[1].call_count == 1:
+                app_instance.generation += 1  # Simulate new user message
+            return result
+
+        members[1].query = preempting_query
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+
+        # Both get initial round, then generation mismatch stops auto-turns
+        assert members[0].call_count == 1
+        assert members[1].call_count == 1
+
+    def test_muted_members_skipped_in_auto_turns(self, project: Path) -> None:
+        """Muted members should be skipped in auto-turn messages."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-at5"
+        # Budget=4, 3 members, codex muted → active=[claude, cursor]
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex", "cursor"], auto_messages=4)
+        app_instance.muted.add("codex")
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex", "cursor"], 1, tdir))
+
+        # Initial round: all 3 queried (targets decided by send_message)
+        # Auto-turns: budget=4, active=[claude, cursor] → claude, cursor, claude, cursor
+        assert members[0].call_count == 3  # claude: 1 initial + 2 auto
+        assert members[1].call_count == 1  # codex: 1 initial only
+        assert members[2].call_count == 3  # cursor: 1 initial + 2 auto
+
+    def test_directed_message_skips_auto_turns(self, project: Path) -> None:
+        """@member directed messages should not trigger auto-turns."""
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-at6"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        targets = app_instance.parse_targets("@claude What do you think?")
+        to = targets[0] if len(targets) == 1 else "all"
+
+        # Directed message: to should be the member name, not "all"
+        assert to == "claude"
+        assert to != "all"  # This means send_message won't use run_chat_round
+
+    def test_sequential_mode_queries_in_order(self, project: Path) -> None:
+        """mode='sequential' should query members one at a time, in order."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-at7"
+        # auto_messages=2 → 2 sequential auto-turn messages after initial
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_messages=2, mode="sequential"
+        )
+
+        # Track ordering
+        call_order = []
+        for m in members:
+            real_query = m.query
+            name = m.name
+
+            def make_ordered_query(real_fn, member_name):
+                def ordered_query(prompt, timeout, stream_path=None, max_retries=0):
+                    result = real_fn(prompt, timeout, stream_path, max_retries)
+                    call_order.append(member_name)
+                    return result
+
+                return ordered_query
+
+            m.query = make_ordered_query(real_query, name)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+
+        # Sequential initial: claude then codex; auto-turns: claude then codex
+        assert call_order == ["claude", "codex", "claude", "codex"]
+
+    def test_error_in_auto_turn_continues_round(self, project: Path) -> None:
+        """An error from one member in auto-turns should not stop the next member."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import thread_dir
+
+        tid = "council-at8"
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=2)
+
+        # Make claude raise an exception on auto-turn queries
+        def error_query(prompt, timeout, stream_path=None, max_retries=0):
+            members[0].call_count += 1
+            if members[0].call_count > 1:
+                raise RuntimeError("API error")
+            return AgentResponse(name="claude", text="Initial response")
+
+        members[0].query = error_query
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir))
+
+        # claude: 1 initial + 1 auto (error, consumes budget) = 2
+        assert members[0].call_count == 2
+        # codex: 1 initial + 1 auto = 2
+        assert members[1].call_count == 2
+
+    def test_app_has_generation_counter(self) -> None:
+        """ChatApp should have a generation counter initialized to 0."""
+        from kingdom.tui.app import ChatApp
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        assert app_instance.generation == 0
+
+
+class TestCouncilCreateNewFields:
+    """Test that Council.create() passes auto_messages and mode from config."""
+
+    def test_create_default_auto_messages(self, project: Path) -> None:
+        """Default auto_messages should be -1 (auto: len(members))."""
+        from kingdom.council.council import Council
+
+        council = Council.create(base=project)
+        assert council.auto_messages == -1
+
+    def test_create_default_mode(self, project: Path) -> None:
+        """Default mode should be 'broadcast'."""
+        from kingdom.council.council import Council
+
+        council = Council.create(base=project)
+        assert council.mode == "broadcast"
+
+    def test_create_custom_auto_messages(self, project: Path) -> None:
+        """Custom auto_messages from config should be passed through."""
+        import json
+
+        kd = project / ".kd"
+        (kd / "config.json").write_text(json.dumps({"council": {"auto_messages": 5}}))
+
+        from kingdom.council.council import Council
+
+        council = Council.create(base=project)
+        assert council.auto_messages == 5
+
+    def test_create_auto_messages_zero(self, project: Path) -> None:
+        """auto_messages=0 should be valid (disables auto-turns)."""
+        import json
+
+        kd = project / ".kd"
+        (kd / "config.json").write_text(json.dumps({"council": {"auto_messages": 0}}))
+
+        from kingdom.council.council import Council
+
+        council = Council.create(base=project)
+        assert council.auto_messages == 0
+
+    def test_create_sequential_mode(self, project: Path) -> None:
+        """mode='sequential' from config should be passed through."""
+        import json
+
+        kd = project / ".kd"
+        (kd / "config.json").write_text(json.dumps({"council": {"mode": "sequential"}}))
+
+        from kingdom.council.council import Council
+
+        council = Council.create(base=project)
+        assert council.mode == "sequential"

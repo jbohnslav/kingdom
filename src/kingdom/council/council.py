@@ -20,6 +20,8 @@ class Council:
 
     members: list[CouncilMember] = field(default_factory=list)
     timeout: int = 600
+    auto_messages: int = -1
+    mode: str = "broadcast"
 
     @classmethod
     def create(cls, logs_dir: Path | None = None, base: Path | None = None) -> Council:
@@ -54,7 +56,12 @@ class Council:
             for member in members:
                 member.log_path = logs_dir / f"council-{member.name}.log"
 
-        return cls(members=members, timeout=cfg.council.timeout)
+        return cls(
+            members=members,
+            timeout=cfg.council.timeout,
+            auto_messages=cfg.council.auto_messages,
+            mode=cfg.council.mode,
+        )
 
     def query(self, prompt: str) -> dict[str, AgentResponse]:
         """Query all members in parallel and return responses."""

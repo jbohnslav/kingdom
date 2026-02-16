@@ -45,7 +45,7 @@ class CouncilConfig:
 
     members: list[str] = field(default_factory=list)
     timeout: int = 600
-    auto_rounds: int = 3
+    auto_messages: int = -1
     mode: str = "broadcast"
     preamble: str = ""
 
@@ -98,7 +98,7 @@ def default_config() -> KingdomConfig:
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
 VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
-VALID_COUNCIL_KEYS = {"members", "timeout", "auto_rounds", "mode", "preamble"}
+VALID_COUNCIL_KEYS = {"members", "timeout", "auto_messages", "mode", "preamble"}
 VALID_PEASANT_KEYS = {"agent", "timeout", "max_iterations"}
 VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant"}
 VALID_AGENT_PROMPT_PHASES = {"council", "design", "review", "peasant"}
@@ -191,11 +191,13 @@ def validate_council(data: dict) -> CouncilConfig:
     if timeout <= 0:
         raise ValueError(f"council.timeout must be positive, got {timeout}")
 
-    auto_rounds = data.get("auto_rounds", 3)
-    if not isinstance(auto_rounds, int):
-        raise ValueError(f"council.auto_rounds must be an integer, got {type(auto_rounds).__name__}")
-    if auto_rounds <= 0:
-        raise ValueError(f"council.auto_rounds must be positive, got {auto_rounds}")
+    auto_messages = data.get("auto_messages", -1)
+    if not isinstance(auto_messages, int):
+        raise ValueError(f"council.auto_messages must be an integer, got {type(auto_messages).__name__}")
+    if auto_messages < -1:
+        raise ValueError(
+            f"council.auto_messages must be -1 (auto), 0 (disabled), or a positive integer, got {auto_messages}"
+        )
 
     valid_modes = {"broadcast", "sequential"}
     mode = data.get("mode", "broadcast")
@@ -210,7 +212,7 @@ def validate_council(data: dict) -> CouncilConfig:
     if "preamble" in data and not preamble:
         raise ValueError("council.preamble must be non-empty if specified")
 
-    return CouncilConfig(members=members, timeout=timeout, auto_rounds=auto_rounds, mode=mode, preamble=preamble)
+    return CouncilConfig(members=members, timeout=timeout, auto_messages=auto_messages, mode=mode, preamble=preamble)
 
 
 def validate_peasant(data: dict) -> PeasantConfig:
@@ -283,7 +285,7 @@ def validate_config(data: dict) -> KingdomConfig:
         council = CouncilConfig(
             members=list(agents),
             timeout=council.timeout,
-            auto_rounds=council.auto_rounds,
+            auto_messages=council.auto_messages,
             mode=council.mode,
             preamble=council.preamble,
         )

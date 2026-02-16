@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -109,17 +110,19 @@ class ChatApp(App):
         ("escape", "interrupt", "Interrupt/Quit"),
     ]
 
-    def __init__(self, base: Path, branch: str, thread_id: str) -> None:
+    def __init__(self, base: Path, branch: str, thread_id: str, debug_streams: bool = False) -> None:
         super().__init__()
         self.base = base
         self.branch = branch
         self.thread_id = thread_id
+        self.debug_streams = debug_streams
         self.poller: ThreadPoller | None = None
         self.member_names: list[str] = []
         self.auto_scroll = True
         self.council: Council | None = None
         self.interrupted = False
         self.muted: set[str] = set()
+        self.generation: int = 0
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -281,6 +284,8 @@ class ChatApp(App):
             return
 
         self.interrupted = False
+        self.generation += 1
+        gen = self.generation
 
         # Parse @mentions
         targets = self.parse_targets(text)
@@ -298,23 +303,26 @@ class ChatApp(App):
         if self.poller:
             self.poller.last_sequence += 1
 
-        # Create waiting panels and dispatch queries
+        # Create waiting panels for initial round targets
         tdir = thread_dir(self.base, self.branch, self.thread_id)
-
         for name in targets:
             panel = WaitingPanel(sender=name, id=f"wait-{name}")
             log.mount(panel)
 
-            # Launch query in background
-            member = self.council.get_member(name) if self.council else None
+        if to == "all":
+            # Broadcast: coordinator handles initial round + auto-turns
+            self.run_worker(self.run_chat_round(targets, gen, tdir), exclusive=False)
+        else:
+            # Directed: single query, no auto-turns
+            member = self.council.get_member(targets[0]) if self.council else None
             if member:
-                stream_path = tdir / f".stream-{name}.jsonl"
-                self.run_worker(self.run_query(member, text, stream_path), exclusive=False)
+                stream_path = tdir / f".stream-{targets[0]}.jsonl"
+                self.run_worker(self.run_query(member, stream_path), exclusive=False)
 
         if self.auto_scroll:
             log.scroll_end(animate=False)
 
-    async def run_query(self, member, prompt: str, stream_path: Path) -> None:
+    async def run_query(self, member, stream_path: Path) -> None:
         """Run a member query with full thread context, then persist and clean up."""
         try:
             timeout = self.council.timeout if self.council else 600
@@ -336,9 +344,105 @@ class ChatApp(App):
             error_body = f"*Error: {exc}*"
             add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=error_body)
         finally:
-            # Clean up stream file — the finalized message file is now the source of truth
+            # Optionally preserve raw stream events for debugging before cleanup.
+            if stream_path.exists() and self.debug_streams:
+                debug_path = self.build_debug_stream_path(stream_path, member.name)
+                stream_path.replace(debug_path)
+
+            # Clean up live stream file — finalized message file remains source of truth.
             if stream_path.exists():
                 stream_path.unlink()
+
+    def build_debug_stream_path(self, stream_path: Path, member_name: str) -> Path:
+        """Build a unique path for preserved stream debug artifacts."""
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        return stream_path.parent / f".debug-stream-{member_name}-{timestamp}.jsonl"
+
+    async def run_chat_round(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Coordinate initial broadcast + optional auto-turn messages.
+
+        Phase 1: Initial round — parallel (broadcast mode) or sequential.
+        Phase 2: Auto-turn messages — sequential round-robin, one member at a
+        time, up to a message budget. Skipped on the first king message in a
+        thread (no prior member responses yet).
+        """
+        if not self.council:
+            return
+
+        mode = self.council.mode
+
+        # Determine if auto-turns should fire after the initial round.
+        # First king message in a thread (no prior member responses) → broadcast
+        # only, no auto-turns. Follow-up messages get round-robin discussion.
+        prior_messages = list_messages(self.base, self.branch, self.thread_id)
+        is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
+
+        # Phase 1: Initial round
+        if mode == "broadcast" and len(targets) > 1:
+            # Parallel broadcast — all members fire simultaneously
+            coros = []
+            for name in targets:
+                member = self.council.get_member(name)
+                if member:
+                    stream_path = tdir / f".stream-{name}.jsonl"
+                    coros.append(self.run_query(member, stream_path))
+            await asyncio.gather(*coros)
+            # Check for preemption after broadcast completes
+            if self.interrupted or self.generation != generation:
+                return
+        else:
+            # Sequential (mode="sequential" or single target)
+            for name in targets:
+                if self.interrupted or self.generation != generation:
+                    return
+                member = self.council.get_member(name)
+                if not member:
+                    continue
+                stream_path = tdir / f".stream-{name}.jsonl"
+                await self.run_query(member, stream_path)
+
+        # Phase 2: Auto-turn messages (sequential round-robin, message budget)
+        # Skip on first exchange — broadcast is just gathering initial positions.
+        if is_first_exchange:
+            return
+
+        active = [n for n in self.member_names if n not in self.muted]
+        budget = self.council.auto_messages
+        if budget == 0:
+            return
+        if budget < 0:
+            # -1 = auto: one message per active member
+            budget = len(active)
+        if budget <= 0:
+            return
+        messages_sent = 0
+
+        while messages_sent < budget:
+            for name in active:
+                if messages_sent >= budget:
+                    break
+                if self.interrupted or self.generation != generation:
+                    return
+                if name in self.muted:
+                    continue
+                member = self.council.get_member(name)
+                if not member:
+                    continue
+                # Remove stale panel for this member, then mount fresh WaitingPanel
+                log = self.query_one("#message-log", MessageLog)
+                self.remove_member_panels(log, name)
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+                if self.auto_scroll:
+                    log.scroll_end(animate=False)
+                stream_path = tdir / f".stream-{name}.jsonl"
+                await self.run_query(member, stream_path)
+                messages_sent += 1
+
+    def remove_member_panels(self, log: MessageLog, name: str) -> None:
+        """Remove any existing wait/stream/interrupted panels for a member."""
+        for prefix in ("wait", "stream", "interrupted"):
+            for panel in list(log.query(f"#{prefix}-{name}")):
+                panel.remove()
 
     def parse_targets(self, text: str) -> list[str]:
         """Parse @mentions from text to determine query targets.
