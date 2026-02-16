@@ -10,21 +10,31 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-# Deterministic color palette indexed by member name hash.
-MEMBER_COLORS = [
-    "cyan",
-    "green",
-    "magenta",
+# Fixed colors for known council members.
+DEFAULT_MEMBER_COLORS: dict[str, str] = {
+    "claude": "cyan",
+    "codex": "green",
+    "cursor": "magenta",
+}
+
+# Fallback palette for unknown members, indexed by stable hash.
+FALLBACK_COLORS = [
     "yellow",
     "blue",
     "red",
+    "cyan",
+    "green",
+    "magenta",
 ]
 
 
 def color_for_member(name: str) -> str:
     """Return a deterministic color for a member name."""
-    idx = hash(name) % len(MEMBER_COLORS)
-    return MEMBER_COLORS[idx]
+    if name in DEFAULT_MEMBER_COLORS:
+        return DEFAULT_MEMBER_COLORS[name]
+    # Stable hash (not affected by PYTHONHASHSEED randomization)
+    idx = sum(ord(c) for c in name) % len(FALLBACK_COLORS)
+    return FALLBACK_COLORS[idx]
 
 
 class MessagePanel(Static):
@@ -48,8 +58,8 @@ class MessagePanel(Static):
         self.body = body
 
     def compose_text(self) -> str:
-        """Format the display text."""
-        return f"**{self.sender}**\n\n{self.body}"
+        """Format the display text (sender shown in border title, not body)."""
+        return self.body
 
     def on_mount(self) -> None:
         if self.sender == "king":
@@ -100,7 +110,7 @@ class WaitingPanel(Static):
     WaitingPanel {
         margin: 0 1;
         padding: 0;
-        border: dashed $text-muted;
+        border: dashed $secondary;
         height: 1;
     }
     """

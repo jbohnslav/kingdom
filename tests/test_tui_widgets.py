@@ -23,10 +23,11 @@ class TestColorForMember:
         assert len(colors) >= 2
 
     def test_returns_valid_color(self) -> None:
-        from kingdom.tui.widgets import MEMBER_COLORS
+        from kingdom.tui.widgets import DEFAULT_MEMBER_COLORS, FALLBACK_COLORS
 
+        all_colors = set(DEFAULT_MEMBER_COLORS.values()) | set(FALLBACK_COLORS)
         for name in ["claude", "codex", "cursor"]:
-            assert color_for_member(name) in MEMBER_COLORS
+            assert color_for_member(name) in all_colors
 
 
 class TestMessagePanel:
@@ -37,8 +38,7 @@ class TestMessagePanel:
 
     def test_compose_text(self) -> None:
         panel = MessagePanel(sender="codex", body="Analysis here")
-        assert "**codex**" in panel.compose_text()
-        assert "Analysis here" in panel.compose_text()
+        assert panel.compose_text() == "Analysis here"
 
     def test_king_message(self) -> None:
         panel = MessagePanel(sender="king", body="Question?")
