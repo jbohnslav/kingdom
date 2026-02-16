@@ -47,6 +47,21 @@ def claude_stream_event(text: str) -> str:
     )
 
 
+def cursor_assistant_event(text: str) -> str:
+    """Build a Cursor assistant chunk event."""
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": text},
+                ],
+            },
+        }
+    )
+
+
 @pytest.fixture()
 def tdir(tmp_path: Path) -> Path:
     """Create a thread directory."""
@@ -184,6 +199,27 @@ class TestThreadPollerStreaming:
 
         started = [e for e in events if isinstance(e, StreamStarted)]
         assert len(started) == 0  # Already started in first poll
+
+    @pytest.mark.xfail(
+        reason="Known Cursor issue: assistant snapshot chunks are treated as deltas and can make streaming text appear overwritten/unstable.",
+        strict=False,
+    )
+    def test_cursor_assistant_snapshot_chunks_should_use_latest_snapshot(self, tdir: Path) -> None:
+        """Cumulative assistant snapshots should resolve to latest snapshot, not concatenation artifacts."""
+        write_stream_line(tdir, "cursor", cursor_assistant_event("Beautiful is better than ugly."))
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
+        poller.poll()
+
+        write_stream_line(
+            tdir,
+            "cursor",
+            cursor_assistant_event("Beautiful is better than ugly. Explicit is better than implicit."),
+        )
+        events = poller.poll()
+
+        deltas = [e for e in events if isinstance(e, StreamDelta)]
+        assert len(deltas) == 1
+        assert deltas[0].full_text == "Beautiful is better than ugly. Explicit is better than implicit."
 
 
 class TestThreadPollerFinalization:

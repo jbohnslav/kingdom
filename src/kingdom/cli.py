@@ -1223,6 +1223,13 @@ def display_rich_panels(responses, thread_id, console):
 def chat(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID to open.")] = None,
     new: Annotated[bool, typer.Option("--new", help="Create a new thread.")] = False,
+    debug: Annotated[
+        bool,
+        typer.Option(
+            "--debug",
+            help="Preserve per-member stream NDJSON files as .debug-stream-*.jsonl in the thread directory.",
+        ),
+    ] = False,
 ) -> None:
     """Open the council chat TUI.
 
@@ -1282,7 +1289,7 @@ def chat(
 
     from kingdom.tui.app import ChatApp
 
-    app_instance = ChatApp(base=base, branch=feature, thread_id=tid)
+    app_instance = ChatApp(base=base, branch=feature, thread_id=tid, debug_streams=debug)
     app_instance.run()
 
 
