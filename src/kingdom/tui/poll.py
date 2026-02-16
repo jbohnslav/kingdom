@@ -65,7 +65,6 @@ class ThreadPoller:
         last_sequence: Highest seen message sequence number.
         stream_offsets: Byte offset per member stream file.
         stream_texts: Accumulated extracted text per member.
-        finalized_members: Members whose latest response has been finalized.
         active_streams: Members whose stream files we are currently tracking.
     """
 
@@ -74,7 +73,6 @@ class ThreadPoller:
     last_sequence: int = 0
     stream_offsets: dict[str, int] = field(default_factory=dict)
     stream_texts: dict[str, str] = field(default_factory=dict)
-    finalized_members: set[str] = field(default_factory=set)
     active_streams: set[str] = field(default_factory=set)
 
     def poll(self) -> list[PollEvent]:
@@ -114,7 +112,6 @@ class ThreadPoller:
                 self.active_streams.discard(sender)
                 self.stream_offsets.pop(sender, None)
                 self.stream_texts.pop(sender, None)
-                self.finalized_members.add(sender)
 
         return events
 
@@ -125,10 +122,6 @@ class ThreadPoller:
         for path in self.thread_dir.glob(".stream-*.jsonl"):
             # Parse member name from filename: .stream-claude.jsonl -> claude
             member = path.name.removeprefix(".stream-").removesuffix(".jsonl")
-
-            # Skip members whose response has already been finalized this round
-            if member in self.finalized_members:
-                continue
 
             try:
                 file_size = path.stat().st_size

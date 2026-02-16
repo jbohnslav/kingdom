@@ -194,7 +194,9 @@ class TestThreadPollerFinalization:
         poller.poll()
         assert "claude" in poller.active_streams
 
-        # Finalized message arrives
+        # Simulate run_query: stream file deleted, then finalized message written
+        stream_path = tdir / ".stream-claude.jsonl"
+        stream_path.unlink()
         write_message(tdir, 1, "claude", "Hello world (final)")
         events = poller.poll()
 
@@ -203,28 +205,26 @@ class TestThreadPollerFinalization:
         assert finished[0].member == "claude"
         assert "claude" not in poller.active_streams
 
-    def test_finalized_stream_skipped(self, tdir: Path) -> None:
-        """After finalization via streaming, stream file updates are ignored."""
-        # First: start streaming
+    def test_finalization_clears_stream_state(self, tdir: Path) -> None:
+        """After finalization, stream state is cleaned up so round 2 works."""
+        # Start streaming
         write_stream_line(tdir, "claude", claude_stream_event("partial"))
         poller = ThreadPoller(thread_dir=tdir, member_backends={"claude": "claude_code"})
         poller.poll()
         assert "claude" in poller.active_streams
 
-        # Then: finalized message arrives, stream file still present
+        # Simulate run_query: stream file deleted, then finalized message written
+        stream_path = tdir / ".stream-claude.jsonl"
+        stream_path.unlink()
         write_message(tdir, 1, "claude", "Final answer")
-        write_stream_line(tdir, "claude", claude_stream_event("more stale"))
         events = poller.poll()
 
         msgs = [e for e in events if isinstance(e, NewMessage)]
+        finished = [e for e in events if isinstance(e, StreamFinished)]
         assert len(msgs) == 1
-        assert "claude" in poller.finalized_members
-
-        # Further stream updates should be ignored
-        write_stream_line(tdir, "claude", claude_stream_event("ignored"))
-        events = poller.poll()
-        deltas = [e for e in events if isinstance(e, StreamDelta) and e.member == "claude"]
-        assert len(deltas) == 0
+        assert len(finished) == 1
+        assert "claude" not in poller.active_streams
+        assert "claude" not in poller.stream_offsets
 
 
 class TestThreadPollerRetry:
@@ -248,6 +248,36 @@ class TestThreadPollerRetry:
         assert len(deltas) == 1
         # Text should be from retry only, not accumulated from first attempt
         assert deltas[0].full_text == "Retry"
+
+
+class TestThreadPollerMultiTurn:
+    def test_second_round_stream_detected_after_finalization(self, tdir: Path) -> None:
+        """After a member is finalized in round 1, a new stream in round 2 must be detected."""
+        # Round 1: stream then finalize
+        write_stream_line(tdir, "claude", claude_stream_event("Round 1"))
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"claude": "claude_code"})
+        poller.poll()  # picks up stream started + delta
+
+        # Simulate run_query completing: stream file deleted, message file written
+        stream_path = tdir / ".stream-claude.jsonl"
+        stream_path.unlink()
+        write_message(tdir, 1, "king", "Question 1")
+        write_message(tdir, 2, "claude", "Answer 1")
+        poller.poll()  # picks up finalized messages + stream finished
+
+        assert "claude" not in poller.active_streams
+
+        # Round 2: new king message, new stream appears
+        write_message(tdir, 3, "king", "Question 2")
+        write_stream_line(tdir, "claude", claude_stream_event("Round 2"))
+        events = poller.poll()
+
+        started = [e for e in events if isinstance(e, StreamStarted)]
+        deltas = [e for e in events if isinstance(e, StreamDelta)]
+        assert len(started) == 1, f"Expected StreamStarted for round 2, got {events}"
+        assert started[0].member == "claude"
+        assert len(deltas) == 1
+        assert deltas[0].full_text == "Round 2"
 
 
 class TestThreadPollerExternalStreams:
