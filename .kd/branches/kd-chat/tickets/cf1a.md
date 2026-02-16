@@ -90,6 +90,26 @@ Build deeper end-to-end integration coverage for `kd chat` using Textual's test 
 - Plugin choice: avoid adding new pytest plugins unless necessary; use `asyncio.run(...)` wrappers if that keeps the setup simpler.
 - Snapshot testing remains optional; only adopt if output is stable across environments.
 
+## Diagnosis Notes (2026-02-16)
+
+Observed in live thread `council-9cb6`:
+
+- `0004-cursor.md` and `0007-cursor.md` contain "Council Advisor" meta-analysis instead of normal in-thread recall.
+- Later turns now ingest those messages via `format_thread_history(...)`, so the meta style is reinforced in subsequent prompts.
+- The same thread also shows agent-label duplication (`codex: codex: ...`) in stored bodies, which further pollutes history context.
+
+Root-cause hypothesis (code-level):
+
+- `kd chat` currently uses `CouncilMember` query path, which prepends council-advisor framing for every query.
+- `ChatApp.on_mount()` also calls `self.council.load_sessions(...)`, so branch-level resume IDs can leak prior context into new chat threads.
+- With full-history injection enabled, any off-style/meta response becomes durable context and compounds over turns.
+
+Implications for this integration-test ticket:
+
+- Add integration coverage that verifies behavior in a fresh thread with no pre-existing session context.
+- Add a session-isolation regression case: a new `kd chat --new` thread should not inherit unrelated prior-agent context.
+- Add transcript-sanitization assertions so speaker labels are not duplicated in persisted message bodies.
+
 ## Acceptance Criteria
 
 - [ ] New Textual integration tests exist using `app.run_test()` + `Pilot`.

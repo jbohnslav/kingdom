@@ -14,5 +14,5 @@ def require_textual() -> None:
         import textual  # noqa: F401
     except ImportError as exc:
         raise SystemExit(
-            "The 'textual' package is required for kd chat.\n" "Install it with: uv sync --group chat"
+            "The 'textual' package is required for kd chat.\nInstall it with: uv sync --group chat"
         ) from exc
