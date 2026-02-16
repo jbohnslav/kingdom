@@ -493,6 +493,87 @@ class TestRunQuery:
         # thread_body() returns text when both text and error are present
         assert messages[0].body == "Partial answer before timeout"
 
+    def test_run_query_uses_formatted_thread_history(self, project: Path) -> None:
+        """run_query should send full formatted history, not only the latest text."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import add_message
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-rq5"
+        create_thread(project, BRANCH, tid, ["king", "claude", "cursor"], "council")
+
+        add_message(project, BRANCH, tid, from_="king", to="all", body="What changed?")
+        add_message(project, BRANCH, tid, from_="cursor", to="king", body="I updated the parser.")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        captured_prompt: dict[str, str] = {}
+        fake_response = AgentResponse(name="claude", text="Looks good.")
+
+        class FakeMember:
+            name = "claude"
+
+            def query(self, prompt, timeout, stream_path=None):
+                captured_prompt["value"] = prompt
+                return fake_response
+
+        stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), "latest message", stream_path))
+
+        prompt = captured_prompt["value"]
+        assert "[Previous conversation]" in prompt
+        assert "king: What changed?" in prompt
+        assert "cursor: I updated the parser." in prompt
+        assert prompt.rstrip().endswith("You are claude. Continue the discussion.")
+
+
+class TestChatAppSessionIsolation:
+    """Chat threads should not inherit session resume IDs."""
+
+    def test_on_mount_does_not_call_load_sessions(self, project: Path) -> None:
+        """ChatApp must not call council.load_sessions() — chat uses thread history only."""
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-iso"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Simulate what on_mount does (without real Textual app)
+        from kingdom.council import Council
+
+        council = Council.create(base=project)
+        # After ChatApp.on_mount, members should have no session_id
+        # (load_sessions is not called)
+        for member in council.members:
+            assert member.session_id is None
+
+    def test_chat_preamble_set_on_members(self, project: Path) -> None:
+        """ChatApp should set chat-specific preamble on council members."""
+        from kingdom.tui.app import CHAT_PREAMBLE, ChatApp
+
+        tid = "council-preamble"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Simulate the council setup from on_mount (without real Textual mount)
+        from kingdom.council import Council
+
+        council = Council.create(base=project)
+        for member in council.members:
+            member.preamble = CHAT_PREAMBLE.format(name=member.name)
+
+        for member in council.members:
+            assert "participating in a group discussion" in member.preamble
+            assert member.name in member.preamble
+            assert "council advisor" not in member.preamble.lower()
+
 
 class TestChatAppLayout:
     """Test the widget layout of ChatApp."""

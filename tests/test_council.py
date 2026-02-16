@@ -855,6 +855,39 @@ class TestAgentResponseThreadBody:
         r = AgentResponse(name="claude", text="some output", error="also had error")
         assert r.thread_body() == "some output"
 
+    def test_strips_echoed_speaker_prefix(self) -> None:
+        """Agents sometimes echo back 'name: ' from history format."""
+        r = AgentResponse(name="codex", text="codex: Hello there")
+        assert r.thread_body() == "Hello there"
+
+    def test_no_false_strip_on_name_substring(self) -> None:
+        """Only strip 'name: ' prefix, not 'name' as a substring."""
+        r = AgentResponse(name="codex", text="codex is great")
+        assert r.thread_body() == "codex is great"
+
+    def test_no_strip_other_speaker_prefix(self) -> None:
+        """Don't strip a different speaker's prefix."""
+        r = AgentResponse(name="codex", text="claude: Hello there")
+        assert r.thread_body() == "claude: Hello there"
+
+
+class TestPreambleOverride:
+    """Tests for CouncilMember.preamble field overriding COUNCIL_PREAMBLE."""
+
+    def test_default_preamble_used_when_empty(self) -> None:
+        member = make_member("claude")
+        cmd = member.build_command("hello")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith(CouncilMember.COUNCIL_PREAMBLE)
+
+    def test_custom_preamble_replaces_default(self) -> None:
+        member = make_member("claude")
+        member.preamble = "You are claude in a chat.\n\n"
+        cmd = member.build_command("hello")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith("You are claude in a chat.\n\n")
+        assert CouncilMember.COUNCIL_PREAMBLE not in prompt
+
 
 class TestQueryRetry:
     """Tests for automatic retry in CouncilMember.query()."""

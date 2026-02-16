@@ -16,10 +16,25 @@ from textual.widgets import Static, TextArea
 from kingdom.agent import resolve_all_agents
 from kingdom.config import load_config
 from kingdom.council import Council
-from kingdom.thread import add_message, get_thread, is_error_response, is_timeout_response, list_messages, thread_dir
+from kingdom.thread import (
+    add_message,
+    format_thread_history,
+    get_thread,
+    is_error_response,
+    is_timeout_response,
+    list_messages,
+    thread_dir,
+)
 
 from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThreadPoller
 from .widgets import ErrorPanel, MessagePanel, StreamingPanel, WaitingPanel
+
+CHAT_PREAMBLE = (
+    "You are {name}, participating in a group discussion with other AI agents and the King (human). "
+    "Engage directly with the conversation — respond to questions, share your perspective, "
+    "and build on or challenge points raised by others. "
+    "Do NOT create, edit, or write files. Do NOT run git commands that modify state.\n\n"
+)
 
 
 class MessageLog(VerticalScroll):
@@ -134,13 +149,14 @@ class ChatApp(App):
             member_backends=member_backends,
         )
 
-        # Create Council for direct query dispatch
+        # Create Council for direct query dispatch (no load_sessions — chat threads
+        # use format_thread_history() for context, not session resume IDs)
         self.council = Council.create(base=self.base)
-        self.council.load_sessions(self.base, self.branch)
-        # Set base/branch on members for PID tracking
+        # Set base/branch and chat-specific preamble on members
         for member in self.council.members:
             member.base = self.base
             member.branch = self.branch
+            member.preamble = CHAT_PREAMBLE.format(name=member.name)
 
         # Load existing messages from thread history
         self.load_history()
@@ -241,10 +257,12 @@ class ChatApp(App):
             log.scroll_end(animate=False)
 
     async def run_query(self, member, prompt: str, stream_path: Path) -> None:
-        """Run a member query in a thread, persist the response, and clean up."""
+        """Run a member query with full thread context, then persist and clean up."""
         try:
             timeout = self.council.timeout if self.council else 600
-            response = await asyncio.to_thread(member.query, prompt, timeout, stream_path)
+            tdir = thread_dir(self.base, self.branch, self.thread_id)
+            prompt_with_history = format_thread_history(tdir, member.name)
+            response = await asyncio.to_thread(member.query, prompt_with_history, timeout, stream_path)
 
             # Always persist response to thread files (source of truth)
             add_message(
