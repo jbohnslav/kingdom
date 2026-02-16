@@ -1,120 +1,99 @@
 ---
 id: "cf1a"
-status: open
-deps: [3642, d869]
-links: []
+status: closed
+deps: []
+links: [council-c86e]
 created: 2026-02-16T11:21:29Z
 type: task
 priority: 2
 ---
-# Extensive Textual integration tests for kd chat (with optional slow-test flag)
+# Textual integration tests for kd chat
 
-Build deeper end-to-end integration coverage for `kd chat` using Textual's test harness (`app.run_test()` + `Pilot`) so we verify real UI behavior, not only unit-level methods.
+Build end-to-end integration coverage for `kd chat` using Textual's `app.run_test()` + `Pilot` so we verify real UI behavior, not only unit-level methods.
 
 ## Current State (2026-02-16)
 
-- Existing TUI tests are mostly unit-style (`tests/test_tui.py`, `tests/test_tui_poll.py`, `tests/test_tui_widgets.py`) and do not drive the app through `app.run_test()` + `Pilot`.
-- `ChatApp` currently has core send/poll/render behavior, but slash commands and escape-interrupt semantics are tracked in separate open tickets:
-  - `3642` slash commands (`/mute`, `/unmute`, `/help`, `/quit`)
-  - `d869` escape interrupt and subprocess termination behavior
+- Existing TUI tests (~3,000 lines across 4 files) are unit-style with direct instantiation + mocking. Zero use of `app.run_test()` or `Pilot`.
+- Dependencies `3642` (slash commands), `d869` (escape interrupt), and `3b76` (auto-turn) are all **closed** — slash, interrupt, and auto-turn coverage are in-scope now.
 - CI currently runs `uv run pytest`; integration test runtime must remain explicit and controllable.
+
+## Council Input (council-c86e)
+
+**Consensus across all members:**
+- `app.run_test()` + `Pilot` harness in `tests/test_tui_integration.py`
+- Mock the Council (API calls), not the poller (real file I/O is fast and exercises the real poll→render cycle)
+- Gate behind pytest marker from day one, not as a later phase
+- Bounded `wait_until()` helper with retries — never fixed sleeps
+- Session-isolation regression case is important
+
+**Timing strategy (Claude):** Call `await app.poll_updates()` directly in tests after writing files, bypassing the 100ms timer. Trades purity for determinism — the #1 killer of Textual integration suites is timing flakiness.
+
+**Scope calibration (Claude):** Start minimal (3-4 core scenarios), prove the harness works, then expand. Defer layout-at-multiple-sizes (low value, high maintenance) and visual/snapshot testing.
+
+**Scope expansion (Codex):** Since all deps are closed, slash/interrupt/auto-turn integration coverage should be included now, not deferred.
+
+**Adopted approach:** Start with core scenarios to prove the harness, then immediately expand to slash/interrupt/auto-turn in the same ticket. No multi-phase gating.
 
 ## Scope
 
-- Add Textual integration tests that drive real user flows (typing, Enter, Shift+Enter, key bindings, and command submission).
-- Cover implemented chat flows now: thread history render, send flow, waiting/streaming/finalized transitions, error rendering, and external updates visible in the running TUI.
-- Cover slash/interrupt flows in this ticket once the dependent behavior lands (`3642`, `d869`) using the same integration harness.
-- Use async-friendly checks (`pilot.pause()` / bounded waits) so tests assert post-update UI state reliably.
-- Run selected scenarios at multiple terminal sizes (at least `80x24` and one wider layout) to catch layout regressions.
-- Optionally add visual/snapshot checks only if deterministic and low-noise.
+- Mock Council that writes canned response files to the thread dir (simulates stream start/deltas/final, timeout/error, terminable process).
+- `wait_until(predicate, ...)` helper using `pilot.pause()` loops with bounded retries.
+- Direct `await app.poll_updates()` calls in tests after writing files (bypass timer for determinism).
+- Gate all integration tests behind `@pytest.mark.textual_integration` + `--run-textual-integration` flag from the start.
+- **Out of scope:** layout testing at multiple terminal sizes, visual/snapshot testing.
 
-## Execution Plan
+## Test Scenarios
 
-### Phase 1: Harness + Baseline Integration Coverage (can start now)
+### Core (prove the harness)
 
-- Create a dedicated integration module (for example `tests/test_tui_integration.py`) focused on real Textual app driving.
-- Add test helpers/fixtures to:
-  - build a temporary branch/thread with deterministic members/messages
-  - start `ChatApp` under `app.run_test()`
-  - poll the UI safely (small bounded waits instead of fixed sleeps where possible)
-  - inspect mounted widget state by id/class (`MessagePanel`, `WaitingPanel`, `StreamingPanel`, `ErrorPanel`)
-- Implement baseline integration scenarios:
-  - app boot: header content, input focus, history render from thread files
-  - keyboard input: Enter sends, Shift+Enter inserts newline
-  - send lifecycle: king message appears immediately, waiting panels mount for targets
-  - stream lifecycle: waiting -> streaming -> finalized via real poll loop and stream file updates
-  - error lifecycle: error body renders `ErrorPanel` with timeout labeling
-  - external updates: new message files written while app runs appear without restart
-  - layout sanity at two terminal sizes
+1. App boots: header content, input focus, history renders from thread files
+2. Keyboard: Enter sends, Shift+Enter inserts newline
+3. Send lifecycle: king message appears, waiting panels mount for targets
+4. Stream lifecycle: waiting → streaming → finalized via poll + stream file writes
+5. Error lifecycle: error body renders `ErrorPanel` with timeout labeling
+6. External updates: message files written while app runs appear without restart
 
-### Phase 2: Slow-Test Gate + Documentation
+### Behavioral (now that deps are closed)
 
-- Add an explicit marker and CLI gate for the integration suite:
-  - marker name: `textual_integration`
-  - CLI flag: `--run-textual-integration`
-- Wire gate in test config (`conftest.py` / `pytest.ini`) so these tests skip unless explicitly enabled.
-- Document commands for fast vs full runs:
-  - default fast run
-  - full integration run with the new flag
-  - CI guidance for where/when to enable the full suite
+7. Slash commands: `/help`, `/mute`, `/unmute`, unknown command, `/quit`
+8. Escape interrupt: active queries terminate, interrupted state rendered, second Escape forces exit
+9. Auto-turn: one deterministic auto-turn follow-up cycle
 
-### Phase 3: Pending Feature Coverage (after dependencies land)
+### Regression
 
-- Add integration cases for slash commands once `3642` is complete.
-- Add integration cases for escape interrupt behavior once `d869` is complete.
-- If auto-turn behavior from `3b76` lands during this work, extend integration scenarios to cover one deterministic auto-turn cycle.
+10. Fresh thread isolation: `kd chat --new` does not inherit prior session context
+11. Speaker label sanitization: persisted bodies do not contain duplicated prefixes (`codex: codex:`)
 
-## Test Matrix
+## Implementation
 
-- Startup:
-  - existing history is rendered in order
-  - no-history thread starts cleanly
-- Input:
-  - Enter submits
-  - Shift+Enter preserves multiline input
-  - `@member` targeting affects waiting panels / dispatch fanout
-- Streaming:
-  - start event replaces waiting panel
-  - deltas update streaming content
-  - final message removes streaming panel and mounts finalized panel
-  - timeout/error messages produce `ErrorPanel`
-- Runtime updates:
-  - thread files updated externally are reflected while app is open
-- Layout:
-  - base layout remains usable at `80x24`
-  - wider terminal layout keeps header/log/input visible and non-overlapping
+1. Create `tests/test_tui_integration.py` with fixtures:
+   - `tmp_branch_env`: builds temp branch/thread with deterministic members/messages
+   - `mock_council`: patches `Council.create` to return fake members that write canned files
+   - `wait_until(predicate, pilot, *, timeout=2.0, interval=0.05)`: bounded polling helper
 
-## Risks / Decisions
+2. Wire pytest gating in `conftest.py` / `pyproject.toml`:
+   - Marker: `textual_integration`
+   - Flag: `--run-textual-integration`
+   - Default `pytest` skips these; full run is opt-in
 
-- Determinism: avoid brittle timing assertions; prefer bounded retry/pause polling helpers.
-- Plugin choice: avoid adding new pytest plugins unless necessary; use `asyncio.run(...)` wrappers if that keeps the setup simpler.
-- Snapshot testing remains optional; only adopt if output is stable across environments.
+3. Implement scenarios 1-6 first, verify harness is solid, then 7-11.
 
-## Diagnosis Notes (2026-02-16)
+## Done Criteria
 
-Observed in live thread `council-9cb6`:
+- [x] Integration tests exist using `app.run_test()` + `Pilot` covering scenarios 1-11.
+- [x] All tests gated behind `--run-textual-integration` flag.
+- [x] Test suite runs deterministically in ≤30s on local dev machine.
+- [x] Test run instructions documented (fast local vs full integration).
+- [x] Manual smoke-check of `kd chat` after any CLI/output changes.
 
-- `0004-cursor.md` and `0007-cursor.md` contain "Council Advisor" meta-analysis instead of normal in-thread recall.
-- Later turns now ingest those messages via `format_thread_history(...)`, so the meta style is reinforced in subsequent prompts.
-- The same thread also shows agent-label duplication (`codex: codex: ...`) in stored bodies, which further pollutes history context.
+## Worklog
 
-Root-cause hypothesis (code-level):
-
-- `kd chat` currently uses `CouncilMember` query path, which prepends council-advisor framing for every query.
-- `ChatApp.on_mount()` also calls `self.council.load_sessions(...)`, so branch-level resume IDs can leak prior context into new chat threads.
-- With full-history injection enabled, any off-style/meta response becomes durable context and compounds over turns.
-
-Implications for this integration-test ticket:
-
-- Add integration coverage that verifies behavior in a fresh thread with no pre-existing session context.
-- Add a session-isolation regression case: a new `kd chat --new` thread should not inherit unrelated prior-agent context.
-- Add transcript-sanitization assertions so speaker labels are not duplicated in persisted message bodies.
-
-## Acceptance Criteria
-
-- [ ] New Textual integration tests exist using `app.run_test()` + `Pilot`.
-- [ ] Baseline implemented chat flows are covered by integration tests (startup, input, streaming, error, external updates, basic layout).
-- [ ] Integration tests can be explicitly included/excluded via pytest flag/marker gating.
-- [ ] Test run instructions are documented (fast local run vs full integration run).
-- [ ] Slash/interrupt integration coverage is added in this ticket once `3642` / `d869` behavior is available.
-- [ ] `kd chat` behavior is manually smoke-checked after any CLI/output interaction changes.
+- 2026-02-16: Implemented all 11 scenarios (22 tests) in `tests/test_tui_integration.py`:
+  - Pytest gating: `@pytest.mark.textual_integration` marker + `--run-textual-integration` flag in `conftest.py`/`pytest.ini`
+  - Added `pytest-asyncio` dep with `asyncio_mode = auto` in pytest.ini
+  - Harness: `FakeMember` writes canned stream files, `wait_until()` bounded polling helper
+  - Core (1-6): boot/header/focus/history, keyboard, send lifecycle, stream→finalized, error panels, external updates
+  - Behavioral (7-9): slash commands (/help /mute /unmute /quit unknown), escape interrupt (first=terminate, second=exit), auto-turn sequential round-robin
+  - Regression (10-11): session_id cleared after query, no duplicated speaker prefix in persisted bodies
+  - 22 tests pass in ~4s, full suite (882 tests) in ~20s
+  - Without flag: all 22 integration tests skip cleanly
