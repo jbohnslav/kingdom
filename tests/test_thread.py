@@ -12,6 +12,7 @@ from kingdom.thread import (
     ThreadMeta,
     add_message,
     create_thread,
+    format_thread_history,
     get_thread,
     list_messages,
     list_threads,
@@ -288,6 +289,91 @@ class TestEndToEnd:
         threads = list_threads(project, BRANCH)
         assert len(threads) == 1
         assert threads[0].id == "council-caching-debate"
+
+
+class TestFormatThreadHistory:
+    """Tests for format_thread_history()."""
+
+    def test_empty_thread(self, project: Path) -> None:
+        create_thread(project, BRANCH, "empty", ["king", "claude"], "council")
+        tdir = thread_dir(project, BRANCH, "empty")
+
+        result = format_thread_history(tdir, "claude")
+
+        assert result == "---\nYou are claude. Continue the discussion."
+
+    def test_single_message(self, project: Path) -> None:
+        create_thread(project, BRANCH, "single", ["king", "claude"], "council")
+        add_message(project, BRANCH, "single", from_="king", to="all", body="What do you think?")
+        tdir = thread_dir(project, BRANCH, "single")
+
+        result = format_thread_history(tdir, "claude")
+
+        assert "[Previous conversation]" in result
+        assert "king: What do you think?" in result
+        assert "---\nYou are claude. Continue the discussion." in result
+
+    def test_multi_member_conversation(self, project: Path) -> None:
+        create_thread(project, BRANCH, "multi", ["king", "claude", "codex", "cursor"], "council")
+        add_message(project, BRANCH, "multi", from_="king", to="all", body="Should we use Redis?")
+        add_message(project, BRANCH, "multi", from_="claude", to="king", body="Yes, for persistence.")
+        add_message(project, BRANCH, "multi", from_="codex", to="king", body="No, Memcached is simpler.")
+        tdir = thread_dir(project, BRANCH, "multi")
+
+        result = format_thread_history(tdir, "cursor")
+
+        assert "king: Should we use Redis?" in result
+        assert "claude: Yes, for persistence." in result
+        assert "codex: No, Memcached is simpler." in result
+        assert "You are cursor. Continue the discussion." in result
+        # Messages should appear in sequence order
+        king_pos = result.index("king:")
+        claude_pos = result.index("claude:")
+        codex_pos = result.index("codex:")
+        assert king_pos < claude_pos < codex_pos
+
+    def test_directed_messages_included_with_recipient(self, project: Path) -> None:
+        create_thread(project, BRANCH, "directed", ["king", "claude", "codex"], "council")
+        add_message(project, BRANCH, "directed", from_="king", to="all", body="General question")
+        add_message(project, BRANCH, "directed", from_="king", to="claude", body="Claude, elaborate?")
+        add_message(project, BRANCH, "directed", from_="claude", to="king", body="Here's more detail.")
+        tdir = thread_dir(project, BRANCH, "directed")
+
+        # codex should see the directed message too (full visibility)
+        result = format_thread_history(tdir, "codex")
+
+        assert "king: General question" in result
+        assert "king (to claude): Claude, elaborate?" in result
+        assert "claude: Here's more detail." in result
+
+    def test_broadcast_messages_no_recipient_annotation(self, project: Path) -> None:
+        create_thread(project, BRANCH, "broadcast", ["king", "claude"], "council")
+        add_message(project, BRANCH, "broadcast", from_="king", to="all", body="Hello all")
+        tdir = thread_dir(project, BRANCH, "broadcast")
+
+        result = format_thread_history(tdir, "claude")
+
+        # Broadcast messages should NOT have "(to all)" annotation
+        assert "king: Hello all" in result
+        assert "(to all)" not in result
+
+    def test_custom_suffix(self, project: Path) -> None:
+        create_thread(project, BRANCH, "suffix", ["king", "claude"], "council")
+        add_message(project, BRANCH, "suffix", from_="king", to="all", body="Hi")
+        tdir = thread_dir(project, BRANCH, "suffix")
+
+        result = format_thread_history(tdir, "claude", suffix="Respond with a code review.")
+
+        assert result.endswith("---\nRespond with a code review.")
+
+    def test_multiline_body_preserved(self, project: Path) -> None:
+        create_thread(project, BRANCH, "multiline", ["king", "claude"], "council")
+        add_message(project, BRANCH, "multiline", from_="king", to="all", body="Line one\n\nLine two\n\n## Heading")
+        tdir = thread_dir(project, BRANCH, "multiline")
+
+        result = format_thread_history(tdir, "claude")
+
+        assert "Line one\n\nLine two\n\n## Heading" in result
 
 
 class TestThreadResponseStatus:
