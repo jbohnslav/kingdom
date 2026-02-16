@@ -603,7 +603,29 @@ def extract_cursor_stream_thinking(line: str) -> str | None:
     return None
 
 
+def extract_codex_stream_thinking(line: str) -> str | None:
+    """Extract reasoning text from a single Codex NDJSON line.
+
+    Codex emits reasoning chunks via:
+    ``{"type":"item.completed","item":{"type":"reasoning","text":"..."}}``
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "item.completed":
+        item = event.get("item", {})
+        if item.get("type") == "reasoning":
+            text = item.get("text")
+            if isinstance(text, str):
+                return text
+    return None
+
+
 STREAM_THINKING_EXTRACTORS: dict[str, Any] = {
+    "codex": extract_codex_stream_thinking,
     "cursor": extract_cursor_stream_thinking,
 }
 
@@ -612,7 +634,7 @@ def extract_stream_thinking(line: str, backend: str) -> str | None:
     """Extract thinking text from a single NDJSON line for the given backend.
 
     Returns None for non-thinking events, unknown backends, or backends
-    that don't emit thinking tokens (e.g. claude_code, codex).
+    that don't emit thinking tokens (e.g. claude_code).
     """
     extractor = STREAM_THINKING_EXTRACTORS.get(backend)
     if extractor is None:

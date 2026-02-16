@@ -619,6 +619,18 @@ class TestExtractStreamText:
 
 
 class TestExtractStreamThinking:
+    def test_codex_reasoning_item(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "item.completed", "item": {"type": "reasoning", "text": "Thinking..."}})
+        assert extract_stream_thinking(line, "codex") == "Thinking..."
+
+    def test_codex_non_reasoning_item_returns_none(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Hello"}})
+        assert extract_stream_thinking(line, "codex") is None
+
     def test_cursor_thinking_delta(self) -> None:
         from kingdom.agent import extract_stream_thinking
 
