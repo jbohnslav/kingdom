@@ -243,6 +243,174 @@ class TestParseTargets:
         assert targets == ["claude"]  # falls back to all members
 
 
+class TestSlashCommands:
+    """Test slash command handling."""
+
+    def test_mute_excludes_from_broadcast(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd1"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex", "cursor"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        app_instance.muted.add("codex")
+        targets = app_instance.parse_targets("What do you think?")
+        assert "codex" not in targets
+        assert "claude" in targets
+        assert "cursor" in targets
+
+    def test_explicit_mention_overrides_mute(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd2"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        app_instance.muted.add("codex")
+        targets = app_instance.parse_targets("@codex What do you think?")
+        assert targets == ["codex"]
+
+    def test_at_all_excludes_muted(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd3"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        app_instance.muted.add("codex")
+        targets = app_instance.parse_targets("@all What do you think?")
+        assert targets == ["claude"]
+
+    def test_handle_slash_command_mute(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd4"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/mute claude")
+        assert "claude" in app_instance.muted
+
+    def test_handle_slash_command_unmute(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd5"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.muted.add("claude")
+        app_instance.handle_slash_command("/unmute claude")
+        assert "claude" not in app_instance.muted
+
+    def test_handle_slash_command_help(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd6"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/help")
+        app_instance.show_system_message.assert_called_once()
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "/mute" in msg
+        assert "/quit" in msg
+
+    def test_handle_slash_command_quit(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd7"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        exited = []
+        app_instance.exit = lambda: exited.append(True)
+        app_instance.handle_slash_command("/quit")
+        assert exited == [True]
+
+    def test_handle_slash_command_exit(self, project: Path) -> None:
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd8"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        exited = []
+        app_instance.exit = lambda: exited.append(True)
+        app_instance.handle_slash_command("/exit")
+        assert exited == [True]
+
+    def test_unknown_command_shows_error(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd9"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/bogus")
+        app_instance.show_system_message.assert_called_once()
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "Unknown command" in msg
+
+    def test_mute_invalid_member_shows_error(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd10"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/mute nonexistent")
+        assert "nonexistent" not in app_instance.muted
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "Unknown member" in msg
+
+    def test_mute_no_arg_shows_status(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd11"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        # No members muted
+        app_instance.handle_slash_command("/mute")
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "No members muted" in msg
+
+        # One member muted
+        app_instance.muted.add("claude")
+        app_instance.handle_slash_command("/mute")
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "claude" in msg
+
+
 class TestChatAppHistory:
     """Test thread history loading on open."""
 

@@ -98,6 +98,11 @@ class ChatApp(App):
     Screen {
         layout: vertical;
     }
+    .system-message {
+        margin: 0 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -114,6 +119,7 @@ class ChatApp(App):
         self.auto_scroll = True
         self.council: Council | None = None
         self.interrupted = False
+        self.muted: set[str] = set()
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -261,13 +267,19 @@ class ChatApp(App):
         self.send_message()
 
     def send_message(self) -> None:
-        """Send the current input as a king message."""
+        """Send the current input as a king message or handle slash command."""
         input_area = self.query_one("#input-area", TextArea)
         text = input_area.text.strip()
         if not text:
             return
 
         input_area.clear()
+
+        # Handle slash commands
+        if text.startswith("/"):
+            self.handle_slash_command(text)
+            return
+
         self.interrupted = False
 
         # Parse @mentions
@@ -331,19 +343,95 @@ class ChatApp(App):
     def parse_targets(self, text: str) -> list[str]:
         """Parse @mentions from text to determine query targets.
 
+        Muted members are excluded from broadcast but can be explicitly @mentioned.
         Returns list of member names to query.
         """
         mentions = re.findall(r"(?<!\w)@(\w+)", text)
 
         if not mentions:
-            return list(self.member_names)
+            # Broadcast: exclude muted members
+            return [m for m in self.member_names if m not in self.muted]
 
         if "all" in mentions:
-            return list(self.member_names)
+            return [m for m in self.member_names if m not in self.muted]
 
-        # Filter to valid member names
+        # Explicit @mention overrides mute
         valid = [m for m in mentions if m in self.member_names]
-        return valid if valid else list(self.member_names)
+        return valid if valid else [m for m in self.member_names if m not in self.muted]
+
+    # -- Slash commands ---------------------------------------------------
+
+    def handle_slash_command(self, text: str) -> None:
+        """Dispatch slash commands."""
+        parts = text.split(None, 1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd == "/mute":
+            self.cmd_mute(arg)
+        elif cmd == "/unmute":
+            self.cmd_unmute(arg)
+        elif cmd in ("/help", "/h"):
+            self.cmd_help()
+        elif cmd in ("/quit", "/exit"):
+            self.exit()
+        else:
+            self.show_system_message(f"Unknown command: {cmd}. Type /help for available commands.")
+
+    def cmd_mute(self, arg: str) -> None:
+        """Mute a member — exclude from broadcast queries."""
+        if not arg:
+            if self.muted:
+                self.show_system_message(f"Muted: {', '.join(sorted(self.muted))}")
+            else:
+                self.show_system_message("No members muted. Usage: /mute <member>")
+            return
+        name = arg.lower()
+        if name not in self.member_names:
+            self.show_system_message(f"Unknown member: {name}. Members: {', '.join(self.member_names)}")
+            return
+        if name in self.muted:
+            self.show_system_message(f"{name} is already muted.")
+            return
+        self.muted.add(name)
+        self.show_system_message(f"Muted {name} — excluded from broadcast queries.")
+
+    def cmd_unmute(self, arg: str) -> None:
+        """Unmute a member — re-include in broadcast queries."""
+        if not arg:
+            self.show_system_message("Usage: /unmute <member>")
+            return
+        name = arg.lower()
+        if name not in self.muted:
+            self.show_system_message(f"{name} is not muted.")
+            return
+        self.muted.discard(name)
+        self.show_system_message(f"Unmuted {name} — included in broadcast queries.")
+
+    def cmd_help(self) -> None:
+        """Show available commands."""
+        help_text = (
+            "/mute <member>  — exclude member from broadcast queries\n"
+            "/unmute <member> — re-include member in queries\n"
+            "/mute            — show currently muted members\n"
+            "/help            — show this help\n"
+            "/quit or /exit   — quit kd chat\n"
+            "\n"
+            "Esc: interrupt running queries / quit\n"
+            "Enter: send message\n"
+            "Shift+Enter: newline\n"
+            "@member: direct message\n"
+            "@all: explicit broadcast"
+        )
+        self.show_system_message(help_text)
+
+    def show_system_message(self, text: str) -> None:
+        """Show a system message in the message log."""
+        log = self.query_one("#message-log", MessageLog)
+        panel = Static(text, classes="system-message")
+        log.mount(panel)
+        if self.auto_scroll:
+            log.scroll_end(animate=False)
 
     # -- Polling ----------------------------------------------------------
 
