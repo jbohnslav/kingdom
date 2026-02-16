@@ -156,11 +156,12 @@ class TestChatApp:
         assert app_instance.branch == "main"
         assert app_instance.thread_id == "council-abc"
 
-    def test_app_has_auto_scroll(self) -> None:
+    def test_app_no_auto_scroll_attr(self) -> None:
+        """auto_scroll stub removed — anchor() handles scroll follow."""
         from kingdom.tui.app import ChatApp
 
         app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
-        assert app_instance.auto_scroll is True
+        assert not hasattr(app_instance, "auto_scroll")
 
     def test_app_has_poller_none_before_mount(self) -> None:
         from kingdom.tui.app import ChatApp

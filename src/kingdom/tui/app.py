@@ -108,6 +108,7 @@ class ChatApp(App):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         ("escape", "interrupt", "Interrupt/Quit"),
+        ("end", "scroll_bottom", "Jump to bottom"),
     ]
 
     def __init__(self, base: Path, branch: str, thread_id: str, debug_streams: bool = False) -> None:
@@ -118,7 +119,6 @@ class ChatApp(App):
         self.debug_streams = debug_streams
         self.poller: ThreadPoller | None = None
         self.member_names: list[str] = []
-        self.auto_scroll = True
         self.council: Council | None = None
         self.interrupted = False
         self.muted: set[str] = set()
@@ -176,11 +176,33 @@ class ChatApp(App):
         # Load existing messages from thread history
         self.load_history()
 
+        # Enable anchor-to-bottom: auto-scrolls on new content, pauses
+        # when user scrolls up, re-engages when user scrolls back to bottom.
+        log = self.query_one("#message-log", MessageLog)
+        log.anchor()
+
         self.set_interval(0.1, self.poll_updates)
 
         # Focus the input area
         input_area = self.query_one("#input-area", TextArea)
         input_area.focus()
+
+    def action_scroll_bottom(self) -> None:
+        """Jump to bottom and re-engage auto-follow."""
+        log = self.query_one("#message-log", MessageLog)
+        log.scroll_end(animate=False)
+        log.anchor()
+        self.update_status_bar(log)
+
+    def update_status_bar(self, log: MessageLog | None = None) -> None:
+        """Update status bar to show scroll state."""
+        if log is None:
+            log = self.query_one("#message-log", MessageLog)
+        bar = self.query_one(StatusBar)
+        if log._anchor_released:
+            bar.update("Esc: interrupt/quit · Enter: send · End: jump to bottom")
+        else:
+            bar.update("Esc: interrupt/quit · Enter: send · Shift+Enter: newline")
 
     def action_interrupt(self) -> None:
         """Handle Escape: interrupt running queries or quit.
@@ -259,9 +281,6 @@ class ChatApp(App):
         if self.poller and messages:
             self.poller.last_sequence = messages[-1].sequence
 
-        # Scroll to bottom after loading history
-        log.scroll_end(animate=False)
-
     def on_key(self, event) -> None:
         """Handle Enter to send, let Shift+Enter pass through for newline."""
         if event.key == "enter":
@@ -328,9 +347,6 @@ class ChatApp(App):
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
                 self.run_worker(self.run_query(member, stream_path), exclusive=False)
-
-        if self.auto_scroll:
-            log.scroll_end(animate=False)
 
     async def run_query(self, member, stream_path: Path) -> None:
         """Run a member query with full thread context, then persist and clean up."""
@@ -435,8 +451,6 @@ class ChatApp(App):
                 log = self.query_one("#message-log", MessageLog)
                 self.remove_member_panels(log, name)
                 log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
-                if self.auto_scroll:
-                    log.scroll_end(animate=False)
                 stream_path = tdir / f".stream-{name}.jsonl"
                 await self.run_query(member, stream_path)
                 messages_sent += 1
@@ -527,6 +541,7 @@ class ChatApp(App):
             "Esc: interrupt running queries / quit\n"
             "Enter: send message\n"
             "Shift+Enter: newline\n"
+            "End: jump to bottom (re-engage auto-follow)\n"
             "@member: direct message\n"
             "@all: explicit broadcast"
         )
@@ -537,8 +552,6 @@ class ChatApp(App):
         log = self.query_one("#message-log", MessageLog)
         panel = Static(text, classes="system-message")
         log.mount(panel)
-        if self.auto_scroll:
-            log.scroll_end(animate=False)
 
     # -- Polling ----------------------------------------------------------
 
@@ -565,8 +578,8 @@ class ChatApp(App):
             elif isinstance(event, StreamFinished):
                 self.handle_stream_finished(event)
 
-        if self.auto_scroll:
-            log.scroll_end(animate=False)
+        # Update status bar to reflect scroll state
+        self.update_status_bar(log)
 
     def handle_new_message(self, log: MessageLog, event: NewMessage) -> None:
         """Replace waiting/streaming/thinking/interrupted panel in-place with a finalized message."""
