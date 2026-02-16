@@ -5,7 +5,7 @@ deps: []
 links: []
 created: 2026-02-16T18:58:53Z
 type: task
-priority: 2
+priority: 1
 ---
 # kd chat: add copy-to-clipboard action for each council message
 
