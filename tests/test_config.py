@@ -256,6 +256,23 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be non-empty"):
             validate_config({"council": {"preamble": ""}})
 
+    def test_bad_thinking_visibility_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            validate_config({"council": {"thinking_visibility": 123}})
+
+    def test_bad_thinking_visibility_value(self) -> None:
+        with pytest.raises(ValueError, match="must be one of"):
+            validate_config({"council": {"thinking_visibility": "verbose"}})
+
+    def test_thinking_visibility_valid_values(self) -> None:
+        for mode in ("auto", "show", "hide"):
+            cfg = validate_config({"council": {"thinking_visibility": mode}})
+            assert cfg.council.thinking_visibility == mode
+
+    def test_thinking_visibility_default(self) -> None:
+        cfg = validate_config({})
+        assert cfg.council.thinking_visibility == "auto"
+
     def test_peasant_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
             validate_config({"peasant": {"timeout": -1}})

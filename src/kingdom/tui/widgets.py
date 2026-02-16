@@ -4,9 +4,12 @@ MessagePanel — finalized message (king or member), rendered as Markdown.
 StreamingPanel — in-progress response, updates as tokens arrive.
 WaitingPanel — placeholder before streaming starts.
 ErrorPanel — error or timeout display.
+ThinkingPanel — collapsible thinking/reasoning tokens.
 """
 
 from __future__ import annotations
+
+import time
 
 from textual.widgets import Static
 
@@ -147,3 +150,73 @@ class ErrorPanel(Static):
         self.border_title = f"{self.sender} — {label}"
         self.styles.border = ("round", "red")
         self.update(self.error)
+
+
+class ThinkingPanel(Static):
+    """Collapsible panel for thinking/reasoning tokens.
+
+    Starts expanded while thinking streams in.  Auto-collapses on first answer
+    token into a one-line summary.  Click or Enter toggles expanded/collapsed.
+    Once the user manually toggles, auto-collapse is disabled (user_pinned).
+    """
+
+    DEFAULT_CSS = """
+    ThinkingPanel {
+        margin: 0 1;
+        padding: 0 1;
+        border: dashed $secondary;
+        color: $text-muted;
+    }
+    ThinkingPanel.collapsed {
+        height: 1;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self, sender: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.sender = sender
+        self.thinking_text = ""
+        self.expanded = True
+        self.user_pinned = False
+        self.start_time = time.monotonic()
+
+    def on_mount(self) -> None:
+        color = color_for_member(self.sender)
+        self.styles.border = ("dashed", color)
+        self.update_display()
+
+    def on_click(self) -> None:
+        """Toggle expanded/collapsed on click."""
+        self.user_pinned = True
+        self.expanded = not self.expanded
+        if self.expanded:
+            self.remove_class("collapsed")
+        else:
+            self.add_class("collapsed")
+        self.update_display()
+
+    def update_thinking(self, text: str) -> None:
+        """Update with new accumulated thinking text."""
+        self.thinking_text = text
+        if self.expanded:
+            self.update_display()
+
+    def collapse(self) -> None:
+        """Auto-collapse (called when answer tokens start arriving)."""
+        if self.user_pinned:
+            return
+        self.expanded = False
+        self.add_class("collapsed")
+        self.update_display()
+
+    def update_display(self) -> None:
+        """Refresh the rendered content based on expanded/collapsed state."""
+        n = len(self.thinking_text)
+        elapsed = time.monotonic() - self.start_time
+        if self.expanded:
+            self.border_title = f"{self.sender} thinking · {n:,} chars · {elapsed:.1f}s"
+            self.update(self.thinking_text + "\u258d")  # ▍ cursor
+        else:
+            self.border_title = f"\u25b6 {self.sender} thinking · {n:,} chars · {elapsed:.1f}s"
+            self.update("")

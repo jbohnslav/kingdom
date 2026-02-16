@@ -27,8 +27,8 @@ from kingdom.thread import (
     thread_dir,
 )
 
-from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThreadPoller
-from .widgets import ErrorPanel, MessagePanel, StreamingPanel, WaitingPanel
+from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller
+from .widgets import ErrorPanel, MessagePanel, StreamingPanel, ThinkingPanel, WaitingPanel
 
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
@@ -123,6 +123,7 @@ class ChatApp(App):
         self.interrupted = False
         self.muted: set[str] = set()
         self.generation: int = 0
+        self.thinking_visibility: str = "auto"
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -145,8 +146,9 @@ class ChatApp(App):
         """Initialize poller, council, and start polling."""
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
-        # Resolve member backends for stream text extraction
+        # Load config for backends and thinking visibility
         cfg = load_config(self.base)
+        self.thinking_visibility = cfg.council.thinking_visibility
         agent_configs = resolve_all_agents(cfg.agents)
         member_backends = {}
         for name in self.member_names:
@@ -205,7 +207,7 @@ class ChatApp(App):
         # Replace waiting/streaming panels with interrupted indicators immediately
         log = self.query_one("#message-log", MessageLog)
         for member in active:
-            for prefix in ("wait", "stream"):
+            for prefix in ("wait", "stream", "thinking"):
                 panel_id = f"{prefix}-{member.name}"
                 try:
                     panel = log.query_one(f"#{panel_id}")
@@ -435,8 +437,8 @@ class ChatApp(App):
                 messages_sent += 1
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
-        """Remove any existing wait/stream/interrupted panels for a member."""
-        for prefix in ("wait", "stream", "interrupted"):
+        """Remove any existing wait/stream/thinking/interrupted panels for a member."""
+        for prefix in ("wait", "stream", "thinking", "interrupted"):
             for panel in list(log.query(f"#{prefix}-{name}")):
                 panel.remove()
 
@@ -551,8 +553,10 @@ class ChatApp(App):
                 self.handle_new_message(log, event)
             elif isinstance(event, StreamStarted):
                 self.handle_stream_started(log, event)
+            elif isinstance(event, ThinkingDelta):
+                self.handle_thinking_delta(log, event)
             elif isinstance(event, StreamDelta):
-                self.handle_stream_delta(event)
+                self.handle_stream_delta(log, event)
             elif isinstance(event, StreamFinished):
                 self.handle_stream_finished(event)
 
@@ -560,13 +564,15 @@ class ChatApp(App):
             log.scroll_end(animate=False)
 
     def handle_new_message(self, log: MessageLog, event: NewMessage) -> None:
-        """Replace waiting/streaming/interrupted panel in-place with a finalized message."""
+        """Replace waiting/streaming/thinking/interrupted panel in-place with a finalized message."""
         waiting_id = f"wait-{event.sender}"
         streaming_id = f"stream-{event.sender}"
+        thinking_id = f"thinking-{event.sender}"
         interrupted_id = f"interrupted-{event.sender}"
         existing = (
             list(log.query(f"#{waiting_id}"))
             + list(log.query(f"#{streaming_id}"))
+            + list(log.query(f"#{thinking_id}"))
             + list(log.query(f"#{interrupted_id}"))
         )
 
@@ -608,8 +614,38 @@ class ChatApp(App):
         else:
             log.mount(panel)
 
-    def handle_stream_delta(self, event: StreamDelta) -> None:
-        """Update the streaming panel with new text."""
+    def handle_thinking_delta(self, log: MessageLog, event: ThinkingDelta) -> None:
+        """Show or update a ThinkingPanel for this member."""
+        if self.thinking_visibility == "hide":
+            return
+
+        panel_id = f"thinking-{event.member}"
+        try:
+            panel = self.query_one(f"#{panel_id}", ThinkingPanel)
+            panel.update_thinking(event.full_text)
+        except Exception:
+            # First thinking event — mount a ThinkingPanel before the streaming panel
+            panel = ThinkingPanel(sender=event.member, id=panel_id)
+            stream_id = f"stream-{event.member}"
+            wait_id = f"wait-{event.member}"
+            anchor = list(log.query(f"#{stream_id}")) + list(log.query(f"#{wait_id}"))
+            if anchor:
+                log.mount(panel, before=anchor[0])
+            else:
+                log.mount(panel)
+            panel.update_thinking(event.full_text)
+
+    def handle_stream_delta(self, log: MessageLog, event: StreamDelta) -> None:
+        """Update the streaming panel with new text. Auto-collapse thinking."""
+        # Auto-collapse thinking panel on first answer token
+        if self.thinking_visibility == "auto":
+            thinking_id = f"thinking-{event.member}"
+            try:
+                thinking_panel = self.query_one(f"#{thinking_id}", ThinkingPanel)
+                thinking_panel.collapse()
+            except Exception:
+                pass
+
         panel_id = f"stream-{event.member}"
         try:
             panel = self.query_one(f"#{panel_id}", StreamingPanel)

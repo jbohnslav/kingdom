@@ -6,6 +6,7 @@ from kingdom.tui.widgets import (
     ErrorPanel,
     MessagePanel,
     StreamingPanel,
+    ThinkingPanel,
     WaitingPanel,
     color_for_member,
 )
@@ -82,3 +83,44 @@ class TestErrorPanel:
     def test_default_not_timed_out(self) -> None:
         panel = ErrorPanel(sender="cursor", error="Some error")
         assert panel.timed_out is False
+
+
+class TestThinkingPanel:
+    def test_initial_state(self) -> None:
+        panel = ThinkingPanel(sender="cursor")
+        assert panel.sender == "cursor"
+        assert panel.thinking_text == ""
+        assert panel.expanded is True
+        assert panel.user_pinned is False
+
+    def test_update_thinking(self) -> None:
+        panel = ThinkingPanel(sender="cursor")
+        panel.update_thinking("Step 1")
+        assert panel.thinking_text == "Step 1"
+
+    def test_collapse(self) -> None:
+        panel = ThinkingPanel(sender="cursor")
+        panel.update_thinking("Reasoning...")
+        panel.collapse()
+        assert panel.expanded is False
+
+    def test_collapse_respects_user_pinned(self) -> None:
+        panel = ThinkingPanel(sender="cursor")
+        panel.user_pinned = True
+        panel.expanded = True
+        panel.collapse()
+        # Should NOT collapse because user pinned it open
+        assert panel.expanded is True
+
+    def test_on_click_toggles_and_pins(self) -> None:
+        panel = ThinkingPanel(sender="cursor")
+        assert panel.expanded is True
+        assert panel.user_pinned is False
+
+        panel.on_click()
+        assert panel.expanded is False
+        assert panel.user_pinned is True
+
+        panel.on_click()
+        assert panel.expanded is True
+        assert panel.user_pinned is True

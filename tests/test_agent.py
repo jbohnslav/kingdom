@@ -1,5 +1,7 @@
 """Tests for agent configuration and command building."""
 
+import json
+
 import pytest
 
 from kingdom.agent import (
@@ -614,3 +616,39 @@ class TestExtractStreamText:
 
     def test_invalid_json(self) -> None:
         assert extract_stream_text("not json", "claude_code") is None
+
+
+class TestExtractStreamThinking:
+    def test_cursor_thinking_delta(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "thinking", "subtype": "delta", "text": "Reasoning..."})
+        assert extract_stream_thinking(line, "cursor") == "Reasoning..."
+
+    def test_cursor_thinking_completed_returns_none(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "thinking", "subtype": "completed"})
+        assert extract_stream_thinking(line, "cursor") is None
+
+    def test_cursor_non_thinking_event(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "assistant", "text": "Hello"})
+        assert extract_stream_thinking(line, "cursor") is None
+
+    def test_claude_no_thinking_extractor(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "thinking", "subtype": "delta", "text": "x"})
+        assert extract_stream_thinking(line, "claude_code") is None
+
+    def test_unknown_backend(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        assert extract_stream_thinking('{"type":"thinking"}', "unknown") is None
+
+    def test_invalid_json(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        assert extract_stream_thinking("not json", "cursor") is None

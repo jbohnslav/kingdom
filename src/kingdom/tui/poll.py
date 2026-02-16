@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kingdom.agent import extract_stream_text
+from kingdom.agent import extract_stream_text, extract_stream_thinking
 
 # ---------------------------------------------------------------------------
 # Poll events
@@ -41,13 +41,21 @@ class StreamDelta:
 
 
 @dataclass
+class ThinkingDelta:
+    """New thinking/reasoning text extracted from a member's stream file."""
+
+    member: str
+    full_text: str  # accumulated thinking text so far
+
+
+@dataclass
 class StreamFinished:
     """A stream finished (finalized message exists for this member)."""
 
     member: str
 
 
-PollEvent = NewMessage | StreamStarted | StreamDelta | StreamFinished
+PollEvent = NewMessage | StreamStarted | StreamDelta | ThinkingDelta | StreamFinished
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +81,7 @@ class ThreadPoller:
     last_sequence: int = 0
     stream_offsets: dict[str, int] = field(default_factory=dict)
     stream_texts: dict[str, str] = field(default_factory=dict)
+    thinking_texts: dict[str, str] = field(default_factory=dict)
     active_streams: set[str] = field(default_factory=set)
 
     def poll(self) -> list[PollEvent]:
@@ -112,6 +121,7 @@ class ThreadPoller:
                 self.active_streams.discard(sender)
                 self.stream_offsets.pop(sender, None)
                 self.stream_texts.pop(sender, None)
+                self.thinking_texts.pop(sender, None)
 
         return events
 
@@ -134,6 +144,7 @@ class ThreadPoller:
             if file_size < current_offset:
                 current_offset = 0
                 self.stream_texts[member] = ""
+                self.thinking_texts[member] = ""
 
             # New stream file
             if member not in self.active_streams:
@@ -142,15 +153,16 @@ class ThreadPoller:
 
             # Read new bytes
             if file_size > current_offset:
-                new_text = tail_stream_file(
-                    path,
-                    current_offset,
-                    self.member_backends.get(member, "claude_code"),
-                )
+                backend = self.member_backends.get(member, "claude_code")
+                new_text, new_thinking = tail_stream_file(path, current_offset, backend)
                 if new_text:
                     accumulated = self.stream_texts.get(member, "") + new_text
                     self.stream_texts[member] = accumulated
                     events.append(StreamDelta(member=member, full_text=accumulated))
+                if new_thinking:
+                    accumulated_thinking = self.thinking_texts.get(member, "") + new_thinking
+                    self.thinking_texts[member] = accumulated_thinking
+                    events.append(ThinkingDelta(member=member, full_text=accumulated_thinking))
 
                 self.stream_offsets[member] = file_size
 
@@ -173,19 +185,23 @@ def read_message_body(path: Path) -> str:
     return text.strip()
 
 
-def tail_stream_file(path: Path, offset: int, backend: str) -> str:
-    """Read new bytes from a stream file and extract text deltas."""
+def tail_stream_file(path: Path, offset: int, backend: str) -> tuple[str, str]:
+    """Read new bytes from a stream file and extract text and thinking deltas.
+
+    Returns a (text, thinking) tuple of extracted content.
+    """
     try:
         with path.open("r", encoding="utf-8") as f:
             f.seek(offset)
             new_data = f.read()
     except (FileNotFoundError, OSError):
-        return ""
+        return "", ""
 
     if not new_data:
-        return ""
+        return "", ""
 
     text_parts: list[str] = []
+    thinking_parts: list[str] = []
     for line in new_data.splitlines():
         line = line.strip()
         if not line:
@@ -193,5 +209,8 @@ def tail_stream_file(path: Path, offset: int, backend: str) -> str:
         extracted = extract_stream_text(line, backend)
         if extracted:
             text_parts.append(extracted)
+        thinking = extract_stream_thinking(line, backend)
+        if thinking:
+            thinking_parts.append(thinking)
 
-    return "".join(text_parts)
+    return "".join(text_parts), "".join(thinking_parts)

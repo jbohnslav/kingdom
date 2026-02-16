@@ -577,3 +577,44 @@ def extract_stream_text(line: str, backend: str) -> str | None:
     if extractor is None:
         return None
     return extractor(line)
+
+
+# ---------------------------------------------------------------------------
+# Stream thinking extractors — extract thinking/reasoning tokens from NDJSON
+# ---------------------------------------------------------------------------
+
+
+def extract_cursor_stream_thinking(line: str) -> str | None:
+    """Extract thinking text from a Cursor stream-json NDJSON line.
+
+    Cursor emits ``{"type": "thinking", "subtype": "delta", "text": "..."}``
+    for reasoning tokens.  Returns None for non-thinking events.
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "thinking" and event.get("subtype") == "delta":
+        text = event.get("text")
+        if isinstance(text, str):
+            return text
+    return None
+
+
+STREAM_THINKING_EXTRACTORS: dict[str, Any] = {
+    "cursor": extract_cursor_stream_thinking,
+}
+
+
+def extract_stream_thinking(line: str, backend: str) -> str | None:
+    """Extract thinking text from a single NDJSON line for the given backend.
+
+    Returns None for non-thinking events, unknown backends, or backends
+    that don't emit thinking tokens (e.g. claude_code, codex).
+    """
+    extractor = STREAM_THINKING_EXTRACTORS.get(backend)
+    if extractor is None:
+        return None
+    return extractor(line)

@@ -12,6 +12,7 @@ from kingdom.tui.poll import (
     StreamDelta,
     StreamFinished,
     StreamStarted,
+    ThinkingDelta,
     ThreadPoller,
     read_message_body,
     tail_stream_file,
@@ -62,6 +63,11 @@ def cursor_assistant_event(text: str) -> str:
     )
 
 
+def cursor_thinking_event(text: str) -> str:
+    """Build a Cursor thinking delta event."""
+    return json.dumps({"type": "thinking", "subtype": "delta", "text": text})
+
+
 @pytest.fixture()
 def tdir(tmp_path: Path) -> Path:
     """Create a thread directory."""
@@ -86,32 +92,37 @@ class TestReadMessageBody:
 class TestTailStreamFile:
     def test_reads_new_bytes(self, tdir: Path) -> None:
         path = write_stream_line(tdir, "claude", claude_stream_event("Hello"))
-        text = tail_stream_file(path, 0, "claude_code")
+        text, thinking = tail_stream_file(path, 0, "claude_code")
         assert text == "Hello"
+        assert thinking == ""
 
     def test_reads_from_offset(self, tdir: Path) -> None:
         path = write_stream_line(tdir, "claude", claude_stream_event("Hello"))
         first_size = path.stat().st_size
         write_stream_line(tdir, "claude", claude_stream_event(" world"))
-        text = tail_stream_file(path, first_size, "claude_code")
+        text, thinking = tail_stream_file(path, first_size, "claude_code")
         assert text == " world"
+        assert thinking == ""
 
     def test_returns_empty_for_no_data(self, tdir: Path) -> None:
         path = tdir / ".stream-claude.jsonl"
         path.write_text("", encoding="utf-8")
-        text = tail_stream_file(path, 0, "claude_code")
+        text, thinking = tail_stream_file(path, 0, "claude_code")
         assert text == ""
+        assert thinking == ""
 
     def test_returns_empty_for_missing_file(self, tdir: Path) -> None:
         path = tdir / ".stream-missing.jsonl"
-        text = tail_stream_file(path, 0, "claude_code")
+        text, thinking = tail_stream_file(path, 0, "claude_code")
         assert text == ""
+        assert thinking == ""
 
     def test_skips_non_text_events(self, tdir: Path) -> None:
         path = tdir / ".stream-claude.jsonl"
         path.write_text('{"type": "message_start"}\n', encoding="utf-8")
-        text = tail_stream_file(path, 0, "claude_code")
+        text, thinking = tail_stream_file(path, 0, "claude_code")
         assert text == ""
+        assert thinking == ""
 
 
 class TestThreadPollerMessages:
@@ -326,3 +337,85 @@ class TestThreadPollerExternalStreams:
         started = [e for e in events if isinstance(e, StreamStarted)]
         assert len(started) == 1
         assert started[0].member == "codex"
+
+
+class TestTailStreamFileThinking:
+    def test_extracts_cursor_thinking(self, tdir: Path) -> None:
+        path = write_stream_line(tdir, "cursor", cursor_thinking_event("Reasoning..."))
+        text, thinking = tail_stream_file(path, 0, "cursor")
+        assert text == ""
+        assert thinking == "Reasoning..."
+
+    def test_extracts_both_thinking_and_text(self, tdir: Path) -> None:
+        """When thinking and text events are in same chunk, both are extracted."""
+        path = write_stream_line(tdir, "cursor", cursor_thinking_event("Think first"))
+        write_stream_line(tdir, "cursor", cursor_assistant_event("Then answer"))
+        text, thinking = tail_stream_file(path, 0, "cursor")
+        assert thinking == "Think first"
+        assert text == "Then answer"
+
+    def test_no_thinking_for_claude(self, tdir: Path) -> None:
+        path = write_stream_line(tdir, "claude", claude_stream_event("Hello"))
+        text, thinking = tail_stream_file(path, 0, "claude_code")
+        assert text == "Hello"
+        assert thinking == ""
+
+
+class TestThreadPollerThinking:
+    def test_emits_thinking_delta(self, tdir: Path) -> None:
+        write_stream_line(tdir, "cursor", cursor_thinking_event("Step 1"))
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
+        events = poller.poll()
+
+        thinking = [e for e in events if isinstance(e, ThinkingDelta)]
+        assert len(thinking) == 1
+        assert thinking[0].member == "cursor"
+        assert thinking[0].full_text == "Step 1"
+
+    def test_accumulates_thinking_across_polls(self, tdir: Path) -> None:
+        write_stream_line(tdir, "cursor", cursor_thinking_event("Step 1\n"))
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
+        poller.poll()
+
+        write_stream_line(tdir, "cursor", cursor_thinking_event("Step 2\n"))
+        events = poller.poll()
+
+        thinking = [e for e in events if isinstance(e, ThinkingDelta)]
+        assert len(thinking) == 1
+        assert thinking[0].full_text == "Step 1\nStep 2\n"
+
+    def test_thinking_cleared_on_finalization(self, tdir: Path) -> None:
+        write_stream_line(tdir, "cursor", cursor_thinking_event("Thinking..."))
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
+        poller.poll()
+        assert "cursor" in poller.thinking_texts
+
+        # Finalize
+        stream_path = tdir / ".stream-cursor.jsonl"
+        stream_path.unlink()
+        write_message(tdir, 1, "cursor", "Final answer")
+        poller.poll()
+        assert "cursor" not in poller.thinking_texts
+
+    def test_thinking_cleared_on_retry(self, tdir: Path) -> None:
+        write_stream_line(tdir, "cursor", cursor_thinking_event("First attempt"))
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
+        poller.poll()
+
+        # Simulate retry: truncate stream file
+        stream_path = tdir / ".stream-cursor.jsonl"
+        stream_path.write_text(cursor_thinking_event("Retry") + "\n", encoding="utf-8")
+        events = poller.poll()
+
+        thinking = [e for e in events if isinstance(e, ThinkingDelta)]
+        assert len(thinking) == 1
+        assert thinking[0].full_text == "Retry"
+
+    def test_no_thinking_delta_for_claude(self, tdir: Path) -> None:
+        """Claude doesn't emit thinking events, so no ThinkingDelta should appear."""
+        write_stream_line(tdir, "claude", claude_stream_event("Hello"))
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"claude": "claude_code"})
+        events = poller.poll()
+
+        thinking = [e for e in events if isinstance(e, ThinkingDelta)]
+        assert len(thinking) == 0
