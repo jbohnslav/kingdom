@@ -934,10 +934,10 @@ class TestRunQuery:
         from kingdom.tui.app import ChatApp
 
         tid = "council-rq5"
-        create_thread(project, BRANCH, tid, ["king", "claude", "cursor"], "council")
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
 
         add_message(project, BRANCH, tid, from_="king", to="all", body="What changed?")
-        add_message(project, BRANCH, tid, from_="cursor", to="king", body="I updated the parser.")
+        add_message(project, BRANCH, tid, from_="codex", to="king", body="I updated the parser.")
 
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         list(app_instance.compose())
@@ -958,7 +958,7 @@ class TestRunQuery:
         prompt = captured_prompt["value"]
         assert "[Previous conversation]" in prompt
         assert "king: What changed?" in prompt
-        assert "cursor: I updated the parser." in prompt
+        assert "codex: I updated the parser." in prompt
         assert prompt.rstrip().endswith("You are claude. Continue the discussion.")
 
 
@@ -1385,18 +1385,18 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at5"
-        # Budget=4, 3 members, codex muted → active=[claude, cursor]
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex", "cursor"], auto_messages=4)
+        # Budget=4, 3 members, codex muted → active=[claude, extra]
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex", "extra"], auto_messages=4)
         app_instance.muted.add("codex")
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex", "cursor"], 1, tdir, is_first_exchange=False))
+        asyncio.run(app_instance.run_chat_round(["claude", "codex", "extra"], 1, tdir, is_first_exchange=False))
 
-        # Sequential budget=4, active=[claude, cursor] → claude, cursor, claude, cursor
+        # Sequential budget=4, active=[claude, extra] → claude, extra, claude, extra
         assert members[0].call_count == 2  # claude
         assert members[1].call_count == 0  # codex: muted, never queried
-        assert members[2].call_count == 2  # cursor
+        assert members[2].call_count == 2  # extra
 
     def test_directed_message_skips_auto_turns(self, project: Path) -> None:
         """@member directed messages should not trigger auto-turns."""

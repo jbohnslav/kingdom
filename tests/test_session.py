@@ -204,12 +204,12 @@ class TestListActiveAgents:
     def test_returns_non_idle_agents(self, project: Path) -> None:
         set_agent_state(project, BRANCH, "claude", AgentState(name="claude", status="working"))
         set_agent_state(project, BRANCH, "codex", AgentState(name="codex", status="idle"))
-        set_agent_state(project, BRANCH, "cursor", AgentState(name="cursor", status="blocked"))
+        set_agent_state(project, BRANCH, "extra", AgentState(name="extra", status="blocked"))
 
         active = list_active_agents(project, BRANCH)
         names = [a.name for a in active]
         assert "claude" in names
-        assert "cursor" in names
+        assert "extra" in names
         assert "codex" not in names
 
     def test_includes_done_and_failed(self, project: Path) -> None:

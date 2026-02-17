@@ -240,7 +240,7 @@ class TestEndToEnd:
             project,
             BRANCH,
             "council-caching-debate",
-            members=["king", "claude", "codex", "cursor"],
+            members=["king", "claude", "codex"],
             pattern="council",
         )
         assert meta.pattern == "council"
@@ -261,14 +261,6 @@ class TestEndToEnd:
         add_message(
             project, BRANCH, "council-caching-debate", from_="codex", to="king", body="Memcached for simplicity."
         )
-        add_message(
-            project,
-            BRANCH,
-            "council-caching-debate",
-            from_="cursor",
-            to="king",
-            body="Redis, it supports more data types.",
-        )
 
         # King follows up with one member
         add_message(
@@ -280,10 +272,10 @@ class TestEndToEnd:
 
         # Verify full history
         msgs = list_messages(project, BRANCH, "council-caching-debate")
-        assert len(msgs) == 6
-        assert [m.sequence for m in msgs] == [1, 2, 3, 4, 5, 6]
+        assert len(msgs) == 5
+        assert [m.sequence for m in msgs] == [1, 2, 3, 4, 5]
         assert msgs[0].from_ == "king"
-        assert msgs[4].to == "codex"
+        assert msgs[3].to == "codex"
 
         # Verify thread appears in listing
         threads = list_threads(project, BRANCH)
@@ -314,18 +306,18 @@ class TestFormatThreadHistory:
         assert "---\nYou are claude. Continue the discussion." in result
 
     def test_multi_member_conversation(self, project: Path) -> None:
-        create_thread(project, BRANCH, "multi", ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, "multi", ["king", "claude", "codex"], "council")
         add_message(project, BRANCH, "multi", from_="king", to="all", body="Should we use Redis?")
         add_message(project, BRANCH, "multi", from_="claude", to="king", body="Yes, for persistence.")
         add_message(project, BRANCH, "multi", from_="codex", to="king", body="No, Memcached is simpler.")
         tdir = thread_dir(project, BRANCH, "multi")
 
-        result = format_thread_history(tdir, "cursor")
+        result = format_thread_history(tdir, "codex")
 
         assert "king: Should we use Redis?" in result
         assert "claude: Yes, for persistence." in result
         assert "codex: No, Memcached is simpler." in result
-        assert "You are cursor. Continue the discussion." in result
+        assert "You are codex. Continue the discussion." in result
         # Messages should appear in sequence order
         king_pos = result.index("king:")
         claude_pos = result.index("claude:")
