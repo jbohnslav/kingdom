@@ -686,7 +686,7 @@ class TestPhase1SmokeTest:
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         widgets = list(app_instance.compose())
 
-        assert len(widgets) == 4
+        assert len(widgets) == 5  # header, message log, status bar, command hints, input area
         assert app_instance.member_names == ["claude", "codex", "cursor"]
 
     def test_parse_targets_with_all_variants(self, project: Path) -> None:
@@ -1177,7 +1177,7 @@ class TestChatAppLayout:
         # Compose triggers member loading
         widgets = list(app_instance.compose())
         assert app_instance.member_names == ["claude", "codex"]
-        assert len(widgets) == 4  # header, message log, status bar, input area
+        assert len(widgets) == 5  # header, message log, status bar, command hints, input area
 
     def test_header_shows_thread_info(self, project: Path) -> None:
         from textual.widgets import Static
