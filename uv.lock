@@ -90,11 +90,10 @@ wheels = [
 ]
 
 [[package]]
-name = "kingdom"
-version = "0.1.0"
+name = "kingdom-cli"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
-    { name = "pytest-asyncio" },
     { name = "rich" },
     { name = "typer" },
 ]
@@ -106,12 +105,12 @@ chat = [
 dev = [
     { name = "pre-commit" },
     { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "rich", specifier = ">=14.3.1" },
     { name = "typer", specifier = ">=0.21.1" },
 ]
@@ -121,6 +120,7 @@ chat = [{ name = "textual", specifier = ">=7.5.0" }]
 dev = [
     { name = "pre-commit", specifier = ">=4.0.0" },
     { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "ruff", specifier = ">=0.8.6" },
 ]
 
