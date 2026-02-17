@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 
+from rich.markdown import Markdown as RichMarkdown
 from textual.widgets import Static
 
 # Fixed colors for known council members.
@@ -71,7 +72,7 @@ class MessagePanel(Static):
             color = color_for_member(self.sender)
             self.styles.border = ("round", color)
             self.border_title = self.sender
-        self.update(self.compose_text())
+        self.update(RichMarkdown(self.compose_text()))
 
 
 class StreamingPanel(Static):
@@ -149,7 +150,7 @@ class ErrorPanel(Static):
         label = "timed out" if self.timed_out else "errored"
         self.border_title = f"{self.sender} — {label}"
         self.styles.border = ("round", "red")
-        self.update(self.error)
+        self.update(RichMarkdown(self.error))
 
 
 class ThinkingPanel(Static):

@@ -194,6 +194,33 @@ class TestAppBoot:
                 assert panels[1].sender == "claude"
                 assert panels[2].sender == "codex"
 
+    async def test_markdown_is_rendered(self, project, thread_id, fake_council) -> None:
+        """Message bodies with markdown should render formatted, not show raw syntax."""
+        from io import StringIO
+
+        from rich.console import Console
+        from rich.markdown import Markdown as RichMarkdown
+
+        add_message(project, BRANCH, thread_id, from_="claude", to="king", body="This is **bold** and `code`")
+
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)):
+                log = app.query_one("#message-log", MessageLog)
+                panels = log.query(MessagePanel)
+                assert len(panels) == 1
+
+                # The widget's internal content should be a Rich Markdown renderable
+                internal = panels[0]._Static__content
+                assert isinstance(internal, RichMarkdown), f"Expected RichMarkdown, got {type(internal)}"
+
+                # Verify the rendered plain text has no raw delimiters
+                buf = StringIO()
+                Console(file=buf, width=120, no_color=True).print(internal)
+                rendered = buf.getvalue()
+                assert "**" not in rendered, f"Raw markdown ** found in rendered text: {rendered!r}"
+                assert "bold" in rendered
+
     async def test_no_history_starts_clean(self, project, thread_id, fake_council) -> None:
         app = make_app(project, thread_id)
         with patch.object(Council, "create", return_value=fake_council):
