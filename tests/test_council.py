@@ -200,6 +200,36 @@ class TestCouncilMemberQuery:
         proc.kill.assert_called_once()
         assert stream_path.read_text() == partial_output
 
+    def test_query_timeout_parses_codex_jsonl(self, tmp_path: Path) -> None:
+        """Codex timeout should parse JSONL and extract agent_message text, not dump raw JSON."""
+        member = make_member("codex")
+        codex_jsonl = (
+            '{"type":"thread.started","thread_id":"abc-123"}\n'
+            '{"type":"turn.started"}\n'
+            '{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Planning"}}\n'
+            '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"I launched the peasant."}}\n'
+            '{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"sleep 60","aggregated_output":"","exit_code":0,"status":"completed"}}\n'
+            '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Still waiting on the peasant."}}\n'
+        )
+
+        proc = MagicMock()
+        proc.stdout = io.StringIO(codex_jsonl)
+        proc.stderr = io.StringIO("")
+        proc.returncode = -9
+        proc.poll.return_value = None
+        proc.kill.return_value = None
+        proc.wait.return_value = -9
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            response = member.query("test prompt", timeout=0, max_retries=0)
+
+        assert response.error is not None
+        assert "Timeout" in response.error
+        # Should contain parsed agent messages, not raw JSON
+        assert "I launched the peasant." in response.text
+        assert "Still waiting on the peasant." in response.text
+        assert '{"type":' not in response.text
+
     def test_query_handles_command_not_found(self) -> None:
         """Query should handle missing CLI gracefully."""
         member = make_member("claude")
