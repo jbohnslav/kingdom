@@ -14,7 +14,7 @@ from kingdom import cli
 from kingdom.session import AgentState, get_agent_state, set_agent_state
 from kingdom.state import backlog_root, ensure_branch_layout, logs_root, set_current_run
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
-from kingdom.ticket import Ticket, find_ticket, write_ticket
+from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
 runner = CliRunner()
 
@@ -168,6 +168,41 @@ class TestPeasantStart:
 
             assert result.exit_code == 1
             assert "not found" in result.output
+
+    def test_start_blocks_on_in_review_ticket(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = base / ".kd" / "branches" / "feature-peasant-test" / "tickets"
+            tickets_dir.mkdir(parents=True, exist_ok=True)
+            ticket = Ticket(
+                id="kin-rev1",
+                status="in_review",
+                title="Review ticket",
+                body="Under review",
+                created=datetime.now(UTC),
+            )
+            path = tickets_dir / "kin-rev1.md"
+            write_ticket(ticket, path)
+
+            result = runner.invoke(cli.app, ["peasant", "start", "kin-rev1"])
+
+            assert result.exit_code == 1
+            assert "in_review" in result.output
+
+    def test_start_transitions_open_to_in_progress(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base)  # creates with status="open"
+
+            with patch("kingdom.cli.launch_work_background", return_value=12345):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            # Verify the ticket was transitioned to in_progress
+            ticket = read_ticket(ticket_path)
+            assert ticket.status == "in_progress"
 
 
 class TestPeasantStatus:

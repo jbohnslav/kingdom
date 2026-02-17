@@ -31,13 +31,15 @@ from pathlib import Path
 
 from kingdom.parsing import parse_frontmatter, serialize_yaml_value
 
+STATUSES = {"open", "in_progress", "in_review", "closed"}
+
 
 @dataclass
 class Ticket:
     """A ticket with YAML frontmatter metadata and markdown body."""
 
     id: str
-    status: str  # open, in_progress, closed
+    status: str  # open, in_progress, in_review, closed
     deps: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
     created: datetime = field(default_factory=lambda: datetime.now(UTC))

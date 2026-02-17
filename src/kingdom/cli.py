@@ -52,6 +52,7 @@ from kingdom.state import (
     write_json,
 )
 from kingdom.ticket import (
+    STATUSES,
     AmbiguousTicketMatch,
     Ticket,
     find_newly_unblocked,
@@ -1740,6 +1741,16 @@ def peasant_start(
     ctx = resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
 
+    # Block starting work on tickets that are in_review or closed
+    if ticket.status in ("in_review", "closed"):
+        typer.echo(f"Cannot start work on {full_ticket_id}: ticket is {ticket.status}")
+        raise typer.Exit(code=1)
+
+    # Transition open → in_progress
+    if ticket.status == "open":
+        ticket.status = "in_progress"
+        write_ticket(ticket, ctx.ticket_path)
+
     # Default agent from config if not specified on CLI
     if agent is None:
         cfg = load_config(base)
@@ -2478,12 +2489,12 @@ def status(
     tickets = list_tickets(tickets_dir) if tickets_dir.exists() else []
 
     # Count by status
-    status_counts = {"open": 0, "in_progress": 0, "closed": 0}
+    status_counts = {"open": 0, "in_progress": 0, "in_review": 0, "closed": 0}
     for ticket in tickets:
         if ticket.status in status_counts:
             status_counts[ticket.status] += 1
 
-    # Count ready tickets (open/in_progress with all deps closed)
+    # Count ready tickets (open/in_progress with all deps closed — excludes in_review)
     status_by_id = {t.id: t.status for t in tickets}
     ready_count = 0
     for ticket in tickets:
@@ -2534,7 +2545,9 @@ def status(
         typer.echo()
         total = sum(status_counts.values())
         typer.echo(
-            f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, {status_counts['closed']} closed, {ready_count} ready ({total} total)"
+            f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, "
+            f"{status_counts['in_review']} in review, {status_counts['closed']} closed, "
+            f"{ready_count} ready ({total} total)"
         )
 
         if assigned:
@@ -2922,7 +2935,7 @@ def format_ticket_summary(tickets: list) -> str:
     total = len(tickets)
     # Fixed display order
     parts = []
-    for label in ("open", "in_progress", "closed"):
+    for label in ("open", "in_progress", "in_review", "closed"):
         if counts[label]:
             parts.append(f"{counts[label]} {label}")
     parts.append(f"{total} total")
@@ -2959,6 +2972,7 @@ def console_width() -> int:
 STATUS_STYLES = {
     "open": "green",
     "in_progress": "yellow",
+    "in_review": "magenta",
     "closed": "dim",
 }
 
@@ -3031,18 +3045,19 @@ def ticket_list(
     status: Annotated[
         str | None,
         typer.Option(
-            "--status", "-s", help="Filter by status (open, in_progress, closed). Overrides --include-closed."
+            "--status",
+            "-s",
+            help="Filter by status (open, in_progress, in_review, closed). Overrides --include-closed.",
         ),
     ] = None,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List tickets in the current branch or all locations."""
-    valid_statuses = {"open", "in_progress", "closed"}
     if status is not None:
         status = status.lower()
-        if status not in valid_statuses:
-            typer.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(valid_statuses))}")
+        if status not in STATUSES:
+            typer.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
             raise typer.Exit(code=1)
 
     def apply_status_filter(tickets: list) -> list:
@@ -3175,7 +3190,7 @@ def resolve_dep_status(base: Path, dep_id: str) -> str:
     return dep_ticket.status
 
 
-STATUS_COLORS = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
+STATUS_COLORS = {"open": "yellow", "in_progress": "cyan", "in_review": "magenta", "closed": "green"}
 
 
 def render_ticket_panel(ticket: Ticket, ticket_path: Path, base: Path) -> Panel:
@@ -3411,7 +3426,7 @@ def ticket_current(
         console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
         console.print(Rule(style="dim"))
 
-        status_colors = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
+        status_colors = {"open": "yellow", "in_progress": "cyan", "in_review": "magenta", "closed": "green"}
         status_color = status_colors.get(ticket.status, "white")
         console.print(
             f"[bold]{ticket.id}[/bold]  "
