@@ -11,7 +11,6 @@ from kingdom.agent import (
     extract_stream_text,
     parse_claude_response,
     parse_codex_response,
-    parse_cursor_response,
     parse_response,
     resolve_agent,
     resolve_all_agents,
@@ -21,7 +20,7 @@ from kingdom.config import DEFAULT_AGENTS, AgentDef
 
 class TestBackendDefaults:
     def test_all_backends_defined(self) -> None:
-        assert set(BACKEND_DEFAULTS) == {"claude_code", "codex", "cursor"}
+        assert set(BACKEND_DEFAULTS) == {"claude_code", "codex"}
 
     def test_claude_code_defaults(self) -> None:
         d = BACKEND_DEFAULTS["claude_code"]
@@ -35,12 +34,6 @@ class TestBackendDefaults:
         assert "codex" in d["cli"]
         assert d["resume_flag"] == "resume"
         assert d["version_command"] == "codex --version"
-
-    def test_cursor_defaults(self) -> None:
-        d = BACKEND_DEFAULTS["cursor"]
-        assert "agent" in d["cli"]
-        assert d["resume_flag"] == "--resume"
-        assert d["version_command"] == "agent --version"
 
 
 class TestResolveAgent:
@@ -65,10 +58,9 @@ class TestResolveAgent:
 
     def test_resolve_all_defaults(self) -> None:
         configs = resolve_all_agents(DEFAULT_AGENTS)
-        assert set(configs) == {"claude", "codex", "cursor"}
+        assert set(configs) == {"claude", "codex"}
         assert configs["claude"].backend == "claude_code"
         assert configs["codex"].backend == "codex"
-        assert configs["cursor"].backend == "cursor"
 
 
 class TestAgentConfig:
@@ -159,34 +151,6 @@ class TestBuildCommand:
             "hello",
         ]
 
-    def test_cursor_without_session(self) -> None:
-        cmd = build_command(make_config("cursor"), "hello world")
-        assert cmd == [
-            "agent",
-            "--force",
-            "--sandbox",
-            "disabled",
-            "--print",
-            "--output-format",
-            "json",
-            "hello world",
-        ]
-
-    def test_cursor_with_session(self) -> None:
-        cmd = build_command(make_config("cursor"), "hello", session_id="conv-456")
-        assert cmd == [
-            "agent",
-            "--force",
-            "--sandbox",
-            "disabled",
-            "--print",
-            "--output-format",
-            "json",
-            "hello",
-            "--resume",
-            "conv-456",
-        ]
-
     def test_unknown_backend_raises(self) -> None:
         config = AgentConfig(name="bad", backend="unknown", cli="bad", resume_flag="")
         with pytest.raises(ValueError, match="Unknown backend"):
@@ -213,13 +177,6 @@ class TestBuildCommandModel:
         model_idx = cmd.index("--model")
         assert cmd[model_idx + 1] == "o3"
 
-    def test_cursor_with_model(self) -> None:
-        config = resolve_agent("cursor", AgentDef(backend="cursor", model="llama-3.1"))
-        cmd = build_command(config, "hello")
-        assert "--model" in cmd
-        model_idx = cmd.index("--model")
-        assert cmd[model_idx + 1] == "llama-3.1"
-
     def test_no_model_no_flag(self) -> None:
         config = make_config("claude")
         cmd = build_command(config, "hello")
@@ -242,15 +199,6 @@ class TestBuildCommandExtraFlags:
         cmd = build_command(config, "hello")
         assert "--debug" in cmd
 
-    def test_cursor_extra_flags(self) -> None:
-        config = resolve_agent("cursor", AgentDef(backend="cursor", extra_flags=["--debug"]))
-        cmd = build_command(config, "hello")
-        assert "--debug" in cmd
-        # Extra flags before prompt (positional)
-        prompt_idx = cmd.index("hello")
-        debug_idx = cmd.index("--debug")
-        assert debug_idx < prompt_idx
-
 
 class TestBuildCommandSkipPermissions:
     def test_claude_skip_permissions_false(self) -> None:
@@ -269,14 +217,6 @@ class TestBuildCommandSkipPermissions:
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         assert "disk-full-read-access" in " ".join(cmd)
 
-    def test_cursor_skip_permissions_false(self) -> None:
-        cmd = build_command(make_config("cursor"), "hello world", skip_permissions=False)
-        assert "--force" not in cmd
-        assert "--sandbox" not in cmd
-        assert "disabled" not in cmd
-        assert "--mode" in cmd
-        assert "ask" in cmd
-
     def test_claude_skip_permissions_true_is_default(self) -> None:
         cmd_default = build_command(make_config("claude"), "hello")
         cmd_explicit = build_command(make_config("claude"), "hello", skip_permissions=True)
@@ -288,12 +228,6 @@ class TestBuildCommandSkipPermissions:
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         assert "resume" in cmd
         assert "t-1" in cmd
-
-    def test_cursor_skip_permissions_false_with_session(self) -> None:
-        cmd = build_command(make_config("cursor"), "hello", session_id="c-1", skip_permissions=False)
-        assert "--force" not in cmd
-        assert "--resume" in cmd
-        assert "c-1" in cmd
 
 
 class TestParseClaudeResponse:
@@ -343,25 +277,6 @@ class TestParseCodexResponse:
         assert session_id == "t1"
 
 
-class TestParseCursorResponse:
-    def test_json_output_result_key(self) -> None:
-        stdout = '{"result":"OK","session_id":"abc123"}'
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "OK"
-        assert session_id == "abc123"
-
-    def test_json_output_text_key(self) -> None:
-        stdout = '{"text":"hello","conversation_id":"conv-1"}'
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "hello"
-        assert session_id == "conv-1"
-
-    def test_non_json_fallback(self) -> None:
-        text, session_id, _ = parse_cursor_response("plain", "", 0)
-        assert text == "plain"
-        assert session_id is None
-
-
 class TestParseResponseDispatch:
     def test_dispatches_to_claude(self) -> None:
         config = make_config("claude")
@@ -392,18 +307,6 @@ class TestBuildCommandStreaming:
         assert cmd[fmt_idx + 1] == "json"
         assert "--verbose" not in cmd
         assert "--include-partial-messages" not in cmd
-
-    def test_cursor_streaming_replaces_output_format(self) -> None:
-        cmd = build_command(make_config("cursor"), "hello", streaming=True)
-        fmt_idx = cmd.index("--output-format")
-        assert cmd[fmt_idx + 1] == "stream-json"
-        assert "--stream-partial-output" in cmd
-
-    def test_cursor_streaming_false_keeps_json(self) -> None:
-        cmd = build_command(make_config("cursor"), "hello", streaming=False)
-        fmt_idx = cmd.index("--output-format")
-        assert cmd[fmt_idx + 1] == "json"
-        assert "--stream-partial-output" not in cmd
 
     def test_codex_streaming_unchanged(self) -> None:
         cmd_normal = build_command(make_config("codex"), "hello", streaming=False)
@@ -475,99 +378,6 @@ class TestParseClaudeResponseNDJSON:
         assert text == "ok"
 
 
-class TestParseCursorResponseNDJSON:
-    def test_ndjson_stream_event_wrapped_deltas(self) -> None:
-        """stream_event-wrapped content_block_delta events."""
-        stdout = (
-            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}},"session_id":"conv-1"}\n'
-            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" there"}},"session_id":"conv-1"}\n'
-            '{"type":"result","session_id":"conv-1"}\n'
-        )
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "Hi there"
-        assert session_id == "conv-1"
-
-    def test_ndjson_flat_content_block_delta(self) -> None:
-        """Top-level content_block_delta (no stream_event wrapper)."""
-        stdout = (
-            '{"type":"content_block_delta","delta":{"type":"text_delta","text":"flat"}}\n'
-            '{"type":"result","session_id":"c-1"}\n'
-        )
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "flat"
-        assert session_id == "c-1"
-
-    def test_ndjson_assistant_message_format(self) -> None:
-        """Assistant event with message.content blocks."""
-        stdout = (
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"response"}]},"session_id":"c-2"}\n'
-            '{"type":"result","session_id":"c-2"}\n'
-        )
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "response"
-        assert session_id == "c-2"
-
-    def test_ndjson_assistant_flat_text_fallback(self) -> None:
-        """Assistant event with flat text field (no message.content)."""
-        stdout = '{"type":"assistant","text":"response text"}\n{"type":"result","conversation_id":"c-3"}\n'
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "response text"
-        assert session_id == "c-3"
-
-    def test_ndjson_deltas_preferred_over_assistant(self) -> None:
-        """Deltas collected first means assistant block is skipped."""
-        stdout = (
-            '{"type":"content_block_delta","delta":{"type":"text_delta","text":"from deltas"}}\n'
-            '{"type":"assistant","text":"from assistant"}\n'
-            '{"type":"result","session_id":"c-4"}\n'
-        )
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "from deltas"
-        assert session_id == "c-4"
-
-    def test_single_json_still_works(self) -> None:
-        stdout = '{"result":"OK","session_id":"abc123"}'
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "OK"
-        assert session_id == "abc123"
-
-    def test_ndjson_assistant_chunk_stream_uses_result_text(self) -> None:
-        """When assistant emits partial chunks, final result text should win."""
-        stdout = (
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"We use `pytest` for testing. It\'"}]},"session_id":"c-5"}\n'
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"s standard in this repo."}]},"session_id":"c-5"}\n'
-            '{"type":"result","result":"We use `pytest` for testing. It\'s standard in this repo.","session_id":"c-5"}\n'
-        )
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "We use `pytest` for testing. It's standard in this repo."
-        assert session_id == "c-5"
-
-    def test_ndjson_assistant_chunk_stream_without_result_merges_chunks(self) -> None:
-        """Without result text, assistant chunk events should be merged."""
-        stdout = (
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"We use `pytest` for testing. It\'"}]},"session_id":"c-6"}\n'
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"s standard in this repo."}]},"session_id":"c-6"}\n'
-        )
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "We use `pytest` for testing. It's standard in this repo."
-        assert session_id == "c-6"
-
-    @pytest.mark.xfail(
-        reason="Known Cursor issue: result event may be shorter than streamed assistant content, making finalized message look overwritten.",
-        strict=False,
-    )
-    def test_ndjson_short_result_should_not_overwrite_richer_assistant_stream(self) -> None:
-        """Capture current failure: short final result clobbers richer assistant stream."""
-        stdout = (
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"Beautiful is better than ugly. Explicit is better than implicit."}]},"session_id":"c-7"}\n'
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"Beautiful is better than ugly. Explicit is better than implicit. Simple is better than complex."}]},"session_id":"c-7"}\n'
-            '{"type":"result","result":"Beautiful is better than ugly.","session_id":"c-7"}\n'
-        )
-        text, session_id, _ = parse_cursor_response(stdout, "", 0)
-        assert text == "Beautiful is better than ugly. Explicit is better than implicit. Simple is better than complex."
-        assert session_id == "c-7"
-
-
 class TestExtractStreamText:
     def test_claude_stream_event_wrapped(self) -> None:
         """Real format: text_delta wrapped in stream_event."""
@@ -593,24 +403,6 @@ class TestExtractStreamText:
         line = '{"type":"turn.started"}'
         assert extract_stream_text(line, "codex") is None
 
-    def test_cursor_stream_event_wrapped(self) -> None:
-        line = (
-            '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"yo"}}}'
-        )
-        assert extract_stream_text(line, "cursor") == "yo"
-
-    def test_cursor_bare_content_block_delta(self) -> None:
-        line = '{"type":"content_block_delta","delta":{"type":"text_delta","text":"bare"}}'
-        assert extract_stream_text(line, "cursor") == "bare"
-
-    def test_cursor_assistant_message_chunk(self) -> None:
-        line = '{"type":"assistant","message":{"content":[{"type":"text","text":"chunk"}]}}'
-        assert extract_stream_text(line, "cursor") == "chunk"
-
-    def test_cursor_assistant_flat_text_chunk(self) -> None:
-        line = '{"type":"assistant","text":"chunk text"}'
-        assert extract_stream_text(line, "cursor") == "chunk text"
-
     def test_unknown_backend(self) -> None:
         assert extract_stream_text('{"type":"foo"}', "unknown") is None
 
@@ -631,24 +423,6 @@ class TestExtractStreamThinking:
         line = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Hello"}})
         assert extract_stream_thinking(line, "codex") is None
 
-    def test_cursor_thinking_delta(self) -> None:
-        from kingdom.agent import extract_stream_thinking
-
-        line = json.dumps({"type": "thinking", "subtype": "delta", "text": "Reasoning..."})
-        assert extract_stream_thinking(line, "cursor") == "Reasoning..."
-
-    def test_cursor_thinking_completed_returns_none(self) -> None:
-        from kingdom.agent import extract_stream_thinking
-
-        line = json.dumps({"type": "thinking", "subtype": "completed"})
-        assert extract_stream_thinking(line, "cursor") is None
-
-    def test_cursor_non_thinking_event(self) -> None:
-        from kingdom.agent import extract_stream_thinking
-
-        line = json.dumps({"type": "assistant", "text": "Hello"})
-        assert extract_stream_thinking(line, "cursor") is None
-
     def test_claude_no_thinking_extractor(self) -> None:
         from kingdom.agent import extract_stream_thinking
 
@@ -663,4 +437,4 @@ class TestExtractStreamThinking:
     def test_invalid_json(self) -> None:
         from kingdom.agent import extract_stream_thinking
 
-        assert extract_stream_thinking("not json", "cursor") is None
+        assert extract_stream_thinking("not json", "codex") is None

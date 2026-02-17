@@ -13,6 +13,7 @@ import secrets
 import signal
 import subprocess
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, NamedTuple
@@ -23,8 +24,11 @@ if TYPE_CHECKING:
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.rule import Rule
+from rich.table import Table
+from rich.text import Text
 
 from kingdom.breakdown import build_breakdown_template
 from kingdom.council import Council
@@ -50,6 +54,7 @@ from kingdom.state import (
 from kingdom.ticket import (
     AmbiguousTicketMatch,
     Ticket,
+    find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
     list_tickets,
@@ -57,6 +62,13 @@ from kingdom.ticket import (
     read_ticket,
     write_ticket,
 )
+
+error_console = Console(stderr=True)
+
+
+def print_error(message: str) -> None:
+    """Print a consistently styled error message to stderr."""
+    error_console.print(f"[bold red]Error:[/bold red] {message}")
 
 
 def is_branch_done(branch_dir: Path) -> bool:
@@ -108,7 +120,7 @@ def ensure_feature_branch(feature: str) -> None:
         checkout = subprocess.run(["git", "checkout", "-b", feature], text=True)
         if checkout.returncode != 0:
             raise RuntimeError(f"Failed to create branch '{feature}'")
-        typer.echo(f"Created branch: {feature}")
+        typer.echo(f"Created branch {feature}")
         return
 
     typer.echo(f"Warning: current branch '{current}' does not match feature '{feature}'.")
@@ -126,7 +138,7 @@ def init(
     base = Path.cwd()
 
     if not no_git and not is_git_repo(base):
-        typer.echo("Error: Not a git repository. Use --no-git to initialize anyway.")
+        print_error("Not a git repository. Use --no-git to initialize anyway.")
         raise typer.Exit(code=1)
 
     paths = ensure_base_layout(base, create_gitignore=not no_gitignore)
@@ -150,7 +162,7 @@ def init(
         }
         config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-    typer.echo(f"Initialized: {paths['state_root']}")
+    typer.echo(f"Initialized {paths['state_root']}")
 
 
 def get_current_git_branch() -> str | None:
@@ -181,7 +193,7 @@ def start(
     # Auto-init if .kd/ doesn't exist (with git check)
     if not state_root(base).exists():
         if not is_git_repo(base):
-            typer.echo("Error: Not a git repository. Run `kd init --no-git` first.")
+            print_error("Not a git repository. Run `kd init --no-git` first.")
             raise typer.Exit(code=1)
         typer.echo("Auto-initializing .kd/ directory...")
         ensure_base_layout(base)
@@ -190,16 +202,16 @@ def start(
     current_path = state_root(base) / "current"
     if current_path.exists() and not force:
         existing = current_path.read_text(encoding="utf-8").strip()
-        typer.echo(f"Error: A session is already active: {existing}")
-        typer.echo("Use --force to override, or run `kd done` first.")
+        print_error(f"A session is already active: {existing}")
+        error_console.print("  Use --force to override, or run `kd done` first.")
         raise typer.Exit(code=1)
 
     # Determine branch name
     if branch is None:
         branch = get_current_git_branch()
         if branch is None:
-            typer.echo("Error: Detached HEAD state. Please provide a branch name:")
-            typer.echo("  kd start <branch-name>")
+            print_error("Detached HEAD state. Please provide a branch name:")
+            error_console.print("  kd start <branch-name>")
             raise typer.Exit(code=1)
 
     # Normalize branch name for directory
@@ -221,9 +233,9 @@ def start(
     state["branch"] = branch
     write_json(state_path, state)
 
-    typer.echo(f"Started session for branch: {branch}")
-    typer.echo(f"Location: {branch_dir}")
-    typer.echo(f"Design: {design_path}")
+    typer.echo(f"Started session for branch {branch}")
+    typer.echo(f"  Location: {branch_dir}")
+    typer.echo(f"  Design: {design_path}")
 
 
 @app.command(help="Mark the current session as done.")
@@ -255,7 +267,7 @@ def done(
         if legacy_dir.exists():
             source_dir = legacy_dir
         else:
-            typer.echo(f"Error: Branch '{feature}' not found.")
+            print_error(f"Branch '{feature}' not found.")
             raise typer.Exit(code=1)
 
     # Check for open tickets
@@ -263,10 +275,10 @@ def done(
         tickets_dir = source_dir / "tickets"
         open_tickets = [t for t in list_tickets(tickets_dir) if t.status != "closed"]
         if open_tickets:
-            typer.echo(f"Error: {len(open_tickets)} open ticket(s) on '{feature}':")
+            print_error(f"{len(open_tickets)} open ticket(s) on '{feature}':")
             for t in open_tickets:
-                typer.echo(f"  {t.id} [{t.status}] {t.title}")
-            typer.echo("\nClose tickets, move them to backlog with `kd tk move`, or use --force.")
+                error_console.print(f"  {t.id} [{t.status}] {t.title}")
+            error_console.print("\nClose tickets, move them to backlog with `kd tk move`, or use --force.")
             raise typer.Exit(code=1)
 
     # Update state.json with status and timestamp
@@ -309,13 +321,17 @@ def done(
     tickets_dir = source_dir / "tickets"
     all_tickets = list_tickets(tickets_dir)
     closed_count = sum(1 for t in all_tickets if t.status == "closed")
-    typer.echo(f"Done: '{feature}'")
-    if closed_count:
-        typer.echo(f"  {closed_count} tickets closed")
-    if session_cleared:
-        typer.echo("  Session cleared")
 
-    # Remind to push if there are unpushed commits
+    console = Console()
+
+    lines: list[str] = []
+    if closed_count:
+        lines.append(f"[cyan]{closed_count}[/cyan] tickets closed")
+    if session_cleared:
+        lines.append("Session cleared")
+
+    # Check for unpushed commits
+    push_reminder = ""
     try:
         rev_result = subprocess.run(
             ["git", "rev-list", "--count", "@{u}..HEAD"],
@@ -325,12 +341,18 @@ def done(
         if rev_result.returncode == 0:
             ahead = int(rev_result.stdout.strip())
             if ahead > 0:
-                typer.echo(f"  {ahead} unpushed commit(s) — remember to push")
+                push_reminder = f"[yellow]{ahead} unpushed commit(s) — remember to push[/yellow]"
         else:
-            # No upstream tracking branch — likely unpushed
-            typer.echo("  No upstream branch — remember to push")
+            push_reminder = "[yellow]No upstream branch — remember to push[/yellow]"
     except (subprocess.SubprocessError, ValueError):
         pass
+
+    if push_reminder:
+        lines.append(push_reminder)
+
+    body = "\n".join(lines) if lines else "[dim]No additional info[/dim]"
+    panel = Panel(body, title=f"[bold green]Done: {feature}[/bold green]", border_style="green")
+    console.print(panel)
 
 
 council_app = typer.Typer(name="council", help="Query council members.")
@@ -452,7 +474,7 @@ def council_ask(
                 for name, r in responses.items()
             },
         }
-        print(json.dumps(output, indent=2))
+        console.print_json(json.dumps(output, indent=2))
         return
 
     # --async mode: dispatch agents in background, then watch
@@ -726,15 +748,15 @@ def council_list() -> None:
     council_threads = [t for t in threads if t.pattern == "council"]
 
     if not council_threads:
-        typer.echo("No council threads.")
+        typer.echo('No council threads. Start one with `kd council ask "prompt"`.')
         return
 
     state_symbols = {
-        MEMBER_RESPONDED: "[green]\u2713[/green]",
-        MEMBER_RUNNING: "[yellow]\u25cb[/yellow]",
-        MEMBER_ERRORED: "[red]\u2717[/red]",
-        MEMBER_TIMED_OUT: "[red]\u29d6[/red]",
-        MEMBER_PENDING: "[dim]\u2026[/dim]",
+        MEMBER_RESPONDED: ("[green]\u2713[/green]", "responded"),
+        MEMBER_RUNNING: ("[yellow]\u25cb[/yellow]", "running"),
+        MEMBER_ERRORED: ("[red]\u2717[/red]", "errored"),
+        MEMBER_TIMED_OUT: ("[red]\u29d6[/red]", "timed out"),
+        MEMBER_PENDING: ("[dim]\u2026[/dim]", "pending"),
     }
 
     for t in council_threads:
@@ -755,7 +777,7 @@ def council_list() -> None:
         member_parts = []
         for name in sorted(status.member_states):
             ms = status.member_states[name]
-            symbol = state_symbols.get(ms.state, "?")
+            symbol, _label = state_symbols.get(ms.state, ("?", "unknown"))
             member_parts.append(f"{symbol} {name}")
         members_str = "  ".join(member_parts) if member_parts else ""
 
@@ -765,6 +787,10 @@ def council_list() -> None:
         if members_str:
             console.print(f"  {members_str}")
         console.print()
+
+    # Print legend explaining the status symbols
+    legend_parts = [f"{sym} {label}" for sym, label in state_symbols.values()]
+    console.print(f"[dim]{' '.join(legend_parts)}[/dim]")
 
 
 @council_app.command("ls", hidden=True)
@@ -789,7 +815,7 @@ def council_status(
         threads = list_threads(base, feature)
         council_threads = [t for t in threads if t.pattern == "council"]
         if not council_threads:
-            typer.echo("No council threads.")
+            typer.echo('No council threads. Start one with `kd council ask "prompt"`.')
             return
         for t in council_threads:
             status = thread_response_status(base, feature, t.id)
@@ -1182,8 +1208,10 @@ def render_response(response, console):
     else:
         content = response.text if response.text else "*No response*"
 
+    from kingdom.tui.widgets import format_elapsed
+
     console.print(Markdown(f"## {response.name}\n\n{content}"))
-    console.print(f"[dim]{response.elapsed:.1f}s[/dim]", justify="right")
+    console.print(f"[dim]{format_elapsed(response.elapsed)}[/dim]", justify="right")
     console.print()
 
 
@@ -1552,7 +1580,7 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
     try:
         result = find_ticket(base, ticket_id, branch=feature)
     except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
+        print_error(f"{e}")
         raise typer.Exit(code=1) from None
 
     if result is None:
@@ -1740,7 +1768,6 @@ def peasant_start(
 @peasant_app.command("status", help="Show active peasants.")
 def peasant_status() -> None:
     """Show table of active peasants: ticket, agent, status, elapsed, last activity."""
-    from rich.table import Table
 
     from kingdom.session import list_active_agents
 
@@ -2094,7 +2121,7 @@ def peasant_review(
 
     # --- Accept / Reject actions ---
     if accept and reject is not None:
-        typer.echo("Error: --accept and --reject are mutually exclusive.")
+        print_error("--accept and --reject are mutually exclusive.")
         raise typer.Exit(code=1)
 
     if accept:
@@ -2141,7 +2168,7 @@ def peasant_review(
             agent_backend = state.agent_backend or "claude"
             worktree_path = worktree_path_for(base, full_ticket_id)
             if not worktree_path.exists():
-                typer.echo(f"Error: worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
+                print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
                 raise typer.Exit(code=1)
 
             pid = launch_work_background(
@@ -2486,7 +2513,8 @@ def config_show() -> None:
             return [strip_empty(item) for item in obj]
         return obj
 
-    print(json.dumps(strip_empty(dataclasses.asdict(cfg)), indent=2))
+    console = Console()
+    console.print_json(json.dumps(strip_empty(dataclasses.asdict(cfg)), indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -2578,7 +2606,8 @@ def doctor(
                 cli_issues.append({"name": check["name"], "hint": check["install_hint"]})
 
     if output_json:
-        print(json.dumps({"config": config_result, "agents": cli_results}, indent=2))
+        console = Console()
+        console.print_json(json.dumps({"config": config_result, "agents": cli_results}, indent=2))
     else:
         if not config_ok:
             typer.echo("\nAgent CLIs:")
@@ -2669,9 +2698,9 @@ def migrate(
                 collisions.append(str(ticket_file.relative_to(base)))
 
     if collisions:
-        typer.echo("Error: collision detected — target files already exist:")
+        print_error("collision detected — target files already exist:")
         for c in collisions:
-            typer.echo(f"  {c}")
+            error_console.print(f"  {c}")
         raise typer.Exit(code=1)
 
     # Pass 1: rename files (git mv for history preservation)
@@ -2768,7 +2797,7 @@ def ticket_create(
             try:
                 dep_result = find_ticket(base, dep_id)
             except AmbiguousTicketMatch as e:
-                typer.echo(f"Error: {e}")
+                print_error(f"{e}")
                 raise typer.Exit(code=1) from None
             if dep_result is None:
                 typer.echo(f"Dependency ticket not found: {dep_id}")
@@ -2800,7 +2829,107 @@ def ticket_create(
     write_ticket(ticket, ticket_path)
 
     dep_suffix = f" (depends on: {', '.join(resolved_deps)})" if resolved_deps else ""
-    typer.echo(f"Created {ticket_id}: {title}{dep_suffix}")
+    location_label = " (backlog)" if backlog else ""
+    typer.echo(f"Created {ticket_id}{location_label}: {title}{dep_suffix}")
+    typer.echo(str(ticket_path))
+
+
+def format_ticket_summary(tickets: list) -> str:
+    """Build a one-line summary of ticket counts by status.
+
+    Args:
+        tickets: List of Ticket objects (or dicts with 'status' key).
+
+    Returns:
+        A string like "5 open · 2 in_progress · 3 closed · 10 total".
+    """
+    counts: Counter[str] = Counter()
+    for t in tickets:
+        st = t["status"] if isinstance(t, dict) else t.status
+        counts[st] += 1
+    total = len(tickets)
+    # Fixed display order
+    parts = []
+    for label in ("open", "in_progress", "closed"):
+        if counts[label]:
+            parts.append(f"{counts[label]} {label}")
+    parts.append(f"{total} total")
+    return " · ".join(parts)
+
+
+def format_ticket_line(ticket: Ticket, location: str | None = None) -> str:
+    """Format a single ticket as a one-line string for list output.
+
+    Includes dependency arrows when the ticket has deps, e.g.:
+        a1b2 [P2][open] - My ticket  <- c3d4, e5f6
+
+    Args:
+        ticket: The ticket to format.
+        location: Optional location label (e.g. "backlog", "branch:main").
+
+    Returns:
+        Formatted ticket line string.
+    """
+    assignee_str = f" @{ticket.assignee}" if ticket.assignee else ""
+    location_str = f" ({location})" if location else ""
+    dep_str = f"  <- {', '.join(ticket.deps)}" if ticket.deps else ""
+    return f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}{location_str}{dep_str}"
+
+
+STATUS_STYLES = {
+    "open": "green",
+    "in_progress": "yellow",
+    "closed": "dim",
+}
+
+
+def render_ticket_table(
+    tickets: list[Ticket],
+    *,
+    show_location: bool = False,
+    locations: dict[str, str] | None = None,
+) -> None:
+    """Render a list of tickets as a Rich table.
+
+    Args:
+        tickets: Tickets to display.
+        show_location: Whether to include a Location column.
+        locations: Mapping of ticket id -> location label (used with show_location).
+    """
+    from rich.table import Table
+
+    console = Console()
+    table = Table(show_header=True, header_style="bold", padding=(0, 1))
+
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("P", justify="center", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Assignee", no_wrap=True)
+    table.add_column("Title", no_wrap=True)
+    table.add_column("Deps", style="dim", no_wrap=True)
+    if show_location:
+        table.add_column("Location", no_wrap=True)
+
+    for ticket in tickets:
+        status_style = STATUS_STYLES.get(ticket.status, "")
+        dep_str = ", ".join(ticket.deps) if ticket.deps else ""
+        assignee_str = f"@{ticket.assignee}" if ticket.assignee else ""
+
+        row: list[str] = [
+            ticket.id,
+            f"P{ticket.priority}",
+            f"[{status_style}]{ticket.status}[/{status_style}]" if status_style else ticket.status,
+            assignee_str,
+            ticket.title,
+            dep_str,
+        ]
+        if show_location:
+            loc = (locations or {}).get(ticket.id, "")
+            row.append(loc)
+
+        table.add_row(*row)
+
+    console.print(table)
 
 
 @ticket_app.command("ls", help="List tickets.", hidden=True)
@@ -2811,16 +2940,37 @@ def ticket_list(
         bool, typer.Option("--include-done", help="Include tickets from done branches (with --all).")
     ] = False,
     include_closed: Annotated[bool, typer.Option("--include-closed", help="Include closed tickets in output.")] = False,
+    status: Annotated[
+        str | None,
+        typer.Option(
+            "--status", "-s", help="Filter by status (open, in_progress, closed). Overrides --include-closed."
+        ),
+    ] = None,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List tickets in the current branch or all locations."""
+    valid_statuses = {"open", "in_progress", "closed"}
+    if status is not None:
+        status = status.lower()
+        if status not in valid_statuses:
+            typer.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(valid_statuses))}")
+            raise typer.Exit(code=1)
+
+    def apply_status_filter(tickets: list) -> list:
+        """Filter tickets based on --status or --include-closed flags."""
+        if status is not None:
+            return [t for t in tickets if t.status == status]
+        if not include_closed:
+            return [t for t in tickets if t.status != "closed"]
+        return tickets
+
     base = Path.cwd()
 
     if backlog:
         backlog_tickets = backlog_root(base) / "tickets"
-        tickets = list_tickets(backlog_tickets) if backlog_tickets.exists() else []
-        tickets = [t for t in tickets if t.status != "closed"]
+        all_backlog_tickets = list_tickets(backlog_tickets) if backlog_tickets.exists() else []
+        tickets = apply_status_filter(all_backlog_tickets)
 
         if output_json:
             results = [
@@ -2836,11 +2986,10 @@ def ticket_list(
             typer.echo(json.dumps(results, indent=2))
         else:
             if not tickets:
-                typer.echo("No backlog tickets.")
+                typer.echo('No backlog tickets. Create one with `kd tk create --backlog "title"`.')
                 return
-            for ticket in tickets:
-                assignee_str = f" @{ticket.assignee}" if ticket.assignee else ""
-                typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}")
+            render_ticket_table(tickets)
+            typer.echo(format_ticket_summary(all_backlog_tickets))
         return
 
     if all_tickets:
@@ -2861,34 +3010,40 @@ def ticket_list(
         if backlog_tickets.exists():
             locations.append(("backlog", backlog_tickets))
 
-        all_results: list[dict] = []
+        all_filtered: list[Ticket] = []
+        all_unfiltered: list[Ticket] = []
+        location_map: dict[str, str] = {}
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
-            if not include_closed:
-                tickets = [t for t in tickets if t.status != "closed"]
-            for ticket in tickets:
-                all_results.append(
-                    {
-                        "id": ticket.id,
-                        "priority": ticket.priority,
-                        "status": ticket.status,
-                        "title": ticket.title,
-                        "location": location_name,
-                    }
-                )
+            all_unfiltered.extend(tickets)
+            filtered = apply_status_filter(tickets)
+            for ticket in filtered:
+                location_map[ticket.id] = location_name
+            all_filtered.extend(filtered)
 
         if output_json:
-            typer.echo(json.dumps(all_results, indent=2))
+            results = [
+                {
+                    "id": t.id,
+                    "priority": t.priority,
+                    "status": t.status,
+                    "title": t.title,
+                    "location": location_map.get(t.id, ""),
+                }
+                for t in all_filtered
+            ]
+            typer.echo(json.dumps(results, indent=2))
         else:
-            for item in all_results:
-                loc = item["location"]
-                typer.echo(f"{item['id']} [P{item['priority']}][{item['status']}] - {item['title']} ({loc})")
+            if not all_filtered:
+                typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
+                return
+            render_ticket_table(all_filtered, show_location=True, locations=location_map)
+            typer.echo(format_ticket_summary(all_unfiltered))
     else:
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
-        tickets = list_tickets(tickets_dir)
-        if not include_closed:
-            tickets = [t for t in tickets if t.status != "closed"]
+        all_branch_tickets = list_tickets(tickets_dir)
+        tickets = apply_status_filter(all_branch_tickets)
 
         if output_json:
             results = [
@@ -2903,11 +3058,30 @@ def ticket_list(
             typer.echo(json.dumps(results, indent=2))
         else:
             if not tickets:
-                typer.echo("No tickets found.")
+                typer.echo('No tickets found. Create one with `kd tk create "title"`.')
                 return
-            for ticket in tickets:
-                assignee_str = f" @{ticket.assignee}" if ticket.assignee else ""
-                typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}")
+            render_ticket_table(tickets)
+            typer.echo(format_ticket_summary(all_branch_tickets))
+
+
+def resolve_dep_status(base: Path, dep_id: str) -> str:
+    """Look up a dependency ticket's status by its ID.
+
+    Args:
+        base: Project root directory.
+        dep_id: Full or partial ticket ID.
+
+    Returns:
+        The ticket's status string, or "unknown" if the ticket can't be found.
+    """
+    try:
+        result = find_ticket(base, dep_id)
+    except AmbiguousTicketMatch:
+        return "unknown"
+    if result is None:
+        return "unknown"
+    dep_ticket, _ = result
+    return dep_ticket.status
 
 
 @ticket_app.command("show", help="Show a ticket.")
@@ -2936,14 +3110,14 @@ def ticket_show(
                 with contextlib.suppress(ValueError, FileNotFoundError):
                     pairs.append((read_ticket(ticket_file), ticket_file))
         if not pairs:
-            typer.echo("No tickets on this branch.")
+            typer.echo('No tickets on this branch. Create one with `kd tk create "title"`.')
             raise typer.Exit(code=0)
     elif ticket_ids:
         for tid in ticket_ids:
             try:
                 result = find_ticket(base, tid)
             except AmbiguousTicketMatch as e:
-                typer.echo(f"Error: {e}")
+                print_error(f"{e}")
                 raise typer.Exit(code=1) from None
             if result is None:
                 typer.echo(f"Ticket not found: {tid}")
@@ -2978,7 +3152,7 @@ def ticket_show(
                 "type": ticket.type,
                 "title": ticket.title,
                 "body": ticket.body,
-                "deps": ticket.deps,
+                "deps": [{"id": d, "status": resolve_dep_status(base, d)} for d in ticket.deps],
                 "links": ticket.links,
                 "created": ticket.created.isoformat(),
                 "assignee": ticket.assignee,
@@ -3005,7 +3179,12 @@ def ticket_show(
                 f"{ticket.type}"
             )
             if ticket.deps:
-                console.print(f"[dim]deps:[/dim] {', '.join(ticket.deps)}")
+                dep_parts = []
+                for dep_id in ticket.deps:
+                    dep_status = resolve_dep_status(base, dep_id)
+                    dep_color = status_colors.get(dep_status, "white")
+                    dep_parts.append(f"{dep_id} [{dep_color}]{dep_status}[/{dep_color}]")
+                console.print(f"[dim]deps:[/dim] {', '.join(dep_parts)}")
             if ticket.links:
                 console.print(f"[dim]links:[/dim] {', '.join(ticket.links)}")
             if ticket.assignee:
@@ -3024,7 +3203,7 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
     try:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
+        print_error(f"{e}")
         raise typer.Exit(code=1) from None
 
     if result is None:
@@ -3048,6 +3227,15 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
 
     typer.echo(f"{ticket.id}: {old_status} → {new_status} — {ticket.title}")
 
+    # Show newly unblocked tickets when closing
+    if new_status == "closed":
+        unblocked = find_newly_unblocked(ticket.id, base)
+        if unblocked:
+            typer.echo("")
+            typer.echo(f"Unblocked {len(unblocked)} ticket(s):")
+            for t in unblocked:
+                typer.echo(f"  {t.id} [P{t.priority}] — {t.title}")
+
 
 @ticket_app.command("start", help="Mark a ticket as in_progress.")
 def ticket_start(
@@ -3057,11 +3245,95 @@ def ticket_start(
     update_ticket_status(ticket_id, "in_progress")
 
 
+@ticket_app.command("current", help="Show the in-progress ticket for this branch.")
+def ticket_current(
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+) -> None:
+    """Find and display the ticket currently marked as in_progress on this branch."""
+    base = Path.cwd()
+
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError:
+        typer.echo("No active session. Use `kd start` first.")
+        raise typer.Exit(code=1) from None
+
+    tickets_dir = branch_root(base, feature) / "tickets"
+    if not tickets_dir.exists():
+        typer.echo("No in-progress ticket on this branch.")
+        raise typer.Exit(code=1)
+
+    in_progress = [t for t in list_tickets(tickets_dir) if t.status == "in_progress"]
+
+    if not in_progress:
+        typer.echo("No in-progress ticket on this branch.")
+        raise typer.Exit(code=1)
+
+    ticket = in_progress[0]
+    ticket_path = tickets_dir / f"{ticket.id}.md"
+
+    if output_json:
+        result_json = {
+            "id": ticket.id,
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "type": ticket.type,
+            "title": ticket.title,
+            "body": ticket.body,
+            "deps": [{"id": d, "status": resolve_dep_status(base, d)} for d in ticket.deps],
+            "links": ticket.links,
+            "created": ticket.created.isoformat(),
+            "assignee": ticket.assignee,
+            "path": str(ticket_path),
+        }
+        typer.echo(json.dumps(result_json, indent=2))
+    else:
+        console = Console()
+        console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
+        console.print(Rule(style="dim"))
+
+        status_colors = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
+        status_color = status_colors.get(ticket.status, "white")
+        console.print(
+            f"[bold]{ticket.id}[/bold]  "
+            f"[{status_color}]{ticket.status}[/{status_color}]  "
+            f"P{ticket.priority}  "
+            f"{ticket.type}"
+        )
+        if ticket.deps:
+            dep_parts = []
+            for dep_id in ticket.deps:
+                dep_status = resolve_dep_status(base, dep_id)
+                dep_color = status_colors.get(dep_status, "white")
+                dep_parts.append(f"{dep_id} [{dep_color}]{dep_status}[/{dep_color}]")
+            console.print(f"[dim]deps:[/dim] {', '.join(dep_parts)}")
+        if ticket.links:
+            links_str = ", ".join(ticket.links)
+            console.print(f"[dim]links:[/dim] {links_str}")
+        if ticket.assignee:
+            console.print(f"[dim]assignee:[/dim] {ticket.assignee}")
+        console.print(f"[dim]created:[/dim] {ticket.created.strftime('%Y-%m-%d')}")
+        console.print()
+
+        console.print(Markdown(f"# {ticket.title}\n\n{ticket.body}"))
+
+
 @ticket_app.command("close", help="Mark a ticket as closed.")
 def ticket_close(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    reason: Annotated[
+        str | None, typer.Option("--reason", "-m", help="Reason for closing (appended to worklog).")
+    ] = None,
 ) -> None:
     """Set ticket status to closed."""
+    if reason:
+        from kingdom.harness import append_worklog
+
+        base = Path.cwd()
+        result = find_ticket(base, ticket_id)
+        if result is not None:
+            _, ticket_path = result
+            append_worklog(ticket_path, f"Closed: {reason}")
     update_ticket_status(ticket_id, "closed")
 
 
@@ -3086,7 +3358,7 @@ def ticket_dep(
         result = find_ticket(base, ticket_id)
         dep_result = find_ticket(base, depends_on)
     except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
+        print_error(f"{e}")
         raise typer.Exit(code=1) from None
 
     if result is None:
@@ -3119,7 +3391,7 @@ def ticket_undep(
     try:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
+        print_error(f"{e}")
         raise typer.Exit(code=1) from None
 
     if result is None:
@@ -3152,7 +3424,7 @@ def ticket_assign(
     try:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
+        print_error(f"{e}")
         raise typer.Exit(code=1) from None
 
     if result is None:
@@ -3175,7 +3447,7 @@ def ticket_unassign(
     try:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
+        print_error(f"{e}")
         raise typer.Exit(code=1) from None
 
     if result is None:
@@ -3219,7 +3491,7 @@ def ticket_move(
         try:
             target = resolve_current_run(base)
         except RuntimeError:
-            typer.echo("Error: No current branch active. Use --to <branch> or run `kd start` first.")
+            print_error("No current branch active. Use --to <branch> or run `kd start` first.")
             raise typer.Exit(code=1) from None
 
     if target.lower() == "backlog":
@@ -3236,7 +3508,7 @@ def ticket_move(
         try:
             result = find_ticket(base, tid)
         except AmbiguousTicketMatch as e:
-            typer.echo(f"Error: {e}")
+            print_error(f"{e}")
             raise typer.Exit(code=1) from None
 
         if result is None:
@@ -3269,7 +3541,7 @@ def ticket_pull(
         raise typer.Exit(code=1) from None
 
     if not ticket_ids:
-        typer.echo("Error: at least one ticket ID is required")
+        print_error("at least one ticket ID is required")
         raise typer.Exit(code=1)
 
     dest_dir = get_tickets_dir(base)
@@ -3360,10 +3632,35 @@ def ticket_ready(
         typer.echo(json.dumps(results, indent=2))
     else:
         if not ready_tickets:
-            typer.echo("No ready tickets.")
+            typer.echo('No ready tickets. Create one with `kd tk create "title"` or check deps with `kd tk list`.')
             return
         for ticket, _ in ready_tickets:
             typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}] - {ticket.title}")
+
+
+@ticket_app.command("log", help="Append a worklog entry to a ticket.")
+def ticket_log(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    message: Annotated[str, typer.Argument(help="Worklog message to append.")],
+) -> None:
+    """Append a timestamped journal entry to the ticket's Worklog section."""
+    from kingdom.ticket import append_worklog_entry
+
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+    entry = append_worklog_entry(ticket_path, message)
+    typer.echo(f"{ticket.id}: {entry}")
 
 
 @ticket_app.command("edit", help="Open a ticket in $EDITOR.")
@@ -3376,7 +3673,7 @@ def ticket_edit(
     try:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
-        typer.echo(f"Error: {e}")
+        print_error(f"{e}")
         raise typer.Exit(code=1) from None
 
     if result is None:

@@ -10,6 +10,8 @@ import pytest
 from kingdom.ticket import (
     AmbiguousTicketMatch,
     Ticket,
+    append_worklog_entry,
+    find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
     get_ticket_location,
@@ -936,3 +938,245 @@ class TestGetTicketLocation:
 
         with pytest.raises(AmbiguousTicketMatch):
             get_ticket_location(tmp_path, "ab")
+
+
+class TestFindNewlyUnblocked:
+    """Tests for find_newly_unblocked function."""
+
+    def setup_branch(self, base: Path) -> Path:
+        """Set up branch structure and return tickets dir."""
+        from kingdom.state import ensure_base_layout, ensure_branch_layout
+
+        ensure_base_layout(base)
+        ensure_branch_layout(base, "test-branch")
+        tickets_dir = base / ".kd" / "branches" / "test-branch" / "tickets"
+        return tickets_dir
+
+    def test_single_dep_unblocked(self, tmp_path: Path) -> None:
+        """Closing the only dep unblocks the dependent ticket."""
+        tickets_dir = self.setup_branch(tmp_path)
+        created = datetime.now(UTC)
+
+        blocker = Ticket(id="blk1", status="closed", title="Blocker", body="", created=created)
+        dependent = Ticket(id="dep1", status="open", title="Dependent", body="", deps=["blk1"], created=created)
+        write_ticket(blocker, tickets_dir / "blk1.md")
+        write_ticket(dependent, tickets_dir / "dep1.md")
+
+        result = find_newly_unblocked("blk1", tmp_path)
+        assert len(result) == 1
+        assert result[0].id == "dep1"
+
+    def test_not_unblocked_with_remaining_deps(self, tmp_path: Path) -> None:
+        """Ticket is NOT unblocked if it has other open deps."""
+        tickets_dir = self.setup_branch(tmp_path)
+        created = datetime.now(UTC)
+
+        closed_blocker = Ticket(id="cb01", status="closed", title="Closed", body="", created=created)
+        open_blocker = Ticket(id="ob01", status="open", title="Still open", body="", created=created)
+        dependent = Ticket(
+            id="dep2", status="open", title="Needs both", body="", deps=["cb01", "ob01"], created=created
+        )
+        write_ticket(closed_blocker, tickets_dir / "cb01.md")
+        write_ticket(open_blocker, tickets_dir / "ob01.md")
+        write_ticket(dependent, tickets_dir / "dep2.md")
+
+        result = find_newly_unblocked("cb01", tmp_path)
+        assert len(result) == 0
+
+    def test_closed_dependents_excluded(self, tmp_path: Path) -> None:
+        """Already-closed dependents are excluded from unblocked list."""
+        tickets_dir = self.setup_branch(tmp_path)
+        created = datetime.now(UTC)
+
+        blocker = Ticket(id="blk3", status="closed", title="Blocker", body="", created=created)
+        closed_dep = Ticket(
+            id="cd01", status="closed", title="Already done", body="", deps=["blk3"], created=created
+        )
+        write_ticket(blocker, tickets_dir / "blk3.md")
+        write_ticket(closed_dep, tickets_dir / "cd01.md")
+
+        result = find_newly_unblocked("blk3", tmp_path)
+        assert len(result) == 0
+
+    def test_no_dependents(self, tmp_path: Path) -> None:
+        """Returns empty list when no tickets depend on the closed one."""
+        tickets_dir = self.setup_branch(tmp_path)
+        created = datetime.now(UTC)
+
+        standalone = Ticket(id="solo", status="closed", title="Solo", body="", created=created)
+        other = Ticket(id="oth1", status="open", title="Other", body="", created=created)
+        write_ticket(standalone, tickets_dir / "solo.md")
+        write_ticket(other, tickets_dir / "oth1.md")
+
+        result = find_newly_unblocked("solo", tmp_path)
+        assert len(result) == 0
+
+    def test_multiple_unblocked(self, tmp_path: Path) -> None:
+        """Multiple tickets can be unblocked by closing one blocker."""
+        tickets_dir = self.setup_branch(tmp_path)
+        created = datetime.now(UTC)
+
+        blocker = Ticket(id="blk5", status="closed", title="Blocker", body="", created=created)
+        dep_a = Ticket(id="da01", status="open", title="Task A", body="", deps=["blk5"], created=created)
+        dep_b = Ticket(id="db01", status="open", title="Task B", body="", deps=["blk5"], created=created)
+        write_ticket(blocker, tickets_dir / "blk5.md")
+        write_ticket(dep_a, tickets_dir / "da01.md")
+        write_ticket(dep_b, tickets_dir / "db01.md")
+
+        result = find_newly_unblocked("blk5", tmp_path)
+        assert len(result) == 2
+        result_ids = {t.id for t in result}
+        assert result_ids == {"da01", "db01"}
+
+
+class TestAppendWorklogEntry:
+    """Tests for append_worklog_entry function."""
+
+    def test_creates_worklog_section_when_missing(self, tmp_path: Path) -> None:
+        """Creates ## Worklog section if it doesn't exist."""
+        ticket = Ticket(
+            id="wl01",
+            status="open",
+            title="Test ticket",
+            body="## Acceptance Criteria\n\n- [ ] Done",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+        )
+        path = tmp_path / "wl01.md"
+        write_ticket(ticket, path)
+
+        ts = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
+        entry = append_worklog_entry(path, "Started implementation", timestamp=ts)
+
+        assert entry == "- 2026-02-10 14:30 — Started implementation"
+
+        content = path.read_text()
+        assert "## Worklog" in content
+        assert "- 2026-02-10 14:30 — Started implementation" in content
+
+    def test_appends_to_existing_worklog_section(self, tmp_path: Path) -> None:
+        """Appends entry to an existing ## Worklog section."""
+        ticket = Ticket(
+            id="wl02",
+            status="open",
+            title="Test ticket",
+            body="## Acceptance Criteria\n\n- [ ] Done",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+        )
+        path = tmp_path / "wl02.md"
+        write_ticket(ticket, path)
+
+        ts1 = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
+        ts2 = datetime(2026, 2, 10, 15, 0, 0, tzinfo=UTC)
+        append_worklog_entry(path, "First entry", timestamp=ts1)
+        append_worklog_entry(path, "Second entry", timestamp=ts2)
+
+        content = path.read_text()
+        assert "- 2026-02-10 14:30 — First entry" in content
+        assert "- 2026-02-10 15:00 — Second entry" in content
+
+        # Entries should appear in order
+        first_pos = content.index("First entry")
+        second_pos = content.index("Second entry")
+        assert first_pos < second_pos
+
+    def test_preserves_existing_content(self, tmp_path: Path) -> None:
+        """Existing ticket content is preserved after appending worklog."""
+        ticket = Ticket(
+            id="wl03",
+            status="open",
+            title="Preserve me",
+            body="## Acceptance Criteria\n\n- [ ] Item 1\n- [ ] Item 2",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+        )
+        path = tmp_path / "wl03.md"
+        write_ticket(ticket, path)
+
+        ts = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
+        append_worklog_entry(path, "Work done", timestamp=ts)
+
+        content = path.read_text()
+        assert "# Preserve me" in content
+        assert "## Acceptance Criteria" in content
+        assert "- [ ] Item 1" in content
+        assert "- [ ] Item 2" in content
+
+    def test_file_not_found(self, tmp_path: Path) -> None:
+        """Raises FileNotFoundError for missing file."""
+        with pytest.raises(FileNotFoundError):
+            append_worklog_entry(tmp_path / "nonexistent.md", "message")
+
+    def test_file_ends_with_newline(self, tmp_path: Path) -> None:
+        """File always ends with a newline after appending."""
+        ticket = Ticket(
+            id="wl04",
+            status="open",
+            title="Newline check",
+            body="Body",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+        )
+        path = tmp_path / "wl04.md"
+        write_ticket(ticket, path)
+
+        ts = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
+        append_worklog_entry(path, "Entry", timestamp=ts)
+
+        content = path.read_text()
+        assert content.endswith("\n")
+
+    def test_worklog_before_other_section(self, tmp_path: Path) -> None:
+        """When worklog is followed by another section, entries insert correctly."""
+        content = """---
+id: "wl05"
+status: open
+deps: []
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 2
+---
+# Test
+
+## Worklog
+
+- 2026-02-10 14:00 — Existing entry
+
+## Notes
+
+Some notes here.
+"""
+        path = tmp_path / "wl05.md"
+        path.write_text(content)
+
+        ts = datetime(2026, 2, 10, 15, 0, 0, tzinfo=UTC)
+        append_worklog_entry(path, "New entry", timestamp=ts)
+
+        updated = path.read_text()
+        assert "- 2026-02-10 14:00 — Existing entry" in updated
+        assert "- 2026-02-10 15:00 — New entry" in updated
+        assert "## Notes" in updated
+        assert "Some notes here." in updated
+
+        # New entry should come after existing entry but before ## Notes
+        existing_pos = updated.index("Existing entry")
+        new_pos = updated.index("New entry")
+        notes_pos = updated.index("## Notes")
+        assert existing_pos < new_pos < notes_pos
+
+    def test_default_timestamp_is_utc_now(self, tmp_path: Path) -> None:
+        """When no timestamp provided, uses current UTC time."""
+        ticket = Ticket(
+            id="wl06",
+            status="open",
+            title="Time check",
+            body="",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+        )
+        path = tmp_path / "wl06.md"
+        write_ticket(ticket, path)
+
+        before = datetime.now(UTC)
+        entry = append_worklog_entry(path, "Auto-timestamp")
+        after = datetime.now(UTC)
+
+        # Entry should contain a timestamp within the test window
+        assert before.strftime("%Y-%m-%d %H:%M") in entry or after.strftime("%Y-%m-%d %H:%M") in entry
