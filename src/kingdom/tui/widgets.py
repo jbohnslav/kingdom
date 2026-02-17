@@ -449,3 +449,79 @@ class ThinkingPanel(Static):
         else:
             self.border_title = f"\u25b6 {self.sender} thinking \u00b7 {n:,} chars \u00b7 {format_elapsed(elapsed)}"
             self.update("")
+
+
+# ---------------------------------------------------------------------------
+# Slash command definitions and hint bar
+# ---------------------------------------------------------------------------
+
+SLASH_COMMANDS: list[tuple[str, str]] = [
+    ("/help", "show this help"),
+    ("/h", "show this help (shortcut)"),
+    ("/mute <member>", "exclude member from broadcast"),
+    ("/mute", "show currently muted members"),
+    ("/unmute <member>", "re-include member in broadcast"),
+    ("/quit", "quit kd chat"),
+    ("/exit", "quit kd chat"),
+]
+
+
+def match_commands(prefix: str) -> list[tuple[str, str]]:
+    """Return slash commands whose name starts with the given prefix.
+
+    The prefix is compared against the command word (the part before any
+    space / argument placeholder).  An empty prefix or bare "/" returns all
+    commands.
+    """
+    prefix = prefix.lower()
+    matches = []
+    for cmd, desc in SLASH_COMMANDS:
+        cmd_word = cmd.split()[0]
+        if cmd_word.startswith(prefix):
+            matches.append((cmd, desc))
+    return matches
+
+
+class CommandHintBar(Static):
+    """A hint bar that shows matching slash commands above the input area.
+
+    Hidden by default. Call show_hints() with a prefix to display
+    matching commands, or hide_hints() to remove it.
+    """
+
+    DEFAULT_CSS = """
+    CommandHintBar {
+        dock: bottom;
+        height: auto;
+        max-height: 6;
+        background: $surface;
+        color: $text-muted;
+        padding: 0 1;
+        display: none;
+    }
+    CommandHintBar.visible {
+        display: block;
+    }
+    """
+
+    def show_hints(self, prefix: str) -> None:
+        """Show commands matching prefix. Hides if none match."""
+        matches = match_commands(prefix)
+        if not matches:
+            self.hide_hints()
+            return
+        lines = [f"  {cmd}  {desc}" for cmd, desc in matches]
+        self.update("\n".join(lines))
+        self.add_class("visible")
+
+    def hide_hints(self) -> None:
+        """Hide the hint bar."""
+        self.remove_class("visible")
+        self.update("")
+
+    def first_match(self, prefix: str) -> str | None:
+        """Return the command word of the first matching command, or None."""
+        matches = match_commands(prefix)
+        if not matches:
+            return None
+        return matches[0][0].split()[0]

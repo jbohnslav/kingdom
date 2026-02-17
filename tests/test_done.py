@@ -297,3 +297,33 @@ def test_done_force_overrides_open_ticket_check() -> None:
         assert state["status"] == "done"
         assert "done_at" in state
         assert not (base / ".kd" / "current").exists()
+
+
+def test_done_renders_rich_panel() -> None:
+    """kd done should render output inside a Rich panel with box-drawing characters."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        tickets_dir = branch_dir / "tickets"
+
+        # Create 2 closed tickets
+        for i in range(2):
+            write_ticket(
+                Ticket(id=f"t{i:03d}", status="closed", title=f"Ticket {i}", created=datetime.now(UTC)),
+                tickets_dir / f"t{i:03d}.md",
+            )
+
+        result = runner.invoke(cli.app, ["done"])
+
+        assert result.exit_code == 0
+        # Panel box-drawing characters present (top-left corner of rounded box)
+        assert "\u256d" in result.output
+        # Panel title contains branch name
+        assert "Done: test-feature" in result.output
+        # Panel body
+        assert "2 tickets closed" in result.output
+        assert "Session cleared" in result.output

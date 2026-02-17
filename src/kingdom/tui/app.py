@@ -29,7 +29,15 @@ from kingdom.thread import (
 )
 
 from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller
-from .widgets import ErrorPanel, MessagePanel, StreamingPanel, ThinkingPanel, WaitingPanel, format_reply_text
+from .widgets import (
+    CommandHintBar,
+    ErrorPanel,
+    MessagePanel,
+    StreamingPanel,
+    ThinkingPanel,
+    WaitingPanel,
+    format_reply_text,
+)
 
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
@@ -158,22 +166,46 @@ class InputArea(TextArea):
         await super()._on_key(event)
 
     def handle_tab_complete(self) -> None:
-        """Complete @mention at cursor position, cycling through matches on repeated Tab."""
+        """Complete @mention or /command at cursor position, cycling on repeated Tab."""
+        from .widgets import match_commands
+
         if self.tab_candidates:
             # Cycling: replace the previously inserted completion with the next one
             self.tab_index = (self.tab_index + 1) % len(self.tab_candidates)
             candidate = self.tab_candidates[self.tab_index]
-            # Replace from @ to current cursor position
             row, col = self.cursor_location
             start = self.tab_prefix_start
-            self.replace(f"@{candidate} ", start, (row, col), maintain_selection_offset=False)
+            if self.tab_prefix.startswith("/"):
+                self.replace(f"{candidate} ", start, (row, col), maintain_selection_offset=False)
+            else:
+                self.replace(f"@{candidate} ", start, (row, col), maintain_selection_offset=False)
             return
 
-        # First Tab press: find @partial at cursor
+        # First Tab press: determine if completing a slash command or @mention
         row, col = self.cursor_location
         line = self.document.get_line(row)
         text_before_cursor = line[:col]
 
+        # Slash command completion (first line, starts with /, no spaces yet)
+        if row == 0 and text_before_cursor.startswith("/") and " " not in text_before_cursor:
+            matches = match_commands(text_before_cursor)
+            if matches:
+                # Deduplicate command words while preserving order
+                seen: set[str] = set()
+                candidates: list[str] = []
+                for cmd, _desc in matches:
+                    word = cmd.split()[0]
+                    if word not in seen:
+                        seen.add(word)
+                        candidates.append(word)
+                self.tab_candidates = candidates
+                self.tab_index = 0
+                self.tab_prefix_start = (0, 0)
+                self.tab_prefix = text_before_cursor
+                self.replace(f"{candidates[0]} ", (0, 0), (row, col), maintain_selection_offset=False)
+            return
+
+        # @mention completion
         match = re.search(r"@(\w*)$", text_before_cursor)
         if not match:
             return
@@ -255,6 +287,7 @@ class ChatApp(App):
         )
         yield MessageLog(id="message-log")
         yield StatusBar("Esc: interrupt/quit · Enter: send · Tab: @complete · Ctrl+T: thinking")
+        yield CommandHintBar(id="command-hints")
         yield InputArea(member_names=self.member_names, id="input-area")
 
     def on_mount(self) -> None:
@@ -452,6 +485,19 @@ class ChatApp(App):
     def on_input_area_submit(self, _: InputArea.Submit) -> None:
         """Handle submit events from the input widget."""
         self.send_message()
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Show/hide slash command hints as the user types."""
+        hint_bar = self.query_one("#command-hints", CommandHintBar)
+        text = event.text_area.text
+        # Only the first line matters for slash command detection
+        first_line = text.split("\n", 1)[0]
+
+        if first_line.startswith("/") and " " not in first_line:
+            # User is typing a slash command prefix — show matching hints
+            hint_bar.show_hints(first_line)
+        else:
+            hint_bar.hide_hints()
 
     def on_message_panel_reply(self, event: MessagePanel.Reply) -> None:
         """Handle reply: prefill input with @mention and quoted excerpt."""
@@ -717,7 +763,7 @@ class ChatApp(App):
             "Esc: interrupt running queries / quit\n"
             "Enter: send message\n"
             "Shift+Enter: newline\n"
-            "Tab: autocomplete @mention (cycle with repeated Tab)\n"
+            "Tab: autocomplete @mention or /command (cycle with repeated Tab)\n"
             "End: jump to bottom (re-engage auto-follow)\n"
             "Ctrl+T: toggle thinking visibility (auto/show/hide)\n"
             "@member: direct message\n"
