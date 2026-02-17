@@ -570,11 +570,11 @@ def council_reset(
             raise typer.Exit(code=1)
         m.reset_session()
         c.save_sessions(base, feature)
-        typer.echo(f"Session cleared for {member_name}.")
+        typer.echo(f"Session cleared for {member_name}")
     else:
         c.reset_sessions()
         c.save_sessions(base, feature)
-        typer.echo("All sessions cleared.")
+        typer.echo("All sessions cleared")
 
 
 def group_messages_into_turns(messages: list) -> list[list]:
@@ -1401,7 +1401,7 @@ def design_approve() -> None:
     state = read_json(state_path) if state_path.exists() else {}
     state["design_approved"] = True
     write_json(state_path, state)
-    typer.echo("Design approved.")
+    typer.echo("Design approved")
 
 
 @app.command(help="Draft or iterate the current breakdown.")
@@ -1917,7 +1917,7 @@ def peasant_stop(
     # Send SIGTERM
     try:
         os.kill(state.pid, signal.SIGTERM)
-        typer.echo(f"Sent SIGTERM to peasant {full_ticket_id} (pid {state.pid})")
+        typer.echo(f"{full_ticket_id}: sent SIGTERM (pid {state.pid})")
     except OSError as e:
         typer.echo(f"Process {state.pid} not found: {e}")
 
@@ -1942,7 +1942,7 @@ def peasant_clean(
 
     try:
         remove_worktree(ctx.base, ctx.full_ticket_id)
-        typer.echo(f"Removed worktree for {ctx.full_ticket_id}")
+        typer.echo(f"{ctx.full_ticket_id}: worktree removed")
     except FileNotFoundError:
         typer.echo(f"No worktree found for {ctx.full_ticket_id}")
         raise typer.Exit(code=1) from None
@@ -2021,7 +2021,7 @@ def peasant_sync(
             if init_result.stderr.strip():
                 typer.echo(init_result.stderr.strip())
 
-    typer.echo(f"Sync complete for {full_ticket_id}")
+    typer.echo(f"{full_ticket_id}: sync complete")
 
 
 @peasant_app.command("msg", help="Send a directive to a working peasant.")
@@ -2043,7 +2043,7 @@ def peasant_msg(
         typer.echo(f"No work thread found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1) from None
 
-    typer.echo(f"Directive sent to {full_ticket_id}")
+    typer.echo(f"{full_ticket_id}: directive sent")
 
     # Warn if peasant is not running
     from kingdom.session import get_agent_state
@@ -2739,7 +2739,7 @@ def migrate(
     if dry_run:
         typer.echo("\nDry run complete. Run with --apply to execute.")
     else:
-        typer.echo(f"Migrated: {renamed} files renamed, {rewritten} files rewritten")
+        typer.echo(f"Migrated {renamed} files renamed, {rewritten} files rewritten")
 
 
 # Ticket subcommand group
@@ -3416,9 +3416,9 @@ def ticket_dep(
     if dep_ticket.id not in ticket.deps:
         ticket.deps.append(dep_ticket.id)
         write_ticket(ticket, ticket_path)
-        typer.echo(f"{ticket.id} now depends on {dep_ticket.id}")
+        typer.echo(f"{ticket.id}: now depends on {dep_ticket.id}")
     else:
-        typer.echo(f"{ticket.id} already depends on {dep_ticket.id}")
+        typer.echo(f"{ticket.id}: already depends on {dep_ticket.id}")
 
 
 @ticket_app.command("undep", help="Remove a dependency from a ticket.")
@@ -3449,7 +3449,7 @@ def ticket_undep(
 
     for dep_id in matching_deps:
         ticket.deps.remove(dep_id)
-        typer.echo(f"Removed dependency {ticket.id} → {dep_id}")
+        typer.echo(f"{ticket.id}: removed dependency → {dep_id}")
 
     write_ticket(ticket, ticket_path)
 
@@ -3475,7 +3475,7 @@ def ticket_assign(
     ticket, ticket_path = result
     ticket.assignee = agent
     write_ticket(ticket, ticket_path)
-    typer.echo(f"{ticket.id} assigned to {agent}")
+    typer.echo(f"{ticket.id}: assigned to {agent}")
 
 
 @ticket_app.command("unassign", help="Clear ticket assignment.")
@@ -3498,7 +3498,7 @@ def ticket_unassign(
     ticket, ticket_path = result
     ticket.assignee = None
     write_ticket(ticket, ticket_path)
-    typer.echo(f"{ticket.id} unassigned")
+    typer.echo(f"{ticket.id}: unassigned")
 
 
 @ticket_app.command("move", help="Move a ticket to another branch.")
@@ -3612,7 +3612,7 @@ def ticket_pull(
     # Pass 2: move all validated tickets
     for ticket, ticket_path in validated:
         move_ticket(ticket_path, dest_dir)
-        typer.echo(f"Pulled {ticket.id}: {ticket.title}")
+        typer.echo(f"Pulled {ticket.id} — {ticket.title}")
 
 
 @ticket_app.command("ready", help="List tickets ready to work on.")

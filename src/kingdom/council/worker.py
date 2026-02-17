@@ -17,6 +17,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from rich.console import Console
+
 from kingdom.council.council import Council
 from kingdom.state import logs_root
 from kingdom.thread import add_message
@@ -44,7 +46,7 @@ def main(argv: list[str] | None = None) -> None:
 
         member = c.get_member(args.to_member)
         if member is None:
-            print(f"Unknown member: {args.to_member}", file=sys.stderr)
+            Console(stderr=True).print(f"[red]Unknown member: {args.to_member}[/red]")
             sys.exit(1)
 
         tdir = thread_dir(args.base, args.feature, args.thread_id)

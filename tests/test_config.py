@@ -15,17 +15,16 @@ from kingdom.config import (
 class TestDefaultConfig:
     def test_has_three_agents(self) -> None:
         cfg = default_config()
-        assert set(cfg.agents) == {"claude", "codex", "cursor"}
+        assert set(cfg.agents) == {"claude", "codex"}
 
     def test_agent_backends(self) -> None:
         cfg = default_config()
         assert cfg.agents["claude"].backend == "claude_code"
         assert cfg.agents["codex"].backend == "codex"
-        assert cfg.agents["cursor"].backend == "cursor"
 
     def test_council_defaults(self) -> None:
         cfg = default_config()
-        assert set(cfg.council.members) == {"claude", "codex", "cursor"}
+        assert set(cfg.council.members) == {"claude", "codex"}
         assert cfg.council.timeout == 600
         assert cfg.council.auto_messages == -1
         assert cfg.council.mode == "broadcast"
@@ -48,23 +47,22 @@ class TestDefaultConfig:
 class TestValidateConfig:
     def test_empty_dict_returns_defaults(self) -> None:
         cfg = validate_config({})
-        assert set(cfg.agents) == {"claude", "codex", "cursor"}
+        assert set(cfg.agents) == {"claude", "codex"}
         assert cfg.peasant.agent == "claude"
 
     def test_custom_agents(self) -> None:
         data = {
             "agents": {
                 "claude": {"backend": "claude_code", "model": "opus-4-6"},
-                "local": {"backend": "cursor", "prompt": "Be concise."},
+                "local": {"backend": "codex", "prompt": "Be concise."},
             }
         }
         cfg = validate_config(data)
         assert cfg.agents["claude"].model == "opus-4-6"
-        assert cfg.agents["local"].backend == "cursor"
+        assert cfg.agents["local"].backend == "codex"
         assert cfg.agents["local"].prompt == "Be concise."
         # Defaults still present
         assert "codex" in cfg.agents
-        assert "cursor" in cfg.agents
 
     def test_agent_extra_flags(self) -> None:
         data = {"agents": {"claude": {"backend": "claude_code", "extra_flags": ["--verbose", "--no-cache"]}}}
@@ -120,14 +118,14 @@ class TestValidateConfig:
     def test_council_new_fields_preserved_when_members_defaulted(self) -> None:
         data = {"council": {"auto_messages": 7, "mode": "sequential", "preamble": "Custom."}}
         cfg = validate_config(data)
-        assert set(cfg.council.members) == {"claude", "codex", "cursor"}
+        assert set(cfg.council.members) == {"claude", "codex"}
         assert cfg.council.auto_messages == 7
         assert cfg.council.mode == "sequential"
         assert cfg.council.preamble == "Custom."
 
     def test_council_members_default_to_all_agents(self) -> None:
         cfg = validate_config({})
-        assert set(cfg.council.members) == {"claude", "codex", "cursor"}
+        assert set(cfg.council.members) == {"claude", "codex"}
 
     def test_peasant_config(self) -> None:
         data = {"peasant": {"agent": "codex", "timeout": 1200, "max_iterations": 100}}
@@ -286,14 +284,14 @@ class TestLoadConfig:
     def test_no_file_returns_defaults(self, tmp_path: Path) -> None:
         (tmp_path / ".kd").mkdir()
         cfg = load_config(tmp_path)
-        assert set(cfg.agents) == {"claude", "codex", "cursor"}
+        assert set(cfg.agents) == {"claude", "codex"}
 
     def test_empty_file_returns_defaults(self, tmp_path: Path) -> None:
         kd = tmp_path / ".kd"
         kd.mkdir()
         (kd / "config.json").write_text("{}")
         cfg = load_config(tmp_path)
-        assert set(cfg.agents) == {"claude", "codex", "cursor"}
+        assert set(cfg.agents) == {"claude", "codex"}
 
     def test_valid_config_file(self, tmp_path: Path) -> None:
         kd = tmp_path / ".kd"

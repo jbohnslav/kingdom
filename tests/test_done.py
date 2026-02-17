@@ -77,7 +77,8 @@ def test_done_marks_state_and_clears_current() -> None:
         result = runner.invoke(cli.app, ["done"])
 
         assert result.exit_code == 0
-        assert "Done: 'test-feature'" in result.output
+        assert "Done:" in result.output
+        assert "test-feature" in result.output
 
         # Branch directory still exists (status-only, no move)
         branch_dir = branch_root(base, "test-feature")
@@ -120,7 +121,8 @@ def test_done_with_explicit_feature() -> None:
         result = runner.invoke(cli.app, ["done", "explicit-feature"])
 
         assert result.exit_code == 0
-        assert "Done: 'explicit-feature'" in result.output
+        assert "Done:" in result.output
+        assert "explicit-feature" in result.output
 
         # state.json updated in place
         state = read_json(branch_root(base, "explicit-feature") / "state.json")
@@ -228,7 +230,8 @@ def test_done_with_legacy_runs_structure() -> None:
         result = runner.invoke(cli.app, ["done"])
 
         assert result.exit_code == 0
-        assert "Done: 'legacy-feature'" in result.output
+        assert "Done:" in result.output
+        assert "legacy-feature" in result.output
 
         # state.json updated in the legacy location
         legacy_dir = state_root(base) / "runs" / "legacy-feature"
@@ -260,8 +263,10 @@ def test_done_blocks_when_branch_has_open_tickets() -> None:
 
         assert result.exit_code == 1
         assert "Error: 2 open ticket(s) on 'test-feature':" in result.output
-        assert "kin-open1 [open] Open ticket" in result.output
-        assert "kin-prog1 [in_progress] In progress ticket" in result.output
+        assert "kin-open1" in result.output
+        assert "Open ticket" in result.output
+        assert "kin-prog1" in result.output
+        assert "In progress ticket" in result.output
         assert "Close tickets, move them to backlog with `kd tk move`, or use --force." in result.output
 
         state = read_json(branch_dir / "state.json")
@@ -287,7 +292,7 @@ def test_done_force_overrides_open_ticket_check() -> None:
         result = runner.invoke(cli.app, ["done", "--force"])
 
         assert result.exit_code == 0
-        assert "Done: 'test-feature'" in result.output
+        assert "Done: test-feature" in result.output
         state = read_json(branch_dir / "state.json")
         assert state["status"] == "done"
         assert "done_at" in state

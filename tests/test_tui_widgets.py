@@ -12,6 +12,7 @@ from kingdom.tui.widgets import (
     WaitingPanel,
     color_for_member,
     format_elapsed,
+    format_error_body,
 )
 
 
@@ -161,6 +162,55 @@ class TestWaitingPanel:
         assert panel.sender == "codex"
 
 
+class TestFormatErrorBody:
+    """Tests for format_error_body — user-friendly error display."""
+
+    def test_timeout_shows_detail_and_retry_hint(self) -> None:
+        body = format_error_body("*Error: Timeout after 600s*", "claude", timed_out=True, interrupted=False)
+        assert "**Timed out**" in body
+        assert "Timeout after 600s" in body
+        assert "@claude" in body
+        assert "Retry:" in body
+
+    def test_generic_error_shows_detail_and_retry_hint(self) -> None:
+        body = format_error_body("*Error: Connection refused*", "codex", timed_out=False, interrupted=False)
+        assert "**Error**" in body
+        assert "Connection refused" in body
+        assert "kd council status" in body
+        assert "Retry:" in body
+
+    def test_empty_response_shows_specific_hint(self) -> None:
+        body = format_error_body(
+            "*Empty response — no text or error returned.*", "cursor", timed_out=False, interrupted=False
+        )
+        assert "**Empty response**" in body
+        assert "@cursor" in body
+        assert "Retry:" in body
+
+    def test_interrupted_returns_raw_error(self) -> None:
+        """Interrupted messages should pass through without extra noise."""
+        body = format_error_body("*Interrupted*", "claude", timed_out=False, interrupted=True)
+        assert body == "*Interrupted*"
+
+    def test_interrupted_with_partial_text(self) -> None:
+        raw = "Some partial text\n\n*[Interrupted — response may be incomplete]*"
+        body = format_error_body(raw, "claude", timed_out=False, interrupted=True)
+        assert body == raw
+
+    def test_error_detail_extraction_strips_markers(self) -> None:
+        """The *Error: ...* wrapper should be stripped from the detail."""
+        body = format_error_body("*Error: Process exited with code 1*", "codex", timed_out=False, interrupted=False)
+        assert "Process exited with code 1" in body
+        # Should NOT contain the raw markers
+        assert body.count("*Error:") == 0
+
+    def test_error_body_is_multiline(self) -> None:
+        """Error body should have the detail on one line and retry on another."""
+        body = format_error_body("*Error: something broke*", "claude", timed_out=False, interrupted=False)
+        lines = body.strip().splitlines()
+        assert len(lines) >= 2  # At least detail + retry hint
+
+
 class TestErrorPanel:
     def test_stores_error(self) -> None:
         panel = ErrorPanel(sender="cursor", error="Timeout after 600s")
@@ -215,3 +265,129 @@ class TestThinkingPanel:
         panel.on_click()
         assert panel.expanded is True
         assert panel.user_pinned is True
+
+
+class TestColoredMentionMarkdown:
+    """Tests for @mention coloring in rendered messages."""
+
+    def test_creates_with_member_names(self) -> None:
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("Hello @claude", ["claude", "codex"])
+        assert "claude" in cmm.member_colors
+        assert "codex" in cmm.member_colors
+        assert "all" in cmm.member_colors
+        assert "king" in cmm.member_colors
+
+    def test_pattern_matches_known_members(self) -> None:
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("Hello @claude and @codex", ["claude", "codex"])
+        assert cmm.pattern is not None
+        matches = cmm.pattern.findall("Hello @claude and @codex")
+        assert "claude" in matches
+        assert "codex" in matches
+
+    def test_pattern_does_not_match_unknown(self) -> None:
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("Hello @unknown", ["claude"])
+        assert cmm.pattern is not None
+        matches = cmm.pattern.findall("Hello @unknown")
+        assert matches == []
+
+    def test_renders_segments(self) -> None:
+        """ColoredMentionMarkdown should yield Segment objects from __rich_console__."""
+        from rich.console import Console
+        from rich.segment import Segment
+
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("Hello @claude world", ["claude"])
+        console = Console(force_terminal=True, width=80)
+        options = console.options
+
+        segments = list(cmm.__rich_console__(console, options))
+        assert len(segments) > 0
+        assert all(isinstance(s, Segment) for s in segments)
+
+    def test_mention_segment_has_bold_style(self) -> None:
+        """@mention segments should have bold=True in their style."""
+        from rich.console import Console
+        from rich.segment import Segment
+
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("@claude", ["claude"])
+        console = Console(force_terminal=True, width=80)
+        options = console.options
+
+        segments = list(cmm.__rich_console__(console, options))
+        mention_segs = [s for s in segments if isinstance(s, Segment) and "@claude" in s.text]
+        assert len(mention_segs) >= 1
+        for seg in mention_segs:
+            assert seg.style.bold is True
+
+    def test_plain_text_without_mentions_unchanged(self) -> None:
+        """Text without @mentions should render normally."""
+        from rich.console import Console
+        from rich.segment import Segment
+
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("Hello world", ["claude"])
+        console = Console(force_terminal=True, width=80)
+        options = console.options
+
+        segments = list(cmm.__rich_console__(console, options))
+        text_content = "".join(s.text for s in segments if isinstance(s, Segment))
+        assert "Hello world" in text_content
+
+    def test_empty_member_names(self) -> None:
+        """With no member names, should still render without errors."""
+        from rich.console import Console
+
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("Hello @nobody", [])
+        console = Console(force_terminal=True, width=80)
+        options = console.options
+
+        segments = list(cmm.__rich_console__(console, options))
+        assert len(segments) > 0
+
+    def test_at_all_gets_colored(self) -> None:
+        """@all should be colored (white/bold)."""
+        from rich.console import Console
+        from rich.segment import Segment
+
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("@all thoughts?", ["claude"])
+        console = Console(force_terminal=True, width=80)
+        options = console.options
+
+        segments = list(cmm.__rich_console__(console, options))
+        mention_segs = [s for s in segments if isinstance(s, Segment) and "@all" in s.text]
+        assert len(mention_segs) >= 1
+        for seg in mention_segs:
+            assert seg.style.bold is True
+
+
+class TestMessagePanelMemberNames:
+    """Tests for MessagePanel with member_names for @mention coloring."""
+
+    def test_stores_member_names(self) -> None:
+        panel = MessagePanel(sender="claude", body="Hello", member_names=["claude", "codex"])
+        assert panel.member_names == ["claude", "codex"]
+
+    def test_default_member_names_empty(self) -> None:
+        panel = MessagePanel(sender="claude", body="Hello")
+        assert panel.member_names == []
+
+    def test_backward_compatible_without_member_names(self) -> None:
+        """Old callers that don't pass member_names should still work."""
+        panel = MessagePanel(sender="king", body="Hello @claude")
+        assert panel.sender == "king"
+        assert panel.body == "Hello @claude"
+        assert panel.member_names == []

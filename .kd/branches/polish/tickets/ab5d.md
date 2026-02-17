@@ -1,6 +1,6 @@
 ---
 id: "ab5d"
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-02-16T11:54:37Z

@@ -157,7 +157,7 @@ class TestChatApp:
         assert app_instance.thread_id == "council-abc"
 
     def test_app_no_auto_scroll_attr(self) -> None:
-        """auto_scroll stub removed — anchor() handles scroll follow."""
+        """auto_scroll stub removed — anchor()/is_following handles scroll follow."""
         from kingdom.tui.app import ChatApp
 
         app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
@@ -168,6 +168,71 @@ class TestChatApp:
 
         app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
         assert app_instance.poller is None
+
+
+class TestMessageLogScroll:
+    """Test MessageLog smart scroll (is_following / anchor behavior)."""
+
+    def test_message_log_has_scroll_threshold(self) -> None:
+        """MessageLog should define a SCROLL_THRESHOLD class variable."""
+        from kingdom.tui.app import MessageLog
+
+        assert hasattr(MessageLog, "SCROLL_THRESHOLD")
+        assert isinstance(MessageLog.SCROLL_THRESHOLD, int)
+        assert MessageLog.SCROLL_THRESHOLD > 0
+
+    def test_is_following_true_when_anchor_not_released(self) -> None:
+        """is_following should be True when _anchor_released is False."""
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        log._anchored = True
+        log._anchor_released = False
+        assert log.is_following is True
+
+    def test_is_following_false_when_anchor_released(self) -> None:
+        """is_following should be False when the user has scrolled away from bottom."""
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        log._anchored = True
+        log._anchor_released = True
+        assert log.is_following is False
+
+    def test_update_status_bar_uses_is_following(self, project: Path) -> None:
+        """update_status_bar should use is_following (not _anchor_released directly)."""
+        from unittest.mock import MagicMock, PropertyMock
+
+        from kingdom.tui.app import ChatApp, MessageLog, StatusBar
+
+        tid = "council-scroll1"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Create mock log with is_following property and mock status bar
+        mock_log = MagicMock(spec=MessageLog)
+        mock_bar = MagicMock(spec=StatusBar)
+
+        def fake_query_one(sel_or_cls, cls=None):
+            """Route to mock_log or mock_bar based on the type/selector."""
+            if sel_or_cls is StatusBar:
+                return mock_bar
+            return mock_log
+
+        app_instance.query_one = fake_query_one
+
+        # When following: no "End: jump to bottom" hint
+        type(mock_log).is_following = PropertyMock(return_value=True)
+        app_instance.update_status_bar(mock_log)
+        update_text = mock_bar.update.call_args[0][0]
+        assert "End: jump to bottom" not in update_text
+
+        # When not following: show "End: jump to bottom" hint
+        type(mock_log).is_following = PropertyMock(return_value=False)
+        app_instance.update_status_bar(mock_log)
+        update_text = mock_bar.update.call_args[0][0]
+        assert "End: jump to bottom" in update_text
 
 
 class TestInputArea:
@@ -211,6 +276,120 @@ class TestInputArea:
         app_instance.on_input_area_submit(InputArea.Submit())
 
         assert calls == ["sent"]
+
+    def test_input_area_stores_member_names(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex"])
+        assert input_area.member_names == ["claude", "codex"]
+
+    def test_input_area_default_member_names(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea()
+        assert input_area.member_names == []
+
+    def test_tab_no_at_sign_does_nothing(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex"])
+        # Simulate typing "hello" then Tab
+        input_area.load_text("hello")
+        input_area.move_cursor((0, 5))
+        input_area.handle_tab_complete()
+        assert input_area.text == "hello"
+
+    def test_tab_completes_at_prefix(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex"])
+        input_area.load_text("@cl")
+        input_area.move_cursor((0, 3))
+        input_area.handle_tab_complete()
+        assert input_area.text == "@claude "
+
+    def test_tab_completes_bare_at(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex"])
+        input_area.load_text("@")
+        input_area.move_cursor((0, 1))
+        input_area.handle_tab_complete()
+        # First candidate should be first member
+        assert input_area.text == "@claude "
+
+    def test_tab_completes_at_all(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex"])
+        input_area.load_text("@al")
+        input_area.move_cursor((0, 3))
+        input_area.handle_tab_complete()
+        assert input_area.text == "@all "
+
+    def test_tab_cycles_through_candidates(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex", "cursor"])
+        input_area.load_text("@c")
+        input_area.move_cursor((0, 2))
+        # First Tab: complete to first match
+        input_area.handle_tab_complete()
+        first = input_area.text
+        assert first.startswith("@c")
+        # Second Tab: cycle to next match
+        input_area.handle_tab_complete()
+        second = input_area.text
+        assert second != first or len(input_area.tab_candidates) == 1
+
+    def test_tab_with_text_before_at(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex"])
+        input_area.load_text("Hey @cl")
+        input_area.move_cursor((0, 7))
+        input_area.handle_tab_complete()
+        assert input_area.text == "Hey @claude "
+
+    def test_tab_no_match_does_nothing(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex"])
+        input_area.load_text("@zzz")
+        input_area.move_cursor((0, 4))
+        input_area.handle_tab_complete()
+        assert input_area.text == "@zzz"
+
+    def test_non_tab_key_resets_completion_state(self) -> None:
+        import asyncio
+
+        from textual.events import Key
+
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude", "codex"])
+        input_area.tab_candidates = ["claude", "codex"]
+        input_area.tab_index = 1
+
+        # A non-tab key should reset completion state
+        asyncio.run(input_area._on_key(Key("a", "a")))
+        assert input_area.tab_candidates == []
+        assert input_area.tab_index == 0
+
+    def test_tab_key_intercepted(self) -> None:
+        import asyncio
+
+        from textual.events import Key
+
+        from kingdom.tui.app import InputArea
+
+        input_area = InputArea(member_names=["claude"])
+        input_area.load_text("@cl")
+        input_area.move_cursor((0, 3))
+
+        # Tab key should be intercepted and call handle_tab_complete
+        asyncio.run(input_area._on_key(Key("tab", None)))
+        assert input_area.text == "@claude "
 
 
 class TestParseTargets:
@@ -1508,3 +1687,276 @@ class TestCouncilCreateNewFields:
 
         council = Council.create(base=project)
         assert council.mode == "sequential"
+
+
+class TestToggleThinking:
+    """Test Ctrl+T thinking visibility toggle."""
+
+    def test_default_thinking_visibility(self) -> None:
+        from kingdom.tui.app import ChatApp
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        assert app_instance.thinking_visibility == "auto"
+
+    def test_toggle_cycles_auto_show_hide(self) -> None:
+        """action_toggle_thinking should cycle: auto -> show -> hide -> auto."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        app_instance.show_system_message = MagicMock()
+        app_instance.query = MagicMock(return_value=[])
+
+        assert app_instance.thinking_visibility == "auto"
+
+        app_instance.action_toggle_thinking()
+        assert app_instance.thinking_visibility == "show"
+
+        app_instance.action_toggle_thinking()
+        assert app_instance.thinking_visibility == "hide"
+
+        app_instance.action_toggle_thinking()
+        assert app_instance.thinking_visibility == "auto"
+
+    def test_toggle_shows_system_message(self) -> None:
+        """Each toggle should show a system message with the new mode."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        app_instance.show_system_message = MagicMock()
+        app_instance.query = MagicMock(return_value=[])
+
+        app_instance.action_toggle_thinking()
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "always show" in msg
+
+        app_instance.action_toggle_thinking()
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "hidden" in msg
+
+        app_instance.action_toggle_thinking()
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "auto" in msg
+
+    def test_toggle_hides_existing_panels(self) -> None:
+        """Toggling to 'hide' should set display=False on all ThinkingPanels."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+        from kingdom.tui.widgets import ThinkingPanel
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        app_instance.show_system_message = MagicMock()
+
+        panel1 = ThinkingPanel(sender="claude")
+        panel2 = ThinkingPanel(sender="codex")
+        app_instance.query = MagicMock(return_value=[panel1, panel2])
+
+        # Cycle to "show", then "hide"
+        app_instance.thinking_visibility = "show"
+        app_instance.action_toggle_thinking()
+        assert app_instance.thinking_visibility == "hide"
+
+        assert panel1.display is False
+        assert panel2.display is False
+
+    def test_toggle_shows_existing_panels(self) -> None:
+        """Toggling to 'show' should set display=True and expand non-pinned panels."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+        from kingdom.tui.widgets import ThinkingPanel
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        app_instance.show_system_message = MagicMock()
+
+        panel = ThinkingPanel(sender="claude")
+        panel.expanded = False
+        panel.display = False
+        app_instance.query = MagicMock(return_value=[panel])
+
+        # Cycle from auto to show
+        app_instance.action_toggle_thinking()
+        assert app_instance.thinking_visibility == "show"
+
+        assert panel.display is True
+        assert panel.expanded is True
+
+    def test_toggle_show_respects_user_pinned(self) -> None:
+        """Toggling to 'show' should not expand user-pinned collapsed panels."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+        from kingdom.tui.widgets import ThinkingPanel
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        app_instance.show_system_message = MagicMock()
+
+        panel = ThinkingPanel(sender="claude")
+        panel.expanded = False
+        panel.user_pinned = True
+        panel.display = False
+        app_instance.query = MagicMock(return_value=[panel])
+
+        # Cycle from auto to show
+        app_instance.action_toggle_thinking()
+        assert app_instance.thinking_visibility == "show"
+
+        # Should be visible but NOT expanded (user pinned it collapsed)
+        assert panel.display is True
+        assert panel.expanded is False
+
+    def test_toggle_auto_restores_visibility(self) -> None:
+        """Toggling to 'auto' from 'hide' should make panels visible again."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+        from kingdom.tui.widgets import ThinkingPanel
+
+        app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
+        app_instance.show_system_message = MagicMock()
+
+        panel = ThinkingPanel(sender="claude")
+        panel.display = False
+        app_instance.query = MagicMock(return_value=[panel])
+
+        # Start from hide, toggle to auto
+        app_instance.thinking_visibility = "hide"
+        app_instance.action_toggle_thinking()
+        assert app_instance.thinking_visibility == "auto"
+
+        assert panel.display is True
+
+    def test_thinking_cycle_class_var(self) -> None:
+        """THINKING_CYCLE should contain exactly auto, show, hide."""
+        from kingdom.tui.app import ChatApp
+
+        assert ChatApp.THINKING_CYCLE == ["auto", "show", "hide"]
+
+    def test_help_includes_thinking_hotkey(self, project: Path) -> None:
+        """Help text should mention the Ctrl+T thinking toggle."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-think-help"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/help")
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "Ctrl+T" in msg
+        assert "thinking" in msg.lower()
+
+    def test_binding_registered(self) -> None:
+        """ChatApp should have a ctrl+t binding for toggle_thinking."""
+        from kingdom.tui.app import ChatApp
+
+        bindings = ChatApp.BINDINGS
+        keys = [b[0] for b in bindings]
+        assert "ctrl+t" in keys
+
+
+class TestBuildBranchContext:
+    """Test branch context injection into chat system prompt."""
+
+    def test_returns_branch_name(self, project: Path) -> None:
+        from kingdom.tui.app import build_branch_context
+
+        ctx = build_branch_context(project, BRANCH)
+        assert "[Branch context]" in ctx
+        assert f"Branch: {BRANCH}" in ctx
+
+    def test_includes_tickets(self, project: Path) -> None:
+        from kingdom.state import branch_root
+        from kingdom.ticket import Ticket, write_ticket
+        from kingdom.tui.app import build_branch_context
+
+        tickets_dir = branch_root(project, BRANCH) / "tickets"
+        tickets_dir.mkdir(parents=True, exist_ok=True)
+        write_ticket(
+            Ticket(id="ab12", status="open", title="First ticket", priority=1),
+            tickets_dir / "ab12.md",
+        )
+        write_ticket(
+            Ticket(id="cd34", status="in_progress", title="Second ticket", priority=2),
+            tickets_dir / "cd34.md",
+        )
+
+        ctx = build_branch_context(project, BRANCH)
+        assert "Tickets:" in ctx
+        assert "ab12" in ctx
+        assert "First ticket" in ctx
+        assert "cd34" in ctx
+        assert "Second ticket" in ctx
+        assert "in progress" in ctx  # underscores replaced with spaces
+
+    def test_no_tickets_omits_tickets_section(self, project: Path) -> None:
+        from kingdom.tui.app import build_branch_context
+
+        ctx = build_branch_context(project, BRANCH)
+        assert "[Branch context]" in ctx
+        assert f"Branch: {BRANCH}" in ctx
+        assert "Tickets:" not in ctx
+
+    def test_preamble_includes_branch_context(self, project: Path) -> None:
+        """on_mount should inject branch context into each member's preamble."""
+        from kingdom.council.council import Council
+        from kingdom.state import branch_root
+        from kingdom.ticket import Ticket, write_ticket
+        from kingdom.tui.app import CHAT_PREAMBLE, build_branch_context
+
+        # Create a ticket so context has something to show
+        tickets_dir = branch_root(project, BRANCH) / "tickets"
+        tickets_dir.mkdir(parents=True, exist_ok=True)
+        write_ticket(
+            Ticket(id="ef56", status="open", title="Test ticket", priority=2),
+            tickets_dir / "ef56.md",
+        )
+
+        # Simulate what on_mount does
+        council = Council.create(base=project)
+        branch_context = build_branch_context(project, BRANCH)
+        for member in council.members:
+            member.preamble = CHAT_PREAMBLE.format(name=member.name) + branch_context
+
+        for member in council.members:
+            assert "participating in a group discussion" in member.preamble
+            assert f"Branch: {BRANCH}" in member.preamble
+            assert "ef56" in member.preamble
+            assert "Test ticket" in member.preamble
+
+    def test_context_ends_with_double_newline(self, project: Path) -> None:
+        """Context block should end with double newline for clean separation."""
+        from kingdom.tui.app import build_branch_context
+
+        ctx = build_branch_context(project, BRANCH)
+        assert ctx.endswith("\n\n")
+
+    def test_ticket_priority_ordering(self, project: Path) -> None:
+        """Tickets should be listed in priority order (P1 first)."""
+        from kingdom.state import branch_root
+        from kingdom.ticket import Ticket, write_ticket
+        from kingdom.tui.app import build_branch_context
+
+        tickets_dir = branch_root(project, BRANCH) / "tickets"
+        tickets_dir.mkdir(parents=True, exist_ok=True)
+        write_ticket(
+            Ticket(id="lo01", status="open", title="Low priority", priority=3),
+            tickets_dir / "lo01.md",
+        )
+        write_ticket(
+            Ticket(id="hi01", status="open", title="High priority", priority=1),
+            tickets_dir / "hi01.md",
+        )
+
+        ctx = build_branch_context(project, BRANCH)
+        # P1 should appear before P3
+        hi_pos = ctx.index("hi01")
+        lo_pos = ctx.index("lo01")
+        assert hi_pos < lo_pos

@@ -1,6 +1,6 @@
 """Agent configuration and command building.
 
-Each agent has a backend (claude_code, codex, cursor) whose CLI invocation
+Each agent has a backend (claude_code, codex) whose CLI invocation
 details live in ``BACKEND_DEFAULTS``.  User-facing config (model, prompts,
 extra flags) comes from ``config.py``'s ``AgentDef``.  The two are merged at
 runtime into an ``AgentConfig`` that command builders consume.
@@ -35,12 +35,6 @@ BACKEND_DEFAULTS: dict[str, dict[str, str]] = {
         "resume_flag": "resume",
         "version_command": "codex --version",
         "install_hint": "Install Codex CLI: npm install -g @openai/codex",
-    },
-    "cursor": {
-        "cli": "agent --print --output-format json",
-        "resume_flag": "--resume",
-        "version_command": "agent --version",
-        "install_hint": "Install Cursor Agent: https://docs.cursor.com/agent",
     },
 }
 
@@ -208,103 +202,9 @@ def parse_codex_response(stdout: str, stderr: str, code: int) -> tuple[str, str 
     return "\n".join(text_parts), thread_id, raw
 
 
-def parse_cursor_response(stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
-    """Parse cursor agent CLI JSON or NDJSON (stream-json) output.
-
-    Single-JSON format: ``{"result": "...", "session_id": "..."}``
-
-    NDJSON format: handles ``stream_event``-wrapped deltas, top-level
-    ``content_block_delta``, and ``assistant`` message events.
-    """
-    raw = stdout
-    lines = [ln for ln in stdout.strip().split("\n") if ln.strip()]
-
-    # Single-line: use original single-JSON parser
-    if len(lines) <= 1:
-        try:
-            data = json.loads(stdout)
-            if not isinstance(data, dict):
-                return stdout.strip(), None, raw
-            text = data.get("result") or data.get("text") or data.get("response") or ""
-            session_id = data.get("session_id") or data.get("conversation_id")
-            return text, session_id, raw
-        except json.JSONDecodeError:
-            return stdout.strip(), None, raw
-
-    # Multi-line: parse as NDJSON (stream-json)
-    delta_parts: list[str] = []
-    assistant_parts: list[str] = []
-    result_text = ""
-    session_id = None
-
-    for line in lines:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-
-        event_type = event.get("type")
-
-        # Token-level deltas wrapped in stream_event
-        if event_type == "stream_event":
-            inner = event.get("event", {})
-            if inner.get("type") == "content_block_delta":
-                delta = inner.get("delta", {})
-                if delta.get("type") == "text_delta":
-                    delta_parts.append(delta.get("text", ""))
-            if not session_id:
-                session_id = event.get("session_id")
-        # Top-level content_block_delta (flat format)
-        elif event_type == "content_block_delta":
-            delta = event.get("delta", {})
-            if delta.get("type") == "text_delta":
-                delta_parts.append(delta.get("text", ""))
-        # Assistant message chunks from --stream-partial-output.
-        elif event_type == "assistant":
-            message = event.get("message", {})
-            chunk_parts: list[str] = []
-            if isinstance(message, dict):
-                for block in message.get("content", []):
-                    if block.get("type") == "text":
-                        chunk_parts.append(block.get("text", ""))
-            if not chunk_parts:
-                text = event.get("text", "")
-                if text:
-                    chunk_parts.append(text)
-            if chunk_parts:
-                assistant_parts.append("".join(chunk_parts))
-            if not session_id:
-                session_id = event.get("session_id") or event.get("conversation_id")
-        elif event_type == "result":
-            session_id = event.get("session_id") or event.get("conversation_id")
-            if event.get("result"):
-                result_text = event.get("result")
-
-    if result_text:
-        return result_text, session_id, raw
-    if delta_parts:
-        return "".join(delta_parts), session_id, raw
-    if assistant_parts:
-        merged = ""
-        for part in assistant_parts:
-            # Handle cumulative snapshots and chunked fragments.
-            if part.startswith(merged):
-                merged = part
-            elif merged.startswith(part):
-                continue
-            else:
-                merged += part
-        return merged, session_id, raw
-
-    return "", session_id, raw
-
-
 RESPONSE_PARSERS: dict[str, Any] = {
     "claude_code": parse_claude_response,
     "codex": parse_codex_response,
-    "cursor": parse_cursor_response,
 }
 
 
@@ -385,49 +285,9 @@ def build_codex_command(
     return cmd
 
 
-def build_cursor_command(
-    config: AgentConfig,
-    prompt: str,
-    session_id: str | None,
-    skip_permissions: bool = True,
-    streaming: bool = False,
-) -> list[str]:
-    """Build cursor agent CLI command.
-
-    Format: ``agent [--force --sandbox disabled] [--model MODEL] --print --output-format json PROMPT [--resume SESSION]``
-
-    When skip_permissions is False (council queries), uses --mode ask for read-only.
-    When streaming is True, replaces ``--output-format json`` with ``stream-json``
-    and enables ``--stream-partial-output`` so Cursor emits incremental deltas.
-    """
-    cmd = shlex.split(config.cli)
-    if streaming:
-        try:
-            fmt_idx = cmd.index("--output-format")
-            cmd[fmt_idx + 1] = "stream-json"
-        except (ValueError, IndexError):
-            pass
-        cmd.append("--stream-partial-output")
-    if skip_permissions:
-        cmd.insert(1, "--force")
-        cmd.insert(2, "--sandbox")
-        cmd.insert(3, "disabled")
-    else:
-        cmd.extend(["--mode", "ask"])
-    if config.model:
-        cmd.extend(["--model", config.model])
-    if config.extra_flags:
-        cmd.extend(config.extra_flags)
-    cmd.append(prompt)
-    if session_id:
-        cmd.extend([config.resume_flag, session_id])
-    return cmd
-
-
 COMMAND_BUILDERS: dict[str, Any] = {
     "claude_code": build_claude_command,
     "codex": build_codex_command,
-    "cursor": build_cursor_command,
 }
 
 
@@ -526,45 +386,9 @@ def extract_codex_stream_text(line: str) -> str | None:
     return None
 
 
-def extract_cursor_stream_text(line: str) -> str | None:
-    """Extract text from a single Cursor stream-json NDJSON line.
-
-    Handles ``stream_event`` wrapper, bare ``content_block_delta`` events,
-    and chunked ``assistant`` events.
-    Returns None for non-text events.
-    """
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(event, dict):
-        return None
-    # Unwrap stream_event wrapper
-    if event.get("type") == "stream_event":
-        event = event.get("event", {})
-    if event.get("type") == "content_block_delta":
-        delta = event.get("delta", {})
-        if delta.get("type") == "text_delta":
-            return delta.get("text")
-    if event.get("type") == "assistant":
-        message = event.get("message", {})
-        if isinstance(message, dict):
-            parts: list[str] = []
-            for block in message.get("content", []):
-                if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-            if parts:
-                return "".join(parts)
-        text = event.get("text")
-        if isinstance(text, str) and text:
-            return text
-    return None
-
-
 STREAM_TEXT_EXTRACTORS: dict[str, Any] = {
     "claude_code": extract_claude_stream_text,
     "codex": extract_codex_stream_text,
-    "cursor": extract_cursor_stream_text,
 }
 
 
@@ -582,25 +406,6 @@ def extract_stream_text(line: str, backend: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Stream thinking extractors — extract thinking/reasoning tokens from NDJSON
 # ---------------------------------------------------------------------------
-
-
-def extract_cursor_stream_thinking(line: str) -> str | None:
-    """Extract thinking text from a Cursor stream-json NDJSON line.
-
-    Cursor emits ``{"type": "thinking", "subtype": "delta", "text": "..."}``
-    for reasoning tokens.  Returns None for non-thinking events.
-    """
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(event, dict):
-        return None
-    if event.get("type") == "thinking" and event.get("subtype") == "delta":
-        text = event.get("text")
-        if isinstance(text, str):
-            return text
-    return None
 
 
 def extract_codex_stream_thinking(line: str) -> str | None:
@@ -626,7 +431,6 @@ def extract_codex_stream_thinking(line: str) -> str | None:
 
 STREAM_THINKING_EXTRACTORS: dict[str, Any] = {
     "codex": extract_codex_stream_thinking,
-    "cursor": extract_cursor_stream_thinking,
 }
 
 

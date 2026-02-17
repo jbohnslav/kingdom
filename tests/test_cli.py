@@ -19,7 +19,6 @@ def test_doctor_all_installed() -> None:
         assert "✓" in result.output
         assert "claude" in result.output
         assert "codex" in result.output
-        assert "cursor" in result.output
 
 
 def test_doctor_missing_cli() -> None:
@@ -52,7 +51,6 @@ def test_doctor_json_output() -> None:
         data = json.loads(result.output)
         assert data["agents"]["claude"]["installed"] is True
         assert data["agents"]["codex"]["installed"] is True
-        assert data["agents"]["cursor"]["installed"] is True
         assert data["config"]["valid"] is True
 
 

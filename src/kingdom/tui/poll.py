@@ -169,10 +169,7 @@ class ThreadPoller:
                     events.append(ThinkingDelta(member=member, full_text=accumulated_thinking))
                 if new_text:
                     prev = self.stream_texts.get(member, "")
-                    if backend == "cursor":
-                        accumulated = merge_assistant_snapshots([prev, new_text])
-                    else:
-                        accumulated = prev + new_text
+                    accumulated = prev + new_text
                     self.stream_texts[member] = accumulated
                     events.append(StreamDelta(member=member, full_text=accumulated))
 
@@ -198,7 +195,7 @@ class ThreadPoller:
 def merge_assistant_snapshots(parts: list[str]) -> str:
     """Merge Cursor assistant snapshot events into a single text.
 
-    Cursor emits cumulative assistant events — each chunk is a full snapshot
+    Cursor emits cumulative assistant events -- each chunk is a full snapshot
     of the text so far, not a delta. This merges them by detecting when a
     new part is a superset of the accumulated text.
     """
@@ -252,11 +249,7 @@ def tail_stream_file(path: Path, offset: int, backend: str) -> tuple[str, str]:
         if thinking:
             thinking_parts.append(thinking)
 
-    # Cursor assistant events are cumulative snapshots, not deltas
-    if backend == "cursor":
-        text = merge_assistant_snapshots(text_parts)
-    else:
-        text = "".join(text_parts)
+    text = "".join(text_parts)
 
     # Codex reasoning blocks are separate items — join with newlines
     if backend == "codex":

@@ -29,7 +29,7 @@ from kingdom.thread import (
 )
 
 from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller
-from .widgets import ErrorPanel, MessagePanel, StreamingPanel, ThinkingPanel, WaitingPanel
+from .widgets import ErrorPanel, MessagePanel, StreamingPanel, ThinkingPanel, WaitingPanel, format_reply_text
 
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
@@ -69,13 +69,33 @@ def build_branch_context(base: Path, branch: str) -> str:
 
 
 class MessageLog(VerticalScroll):
-    """Scrollable container for chat messages."""
+    """Scrollable container for chat messages.
+
+    Wraps Textual's VerticalScroll with smart auto-scroll: new content only
+    scrolls to bottom when the user is already near the bottom.  If the user
+    has scrolled up to read history, the view stays put.
+
+    ``is_following`` — True when auto-scroll is active (user is near bottom).
+    ``SCROLL_THRESHOLD`` — pixel distance from bottom that counts as "near".
+    """
+
+    SCROLL_THRESHOLD: int = 5
 
     DEFAULT_CSS = """
     MessageLog {
         height: 1fr;
     }
     """
+
+    @property
+    def is_following(self) -> bool:
+        """True when the viewport is at or near the bottom.
+
+        Uses the internal ``_anchor_released`` flag from Textual's anchor
+        mechanism.  When the user scrolls up, Textual releases the anchor;
+        when they scroll back to the bottom, it re-engages.
+        """
+        return not self._anchor_released
 
 
 class StatusBar(Static):
@@ -265,14 +285,15 @@ class ChatApp(App):
         # load_sessions, no base/branch on members (prevents PID writes to
         # shared session files).  Context comes from thread history injection.
         self.council = Council.create(base=self.base)
+        branch_context = build_branch_context(self.base, self.branch)
         for member in self.council.members:
-            member.preamble = CHAT_PREAMBLE.format(name=member.name)
+            member.preamble = CHAT_PREAMBLE.format(name=member.name) + branch_context
 
         # Load existing messages from thread history
         self.load_history()
 
-        # Enable anchor-to-bottom: auto-scrolls on new content, pauses
-        # when user scrolls up, re-engages when user scrolls back to bottom.
+        # Enable smart auto-scroll: follows new content when at/near the
+        # bottom, pauses when user scrolls up, re-engages when they return.
         log = self.query_one("#message-log", MessageLog)
         log.anchor()
 
@@ -330,7 +351,7 @@ class ChatApp(App):
         if log is None:
             log = self.query_one("#message-log", MessageLog)
         bar = self.query_one(StatusBar)
-        if log._anchor_released:
+        if not log.is_following:
             bar.update("Esc: interrupt/quit · Enter: send · End: jump to bottom · Ctrl+T: thinking")
         else:
             bar.update("Esc: interrupt/quit · Enter: send · Ctrl+T: thinking")
@@ -411,6 +432,7 @@ class ChatApp(App):
                 panel = MessagePanel(
                     sender=msg.from_,
                     body=msg.body,
+                    member_names=self.member_names,
                     id=f"msg-{msg.sequence}",
                 )
             log.mount(panel)
@@ -430,6 +452,20 @@ class ChatApp(App):
     def on_input_area_submit(self, _: InputArea.Submit) -> None:
         """Handle submit events from the input widget."""
         self.send_message()
+
+    def on_message_panel_reply(self, event: MessagePanel.Reply) -> None:
+        """Handle reply: prefill input with @mention and quoted excerpt."""
+        reply_text = format_reply_text(event.sender, event.body)
+        input_area = self.query_one("#input-area", InputArea)
+        # Prepend reply context to any existing draft text
+        existing = input_area.text
+        if existing.strip():
+            input_area.load_text(reply_text + existing)
+        else:
+            input_area.load_text(reply_text)
+        input_area.focus()
+        # Move cursor to the end so the user can start typing immediately
+        input_area.move_cursor_relative(rows=len(reply_text.splitlines()) + 1000, columns=0)
 
     def send_message(self) -> None:
         """Send the current input as a king message or handle slash command."""
@@ -458,7 +494,7 @@ class ChatApp(App):
 
         # Render king message immediately (don't wait for poll cycle)
         log = self.query_one("#message-log", MessageLog)
-        king_panel = MessagePanel(sender="king", body=text, id=f"king-{id(text)}")
+        king_panel = MessagePanel(sender="king", body=text, member_names=self.member_names, id=f"king-{id(text)}")
         log.mount(king_panel)
 
         # Update poller so it doesn't re-report this king message
@@ -686,7 +722,8 @@ class ChatApp(App):
             "Ctrl+T: toggle thinking visibility (auto/show/hide)\n"
             "@member: direct message\n"
             "@all: explicit broadcast\n"
-            "Click message: copy to clipboard"
+            "Click message: reply (quote + @mention)\n"
+            "Shift+click message: copy to clipboard"
         )
         self.show_system_message(help_text)
 
@@ -766,6 +803,7 @@ class ChatApp(App):
             panel = MessagePanel(
                 sender=event.sender,
                 body=event.body,
+                member_names=self.member_names,
                 id=f"msg-{event.sequence}",
             )
 

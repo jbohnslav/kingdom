@@ -10,10 +10,14 @@ CommandHintBar — shows matching slash commands as you type.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 
 from rich.markdown import Markdown as RichMarkdown
+from rich.segment import Segment
+from rich.style import Style
+from textual.message import Message
 from textual.widgets import Static
 
 from kingdom.tui.clipboard import ClipboardUnavailableError, copy_to_clipboard
@@ -39,6 +43,27 @@ def format_elapsed(seconds: float) -> str:
     h, remainder = divmod(total, 3600)
     m, s = divmod(remainder, 60)
     return f"{h}h {m}m {s}s"
+
+
+def format_reply_text(sender: str, body: str, max_quote_lines: int = 4) -> str:
+    """Build reply text with @mention and quoted excerpt.
+
+    Produces::
+
+        @claude
+        > first line of original message
+        > second line...
+        <blank line ready for typing>
+
+    Long messages are truncated to *max_quote_lines* with an ellipsis marker.
+    """
+    lines = body.strip().splitlines()
+    if len(lines) > max_quote_lines:
+        quoted_lines = [*lines[:max_quote_lines], "..."]
+    else:
+        quoted_lines = lines
+    quoted = "\n".join(f"> {line}" for line in quoted_lines)
+    return f"@{sender}\n{quoted}\n\n"
 
 
 # Brand-aware colors for known council members.
@@ -100,11 +125,73 @@ def color_for_member(name: str) -> str:
     return FALLBACK_COLORS[idx]
 
 
+class ColoredMentionMarkdown:
+    """Rich renderable that renders Markdown with @mentions in member colors.
+
+    Wraps RichMarkdown and intercepts rendered Segments, splitting any that
+    contain @member tokens and applying the member's brand color + bold style.
+    """
+
+    def __init__(self, body: str, member_names: list[str]) -> None:
+        self.body = body
+        # Build a color lookup for known names plus special tokens
+        self.member_colors: dict[str, str] = {}
+        for name in member_names:
+            self.member_colors[name] = color_for_member(name)
+        self.member_colors["all"] = "white"
+        self.member_colors["king"] = "white"
+        # Pre-compile pattern
+        if self.member_colors:
+            names = "|".join(re.escape(n) for n in self.member_colors)
+            self.pattern: re.Pattern[str] | None = re.compile(rf"(?<!\w)@({names})(?!\w)")
+        else:
+            self.pattern = None
+
+    def __rich_console__(self, console, options):
+        md = RichMarkdown(self.body)
+        for segment in md.__rich_console__(console, options):
+            if not isinstance(segment, Segment) or not self.pattern:
+                yield segment
+                continue
+
+            text = segment.text
+            style = segment.style or Style()
+
+            if "@" not in text:
+                yield segment
+                continue
+
+            parts = self.pattern.split(text)
+            if len(parts) == 1:
+                yield segment
+                continue
+
+            # parts alternates: [before, captured_name, after, ...]
+            for i, part in enumerate(parts):
+                if not part:
+                    continue
+                if i % 2 == 1:
+                    color = self.member_colors.get(part, "white")
+                    mention_style = style + Style(color=color, bold=True)
+                    yield Segment(f"@{part}", mention_style)
+                else:
+                    yield Segment(part, style)
+
+
 class MessagePanel(Static):
     """A finalized message rendered as Markdown inside a bordered panel.
 
-    Click on a council member's message to copy it to the clipboard.
+    Click on a council member's message to reply (prefills input with quote
+    and @mention).  Shift+click copies the message to the clipboard.
     """
+
+    class Reply(Message):
+        """Posted when the user clicks a member message to reply."""
+
+        def __init__(self, sender: str, body: str) -> None:
+            super().__init__()
+            self.sender = sender
+            self.body = body
 
     DEFAULT_CSS = """
     MessagePanel {
@@ -118,10 +205,11 @@ class MessagePanel(Static):
     }
     """
 
-    def __init__(self, sender: str, body: str, **kwargs) -> None:
+    def __init__(self, sender: str, body: str, member_names: list[str] | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.sender = sender
         self.body = body
+        self.member_names: list[str] = member_names or []
 
     def compose_text(self) -> str:
         """Format the display text (sender shown in border title, not body)."""
@@ -134,13 +222,25 @@ class MessagePanel(Static):
             color = color_for_member(self.sender)
             self.styles.border = ("round", color)
             self.border_title = self.sender
-            self.border_subtitle = "click to copy"
-        self.update(RichMarkdown(self.compose_text()))
+            self.border_subtitle = "click: reply \u00b7 shift+click: copy"
+        if self.member_names:
+            self.update(ColoredMentionMarkdown(self.compose_text(), self.member_names))
+        else:
+            self.update(RichMarkdown(self.compose_text()))
 
-    def on_click(self) -> None:
-        """Copy message body to clipboard on click."""
+    def on_click(self, event) -> None:
+        """Handle click: reply (default) or copy (shift+click)."""
         if self.sender == "king":
             return
+        if event.shift:
+            self.do_copy()
+        else:
+            self.post_message(self.Reply(sender=self.sender, body=self.body))
+            self.border_subtitle = "replying..."
+            self.set_timer(1.5, self.reset_subtitle)
+
+    def do_copy(self) -> None:
+        """Copy message body to the system clipboard."""
         try:
             copy_to_clipboard(self.body)
             self.border_subtitle = "copied!"
@@ -151,8 +251,8 @@ class MessagePanel(Static):
         self.set_timer(2.0, self.reset_subtitle)
 
     def reset_subtitle(self) -> None:
-        """Reset subtitle back to the copy hint after feedback timeout."""
-        self.border_subtitle = "click to copy"
+        """Reset subtitle back to the action hints after feedback timeout."""
+        self.border_subtitle = "click: reply \u00b7 shift+click: copy"
 
 
 class StreamingPanel(Static):
@@ -178,13 +278,13 @@ class StreamingPanel(Static):
 
     def update_title(self) -> None:
         n = len(self.content_text)
-        self.border_title = f"{self.sender} (streaming · {n:,} chars)"
+        self.border_title = f"{self.sender} (streaming \u00b7 {n:,} chars)"
 
     def update_content(self, text: str) -> None:
         """Replace the streamed text and refresh the display."""
         self.content_text = text
         self.update_title()
-        self.update(text + "\u258d")  # ▍ cursor
+        self.update(text + "\u258d")  # cursor
 
 
 class WaitingPanel(Static):
@@ -206,11 +306,48 @@ class WaitingPanel(Static):
     def on_mount(self) -> None:
         color = color_for_member(self.sender)
         self.styles.border = ("dashed", color)
-        self.border_title = f"{self.sender} — waiting..."
+        self.border_title = f"{self.sender} \u2014 waiting..."
+
+
+def format_error_body(error: str, sender: str, timed_out: bool, interrupted: bool) -> str:
+    """Build a user-friendly error body with context and retry hint.
+
+    Extracts the meaningful part of the error and appends an actionable
+    suggestion so the user knows what to try next.
+    """
+    if interrupted:
+        return error  # Already says "*Interrupted*", no extra noise needed
+
+    # Extract the useful detail from the marker format *Error: ...*
+    detail = error
+    if detail.startswith("*Error:") and detail.endswith("*"):
+        detail = detail[len("*Error:") :].rstrip("*").strip()
+    elif detail.startswith("*") and detail.endswith("*"):
+        detail = detail.strip("* ").strip()
+
+    lines: list[str] = []
+    if timed_out:
+        lines.append(f"**Timed out** — {detail}")
+        lines.append("")
+        lines.append(f"Retry: send the message again or `@{sender}` to retry just this member.")
+    elif "empty response" in error.lower():
+        lines.append("**Empty response** — the agent returned no text.")
+        lines.append("")
+        lines.append(f"Retry: rephrase your question or `@{sender}` to try again.")
+    else:
+        lines.append(f"**Error** — {detail}")
+        lines.append("")
+        lines.append("Retry: send the message again. If it persists, check agent config with `kd council status`.")
+
+    return "\n".join(lines)
 
 
 class ErrorPanel(Static):
-    """An error or timeout display with red border."""
+    """An error or timeout display with context and retry hints.
+
+    Shows what failed (timeout, error detail, interruption) and suggests
+    retry actions so the user knows how to recover.
+    """
 
     DEFAULT_CSS = """
     ErrorPanel {
@@ -227,10 +364,21 @@ class ErrorPanel(Static):
         self.timed_out = timed_out
 
     def on_mount(self) -> None:
-        label = "timed out" if self.timed_out else "errored"
+        interrupted = "*Interrupted" in self.error or "*[Interrupted" in self.error
+
+        if interrupted:
+            label = "interrupted"
+            self.styles.border = ("round", "yellow")
+        elif self.timed_out:
+            label = "timed out"
+            self.styles.border = ("round", "red")
+        else:
+            label = "error"
+            self.styles.border = ("round", "red")
+
         self.border_title = f"{self.sender} — {label}"
-        self.styles.border = ("round", "red")
-        self.update(RichMarkdown(self.error))
+        body = format_error_body(self.error, self.sender, self.timed_out, interrupted)
+        self.update(RichMarkdown(body))
 
 
 class ThinkingPanel(Static):
@@ -296,8 +444,8 @@ class ThinkingPanel(Static):
         n = len(self.thinking_text)
         elapsed = time.monotonic() - self.start_time
         if self.expanded:
-            self.border_title = f"{self.sender} thinking · {n:,} chars · {format_elapsed(elapsed)}"
-            self.update(self.thinking_text + "\u258d")  # ▍ cursor
+            self.border_title = f"{self.sender} thinking \u00b7 {n:,} chars \u00b7 {format_elapsed(elapsed)}"
+            self.update(self.thinking_text + "\u258d")  # cursor
         else:
-            self.border_title = f"\u25b6 {self.sender} thinking · {n:,} chars · {format_elapsed(elapsed)}"
+            self.border_title = f"\u25b6 {self.sender} thinking \u00b7 {n:,} chars \u00b7 {format_elapsed(elapsed)}"
             self.update("")

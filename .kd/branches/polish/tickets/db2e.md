@@ -1,6 +1,6 @@
 ---
 id: "db2e"
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-17T00:41:47Z
@@ -12,3 +12,7 @@ priority: 2
 ## Acceptance Criteria
 
 - [ ]
+
+## Worklog
+
+- [03:19] Closed: Added (backlog) label to tk create output when --backlog flag is used. Updated existing test and added new test for non-backlog creates. Also fixed pre-existing import error in test_tui_poll.py.

@@ -1,6 +1,6 @@
 ---
 id: "2def"
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-02-16T13:55:57Z
