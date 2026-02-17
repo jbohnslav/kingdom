@@ -835,7 +835,7 @@ class TestCouncilMentions:
 
             current = get_current_thread(base, BRANCH)
             messages = list_messages(base, BRANCH, current)
-            # 1 king + 2 responses = 3 (cursor excluded)
+            # 1 king + 2 responses = 3
             assert len(messages) == 3
             names = {m.from_ for m in messages if m.from_ != "king"}
             assert names == {"claude", "codex"}
@@ -1421,7 +1421,7 @@ class TestCouncilThreadResolution:
             base = Path.cwd()
             setup_project(base)
 
-            responses = make_responses("claude", "codex", "cursor")
+            responses = make_responses("claude", "codex")
             with mock_council_query_to_thread(responses):
                 runner.invoke(cli.app, ["council", "ask", "Test question"])
 
