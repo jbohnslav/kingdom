@@ -1,6 +1,6 @@
 ---
 id: "8dea"
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-16T18:36:22Z
@@ -37,3 +37,37 @@ Acceptance criteria:
 - At least 5 concrete `kd chat` polish opportunities identified.
 - At least 3 follow-up tickets created with clear acceptance criteria.
 - Overlap with existing tickets is reconciled (link or dedupe rather than duplicate).
+
+## Worklog
+
+### Research completed 2026-02-16
+
+**Codebase reviewed:** All 5 TUI source files (`app.py`, `widgets.py`, `poll.py`, `clipboard.py`, `__init__.py`), all 3 test files (150+ test cases), and the CLI entry point.
+
+**Reference apps studied:**
+- Elia (darrenburns/elia) -- Textual LLM chat client
+- Toad (batrachianai/toad) -- Universal AI terminal frontend by Will McGugan
+- Textual official docs: Markdown widget, LoadingIndicator, get_stream(), external .tcss patterns
+
+**10 concrete improvements identified** (see docs/chat-tui-polish-audit.md):
+1. Replace WaitingPanel with LoadingIndicator (quick win)
+2. Add /copy slash command (quick win)
+3. Render streaming content as Markdown (quick win)
+4. Switch MessagePanel to native Markdown widget (medium)
+5. Extract CSS to external .tcss file (medium)
+6. Add message timestamps (medium)
+7. Improve king message styling (medium)
+8. Click-to-copy on message panels (deferred)
+9. Contextual footer keybindings (deferred)
+10. Theme support (deferred)
+
+**7 follow-up tickets created:**
+- aad9: Replace WaitingPanel with LoadingIndicator
+- c40b: Add /copy slash command
+- ac46: Render streaming content as Markdown
+- f517: Switch MessagePanel to native Markdown widget
+- 774d: Extract CSS to external .tcss stylesheet
+- b6ca: Add timestamps to message panels
+- 55fd: Improve king message styling
+
+**Overlap reconciled:** Reviewed existing tickets 3e60, 27ce, 7afc, 7a1d, cca0, 5e30. No duplicates -- new tickets address visual/UX polish not covered by existing functional tickets.
