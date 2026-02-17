@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,8 @@ from .widgets import (
     format_reply_text,
 )
 
+logger = logging.getLogger(__name__)
+
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
     "Engage directly with the conversation — respond to questions, share your perspective, "
@@ -66,7 +69,7 @@ def build_branch_context(base: Path, branch: str) -> str:
     lines = ["[Branch context]", f"Branch: {branch}"]
 
     tickets_dir = branch_root(base, branch) / "tickets"
-    tickets = list_tickets(tickets_dir)
+    tickets = [t for t in list_tickets(tickets_dir) if t.status != "closed"]
     if tickets:
         lines.append("Tickets:")
         for t in tickets:
@@ -403,7 +406,7 @@ class ChatApp(App):
                 input_area.clear()
                 return
         except Exception:
-            pass
+            logger.debug("Could not query input area during interrupt", exc_info=True)
 
         if not self.council:
             self.exit()
@@ -441,7 +444,7 @@ class ChatApp(App):
                     log.mount(error_panel, before=panel)
                     panel.remove()
                 except Exception:
-                    pass
+                    logger.debug("Could not replace panel %s during interrupt", panel_id, exc_info=True)
 
     def load_history(self) -> None:
         """Load existing messages and render them in the message log."""

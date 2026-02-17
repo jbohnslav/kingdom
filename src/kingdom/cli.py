@@ -2976,8 +2976,6 @@ def render_ticket_table(
         show_location: Whether to include a Location column.
         locations: Mapping of ticket id -> location label (used with show_location).
     """
-    from rich.table import Table
-
     has_assignee = any(t.assignee for t in tickets)
     has_deps = any(t.deps for t in tickets)
 
