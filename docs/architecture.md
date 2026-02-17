@@ -70,4 +70,4 @@ Everything is Markdown with YAML frontmatter or plain JSON:
 - **New agent backends**: Add entries to `BACKEND_DEFAULTS` in `agent.py` and define an `AgentDef` in config.
 - **Custom council composition**: Edit `.kd/config.json` to add/remove council members and their models.
 - **Phase prompts**: Override default prompts for design, breakdown, and work phases in config.
-- **TUI**: The Textual-based chat TUI (`tui/`) is an optional dependency group (`chat`), not required for CLI operation.
+- **TUI**: The Textual-based chat TUI (`tui/`) provides the interactive `kd chat` interface.

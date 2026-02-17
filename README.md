@@ -1,82 +1,68 @@
 # Kingdom
 
-Kingdom (`kd`) is a git-native CLI that helps you plan and ship software by running multi-model AI design councils, turning outcomes into tickets, and executing work through agent workers.
+Kingdom (`kd`) is a markdown file-based CLI for software development: design with a multi-agent council, track work as markdown tickets, and run background RALPH loops with worker peasants.
 
-Kingdom is a development workflow layer on top of your existing repo. You define a goal, run a council to get multiple model perspectives on design and tradeoffs, break the result into explicit tickets, and then execute those tickets with worker agents in parallel. The system keeps state in `.kd/` as plain files (tickets, discussions, decisions, archives), so process and decision history stay versioned with your code. It is built for "design first, then implement" teams that want better planning quality and faster execution without replacing git, PRs, or normal engineering practices.
+The kingdom metaphor is intentional: you are the King, debate your design documents with a council of frontier coding agent CLIs you already use (Claude Code and Codex), break the design into modular markdown tickets, and then peasants execute those tickets in parallel worktrees.
+
+Gastown minus the polecats.
+
+## Why
+
+- **Multi-agent council** — get perspectives from multiple frontier coding models, not just one opinion. Different models catch different things.
+- **Ticket-based execution** — breaking work into scoped tickets fights context rot, lets you use cheaper models for already-designed work, or run tickets in parallel.
+- **Multi-agent reviews** — reviews across models consistently catch bugs that single-agent reviews miss.
+- **Plain markdown files** — tickets, designs, and council threads are all markdown. Your coding agents are already good at finding, reading, and updating markdown.
+- **CLI + TUI** — the TUI is for humans; agent CLIs use `kd` directly to ask the council or other agents for opinions.
+- **Worklog audit trail** — peasant worklogs capture decisions, bugs encountered, and test results in the ticket markdown, committed to git. You can always see *why* something was done, not just the diff.
 
 ## Install
 
 ```bash
-pip install kingdom-cli
+uv tool install kingdom-cli
 ```
 
-## Quick Start
+## Getting Started
+
+1. Initialize the project on your current branch:
 
 ```bash
-# Start a feature (uses current git branch)
 kd start
+```
 
-# Write a design doc
-kd design
+2. Configure council agent CLIs in `.kd/config.json` (check effective config with `kd config show`).
 
-# Get multi-model feedback on your design
-kd council ask "How should we handle auth token refresh?"
+3. Design with the council in the TUI:
 
-# Break design into tickets
+```bash
+kd chat --new
+```
+
+4. Break your design into markdown tickets:
+
+```bash
 kd breakdown
+```
 
-# Work tickets
+5. Review and refine tickets:
+
+```bash
 kd ticket list
-kd ticket start <id>
-kd ticket close <id>
+kd ticket show <id>
+```
 
-# Finish up — archives branch state
+6. Execute tickets:
+- Serial: tell Claude Code or Codex to work tickets directly, or run `kd work <id>`.
+- Parallel: dispatch peasants in worktrees.
+
+```bash
+kd peasant start <id>
+kd peasant status
+```
+
+7. Close out the session:
+
+```bash
 kd done
-```
-
-## Core Workflow
-
-### 1. Design
-
-```bash
-kd design           # Create design.md template
-kd design show      # View design document
-kd design approve   # Mark design as approved
-```
-
-### 2. Council
-
-Query multiple AI models simultaneously for design decisions:
-
-```bash
-kd council ask "How should we implement OAuth refresh tokens?"
-kd council status          # Check which members have responded
-kd council status -v       # Show log file paths and thread location
-```
-
-### 3. Breakdown
-
-```bash
-kd breakdown        # Generate tickets from design
-```
-
-### 4. Tickets
-
-```bash
-kd ticket list              # List tickets for current branch
-kd ticket list --all        # List all tickets across branches
-kd ticket ready             # Show tickets ready to work on
-kd ticket show <id>         # View ticket details
-kd ticket start <id>        # Mark in_progress
-kd ticket close <id>        # Mark closed
-kd ticket create "Title"    # Create new ticket
-kd ticket move <id> backlog # Move to backlog
-```
-
-### 5. Done
-
-```bash
-kd done   # Archive branch folder, clear current
 ```
 
 ## How It Works
@@ -100,22 +86,6 @@ All state lives in `.kd/` as plain Markdown and JSON files, tracked in git along
 ```
 
 No database. No server. Just files on disk.
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `kd start [branch]` | Start working on a branch |
-| `kd status` | Show current branch and ticket counts |
-| `kd done` | Archive current branch |
-| `kd design` | Create/view design document |
-| `kd design show` | Print design.md |
-| `kd design approve` | Mark design approved |
-| `kd breakdown` | Generate tickets from design |
-| `kd ticket <cmd>` | Ticket management (list, show, create, etc.) |
-| `kd council ask` | Query AI council |
-| `kd council status` | Check member response status |
-| `kd doctor` | Check CLI dependencies |
 
 ## Development
 
