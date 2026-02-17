@@ -97,3 +97,13 @@ Build end-to-end integration coverage for `kd chat` using Textual's `app.run_tes
   - Regression (10-11): session_id cleared after query, no duplicated speaker prefix in persisted bodies
   - 22 tests pass in ~4s, full suite (882 tests) in ~20s
   - Without flag: all 22 integration tests skip cleanly
+- 2026-02-16: Council review (council-c86e) — strengthened assertions per feedback:
+  - Escape interrupt: assert WaitingPanel→ErrorPanel replacement + "Interrupted" text, not just terminate() call
+  - Stream lifecycle: verify both members' content + no leftover WaitingPanels
+  - Error lifecycle: verify `timed_out=True` and "Timeout" in error text
+  - Auto-turn: assert exact budget (2 messages) and round-robin order (claude→codex)
+  - Mute: verify system message content ("Muted claude")
+  - Added `@member` directed message test (only claude queried, not codex)
+  - Replaced hard `pilot.pause()` with `wait_until()` predicates where possible
+  - Created backlog tickets for deferred items: cca0, 5e30, 8e84, b93f
+  - 23 tests pass in ~4s, full suite (883 tests) in ~20s

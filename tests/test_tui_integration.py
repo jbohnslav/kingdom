@@ -266,7 +266,7 @@ class TestSendLifecycle:
                 input_area = app.query_one("#input-area", InputArea)
                 input_area.insert("Test message")
                 await pilot.press("enter")
-                await pilot.pause(delay=0.1)
+                await wait_until(pilot, lambda: len(app.query_one("#message-log", MessageLog).query(MessagePanel)) > 0)
 
                 log = app.query_one("#message-log", MessageLog)
                 king_panels = [p for p in log.query(MessagePanel) if p.sender == "king"]
@@ -283,13 +283,33 @@ class TestSendLifecycle:
                 input_area = app.query_one("#input-area", InputArea)
                 input_area.insert("Test broadcast")
                 await pilot.press("enter")
-                await pilot.pause(delay=0.1)
+                await wait_until(pilot, lambda: len(app.query_one("#message-log", MessageLog).query(WaitingPanel)) >= 2)
 
                 log = app.query_one("#message-log", MessageLog)
                 waiting = log.query(WaitingPanel)
                 waiting_names = {w.sender for w in waiting}
                 assert "claude" in waiting_names
                 assert "codex" in waiting_names
+
+    async def test_directed_message_targets_single_member(self, project, thread_id, fake_council) -> None:
+        """@member directed message only queries that member, not broadcast."""
+        app = make_app(project, thread_id)
+        with (
+            patch.object(Council, "create", return_value=fake_council),
+            patch.object(ChatApp, "run_query", new_callable=lambda: lambda *a, **kw: asyncio.sleep(999)),
+        ):
+            async with app.run_test(size=(120, 40)) as pilot:
+                input_area = app.query_one("#input-area", InputArea)
+                input_area.insert("@claude What do you think?")
+                await pilot.press("enter")
+                await wait_until(pilot, lambda: len(app.query_one("#message-log", MessageLog).query(WaitingPanel)) >= 1)
+
+                log = app.query_one("#message-log", MessageLog)
+                waiting = log.query(WaitingPanel)
+                waiting_names = {w.sender for w in waiting}
+                # Only claude should be queried, not codex
+                assert "claude" in waiting_names
+                assert "codex" not in waiting_names
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +319,7 @@ class TestSendLifecycle:
 
 class TestStreamLifecycle:
     async def test_stream_to_finalized(self, project, thread_id, fake_council) -> None:
-        """Full cycle: send message → stream file appears → poll picks up → finalized panel."""
+        """Full cycle: send message → query completes → poll renders finalized panels with correct content."""
         app = make_app(project, thread_id)
 
         with patch.object(Council, "create", return_value=fake_council):
@@ -310,8 +330,12 @@ class TestStreamLifecycle:
                 input_area.insert("Please respond")
                 await pilot.press("enter")
 
-                # Wait for query workers to complete and messages to be persisted
-                await wait_until(pilot, lambda: len(list(tdir.glob("*-claude.md"))) >= 1, timeout=5.0)
+                # Wait for both member responses to be persisted
+                await wait_until(
+                    pilot,
+                    lambda: len(list(tdir.glob("*-claude.md"))) >= 1 and len(list(tdir.glob("*-codex.md"))) >= 1,
+                    timeout=5.0,
+                )
 
                 # Pump the poller to process all events
                 app.poll_updates()
@@ -319,9 +343,18 @@ class TestStreamLifecycle:
 
                 log = app.query_one("#message-log", MessageLog)
 
-                # Should have finalized message panels (not waiting)
+                # Should have finalized message panels for both members (not waiting)
                 msg_panels = [p for p in log.query(MessagePanel) if p.sender != "king"]
-                assert len(msg_panels) >= 1
+                senders = {p.sender for p in msg_panels}
+                assert "claude" in senders
+                assert "codex" in senders
+
+                # Verify response content matches FakeMember output
+                for panel in msg_panels:
+                    assert f"Hello from {panel.sender}" in panel.body
+
+                # No waiting or streaming panels should remain
+                assert len(log.query(WaitingPanel)) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +364,7 @@ class TestStreamLifecycle:
 
 class TestErrorLifecycle:
     async def test_error_response_renders_error_panel(self, project, thread_id) -> None:
-        """An agent that returns an error should produce an ErrorPanel."""
+        """An agent that returns an error should produce an ErrorPanel with timeout labeling."""
         error_council = make_fake_council(["claude", "codex"], response_text="", response_error="Timeout after 10s")
 
         app = make_app(project, thread_id)
@@ -356,6 +389,11 @@ class TestErrorLifecycle:
                 log = app.query_one("#message-log", MessageLog)
                 error_panels = log.query(ErrorPanel)
                 assert len(error_panels) >= 1
+
+                # Verify timeout-specific labeling
+                for panel in error_panels:
+                    assert panel.timed_out is True
+                    assert "Timeout" in panel.error
 
 
 # ---------------------------------------------------------------------------
@@ -416,14 +454,13 @@ class TestSlashCommands:
                 # Mute claude
                 input_area.insert("/mute claude")
                 await pilot.press("enter")
-                await pilot.pause(delay=0.1)
+                await wait_until(pilot, lambda: "claude" in app.muted)
 
-                assert "claude" in app.muted
-
-                # Check system message
+                # Check system message confirms mute
                 log = app.query_one("#message-log", MessageLog)
                 system_msgs = log.query(".system-message")
                 assert len(system_msgs) >= 1
+                assert "Muted claude" in str(system_msgs[0].content)
 
     async def test_unmute_reinclude_member(self, project, thread_id, fake_council) -> None:
         app = make_app(project, thread_id)
@@ -434,13 +471,11 @@ class TestSlashCommands:
                 # Mute then unmute
                 input_area.insert("/mute claude")
                 await pilot.press("enter")
-                await pilot.pause(delay=0.1)
-                assert "claude" in app.muted
+                await wait_until(pilot, lambda: "claude" in app.muted)
 
                 input_area.insert("/unmute claude")
                 await pilot.press("enter")
-                await pilot.pause(delay=0.1)
-                assert "claude" not in app.muted
+                await wait_until(pilot, lambda: "claude" not in app.muted)
 
     async def test_unknown_command(self, project, thread_id, fake_council) -> None:
         app = make_app(project, thread_id)
@@ -481,7 +516,7 @@ class TestEscapeInterrupt:
                 # App exits — no assertion needed, just shouldn't hang
 
     async def test_escape_interrupts_active_query(self, project, thread_id) -> None:
-        """First Escape terminates active processes and shows interrupted panels."""
+        """First Escape terminates active processes and replaces WaitingPanels with ErrorPanels."""
         import subprocess
         from unittest.mock import MagicMock
 
@@ -507,6 +542,17 @@ class TestEscapeInterrupt:
                 # Processes should have been terminated
                 for member in council.members:
                     member.process.terminate.assert_called_once()
+
+                # WaitingPanels should be replaced with ErrorPanels showing "Interrupted"
+                error_panels = log.query(ErrorPanel)
+                assert len(error_panels) == 2
+                interrupted_names = {p.sender for p in error_panels}
+                assert interrupted_names == {"claude", "codex"}
+                for panel in error_panels:
+                    assert "Interrupted" in panel.error
+
+                # No waiting panels should remain
+                assert len(log.query(WaitingPanel)) == 0
 
     async def test_second_escape_exits(self, project, thread_id) -> None:
         """Second Escape after interrupt should exit the app."""
@@ -544,7 +590,7 @@ class TestEscapeInterrupt:
 
 class TestAutoTurn:
     async def test_follow_up_sequential_round_robin(self, project, thread_id) -> None:
-        """After first exchange, follow-up queries proceed sequentially."""
+        """After first exchange, follow-up queries proceed sequentially with correct budget and order."""
         council = make_fake_council(["claude", "codex"])
         council.auto_messages = 2  # exactly 2 follow-up messages
 
@@ -562,20 +608,31 @@ class TestAutoTurn:
                 app.load_history()
                 await pilot.pause(delay=0.1)
 
+                msgs_before = set(tdir.glob("[0-9]*-*.md"))
+
                 # Now send a follow-up (not first exchange since prior responses exist)
                 input_area = app.query_one("#input-area", InputArea)
                 input_area.insert("Follow up question")
                 await pilot.press("enter")
 
-                # Wait for auto-turn messages to be written
+                # Wait for auto-turn messages to be written (king + 2 auto-turn responses)
                 await wait_until(
                     pilot,
-                    lambda: len(list(tdir.glob("[0-9]*-claude.md"))) >= 2,
+                    lambda: len(list(tdir.glob("[0-9]*-*.md"))) >= len(msgs_before) + 3,
                     timeout=5.0,
                 )
 
                 app.poll_updates()
                 await pilot.pause(delay=0.2)
+
+                # Verify exactly 2 follow-up messages were written (respecting budget)
+                new_msgs = sorted(set(tdir.glob("[0-9]*-*.md")) - msgs_before)
+                auto_turn_msgs = [p for p in new_msgs if "king" not in p.name]
+                assert len(auto_turn_msgs) == 2
+
+                # Verify round-robin order: claude first, then codex
+                assert "claude" in auto_turn_msgs[0].name
+                assert "codex" in auto_turn_msgs[1].name
 
 
 # ---------------------------------------------------------------------------
