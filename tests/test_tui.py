@@ -118,6 +118,7 @@ class TestChatCommand:
             branch=BRANCH,
             thread_id="council-debug",
             debug_streams=True,
+            writable=False,
         )
         mock_chat_app.return_value.run.assert_called_once()
 

@@ -49,6 +49,12 @@ CHAT_PREAMBLE = (
     "Do NOT create, edit, or write files. Do NOT run git commands that modify state.\n\n"
 )
 
+WRITABLE_CHAT_PREAMBLE = (
+    "You are {name}, participating in a group discussion with other AI agents and the King (human). "
+    "You have full permissions — you may edit files, create tickets, run git commands, "
+    "and execute any action the King requests. Act on instructions directly.\n\n"
+)
+
 
 def build_branch_context(base: Path, branch: str) -> str:
     """Build a context block with the current branch name and ticket summary.
@@ -261,12 +267,15 @@ class ChatApp(App):
 
     THINKING_CYCLE: ClassVar[list[str]] = ["auto", "show", "hide"]
 
-    def __init__(self, base: Path, branch: str, thread_id: str, debug_streams: bool = False) -> None:
+    def __init__(
+        self, base: Path, branch: str, thread_id: str, debug_streams: bool = False, writable: bool = False
+    ) -> None:
         super().__init__()
         self.base = base
         self.branch = branch
         self.thread_id = thread_id
         self.debug_streams = debug_streams
+        self.writable = writable
         self.poller: ThreadPoller | None = None
         self.member_names: list[str] = []
         self.council: Council | None = None
@@ -322,8 +331,11 @@ class ChatApp(App):
         # shared session files).  Context comes from thread history injection.
         self.council = Council.create(base=self.base)
         branch_context = build_branch_context(self.base, self.branch)
+        preamble_template = WRITABLE_CHAT_PREAMBLE if self.writable else CHAT_PREAMBLE
         for member in self.council.members:
-            member.preamble = CHAT_PREAMBLE.format(name=member.name) + branch_context
+            member.preamble = preamble_template.format(name=member.name) + branch_context
+            if self.writable:
+                member.writable = True
 
         # Load existing messages from thread history
         self.load_history()
@@ -726,6 +738,8 @@ class ChatApp(App):
             self.cmd_mute(arg)
         elif cmd == "/unmute":
             self.cmd_unmute(arg)
+        elif cmd == "/writable":
+            self.cmd_writable()
         elif cmd in ("/help", "/h"):
             self.cmd_help()
         elif cmd in ("/quit", "/exit"):
@@ -763,11 +777,24 @@ class ChatApp(App):
         self.muted.discard(name)
         self.show_system_message(f"Unmuted {name} — included in broadcast queries.")
 
+    def cmd_writable(self) -> None:
+        """Toggle writable mode for all council members."""
+        self.writable = not self.writable
+        if self.council:
+            branch_context = build_branch_context(self.base, self.branch)
+            preamble_template = WRITABLE_CHAT_PREAMBLE if self.writable else CHAT_PREAMBLE
+            for member in self.council.members:
+                member.writable = self.writable
+                member.preamble = preamble_template.format(name=member.name) + branch_context
+        label = "ON — members can edit files and run commands" if self.writable else "OFF — advisory only"
+        self.show_system_message(f"Writable mode: {label}")
+
     def cmd_help(self) -> None:
         """Show available commands."""
         help_text = (
             "/mute <member>  — exclude member from broadcast queries\n"
             "/unmute <member> — re-include member in queries\n"
+            "/writable        — toggle writable mode (file edits, commands)\n"
             "/mute            — show currently muted members\n"
             "/help            — show this help\n"
             "/quit or /exit   — quit kd chat\n"

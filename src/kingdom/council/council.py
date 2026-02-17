@@ -50,6 +50,7 @@ class Council:
                     agent_prompt=agent_def.prompt,
                     phase_prompt=phase_prompt,
                     preamble=cfg.council.preamble,
+                    writable=cfg.council.writable,
                 )
             )
 

@@ -810,6 +810,44 @@ class TestCouncilWorker:
 
         assert exc_info.value.code == 1
 
+    def test_worker_writable_flag(self, project: Path) -> None:
+        """Worker --writable flag should set members to writable mode."""
+        from kingdom.council.worker import main
+        from kingdom.thread import create_thread
+
+        thread_id = "council-writable"
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+
+        captured_cmds = []
+
+        def capture_popen(*a, **kw):
+            captured_cmds.append(a[0] if a else kw.get("args", []))
+            return mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", side_effect=capture_popen):
+            main(
+                [
+                    "--base",
+                    str(project),
+                    "--feature",
+                    BRANCH,
+                    "--thread-id",
+                    thread_id,
+                    "--prompt",
+                    "create a ticket",
+                    "--timeout",
+                    "10",
+                    "--writable",
+                ]
+            )
+
+        # All spawned commands should have skip-permissions
+        for cmd in captured_cmds:
+            cmd_str = " ".join(cmd)
+            assert (
+                "--dangerously-skip-permissions" in cmd_str or "--dangerously-bypass-approvals-and-sandbox" in cmd_str
+            )
+
     def test_worker_saves_sessions(self, project: Path) -> None:
         from kingdom.council.worker import main
         from kingdom.thread import create_thread
@@ -870,6 +908,102 @@ class TestAgentResponseThreadBody:
         """Don't strip a different speaker's prefix."""
         r = AgentResponse(name="codex", text="claude: Hello there")
         assert r.thread_body() == "claude: Hello there"
+
+
+class TestWritableMode:
+    """Tests for writable council members."""
+
+    def test_writable_claude_uses_skip_permissions(self) -> None:
+        """Writable claude member should use --dangerously-skip-permissions."""
+        member = make_member("claude")
+        member.writable = True
+        cmd = member.build_command("create a ticket")
+        assert "--dangerously-skip-permissions" in cmd
+        assert "--allowedTools" not in cmd
+
+    def test_writable_codex_uses_full_sandbox(self) -> None:
+        """Writable codex member should use --dangerously-bypass-approvals-and-sandbox."""
+        member = make_member("codex")
+        member.writable = True
+        cmd = member.build_command("create a ticket")
+        assert "--dangerously-bypass-approvals-and-sandbox" in " ".join(cmd)
+        assert "disk-full-read-access" not in " ".join(cmd)
+
+    def test_writable_member_uses_writable_preamble(self) -> None:
+        """Writable member should use WRITABLE_PREAMBLE instead of COUNCIL_PREAMBLE."""
+        member = make_member("claude")
+        member.writable = True
+        cmd = member.build_command("do something")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith(CouncilMember.WRITABLE_PREAMBLE)
+        assert CouncilMember.COUNCIL_PREAMBLE not in prompt
+
+    def test_writable_with_custom_preamble_uses_custom(self) -> None:
+        """Custom preamble should override writable preamble too."""
+        member = make_member("claude")
+        member.writable = True
+        member.preamble = "Custom writable preamble.\n\n"
+        cmd = member.build_command("do something")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith("Custom writable preamble.")
+        assert CouncilMember.WRITABLE_PREAMBLE not in prompt
+
+    def test_non_writable_default_unchanged(self) -> None:
+        """Default (non-writable) member behavior should be unchanged."""
+        member = make_member("claude")
+        assert member.writable is False
+        cmd = member.build_command("hello")
+        assert "--dangerously-skip-permissions" not in cmd
+        assert "--allowedTools" in cmd
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith(CouncilMember.COUNCIL_PREAMBLE)
+
+    def test_writable_env_role(self) -> None:
+        """Writable member should pass role=council-writable in env."""
+        member = make_member("claude")
+        member.writable = True
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc) as mock_cls:
+            member.query("test", timeout=30)
+
+            env = mock_cls.call_args.kwargs.get("env", {})
+            assert env.get("KD_ROLE") == "council-writable"
+
+    def test_non_writable_env_role(self) -> None:
+        """Non-writable member should pass role=council in env."""
+        member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc) as mock_cls:
+            member.query("test", timeout=30)
+
+            env = mock_cls.call_args.kwargs.get("env", {})
+            assert env.get("KD_ROLE") == "council"
+
+
+class TestWritableCouncilCreate:
+    """Tests for writable flag propagation through Council.create()."""
+
+    def test_create_writable_from_config(self, tmp_path: Path) -> None:
+        """council.writable in config should propagate to all members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {"council": {"writable": True}}
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        for member in council.members:
+            assert member.writable is True
+
+    def test_create_default_not_writable(self, tmp_path: Path) -> None:
+        """Default council members should not be writable."""
+        (tmp_path / ".kd").mkdir(parents=True, exist_ok=True)
+        council = Council.create(base=tmp_path)
+        for member in council.members:
+            assert member.writable is False
 
 
 class TestPreambleOverride:

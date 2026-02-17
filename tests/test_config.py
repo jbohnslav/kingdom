@@ -123,6 +123,26 @@ class TestValidateConfig:
         assert cfg.council.mode == "sequential"
         assert cfg.council.preamble == "Custom."
 
+    def test_council_writable_true(self) -> None:
+        data = {"council": {"writable": True}}
+        cfg = validate_config(data)
+        assert cfg.council.writable is True
+
+    def test_council_writable_false(self) -> None:
+        data = {"council": {"writable": False}}
+        cfg = validate_config(data)
+        assert cfg.council.writable is False
+
+    def test_council_writable_default(self) -> None:
+        cfg = validate_config({})
+        assert cfg.council.writable is False
+
+    def test_council_writable_preserved_when_members_defaulted(self) -> None:
+        data = {"council": {"writable": True}}
+        cfg = validate_config(data)
+        assert cfg.council.writable is True
+        assert set(cfg.council.members) == {"claude", "codex"}
+
     def test_council_members_default_to_all_agents(self) -> None:
         cfg = validate_config({})
         assert set(cfg.council.members) == {"claude", "codex"}
@@ -270,6 +290,14 @@ class TestValidateConfigErrors:
     def test_thinking_visibility_default(self) -> None:
         cfg = validate_config({})
         assert cfg.council.thinking_visibility == "auto"
+
+    def test_bad_council_writable_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a boolean"):
+            validate_config({"council": {"writable": "yes"}})
+
+    def test_council_writable_rejects_int(self) -> None:
+        with pytest.raises(ValueError, match="must be a boolean"):
+            validate_config({"council": {"writable": 1}})
 
     def test_peasant_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):

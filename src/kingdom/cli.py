@@ -471,6 +471,9 @@ def council_ask(
     ] = False,
     no_watch: Annotated[bool, typer.Option("--no-watch", help="With --async, dispatch only without watching.")] = False,
     timeout: Annotated[int | None, typer.Option("--timeout", help="Per-model timeout in seconds.")] = None,
+    writable: Annotated[
+        bool, typer.Option("--writable", "-w", help="Grant council members full write permissions.")
+    ] = False,
 ) -> None:
     """Query council members via threaded conversations.
 
@@ -492,6 +495,9 @@ def council_ask(
     console = Console()
 
     c = Council.create(logs_dir=logs_dir, base=base)
+    if writable:
+        for m in c.members:
+            m.writable = True
     if timeout is not None:
         c.timeout = timeout
     timeout = c.timeout
@@ -601,6 +607,8 @@ def council_ask(
         ]
         if to:
             worker_cmd.extend(["--to", to])
+        if writable:
+            worker_cmd.append("--writable")
 
         subprocess.Popen(
             worker_cmd,
@@ -1325,6 +1333,9 @@ def chat(
             help="Preserve per-member stream NDJSON files as .debug-stream-*.jsonl in the thread directory.",
         ),
     ] = False,
+    writable: Annotated[
+        bool, typer.Option("--writable", "-w", help="Grant council members full write permissions.")
+    ] = False,
 ) -> None:
     """Open the council chat TUI.
 
@@ -1384,7 +1395,7 @@ def chat(
 
     from kingdom.tui.app import ChatApp
 
-    app_instance = ChatApp(base=base, branch=feature, thread_id=tid, debug_streams=debug)
+    app_instance = ChatApp(base=base, branch=feature, thread_id=tid, debug_streams=debug, writable=writable)
     app_instance.run()
 
 
