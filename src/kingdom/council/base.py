@@ -53,6 +53,7 @@ class CouncilMember:
     agent_prompt: str = ""  # agent.prompt from config (always additive)
     phase_prompt: str = ""  # resolved phase prompt (agent-specific or global)
     preamble: str = ""  # override for COUNCIL_PREAMBLE (empty = use default)
+    writable: bool = False  # when True, skip permission restrictions
     process: subprocess.Popen | None = None  # live Popen handle during query
     base: Path | None = None  # project root, for PID tracking in AgentState
     branch: str | None = None  # branch name, for PID tracking in AgentState
@@ -69,23 +70,35 @@ class CouncilMember:
         "Respond with analysis and recommendations — do not implement anything.\n\n"
     )
 
+    WRITABLE_PREAMBLE = (
+        "You are a council member with full permissions. You may edit files, create tickets, "
+        "run git commands, and execute any action the King requests. Act on instructions directly.\n\n"
+    )
+
     def build_command(self, prompt: str) -> list[str]:
         """Build the CLI command to execute.
-
-        Council queries are read-only, so skip_permissions is False.
 
         Prompt merge order:
             safety preamble (hardcoded) + phase prompt (agent-specific or global)
             + agent prompt (always additive) + user prompt
+
+        When writable is True, uses WRITABLE_PREAMBLE and skip_permissions=True.
+        Otherwise uses read-only COUNCIL_PREAMBLE and restricted tool access.
         """
-        parts = [self.preamble or self.COUNCIL_PREAMBLE]
+        if self.writable:
+            default_preamble = self.WRITABLE_PREAMBLE
+        else:
+            default_preamble = self.COUNCIL_PREAMBLE
+        parts = [self.preamble or default_preamble]
         if self.phase_prompt:
             parts.append(self.phase_prompt + "\n\n")
         if self.agent_prompt:
             parts.append(self.agent_prompt + "\n\n")
         parts.append(prompt)
         full_prompt = "".join(parts)
-        return agent_build_command(self.config, full_prompt, self.session_id, skip_permissions=False, streaming=True)
+        return agent_build_command(
+            self.config, full_prompt, self.session_id, skip_permissions=self.writable, streaming=True
+        )
 
     def parse_response(self, stdout: str, stderr: str, code: int) -> tuple[str, str | None, str]:
         """Parse response from CLI output.
@@ -167,13 +180,14 @@ class CouncilMember:
             if stream_path:
                 stream_file = stream_path.open("a", encoding="utf-8")
 
+            role = "council-writable" if self.writable else "council"
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 stdin=subprocess.DEVNULL,
-                env=clean_agent_env(role="council", agent_name=self.name),
+                env=clean_agent_env(role=role, agent_name=self.name),
             )
             self.process = process
 

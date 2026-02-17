@@ -1,122 +1,100 @@
 # Kingdom
 
-A CLI toolkit for AI-assisted software development. Kingdom helps you manage the design→breakdown→tickets→development workflow alongside your coding agent (Claude Code, Cursor, etc.).
+Kingdom (`kd`) is a markdown file-based CLI for software development: design with a multi-agent council, track work as markdown tickets, and run background RALPH loops with worker peasants.
 
-## Quick Start
+The kingdom metaphor is intentional: you are the King, debate your design documents with a council of frontier coding agent CLIs you already use (Claude Code and Codex), break the design into modular markdown tickets, and then peasants execute those tickets in parallel worktrees.
+
+Gastown minus the polecats.
+
+## Why
+
+- **Multi-agent council** — get perspectives from multiple frontier coding models, not just one opinion. Different models catch different things.
+- **Ticket-based execution** — breaking work into scoped tickets fights context rot, lets you use cheaper models for already-designed work, or run tickets in parallel.
+- **Multi-agent reviews** — reviews across models consistently catch bugs that single-agent reviews miss.
+- **Plain markdown files** — tickets, designs, and council threads are all markdown. Your coding agents are already good at finding, reading, and updating markdown.
+- **CLI + TUI** — the TUI is for humans; agent CLIs use `kd` directly to ask the council or other agents for opinions.
+- **Worklog audit trail** — peasant worklogs capture decisions, bugs encountered, and test results in the ticket markdown, committed to git. You can always see *why* something was done, not just the diff.
+
+## Install
 
 ```bash
-# Install
-pip install -e .
+uv tool install kingdom-cli
+```
 
-# Start a feature (uses current git branch)
+## Getting Started
+
+1. Initialize the project on your current branch:
+
+```bash
 kd start
-
-# Or start with a specific branch name
-kd start feature/oauth-refresh
-
-# Check status
-kd status
 ```
 
-## Core Workflow
+2. Configure council agent CLIs in `.kd/config.json` (check effective config with `kd config show`).
 
-### 1. Design Phase
+3. Design with the council in the TUI:
 
 ```bash
-kd design           # Create design.md template
-kd design show      # View design document
-kd design approve   # Mark design as approved
+kd chat --new
 ```
 
-### 2. Breakdown Phase
+4. Break your design into markdown tickets:
 
 ```bash
-kd breakdown        # Print agent prompt to create tickets from design
+kd breakdown
 ```
 
-### 3. Ticket Management
+5. Review and refine tickets:
 
 ```bash
-kd ticket list              # List tickets for current branch
-kd ticket list --all        # List all tickets across branches
-kd ticket ready             # Show tickets ready to work on
-kd ticket show <id>         # View ticket details
-kd ticket start <id>        # Mark in_progress
-kd ticket close <id>        # Mark closed
-kd ticket create "Title"    # Create new ticket
-kd ticket move <id> backlog # Move to backlog
+kd ticket list
+kd ticket show <id>
 ```
 
-### 4. Multi-Model Council
-
-Query multiple AI models simultaneously for design decisions:
+6. Execute tickets:
+- Serial: tell Claude Code or Codex to work tickets directly, or run `kd work <id>`.
+- Parallel: dispatch peasants in worktrees.
 
 ```bash
-kd council ask "How should we implement OAuth refresh tokens?"
-kd council status          # Check which members have responded
-kd council status -v       # Show log file paths and thread location
+kd peasant start <id>
+kd peasant status
 ```
 
-### 5. Complete Feature
+7. Close out the session:
 
 ```bash
-kd done   # Archive branch folder, clear current
+kd done
 ```
 
-## Directory Structure
+## How It Works
+
+All state lives in `.kd/` as plain Markdown and JSON files, tracked in git alongside your code:
 
 ```
 .kd/
 ├── branches/                    # Active branch work
-│   └── feature-oauth-refresh/   # Normalized from feature/oauth-refresh
-│       ├── design.md            # Design document (tracked)
-│       ├── breakdown.md         # Ticket breakdown (tracked)
-│       ├── tickets/             # Branch-specific tickets (tracked)
-│       │   ├── kin-a1b2.md
-│       │   └── kin-c3d4.md
-│       └── state.json           # Operational state (ignored)
+│   └── feature-oauth-refresh/
+│       ├── design.md            # Design document
+│       ├── breakdown.md         # Ticket breakdown
+│       ├── tickets/             # Branch-specific tickets
+│       │   ├── a1b2.md
+│       │   └── c3d4.md
+│       └── threads/             # Council discussion threads
 ├── backlog/                     # Unassigned tickets
 │   └── tickets/
 ├── archive/                     # Completed branches
-├── worktrees/                   # Git worktrees (ignored)
-└── current                      # Pointer to active branch (ignored)
+└── worktrees/                   # Git worktrees (gitignored)
 ```
 
-## Commands Reference
-
-| Command | Description |
-|---------|-------------|
-| `kd start [branch]` | Start working on a branch |
-| `kd status` | Show current branch and ticket counts |
-| `kd done` | Archive current branch |
-| `kd design` | Create/view design document |
-| `kd design show` | Print design.md |
-| `kd design approve` | Mark design approved |
-| `kd breakdown` | Print agent prompt to create tickets from design |
-| `kd ticket <cmd>` | Ticket management (list, show, create, etc.) |
-| `kd council ask` | Query AI council |
-| `kd council status` | Check member response status |
-| `kd doctor` | Check CLI dependencies |
+No database. No server. Just files on disk.
 
 ## Development
 
 ```bash
-# Setup
 uv sync
 source .venv/bin/activate
-
-# Optional: expose this repo's Kingdom skill to your agent tool
-ln -s "$(pwd)/skills/kingdom" ~/.codex/skills/private/kingdom
-# or
-ln -s "$(pwd)/skills/kingdom" ~/.claude/skills/kingdom
-
-# Run tests
 pytest tests/
-
-# Smoke test
-./scripts/smoke.sh
 ```
 
 ## License
 
-MIT
+Apache-2.0 — see [LICENSE](LICENSE) for details.

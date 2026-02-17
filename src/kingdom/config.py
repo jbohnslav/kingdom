@@ -49,6 +49,7 @@ class CouncilConfig:
     mode: str = "broadcast"
     preamble: str = ""
     thinking_visibility: str = "auto"
+    writable: bool = False
 
 
 @dataclass
@@ -98,7 +99,7 @@ def default_config() -> KingdomConfig:
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
 VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
-VALID_COUNCIL_KEYS = {"members", "timeout", "auto_messages", "mode", "preamble", "thinking_visibility"}
+VALID_COUNCIL_KEYS = {"members", "timeout", "auto_messages", "mode", "preamble", "thinking_visibility", "writable"}
 VALID_PEASANT_KEYS = {"agent", "timeout", "max_iterations"}
 VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant"}
 VALID_AGENT_PROMPT_PHASES = {"council", "design", "review", "peasant"}
@@ -221,6 +222,10 @@ def validate_council(data: dict) -> CouncilConfig:
             f"council.thinking_visibility must be one of {', '.join(sorted(valid_thinking))}, got '{thinking_visibility}'"
         )
 
+    writable = data.get("writable", False)
+    if not isinstance(writable, bool):
+        raise ValueError(f"council.writable must be a boolean, got {type(writable).__name__}")
+
     return CouncilConfig(
         members=members,
         timeout=timeout,
@@ -228,6 +233,7 @@ def validate_council(data: dict) -> CouncilConfig:
         mode=mode,
         preamble=preamble,
         thinking_visibility=thinking_visibility,
+        writable=writable,
     )
 
 
@@ -305,6 +311,7 @@ def validate_config(data: dict) -> KingdomConfig:
             mode=council.mode,
             preamble=council.preamble,
             thinking_visibility=council.thinking_visibility,
+            writable=council.writable,
         )
 
     # Peasant

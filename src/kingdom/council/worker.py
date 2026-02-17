@@ -32,12 +32,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--to", default=None, dest="to_member")
+    parser.add_argument("--writable", action="store_true", default=False)
     args = parser.parse_args(argv)
 
     logs_dir = logs_root(args.base, args.feature)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     c = Council.create(logs_dir=logs_dir, base=args.base)
+    if args.writable:
+        for member in c.members:
+            member.writable = True
     c.timeout = args.timeout
     c.load_sessions(args.base, args.feature)
 

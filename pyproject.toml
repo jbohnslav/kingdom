@@ -1,14 +1,34 @@
 [project]
-name = "kingdom"
-version = "0.1.0"
-description = "Add your description here"
+name = "kingdom-cli"
+version = "0.1.1"
+description = "A markdown file-based CLI for software development with multi-agent council design, markdown tickets, and background worker loops."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "James Robinson-Bohnslav" }]
+keywords = ["cli", "ai", "development", "workflow", "agents", "multi-model", "tickets"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development",
+    "Environment :: Console",
+]
+license-files = ["LICENSE"]
 dependencies = [
-    "pytest-asyncio>=1.3.0",
     "rich>=14.3.1",
+    "textual>=7.5.0",
     "typer>=0.21.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jbohnslav/kingdom"
+Repository = "https://github.com/jbohnslav/kingdom"
+Issues = "https://github.com/jbohnslav/kingdom/issues"
+Changelog = "https://github.com/jbohnslav/kingdom/releases"
 
 [project.scripts]
 kd = "kingdom.cli:main"
@@ -21,12 +41,10 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [dependency-groups]
-chat = [
-    "textual>=7.5.0",
-]
 dev = [
     "pre-commit>=4.0.0",
     "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
     "ruff>=0.8.6",
 ]
 

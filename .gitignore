@@ -9,4 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Third-party repos (local design/strategy reference only)
+third-party/
+
+# Council threads and peasant work logs (generated locally)
+.kd/**/threads/
+
 # Kingdom operational state (json/logs ignored via .kd/.gitignore)
