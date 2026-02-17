@@ -25,20 +25,6 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-class TestRequireTextual:
-    def test_import_succeeds_when_installed(self) -> None:
-        from kingdom.tui import require_textual
-
-        # Should not raise
-        require_textual()
-
-    def test_import_raises_when_missing(self) -> None:
-        from kingdom.tui import require_textual
-
-        with patch.dict("sys.modules", {"textual": None}), pytest.raises(SystemExit, match="uv sync --group chat"):
-            require_textual()
-
-
 class TestChatCommand:
     def test_help(self) -> None:
         result = runner.invoke(app, ["chat", "--help"])

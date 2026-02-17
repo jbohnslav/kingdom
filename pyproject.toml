@@ -1,7 +1,7 @@
 [project]
 name = "kingdom-cli"
 version = "0.1.1"
-description = "A git-native CLI that helps you plan and ship software by running multi-model AI design councils, turning outcomes into tickets, and executing work through agent workers."
+description = "A markdown file-based CLI for software development with multi-agent council design, markdown tickets, and background worker loops."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -17,8 +17,10 @@ classifiers = [
     "Topic :: Software Development",
     "Environment :: Console",
 ]
+license-files = ["LICENSE"]
 dependencies = [
     "rich>=14.3.1",
+    "textual>=7.5.0",
     "typer>=0.21.1",
 ]
 
@@ -26,6 +28,7 @@ dependencies = [
 Homepage = "https://github.com/jbohnslav/kingdom"
 Repository = "https://github.com/jbohnslav/kingdom"
 Issues = "https://github.com/jbohnslav/kingdom/issues"
+Changelog = "https://github.com/jbohnslav/kingdom/releases"
 
 [project.scripts]
 kd = "kingdom.cli:main"
@@ -38,9 +41,6 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [dependency-groups]
-chat = [
-    "textual>=7.5.0",
-]
 dev = [
     "pre-commit>=4.0.0",
     "pytest>=9.0.2",

@@ -1341,14 +1341,6 @@ def chat(
 
     Opens an existing thread, creates a new one, or lists recent threads.
     """
-    try:
-        from kingdom.tui import require_textual
-
-        require_textual()
-    except SystemExit as e:
-        typer.echo(str(e))
-        raise typer.Exit(code=1) from e
-
     from kingdom.config import load_config
     from kingdom.thread import create_thread, list_threads
 
