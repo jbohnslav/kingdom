@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from kingdom.thread import ThreadStatus
 
 import typer
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -277,7 +277,7 @@ def done(
         if open_tickets:
             print_error(f"{len(open_tickets)} open ticket(s) on '{feature}':")
             for t in open_tickets:
-                error_console.print(f"  {t.id} [{t.status}] {t.title}")
+                error_console.print(f"  {t.id} \\[{t.status}] {t.title}")
             error_console.print("\nClose tickets, move them to backlog with `kd tk move`, or use --force.")
             raise typer.Exit(code=1)
 
@@ -510,7 +510,7 @@ def council_ask(
         )
 
         if no_watch:
-            typer.echo(f"Dispatched. Use `kd council watch {thread_id}` to see responses.")
+            typer.echo(f"Dispatched — use `kd council watch {thread_id}` to see responses")
             return
 
         # Fall through to watch — poll thread dir and render panels as they arrive
@@ -647,7 +647,7 @@ def council_show(
     if tdir.exists():
         messages = list_messages(base, feature, thread_id)
         if not messages:
-            typer.echo(f"Thread {thread_id}: no messages.")
+            typer.echo(f'Thread {thread_id}: no messages. Send one with `kd council ask "prompt"`.')
             raise typer.Exit(code=1)
 
         turns = group_messages_into_turns(messages)
@@ -697,11 +697,11 @@ def council_show(
         # Try 'last' alias
         if thread_id == "last":
             if not council_logs_dir.exists():
-                typer.echo("No council history found.")
+                typer.echo('No council history found. Start a conversation with `kd council ask "prompt"`.')
                 raise typer.Exit(code=1)
             runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
             if not runs:
-                typer.echo("No council history found.")
+                typer.echo('No council history found. Start a conversation with `kd council ask "prompt"`.')
                 raise typer.Exit(code=1)
             run_dir = max(runs, key=lambda d: d.stat().st_mtime)
         else:
@@ -1150,7 +1150,7 @@ def council_retry(
         if msg.from_ == "king":
             last_king_msg = msg
     if last_king_msg is None:
-        typer.echo("No king message found in thread.")
+        typer.echo('No king message found in thread. Send one first with `kd council ask "prompt"`.')
         raise typer.Exit(code=1)
 
     prompt = last_king_msg.body
@@ -1785,7 +1785,7 @@ def peasant_status() -> None:
     peasants = [a for a in active if a.name.startswith("peasant-")]
 
     if not peasants:
-        typer.echo("No active peasants.")
+        typer.echo("No active peasants. Start one with `kd peasant start <ticket-id>`.")
         return
 
     table = Table(title="Active Peasants")
@@ -1865,7 +1865,7 @@ def peasant_logs(
     stderr_log = peasant_logs_dir / "stderr.log"
 
     if not peasant_logs_dir.exists():
-        typer.echo(f"No logs found for {ctx.full_ticket_id}")
+        typer.echo(f"No logs found for {ctx.full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1)
 
     if follow:
@@ -1875,7 +1875,7 @@ def peasant_logs(
             if files:
                 subprocess.run(["tail", "-f", *files])
             else:
-                typer.echo("Log files are empty.")
+                typer.echo("Log files are empty. The peasant may still be starting up.")
         return
 
     # Show both stdout and stderr
@@ -1890,7 +1890,7 @@ def peasant_logs(
         console.print(Markdown(f"## stderr\n\n```\n{content}\n```"))
 
     if not (stdout_log.exists() or stderr_log.exists()):
-        typer.echo("Log files are empty.")
+        typer.echo("Log files are empty. The peasant may still be starting up.")
 
 
 @peasant_app.command("stop", help="Stop a running peasant.")
@@ -2087,7 +2087,7 @@ def peasant_read(
     peasant_msgs = [m for m in messages if m.from_ == session_name]
 
     if not peasant_msgs:
-        typer.echo(f"No messages from {session_name} yet.")
+        typer.echo(f"No messages from {session_name} yet. The peasant may still be working.")
         return
 
     # Show last N messages
@@ -2141,7 +2141,9 @@ def peasant_review(
         try:
             add_message(base, feature, thread_id, from_="king", to=session_name, body=reject)
         except FileNotFoundError:
-            typer.echo(f"No work thread found for {full_ticket_id}.")
+            typer.echo(
+                f"No work thread found for {full_ticket_id}. Start one with `kd peasant start {full_ticket_id}`."
+            )
             raise typer.Exit(code=1) from None
 
         # Check if peasant process is still alive
@@ -2876,6 +2878,14 @@ def format_ticket_line(ticket: Ticket, location: str | None = None) -> str:
     return f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}{location_str}{dep_str}"
 
 
+def console_width() -> int:
+    """Get the current terminal width, defaulting to 120 if unavailable."""
+    try:
+        return os.get_terminal_size().columns
+    except (ValueError, OSError):
+        return 120
+
+
 STATUS_STYLES = {
     "open": "green",
     "in_progress": "yellow",
@@ -2898,12 +2908,12 @@ def render_ticket_table(
     """
     from rich.table import Table
 
-    console = Console()
+    console = Console(width=max(console_width(), 120))
     table = Table(show_header=True, header_style="bold", padding=(0, 1))
 
     table.add_column("ID", style="cyan", no_wrap=True)
-    table.add_column("P", justify="center", no_wrap=True)
-    table.add_column("Status", no_wrap=True)
+    table.add_column("P", justify="center", no_wrap=True, min_width=2)
+    table.add_column("Status", no_wrap=True, min_width=11)
     table.add_column("Assignee", no_wrap=True)
     table.add_column("Title", no_wrap=True)
     table.add_column("Deps", style="dim", no_wrap=True)
@@ -2968,8 +2978,8 @@ def ticket_list(
     base = Path.cwd()
 
     if backlog:
-        backlog_tickets = backlog_root(base) / "tickets"
-        all_backlog_tickets = list_tickets(backlog_tickets) if backlog_tickets.exists() else []
+        backlog_dir = backlog_root(base) / "tickets"
+        all_backlog_tickets = list_tickets(backlog_dir) if backlog_dir.exists() else []
         tickets = apply_status_filter(all_backlog_tickets)
 
         if output_json:
@@ -2979,6 +2989,7 @@ def ticket_list(
                     "priority": t.priority,
                     "status": t.status,
                     "title": t.title,
+                    "deps": t.deps,
                     "location": "backlog",
                 }
                 for t in tickets
@@ -3028,6 +3039,7 @@ def ticket_list(
                     "priority": t.priority,
                     "status": t.status,
                     "title": t.title,
+                    "deps": t.deps,
                     "location": location_map.get(t.id, ""),
                 }
                 for t in all_filtered
@@ -3052,6 +3064,7 @@ def ticket_list(
                     "priority": t.priority,
                     "status": t.status,
                     "title": t.title,
+                    "deps": t.deps,
                 }
                 for t in tickets
             ]
@@ -3082,6 +3095,61 @@ def resolve_dep_status(base: Path, dep_id: str) -> str:
         return "unknown"
     dep_ticket, _ = result
     return dep_ticket.status
+
+
+STATUS_COLORS = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
+
+
+def render_ticket_panel(ticket: Ticket, ticket_path: Path, base: Path) -> Panel:
+    """Build a Rich Panel displaying a ticket's metadata and body.
+
+    Args:
+        ticket: The Ticket dataclass instance.
+        ticket_path: Absolute path to the ticket file.
+        base: Project root directory (used for relative path display and dep lookups).
+
+    Returns:
+        A Rich Panel renderable.
+    """
+    # Metadata table (borderless grid)
+    meta = Table.grid(padding=(0, 2))
+    meta.add_column("label", style="dim", no_wrap=True)
+    meta.add_column("value")
+
+    status_color = STATUS_COLORS.get(ticket.status, "white")
+    meta.add_row("status", f"[{status_color}]{ticket.status}[/{status_color}]")
+    meta.add_row("priority", f"P{ticket.priority}")
+    meta.add_row("type", ticket.type)
+    meta.add_row("created", ticket.created.strftime("%Y-%m-%d"))
+
+    if ticket.assignee:
+        meta.add_row("assignee", ticket.assignee)
+
+    if ticket.deps:
+        dep_parts = []
+        for dep_id in ticket.deps:
+            dep_status = resolve_dep_status(base, dep_id)
+            dep_color = STATUS_COLORS.get(dep_status, "white")
+            dep_parts.append(f"{dep_id} [{dep_color}]{dep_status}[/{dep_color}]")
+        meta.add_row("deps", ", ".join(dep_parts))
+
+    if ticket.links:
+        meta.add_row("links", ", ".join(ticket.links))
+
+    # Build body content (markdown)
+    parts: list[object] = [meta]
+    if ticket.body.strip():
+        parts.append(Text())  # blank line separator
+        parts.append(Markdown(ticket.body))
+
+    subtitle = str(ticket_path.relative_to(base))
+    return Panel(
+        Group(*parts),
+        title=f"[bold]{ticket.id}[/bold]  {ticket.title}",
+        subtitle=f"[dim]{subtitle}[/dim]",
+        border_style="dim",
+        padding=(1, 2),
+    )
 
 
 @ticket_app.command("show", help="Show a ticket.")
@@ -3166,34 +3234,7 @@ def ticket_show(
         for i, (ticket, ticket_path) in enumerate(pairs):
             if i > 0:
                 console.print()  # separator between tickets
-            console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
-            console.print(Rule(style="dim"))
-
-            # Structured metadata header
-            status_colors = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
-            status_color = status_colors.get(ticket.status, "white")
-            console.print(
-                f"[bold]{ticket.id}[/bold]  "
-                f"[{status_color}]{ticket.status}[/{status_color}]  "
-                f"P{ticket.priority}  "
-                f"{ticket.type}"
-            )
-            if ticket.deps:
-                dep_parts = []
-                for dep_id in ticket.deps:
-                    dep_status = resolve_dep_status(base, dep_id)
-                    dep_color = status_colors.get(dep_status, "white")
-                    dep_parts.append(f"{dep_id} [{dep_color}]{dep_status}[/{dep_color}]")
-                console.print(f"[dim]deps:[/dim] {', '.join(dep_parts)}")
-            if ticket.links:
-                console.print(f"[dim]links:[/dim] {', '.join(ticket.links)}")
-            if ticket.assignee:
-                console.print(f"[dim]assignee:[/dim] {ticket.assignee}")
-            console.print(f"[dim]created:[/dim] {ticket.created.strftime('%Y-%m-%d')}")
-            console.print()
-
-            # Title + body as markdown
-            console.print(Markdown(f"# {ticket.title}\n\n{ticket.body}"))
+            console.print(render_ticket_panel(ticket, ticket_path, base))
 
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:

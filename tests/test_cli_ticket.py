@@ -615,8 +615,9 @@ class TestTicketList:
             result = runner.invoke(cli.app, ["tk", "list", "--all"])
 
             assert result.exit_code == 0
-            assert "Open ticket" in result.output
-            assert "Closed ticket" not in result.output
+            # Rich table may wrap long titles; check ticket IDs instead
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
 
     def test_list_status_filter_open(self) -> None:
         with runner.isolated_filesystem():
@@ -707,8 +708,9 @@ class TestTicketList:
             result = runner.invoke(cli.app, ["tk", "list", "--all", "--status", "closed"])
 
             assert result.exit_code == 0
-            assert "Open ticket" not in result.output
-            assert "Closed ticket" in result.output
+            # Rich table may wrap long titles; check ticket IDs instead
+            assert "aaaa" not in result.output
+            assert "bbbb" in result.output
 
     def test_list_status_filter_short_flag(self) -> None:
         with runner.isolated_filesystem():
@@ -801,6 +803,135 @@ class TestTicketList:
             assert "total" not in result.output
 
 
+class TestTicketListTable:
+    """Tests for Rich table formatting in tk list."""
+
+    def test_table_has_header_row(self) -> None:
+        """The table should include column headers."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(id="aaaa", status="open", title="Test ticket", body="", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "ID" in result.output
+            assert "Status" in result.output
+            assert "Title" in result.output
+
+    def test_table_shows_priority(self) -> None:
+        """Priority should be displayed as P1, P2, etc."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(
+                id="aaaa", status="open", title="High priority", body="", priority=1, created=datetime.now(UTC)
+            )
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "P1" in result.output
+
+    def test_table_shows_assignee(self) -> None:
+        """Assignee should be visible when set."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(
+                id="aaaa", status="open", title="Assigned ticket", body="", assignee="alice", created=datetime.now(UTC)
+            )
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "@alice" in result.output
+
+    def test_table_shows_deps(self) -> None:
+        """Dependencies should be visible in the table."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(
+                id="aaaa",
+                status="open",
+                title="Blocked ticket",
+                body="",
+                deps=["bbbb", "cccc"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "bbbb" in result.output
+            assert "cccc" in result.output
+
+    def test_table_all_shows_location_column(self) -> None:
+        """With --all flag, the Location column should be present."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(id="aaaa", status="open", title="Branch ticket", body="", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--all"])
+
+            assert result.exit_code == 0
+            assert "Location" in result.output
+            assert "branch:" in result.output
+
+    def test_table_backlog_no_location_column(self) -> None:
+        """Without --all flag, no Location column should appear."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(id="aaaa", status="open", title="Normal ticket", body="", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "Location" not in result.output
+
+    def test_json_output_unaffected(self) -> None:
+        """JSON output should not contain table formatting."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(id="aaaa", status="open", title="JSON ticket", body="", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--json"])
+
+            import json
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 1
+            assert data[0]["id"] == "aaaa"
+            assert data[0]["title"] == "JSON ticket"
+
+
 class TestFormatTicketSummary:
     def test_all_statuses(self) -> None:
         tickets = [
@@ -889,11 +1020,11 @@ class TestTicketShow:
             result = runner.invoke(cli.app, ["tk", "show", "cd34"])
 
             assert result.exit_code == 0
-            assert "deps:" in result.output  # structured deps display
+            assert "deps" in result.output  # structured deps display
             assert "ab12" in result.output
 
     def test_show_dep_status_inline(self) -> None:
-        """Dep statuses should appear inline, e.g. 'deps: ab12 closed'."""
+        """Dep statuses should appear inline, e.g. 'deps  ab12 closed'."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -923,7 +1054,7 @@ class TestTicketShow:
             result = runner.invoke(cli.app, ["tk", "show", "cd34"])
 
             assert result.exit_code == 0
-            assert "deps:" in result.output
+            assert "deps" in result.output
             assert "ab12" in result.output
             assert "closed" in result.output
 
@@ -947,7 +1078,7 @@ class TestTicketShow:
             result = runner.invoke(cli.app, ["tk", "show", "ef56"])
 
             assert result.exit_code == 0
-            assert "deps:" in result.output
+            assert "deps" in result.output
             assert "zzzz" in result.output
             assert "unknown" in result.output
 
@@ -1016,6 +1147,122 @@ class TestTicketShow:
             assert len(data["deps"]) == 1
             assert data["deps"][0]["id"] == "ab12"
             assert data["deps"][0]["status"] == "closed"
+
+    def test_show_panel_layout_contains_metadata_grid(self) -> None:
+        """Panel should contain a grid with status, priority, type, and created rows."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="ff99",
+                status="open",
+                title="Panel test",
+                body="Some body text",
+                priority=1,
+                type="bug",
+                created=datetime(2026, 1, 15, tzinfo=UTC),
+            )
+            write_ticket(ticket, tickets_dir / "ff99.md")
+
+            result = runner.invoke(cli.app, ["tk", "show", "ff99"])
+
+            assert result.exit_code == 0
+            output = result.output
+            # Panel border character
+            assert "─" in output or "╭" in output or "│" in output
+            # Metadata fields present as grid rows
+            assert "status" in output
+            assert "open" in output
+            assert "priority" in output
+            assert "P1" in output
+            assert "type" in output
+            assert "bug" in output
+            assert "created" in output
+            assert "2026-01-15" in output
+            # Title in panel header
+            assert "ff99" in output
+            assert "Panel test" in output
+            # Body content
+            assert "Some body text" in output
+
+    def test_show_panel_shows_assignee_when_present(self) -> None:
+        """Assignee row should appear in panel when ticket has an assignee."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="ee88",
+                status="in_progress",
+                title="Assigned ticket",
+                body="",
+                assignee="hand",
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "ee88.md")
+
+            result = runner.invoke(cli.app, ["tk", "show", "ee88"])
+
+            assert result.exit_code == 0
+            assert "assignee" in result.output
+            assert "hand" in result.output
+
+    def test_show_panel_hides_assignee_when_absent(self) -> None:
+        """Assignee row should not appear when ticket has no assignee."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="dd77",
+                status="open",
+                title="Unassigned ticket",
+                body="",
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "dd77.md")
+
+            result = runner.invoke(cli.app, ["tk", "show", "dd77"])
+
+            assert result.exit_code == 0
+            assert "assignee" not in result.output
+
+    def test_show_panel_shows_links(self) -> None:
+        """Links row should appear when ticket has links."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="cc66",
+                status="open",
+                title="Linked ticket",
+                body="",
+                links=["https://example.com/issue/1"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "cc66.md")
+
+            result = runner.invoke(cli.app, ["tk", "show", "cc66"])
+
+            assert result.exit_code == 0
+            assert "links" in result.output
+            assert "https://example.com/issue/1" in result.output
+
+    def test_show_panel_subtitle_has_file_path(self) -> None:
+        """Panel subtitle should show the relative file path."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "bb55")
+
+            result = runner.invoke(cli.app, ["tk", "show", "bb55"])
+
+            assert result.exit_code == 0
+            assert "bb55.md" in result.output
+            assert ".kd/" in result.output
 
 
 class TestMigrate:
@@ -1347,3 +1594,131 @@ class TestTicketLog:
             result = runner.invoke(cli.app, ["tk", "log", "kin-lg04"])
 
             assert result.exit_code != 0
+
+
+class TestTicketDep:
+    """Tests for kd tk dep — adding dependencies."""
+
+    def test_dep_appends_not_overwrites(self) -> None:
+        """Adding a second dep must preserve the first (append, not overwrite).
+
+        Uses the exact IDs from the bug report: cf1a depends on 3642 then d869.
+        """
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            # Create three tickets — 3642 is all-numeric (the tricky case)
+            for tid in ["cf1a", "3642", "d869"]:
+                t = Ticket(
+                    id=tid,
+                    status="open",
+                    title=f"Ticket {tid}",
+                    body="",
+                    created=datetime.now(UTC),
+                )
+                write_ticket(t, tickets_dir / f"{tid}.md")
+
+            # First dep: cf1a depends on 3642
+            result1 = runner.invoke(cli.app, ["tk", "dep", "cf1a", "3642"])
+            assert result1.exit_code == 0, result1.output
+            assert "now depends on" in result1.output
+
+            # Second dep: cf1a depends on d869
+            result2 = runner.invoke(cli.app, ["tk", "dep", "cf1a", "d869"])
+            assert result2.exit_code == 0, result2.output
+            assert "now depends on" in result2.output
+
+            # Both deps must be present
+            found = find_ticket(base, "cf1a")
+            assert found is not None
+            ticket, _ = found
+            assert "3642" in ticket.deps, f"First dep lost! deps={ticket.deps}"
+            assert "d869" in ticket.deps, f"Second dep missing! deps={ticket.deps}"
+            assert len(ticket.deps) == 2
+
+    def test_dep_preserves_existing_deps_on_disk(self) -> None:
+        """A ticket with pre-existing deps on disk must keep them when adding a new dep."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            # Create dep tickets
+            for tid in ["3642", "d869"]:
+                t = Ticket(id=tid, status="open", title=f"Ticket {tid}", body="", created=datetime.now(UTC))
+                write_ticket(t, tickets_dir / f"{tid}.md")
+
+            # Create target ticket already having one dep on disk
+            target = Ticket(
+                id="cf1a",
+                status="open",
+                title="Target ticket",
+                body="",
+                deps=["3642"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(target, tickets_dir / "cf1a.md")
+
+            # Verify first dep survives write/read roundtrip
+            found_before = find_ticket(base, "cf1a")
+            assert found_before is not None
+            ticket_before, _ = found_before
+            assert "3642" in ticket_before.deps, f"Dep lost after roundtrip! deps={ticket_before.deps}"
+
+            # Add second dep via CLI
+            result = runner.invoke(cli.app, ["tk", "dep", "cf1a", "d869"])
+            assert result.exit_code == 0, result.output
+            assert "now depends on" in result.output
+
+            # Both deps must be present
+            found = find_ticket(base, "cf1a")
+            assert found is not None
+            ticket, _ = found
+            assert "3642" in ticket.deps, f"First dep lost! deps={ticket.deps}"
+            assert "d869" in ticket.deps, f"Second dep missing! deps={ticket.deps}"
+            assert len(ticket.deps) == 2
+
+    def test_dep_idempotent(self) -> None:
+        """Adding the same dep twice should be a no-op the second time."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            for tid in ["cf1a", "aaaa"]:
+                t = Ticket(
+                    id=tid,
+                    status="open",
+                    title=f"Ticket {tid}",
+                    body="",
+                    created=datetime.now(UTC),
+                )
+                write_ticket(t, tickets_dir / f"{tid}.md")
+
+            # Add dep twice
+            runner.invoke(cli.app, ["tk", "dep", "cf1a", "aaaa"])
+            result = runner.invoke(cli.app, ["tk", "dep", "cf1a", "aaaa"])
+
+            assert result.exit_code == 0
+            assert "already depends on" in result.output
+
+            found = find_ticket(base, "cf1a")
+            assert found is not None
+            ticket, _ = found
+            assert ticket.deps == ["aaaa"]
+
+    def test_dep_not_found(self) -> None:
+        """Adding a dep with a nonexistent ticket should error."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t = Ticket(id="cf1a", status="open", title="Target", body="", created=datetime.now(UTC))
+            write_ticket(t, tickets_dir / "cf1a.md")
+
+            result = runner.invoke(cli.app, ["tk", "dep", "cf1a", "zzzz"])
+            assert result.exit_code == 1
+            assert "not found" in result.output
