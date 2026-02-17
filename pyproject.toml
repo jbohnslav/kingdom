@@ -1,14 +1,32 @@
 [project]
 name = "kingdom-cli"
 version = "0.1.1"
-description = "Add your description here"
+description = "A git-native CLI that helps you plan and ship software by running multi-model AI design councils, turning outcomes into tickets, and executing work through agent workers."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "James Robinson-Bohnslav" }]
+keywords = ["cli", "ai", "development", "workflow", "agents", "multi-model", "tickets"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development",
+    "Environment :: Console",
+]
 dependencies = [
-    "pytest-asyncio>=1.3.0",
     "rich>=14.3.1",
     "typer>=0.21.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jbohnslav/kingdom"
+Repository = "https://github.com/jbohnslav/kingdom"
+Issues = "https://github.com/jbohnslav/kingdom/issues"
 
 [project.scripts]
 kd = "kingdom.cli:main"
@@ -27,6 +45,7 @@ chat = [
 dev = [
     "pre-commit>=4.0.0",
     "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
     "ruff>=0.8.6",
 ]
 
