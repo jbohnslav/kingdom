@@ -45,25 +45,13 @@ def format_elapsed(seconds: float) -> str:
     return f"{h}h {m}m {s}s"
 
 
-def format_reply_text(sender: str, body: str, max_quote_lines: int = 4) -> str:
-    """Build reply text with @mention and quoted excerpt.
+def format_reply_text(sender: str) -> str:
+    """Build reply prefix: ``@sender `` with a trailing space.
 
-    Produces::
-
-        @claude
-        > first line of original message
-        > second line...
-        <blank line ready for typing>
-
-    Long messages are truncated to *max_quote_lines* with an ellipsis marker.
+    Keeps the input clean — the user types their reply directly after the
+    @mention instead of having to delete a multi-line quoted block.
     """
-    lines = body.strip().splitlines()
-    if len(lines) > max_quote_lines:
-        quoted_lines = [*lines[:max_quote_lines], "..."]
-    else:
-        quoted_lines = lines
-    quoted = "\n".join(f"> {line}" for line in quoted_lines)
-    return f"@{sender}\n{quoted}\n\n"
+    return f"@{sender} "
 
 
 # Brand-aware colors for known council members.
@@ -218,14 +206,14 @@ class MessagePanel(Static):
             color = color_for_member(self.sender)
             self.styles.border = ("round", color)
             self.border_title = self.sender
-            self.border_subtitle = "click: reply \u00b7 shift+click: copy"
+            self.border_subtitle = "click: reply \u00b7 shift: copy"
         if self.member_names:
             self.update(ColoredMentionMarkdown(self.compose_text(), self.member_names))
         else:
             self.update(RichMarkdown(self.compose_text()))
 
     def on_click(self, event) -> None:
-        """Handle click: reply (default) or copy (shift+click)."""
+        """Handle click: reply (default) or copy (shift)."""
         if self.sender == "king":
             return
         if event.shift:
@@ -248,7 +236,7 @@ class MessagePanel(Static):
 
     def reset_subtitle(self) -> None:
         """Reset subtitle back to the action hints after feedback timeout."""
-        self.border_subtitle = "click: reply \u00b7 shift+click: copy"
+        self.border_subtitle = "click: reply \u00b7 shift: copy"
 
 
 class StreamingPanel(Static):

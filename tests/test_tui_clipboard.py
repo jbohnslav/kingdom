@@ -95,7 +95,7 @@ def make_click_event(shift: bool = False) -> MagicMock:
     return event
 
 
-SUBTITLE_HINT = "click: reply \u00b7 shift+click: copy"
+SUBTITLE_HINT = "click: reply \u00b7 shift: copy"
 
 
 class TestMessagePanelCopy:
@@ -210,63 +210,10 @@ class TestMessagePanelReply:
 class TestFormatReplyText:
     """Tests for the format_reply_text helper function."""
 
-    def test_single_line_body(self) -> None:
-        result = format_reply_text("claude", "Short answer")
-        assert result == "@claude\n> Short answer\n\n"
+    def test_returns_at_mention_with_trailing_space(self) -> None:
+        result = format_reply_text("claude")
+        assert result == "@claude "
 
-    def test_multi_line_body(self) -> None:
-        body = "Line one\nLine two\nLine three"
-        result = format_reply_text("codex", body)
-        assert result == "@codex\n> Line one\n> Line two\n> Line three\n\n"
-
-    def test_long_body_truncated(self) -> None:
-        body = "\n".join(f"Line {i}" for i in range(10))
-        result = format_reply_text("claude", body, max_quote_lines=4)
-        lines = result.splitlines()
-        # @claude, 4 quoted lines, "...", blank
-        assert lines[0] == "@claude"
-        assert lines[1] == "> Line 0"
-        assert lines[4] == "> Line 3"
-        assert lines[5] == "> ..."
-        assert result.endswith("\n\n")
-
-    def test_body_exactly_at_limit(self) -> None:
-        body = "A\nB\nC\nD"
-        result = format_reply_text("codex", body, max_quote_lines=4)
-        # Should not truncate (exactly 4 lines)
-        assert "> ..." not in result
-        assert "> A" in result
-        assert "> D" in result
-
-    def test_body_one_over_limit(self) -> None:
-        body = "A\nB\nC\nD\nE"
-        result = format_reply_text("codex", body, max_quote_lines=4)
-        # Should truncate (5 lines > 4 limit)
-        assert "> ..." in result
-        assert "> E" not in result
-
-    def test_whitespace_stripped(self) -> None:
-        body = "  \n  Hello\nWorld  \n  "
-        result = format_reply_text("claude", body)
-        # Leading/trailing whitespace on the body is stripped
-        assert result.startswith("@claude\n>")
-
-    def test_empty_body(self) -> None:
-        result = format_reply_text("claude", "")
-        # Empty body produces @mention + empty quote
-        assert result.startswith("@claude\n")
-        assert result.endswith("\n\n")
-
-    def test_ends_with_double_newline(self) -> None:
-        """Reply text should end with a blank line so user can start typing."""
-        result = format_reply_text("claude", "Hello")
-        assert result.endswith("\n\n")
-
-    def test_custom_max_quote_lines(self) -> None:
-        body = "A\nB\nC\nD\nE\nF"
-        result = format_reply_text("claude", body, max_quote_lines=2)
-        lines = result.splitlines()
-        assert lines[0] == "@claude"
-        assert lines[1] == "> A"
-        assert lines[2] == "> B"
-        assert lines[3] == "> ..."
+    def test_different_sender(self) -> None:
+        result = format_reply_text("codex")
+        assert result == "@codex "

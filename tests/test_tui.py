@@ -1068,11 +1068,17 @@ class TestEscapeInterrupt:
         claude.process = mock_proc
 
         # Stub out query_one to avoid needing mounted widgets
-        app_instance.query_one = MagicMock()
-        app_instance.query_one.return_value = MagicMock()
-        # The log's query returns empty lists (no panels to replace)
-        log_mock = app_instance.query_one.return_value
+        input_mock = MagicMock()
+        input_mock.text = ""  # empty input so Escape doesn't just clear
+        log_mock = MagicMock()
         log_mock.query.return_value = []
+
+        def fake_query_one(selector, *args, **kwargs):
+            if selector == "#input-area":
+                return input_mock
+            return log_mock
+
+        app_instance.query_one = fake_query_one
 
         app_instance.action_interrupt()
 

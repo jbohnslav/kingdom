@@ -29,60 +29,21 @@ def project(tmp_path: Path) -> Path:
 class TestFormatReplyText:
     """Tests for the format_reply_text helper function."""
 
-    def test_single_line_body(self) -> None:
-        result = format_reply_text("claude", "Short answer")
-        assert result == "@claude\n> Short answer\n\n"
+    def test_returns_at_mention_with_trailing_space(self) -> None:
+        result = format_reply_text("claude")
+        assert result == "@claude "
 
-    def test_multi_line_body(self) -> None:
-        body = "Line one\nLine two\nLine three"
-        result = format_reply_text("codex", body)
-        assert result == "@codex\n> Line one\n> Line two\n> Line three\n\n"
+    def test_different_sender(self) -> None:
+        result = format_reply_text("codex")
+        assert result == "@codex "
 
-    def test_long_body_truncated(self) -> None:
-        body = "\n".join(f"Line {i}" for i in range(10))
-        result = format_reply_text("claude", body, max_quote_lines=4)
-        lines = result.splitlines()
-        assert lines[0] == "@claude"
-        assert lines[1] == "> Line 0"
-        assert lines[4] == "> Line 3"
-        assert lines[5] == "> ..."
-        assert result.endswith("\n\n")
+    def test_starts_with_at(self) -> None:
+        result = format_reply_text("claude")
+        assert result.startswith("@")
 
-    def test_body_exactly_at_limit(self) -> None:
-        body = "A\nB\nC\nD"
-        result = format_reply_text("codex", body, max_quote_lines=4)
-        assert "> ..." not in result
-        assert "> A" in result
-        assert "> D" in result
-
-    def test_body_one_over_limit(self) -> None:
-        body = "A\nB\nC\nD\nE"
-        result = format_reply_text("codex", body, max_quote_lines=4)
-        assert "> ..." in result
-        assert "> E" not in result
-
-    def test_whitespace_stripped(self) -> None:
-        body = "  \n  Hello\nWorld  \n  "
-        result = format_reply_text("claude", body)
-        assert result.startswith("@claude\n>")
-
-    def test_empty_body(self) -> None:
-        result = format_reply_text("claude", "")
-        assert result.startswith("@claude\n")
-        assert result.endswith("\n\n")
-
-    def test_ends_with_double_newline(self) -> None:
-        result = format_reply_text("claude", "Hello")
-        assert result.endswith("\n\n")
-
-    def test_custom_max_quote_lines(self) -> None:
-        body = "A\nB\nC\nD\nE\nF"
-        result = format_reply_text("claude", body, max_quote_lines=2)
-        lines = result.splitlines()
-        assert lines[0] == "@claude"
-        assert lines[1] == "> A"
-        assert lines[2] == "> B"
-        assert lines[3] == "> ..."
+    def test_ends_with_space(self) -> None:
+        result = format_reply_text("claude")
+        assert result.endswith(" ")
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +143,7 @@ class TestReplyHandler:
         app_instance.on_message_panel_reply(event)
 
         loaded_text = mock_input.load_text.call_args[0][0]
-        assert loaded_text.startswith("@claude\n")
-        assert "> I think we should refactor." in loaded_text
-        assert loaded_text.endswith("\n\n")
+        assert loaded_text == "@claude "
         mock_input.focus.assert_called_once()
 
     def test_reply_preserves_draft(self, project: Path) -> None:
@@ -203,31 +162,7 @@ class TestReplyHandler:
         app_instance.on_message_panel_reply(event)
 
         loaded_text = mock_input.load_text.call_args[0][0]
-        assert "@codex" in loaded_text
-        assert "> Analysis here." in loaded_text
-        assert "my draft text" in loaded_text
-
-    def test_reply_truncates_long(self, project: Path) -> None:
-        from kingdom.tui.app import ChatApp
-
-        tid = "council-reply3"
-        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
-        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
-        list(app_instance.compose())
-
-        mock_input = MagicMock()
-        mock_input.text = ""
-        app_instance.query_one = MagicMock(return_value=mock_input)
-
-        long_body = "\n".join(f"Line {i}" for i in range(10))
-        event = MessagePanel.Reply(sender="claude", body=long_body)
-        app_instance.on_message_panel_reply(event)
-
-        loaded_text = mock_input.load_text.call_args[0][0]
-        assert "> ..." in loaded_text
-        assert "> Line 0" in loaded_text
-        assert "> Line 3" in loaded_text
-        assert "> Line 4" not in loaded_text
+        assert loaded_text == "@codex my draft text"
 
     def test_help_mentions_reply(self, project: Path) -> None:
         from kingdom.tui.app import ChatApp

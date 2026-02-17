@@ -390,11 +390,21 @@ class ChatApp(App):
             bar.update("Esc: interrupt/quit · Enter: send · Ctrl+T: thinking")
 
     def action_interrupt(self) -> None:
-        """Handle Escape: interrupt running queries or quit.
+        """Handle Escape: clear input, interrupt queries, or quit.
 
-        First Escape kills active queries and shows interrupted panels.
-        Second Escape (or Escape with nothing running) quits the app.
+        1. Input has text → clear it, return
+        2. Active queries running → interrupt them
+        3. Already interrupted / nothing running → exit app
         """
+        # If the input area has text, clear it first
+        try:
+            input_area = self.query_one("#input-area", InputArea)
+            if input_area.text.strip():
+                input_area.clear()
+                return
+        except Exception:
+            pass
+
         if not self.council:
             self.exit()
             return
@@ -500,18 +510,17 @@ class ChatApp(App):
             hint_bar.hide_hints()
 
     def on_message_panel_reply(self, event: MessagePanel.Reply) -> None:
-        """Handle reply: prefill input with @mention and quoted excerpt."""
-        reply_text = format_reply_text(event.sender, event.body)
+        """Handle reply: prefill input with @sender mention."""
+        reply_text = format_reply_text(event.sender)
         input_area = self.query_one("#input-area", InputArea)
-        # Prepend reply context to any existing draft text
         existing = input_area.text
         if existing.strip():
             input_area.load_text(reply_text + existing)
         else:
             input_area.load_text(reply_text)
         input_area.focus()
-        # Move cursor to the end so the user can start typing immediately
-        input_area.move_cursor_relative(rows=len(reply_text.splitlines()) + 1000, columns=0)
+        # Cursor ends up at (0,0) after load_text — move to end of the @mention prefix
+        input_area.move_cursor_relative(columns=len(reply_text))
 
     def send_message(self) -> None:
         """Send the current input as a king message or handle slash command."""
@@ -768,7 +777,7 @@ class ChatApp(App):
             "Ctrl+T: toggle thinking visibility (auto/show/hide)\n"
             "@member: direct message\n"
             "@all: explicit broadcast\n"
-            "Click message: reply (quote + @mention)\n"
+            "Click message: reply (@mention)\n"
             "Shift+click message: copy to clipboard"
         )
         self.show_system_message(help_text)
