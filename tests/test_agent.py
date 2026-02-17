@@ -1,5 +1,7 @@
 """Tests for agent configuration and command building."""
 
+import json
+
 import pytest
 
 from kingdom.agent import (
@@ -395,11 +397,13 @@ class TestBuildCommandStreaming:
         cmd = build_command(make_config("cursor"), "hello", streaming=True)
         fmt_idx = cmd.index("--output-format")
         assert cmd[fmt_idx + 1] == "stream-json"
+        assert "--stream-partial-output" in cmd
 
     def test_cursor_streaming_false_keeps_json(self) -> None:
         cmd = build_command(make_config("cursor"), "hello", streaming=False)
         fmt_idx = cmd.index("--output-format")
         assert cmd[fmt_idx + 1] == "json"
+        assert "--stream-partial-output" not in cmd
 
     def test_codex_streaming_unchanged(self) -> None:
         cmd_normal = build_command(make_config("codex"), "hello", streaming=False)
@@ -527,6 +531,42 @@ class TestParseCursorResponseNDJSON:
         assert text == "OK"
         assert session_id == "abc123"
 
+    def test_ndjson_assistant_chunk_stream_uses_result_text(self) -> None:
+        """When assistant emits partial chunks, final result text should win."""
+        stdout = (
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"We use `pytest` for testing. It\'"}]},"session_id":"c-5"}\n'
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"s standard in this repo."}]},"session_id":"c-5"}\n'
+            '{"type":"result","result":"We use `pytest` for testing. It\'s standard in this repo.","session_id":"c-5"}\n'
+        )
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "We use `pytest` for testing. It's standard in this repo."
+        assert session_id == "c-5"
+
+    def test_ndjson_assistant_chunk_stream_without_result_merges_chunks(self) -> None:
+        """Without result text, assistant chunk events should be merged."""
+        stdout = (
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"We use `pytest` for testing. It\'"}]},"session_id":"c-6"}\n'
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"s standard in this repo."}]},"session_id":"c-6"}\n'
+        )
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "We use `pytest` for testing. It's standard in this repo."
+        assert session_id == "c-6"
+
+    @pytest.mark.xfail(
+        reason="Known Cursor issue: result event may be shorter than streamed assistant content, making finalized message look overwritten.",
+        strict=False,
+    )
+    def test_ndjson_short_result_should_not_overwrite_richer_assistant_stream(self) -> None:
+        """Capture current failure: short final result clobbers richer assistant stream."""
+        stdout = (
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"Beautiful is better than ugly. Explicit is better than implicit."}]},"session_id":"c-7"}\n'
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"Beautiful is better than ugly. Explicit is better than implicit. Simple is better than complex."}]},"session_id":"c-7"}\n'
+            '{"type":"result","result":"Beautiful is better than ugly.","session_id":"c-7"}\n'
+        )
+        text, session_id, _ = parse_cursor_response(stdout, "", 0)
+        assert text == "Beautiful is better than ugly. Explicit is better than implicit. Simple is better than complex."
+        assert session_id == "c-7"
+
 
 class TestExtractStreamText:
     def test_claude_stream_event_wrapped(self) -> None:
@@ -563,8 +603,64 @@ class TestExtractStreamText:
         line = '{"type":"content_block_delta","delta":{"type":"text_delta","text":"bare"}}'
         assert extract_stream_text(line, "cursor") == "bare"
 
+    def test_cursor_assistant_message_chunk(self) -> None:
+        line = '{"type":"assistant","message":{"content":[{"type":"text","text":"chunk"}]}}'
+        assert extract_stream_text(line, "cursor") == "chunk"
+
+    def test_cursor_assistant_flat_text_chunk(self) -> None:
+        line = '{"type":"assistant","text":"chunk text"}'
+        assert extract_stream_text(line, "cursor") == "chunk text"
+
     def test_unknown_backend(self) -> None:
         assert extract_stream_text('{"type":"foo"}', "unknown") is None
 
     def test_invalid_json(self) -> None:
         assert extract_stream_text("not json", "claude_code") is None
+
+
+class TestExtractStreamThinking:
+    def test_codex_reasoning_item(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "item.completed", "item": {"type": "reasoning", "text": "Thinking..."}})
+        assert extract_stream_thinking(line, "codex") == "Thinking..."
+
+    def test_codex_non_reasoning_item_returns_none(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Hello"}})
+        assert extract_stream_thinking(line, "codex") is None
+
+    def test_cursor_thinking_delta(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "thinking", "subtype": "delta", "text": "Reasoning..."})
+        assert extract_stream_thinking(line, "cursor") == "Reasoning..."
+
+    def test_cursor_thinking_completed_returns_none(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "thinking", "subtype": "completed"})
+        assert extract_stream_thinking(line, "cursor") is None
+
+    def test_cursor_non_thinking_event(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "assistant", "text": "Hello"})
+        assert extract_stream_thinking(line, "cursor") is None
+
+    def test_claude_no_thinking_extractor(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        line = json.dumps({"type": "thinking", "subtype": "delta", "text": "x"})
+        assert extract_stream_thinking(line, "claude_code") is None
+
+    def test_unknown_backend(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        assert extract_stream_thinking('{"type":"thinking"}', "unknown") is None
+
+    def test_invalid_json(self) -> None:
+        from kingdom.agent import extract_stream_thinking
+
+        assert extract_stream_thinking("not json", "cursor") is None

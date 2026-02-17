@@ -45,6 +45,10 @@ class CouncilConfig:
 
     members: list[str] = field(default_factory=list)
     timeout: int = 600
+    auto_messages: int = -1
+    mode: str = "broadcast"
+    preamble: str = ""
+    thinking_visibility: str = "auto"
 
 
 @dataclass
@@ -95,7 +99,7 @@ def default_config() -> KingdomConfig:
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
 VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
-VALID_COUNCIL_KEYS = {"members", "timeout"}
+VALID_COUNCIL_KEYS = {"members", "timeout", "auto_messages", "mode", "preamble", "thinking_visibility"}
 VALID_PEASANT_KEYS = {"agent", "timeout", "max_iterations"}
 VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant"}
 VALID_AGENT_PROMPT_PHASES = {"council", "design", "review", "peasant"}
@@ -188,7 +192,44 @@ def validate_council(data: dict) -> CouncilConfig:
     if timeout <= 0:
         raise ValueError(f"council.timeout must be positive, got {timeout}")
 
-    return CouncilConfig(members=members, timeout=timeout)
+    auto_messages = data.get("auto_messages", -1)
+    if not isinstance(auto_messages, int):
+        raise ValueError(f"council.auto_messages must be an integer, got {type(auto_messages).__name__}")
+    if auto_messages < -1:
+        raise ValueError(
+            f"council.auto_messages must be -1 (auto), 0 (disabled), or a positive integer, got {auto_messages}"
+        )
+
+    valid_modes = {"broadcast", "sequential"}
+    mode = data.get("mode", "broadcast")
+    if not isinstance(mode, str):
+        raise ValueError(f"council.mode must be a string, got {type(mode).__name__}")
+    if mode not in valid_modes:
+        raise ValueError(f"council.mode must be one of {', '.join(sorted(valid_modes))}, got '{mode}'")
+
+    preamble = data.get("preamble", "")
+    if not isinstance(preamble, str):
+        raise ValueError(f"council.preamble must be a string, got {type(preamble).__name__}")
+    if "preamble" in data and not preamble:
+        raise ValueError("council.preamble must be non-empty if specified")
+
+    valid_thinking = {"auto", "show", "hide"}
+    thinking_visibility = data.get("thinking_visibility", "auto")
+    if not isinstance(thinking_visibility, str):
+        raise ValueError(f"council.thinking_visibility must be a string, got {type(thinking_visibility).__name__}")
+    if thinking_visibility not in valid_thinking:
+        raise ValueError(
+            f"council.thinking_visibility must be one of {', '.join(sorted(valid_thinking))}, got '{thinking_visibility}'"
+        )
+
+    return CouncilConfig(
+        members=members,
+        timeout=timeout,
+        auto_messages=auto_messages,
+        mode=mode,
+        preamble=preamble,
+        thinking_visibility=thinking_visibility,
+    )
 
 
 def validate_peasant(data: dict) -> PeasantConfig:
@@ -258,7 +299,14 @@ def validate_config(data: dict) -> KingdomConfig:
 
     # Default council members to all agents if not specified
     if not council.members:
-        council = CouncilConfig(members=list(agents), timeout=council.timeout)
+        council = CouncilConfig(
+            members=list(agents),
+            timeout=council.timeout,
+            auto_messages=council.auto_messages,
+            mode=council.mode,
+            preamble=council.preamble,
+            thinking_visibility=council.thinking_visibility,
+        )
 
     # Peasant
     peasant_data = data.get("peasant", {})

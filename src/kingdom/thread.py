@@ -348,6 +348,11 @@ def is_timeout_response(body: str) -> bool:
     return body.startswith("*Error: Timeout")
 
 
+def is_interrupted_response(body: str) -> bool:
+    """Check if a thread message body was interrupted before completion."""
+    return "*[Interrupted" in body
+
+
 @dataclass
 class MemberState:
     """Rich status for a single member in a thread round."""
@@ -424,6 +429,49 @@ def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadSta
         pending=expected - responded,
         member_states=member_states,
     )
+
+
+def format_thread_history(tdir: Path, target_member: str, suffix: str | None = None) -> str:
+    """Format thread messages as a multi-party conversation prompt.
+
+    Reads all finalized messages from *tdir* in sequence order and returns
+    a formatted transcript suitable for injecting into an agent prompt.
+
+    Args:
+        tdir: Thread directory path containing NNNN-*.md message files.
+        target_member: Name of the member who will receive this prompt.
+        suffix: Custom instruction appended after the history block.
+            Defaults to "You are {target_member}. Continue the discussion."
+
+    Returns:
+        Formatted string with conversation history and instruction suffix.
+    """
+    messages: list[Message] = []
+    for path in sorted(tdir.glob("[0-9][0-9][0-9][0-9]-*.md")):
+        try:
+            messages.append(parse_message(path))
+        except (ValueError, FileNotFoundError):
+            continue
+    messages.sort(key=lambda m: m.sequence)
+
+    tail = suffix or f"You are {target_member}. Continue the discussion."
+
+    if not messages:
+        return f"---\n{tail}"
+
+    lines = ["[Previous conversation]", ""]
+    for msg in messages:
+        if msg.to not in ("all", "", "king"):
+            header = f"{msg.from_} (to {msg.to}):"
+        else:
+            header = f"{msg.from_}:"
+        lines.append(f"{header} {msg.body}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append(tail)
+
+    return "\n".join(lines)
 
 
 def list_messages(base: Path, branch: str, thread_id: str) -> list[Message]:

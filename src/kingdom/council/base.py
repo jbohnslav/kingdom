@@ -32,7 +32,12 @@ class AgentResponse:
         See backlog ticket 9124 for frontmatter metadata approach.
         """
         if self.text:
-            return self.text
+            text = self.text
+            # Strip echoed speaker prefix (agents sometimes echo "name: " from history format)
+            prefix = f"{self.name}: "
+            if text.startswith(prefix):
+                text = text[len(prefix) :]
+            return text
         if self.error:
             return f"*Error: {self.error}*"
         return "*Empty response — no text or error returned.*"
@@ -47,6 +52,10 @@ class CouncilMember:
     log_path: Path | None = None
     agent_prompt: str = ""  # agent.prompt from config (always additive)
     phase_prompt: str = ""  # resolved phase prompt (agent-specific or global)
+    preamble: str = ""  # override for COUNCIL_PREAMBLE (empty = use default)
+    process: subprocess.Popen | None = None  # live Popen handle during query
+    base: Path | None = None  # project root, for PID tracking in AgentState
+    branch: str | None = None  # branch name, for PID tracking in AgentState
 
     @property
     def name(self) -> str:
@@ -69,7 +78,7 @@ class CouncilMember:
             safety preamble (hardcoded) + phase prompt (agent-specific or global)
             + agent prompt (always additive) + user prompt
         """
-        parts = [self.COUNCIL_PREAMBLE]
+        parts = [self.preamble or self.COUNCIL_PREAMBLE]
         if self.phase_prompt:
             parts.append(self.phase_prompt + "\n\n")
         if self.agent_prompt:
@@ -166,6 +175,13 @@ class CouncilMember:
                 stdin=subprocess.DEVNULL,
                 env=clean_agent_env(role="council", agent_name=self.name),
             )
+            self.process = process
+
+            # Write PID to AgentState for external monitoring
+            if self.base and self.branch:
+                from kingdom.session import update_agent_state
+
+                update_agent_state(self.base, self.branch, self.name, pid=process.pid)
 
             out_thread = threading.Thread(target=read_stdout, args=(process.stdout,), daemon=True)
             err_thread = threading.Thread(target=read_stderr, args=(process.stderr,), daemon=True)
@@ -260,6 +276,7 @@ class CouncilMember:
             return response
 
         finally:
+            self.process = None
             if stream_file:
                 stream_file.close()
 

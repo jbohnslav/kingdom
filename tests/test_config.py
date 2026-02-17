@@ -27,6 +27,9 @@ class TestDefaultConfig:
         cfg = default_config()
         assert set(cfg.council.members) == {"claude", "codex", "cursor"}
         assert cfg.council.timeout == 600
+        assert cfg.council.auto_messages == -1
+        assert cfg.council.mode == "broadcast"
+        assert cfg.council.preamble == ""
 
     def test_peasant_defaults(self) -> None:
         cfg = default_config()
@@ -93,6 +96,34 @@ class TestValidateConfig:
         cfg = validate_config(data)
         assert cfg.council.members == ["claude", "codex"]
         assert cfg.council.timeout == 300
+
+    def test_council_auto_messages(self) -> None:
+        data = {"council": {"auto_messages": 5}}
+        cfg = validate_config(data)
+        assert cfg.council.auto_messages == 5
+
+    def test_council_mode_sequential(self) -> None:
+        data = {"council": {"mode": "sequential"}}
+        cfg = validate_config(data)
+        assert cfg.council.mode == "sequential"
+
+    def test_council_mode_broadcast(self) -> None:
+        data = {"council": {"mode": "broadcast"}}
+        cfg = validate_config(data)
+        assert cfg.council.mode == "broadcast"
+
+    def test_council_preamble(self) -> None:
+        data = {"council": {"preamble": "You are a helpful advisor."}}
+        cfg = validate_config(data)
+        assert cfg.council.preamble == "You are a helpful advisor."
+
+    def test_council_new_fields_preserved_when_members_defaulted(self) -> None:
+        data = {"council": {"auto_messages": 7, "mode": "sequential", "preamble": "Custom."}}
+        cfg = validate_config(data)
+        assert set(cfg.council.members) == {"claude", "codex", "cursor"}
+        assert cfg.council.auto_messages == 7
+        assert cfg.council.mode == "sequential"
+        assert cfg.council.preamble == "Custom."
 
     def test_council_members_default_to_all_agents(self) -> None:
         cfg = validate_config({})
@@ -197,6 +228,50 @@ class TestValidateConfigErrors:
     def test_council_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
             validate_config({"council": {"timeout": 0}})
+
+    def test_bad_council_auto_messages_type(self) -> None:
+        with pytest.raises(ValueError, match="must be an integer"):
+            validate_config({"council": {"auto_messages": "many"}})
+
+    def test_council_auto_messages_valid_values(self) -> None:
+        validate_config({"council": {"auto_messages": -1}})  # -1 = auto (len(members))
+        validate_config({"council": {"auto_messages": 0}})  # 0 = disabled
+        validate_config({"council": {"auto_messages": 5}})  # positive = explicit budget
+        with pytest.raises(ValueError, match="must be -1"):
+            validate_config({"council": {"auto_messages": -2}})
+
+    def test_bad_council_mode_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            validate_config({"council": {"mode": 123}})
+
+    def test_bad_council_mode_value(self) -> None:
+        with pytest.raises(ValueError, match="must be one of"):
+            validate_config({"council": {"mode": "turbo"}})
+
+    def test_bad_council_preamble_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            validate_config({"council": {"preamble": 123}})
+
+    def test_council_preamble_must_be_nonempty(self) -> None:
+        with pytest.raises(ValueError, match="must be non-empty"):
+            validate_config({"council": {"preamble": ""}})
+
+    def test_bad_thinking_visibility_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            validate_config({"council": {"thinking_visibility": 123}})
+
+    def test_bad_thinking_visibility_value(self) -> None:
+        with pytest.raises(ValueError, match="must be one of"):
+            validate_config({"council": {"thinking_visibility": "verbose"}})
+
+    def test_thinking_visibility_valid_values(self) -> None:
+        for mode in ("auto", "show", "hide"):
+            cfg = validate_config({"council": {"thinking_visibility": mode}})
+            assert cfg.council.thinking_visibility == mode
+
+    def test_thinking_visibility_default(self) -> None:
+        cfg = validate_config({})
+        assert cfg.council.thinking_visibility == "auto"
 
     def test_peasant_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):

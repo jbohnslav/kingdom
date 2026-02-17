@@ -270,6 +270,108 @@ class TestCouncilMemberQuery:
         assert stream_path.read_text() == '{"result": "streamed", "session_id": "s1"}\n'
 
 
+class TestCouncilMemberProcessHandle:
+    """Tests for self.process Popen handle lifecycle."""
+
+    def test_process_is_none_before_query(self) -> None:
+        member = make_member("claude")
+        assert member.process is None
+
+    def test_process_set_during_query(self) -> None:
+        """self.process should be set to the Popen instance during execution."""
+        member = make_member("claude")
+        captured_process = []
+
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        # Replace poll with a function that captures process before returning
+        poll_return = proc.returncode
+
+        def spy_poll():
+            if member.process is not None:
+                captured_process.append(member.process)
+            return poll_return
+
+        proc.poll = spy_poll
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            member.query("test", timeout=30, max_retries=0)
+
+        assert len(captured_process) > 0
+        assert captured_process[0] is proc
+
+    def test_process_none_after_query(self) -> None:
+        """self.process should be reset to None after query completes."""
+        member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            member.query("test", timeout=30)
+
+        assert member.process is None
+
+    def test_process_none_after_error(self) -> None:
+        """self.process should be reset even on error."""
+        member = make_member("claude")
+        proc = mock_popen(stdout="", stderr="error\n", returncode=1)
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            member.query("test", timeout=30, max_retries=0)
+
+        assert member.process is None
+
+    def test_process_none_after_command_not_found(self) -> None:
+        """self.process should be None when command is not found."""
+        member = make_member("claude")
+
+        with patch("kingdom.council.base.subprocess.Popen", side_effect=FileNotFoundError()):
+            member.query("test", timeout=30)
+
+        assert member.process is None
+
+    def test_process_terminatable_during_query(self) -> None:
+        """External code should be able to call member.process.terminate()."""
+        member = make_member("claude")
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            # Simulate what TUI does: access process.terminate()
+            member.process = proc
+            member.process.terminate()
+            proc.terminate.assert_called_once()
+
+    def test_pid_written_to_agent_state(self, tmp_path: Path) -> None:
+        """When base/branch set, PID should be written to AgentState."""
+        branch = "test-branch"
+        ensure_branch_layout(tmp_path, branch)
+
+        member = make_member("claude")
+        member.base = tmp_path
+        member.branch = branch
+
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+        proc.pid = 12345
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            member.query("test", timeout=30)
+
+        state = get_agent_state(tmp_path, branch, "claude")
+        assert state.pid == 12345
+
+    def test_pid_not_written_without_base_branch(self) -> None:
+        """Without base/branch, query should still work without writing PID."""
+        member = make_member("claude")
+        assert member.base is None
+        assert member.branch is None
+
+        proc = mock_popen(stdout='{"result": "ok"}\n')
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            response = member.query("test", timeout=30)
+
+        assert response.text == "ok"
+
+
 class TestCouncilMemberQueryAllMembers:
     """Test that all member types pass stdin=DEVNULL."""
 
@@ -388,6 +490,45 @@ class TestCouncilCreateValidation:
 
         council = Council.create(base=tmp_path)
         assert council.members[0].phase_prompt == "Focus on architecture."
+
+    def test_create_passes_council_preamble(self, tmp_path: Path) -> None:
+        """council.preamble from config should be set on all members."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "council": {"preamble": "You are a helpful advisor.", "members": ["claude", "codex"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        for member in council.members:
+            assert member.preamble == "You are a helpful advisor."
+
+    def test_create_default_preamble_is_empty(self, tmp_path: Path) -> None:
+        """Without council.preamble in config, members get empty string (uses COUNCIL_PREAMBLE fallback)."""
+        (tmp_path / ".kd").mkdir(parents=True, exist_ok=True)
+        council = Council.create(base=tmp_path)
+        for member in council.members:
+            assert member.preamble == ""
+
+    def test_create_preamble_used_in_build_command(self, tmp_path: Path) -> None:
+        """Custom preamble should appear in the built command prompt."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "council": {"preamble": "Custom preamble text.\n\n", "members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        cmd = council.members[0].build_command("User question?")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith("Custom preamble text.")
+        assert CouncilMember.COUNCIL_PREAMBLE not in prompt
 
     def test_create_passes_agent_prompt(self, tmp_path: Path) -> None:
         """Agent prompt (always additive) should be set on members."""
@@ -752,6 +893,39 @@ class TestAgentResponseThreadBody:
     def test_text_takes_priority_over_error(self) -> None:
         r = AgentResponse(name="claude", text="some output", error="also had error")
         assert r.thread_body() == "some output"
+
+    def test_strips_echoed_speaker_prefix(self) -> None:
+        """Agents sometimes echo back 'name: ' from history format."""
+        r = AgentResponse(name="codex", text="codex: Hello there")
+        assert r.thread_body() == "Hello there"
+
+    def test_no_false_strip_on_name_substring(self) -> None:
+        """Only strip 'name: ' prefix, not 'name' as a substring."""
+        r = AgentResponse(name="codex", text="codex is great")
+        assert r.thread_body() == "codex is great"
+
+    def test_no_strip_other_speaker_prefix(self) -> None:
+        """Don't strip a different speaker's prefix."""
+        r = AgentResponse(name="codex", text="claude: Hello there")
+        assert r.thread_body() == "claude: Hello there"
+
+
+class TestPreambleOverride:
+    """Tests for CouncilMember.preamble field overriding COUNCIL_PREAMBLE."""
+
+    def test_default_preamble_used_when_empty(self) -> None:
+        member = make_member("claude")
+        cmd = member.build_command("hello")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith(CouncilMember.COUNCIL_PREAMBLE)
+
+    def test_custom_preamble_replaces_default(self) -> None:
+        member = make_member("claude")
+        member.preamble = "You are claude in a chat.\n\n"
+        cmd = member.build_command("hello")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert prompt.startswith("You are claude in a chat.\n\n")
+        assert CouncilMember.COUNCIL_PREAMBLE not in prompt
 
 
 class TestQueryRetry:
