@@ -714,6 +714,39 @@ class TestRunQuery:
         # thread_body() returns text when both text and error are present
         assert messages[0].body == "Partial answer before timeout"
 
+    def test_run_query_labels_interrupted_partial_response(self, project: Path) -> None:
+        """Interrupted responses with partial text must include an interrupted marker."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import list_messages
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-rq-int"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.interrupted = True  # Simulate interrupt
+
+        fake_response = AgentResponse(name="claude", text="Partial answer before interrupt")
+
+        class FakeMember:
+            name = "claude"
+            session_id = None
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                return fake_response
+
+        stream_path = project / ".kd" / "branches" / "feature-test-chat" / "threads" / tid / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path))
+
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 1
+        # Body should contain the partial text AND an interrupted marker
+        assert "Partial answer before interrupt" in messages[0].body
+        assert "[Interrupted" in messages[0].body
+
     def test_run_query_uses_formatted_thread_history(self, project: Path) -> None:
         """run_query should send full formatted history, not only the latest text."""
         import asyncio
@@ -950,7 +983,8 @@ class TestEscapeInterrupt:
 
         messages = list_messages(project, BRANCH, tid)
         assert len(messages) == 1
-        assert messages[0].body == "Partial answer before kill"
+        assert "Partial answer before kill" in messages[0].body
+        assert "*[Interrupted" in messages[0].body
 
 
 class TestChatAppLayout:

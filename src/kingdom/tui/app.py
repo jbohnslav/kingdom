@@ -22,6 +22,7 @@ from kingdom.thread import (
     format_thread_history,
     get_thread,
     is_error_response,
+    is_interrupted_response,
     is_timeout_response,
     list_messages,
     thread_dir,
@@ -269,6 +270,13 @@ class ChatApp(App):
                     timed_out=timed_out,
                     id=f"msg-{msg.sequence}",
                 )
+            elif msg.from_ != "king" and is_interrupted_response(msg.body):
+                panel = ErrorPanel(
+                    sender=msg.from_,
+                    error=msg.body,
+                    timed_out=False,
+                    id=f"msg-{msg.sequence}",
+                )
             else:
                 panel = MessagePanel(
                     sender=msg.from_,
@@ -359,6 +367,8 @@ class ChatApp(App):
             # Use cleaner message for interrupted queries with no useful text
             if self.interrupted and not response.text:
                 body = "*Interrupted*"
+            elif self.interrupted and response.text:
+                body = response.thread_body() + "\n\n*[Interrupted — response may be incomplete]*"
             else:
                 body = response.thread_body()
 
@@ -603,13 +613,20 @@ class ChatApp(App):
         except Exception:
             pass
 
-        # Detect error responses from thread message body
+        # Detect error/interrupted responses from thread message body
         if event.sender != "king" and is_error_response(event.body):
             timed_out = is_timeout_response(event.body)
             panel = ErrorPanel(
                 sender=event.sender,
                 error=event.body,
                 timed_out=timed_out,
+                id=f"msg-{event.sequence}",
+            )
+        elif event.sender != "king" and is_interrupted_response(event.body):
+            panel = ErrorPanel(
+                sender=event.sender,
+                error=event.body,
+                timed_out=False,
                 id=f"msg-{event.sequence}",
             )
         else:

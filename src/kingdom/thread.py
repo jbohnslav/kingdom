@@ -348,6 +348,11 @@ def is_timeout_response(body: str) -> bool:
     return body.startswith("*Error: Timeout")
 
 
+def is_interrupted_response(body: str) -> bool:
+    """Check if a thread message body was interrupted before completion."""
+    return "*[Interrupted" in body
+
+
 @dataclass
 class MemberState:
     """Rich status for a single member in a thread round."""

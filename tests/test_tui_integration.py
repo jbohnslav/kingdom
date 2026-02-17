@@ -663,6 +663,56 @@ class TestAutoTurn:
 
 
 # ---------------------------------------------------------------------------
+# Scenario 12: Interrupted partial messages labeled on history replay
+# ---------------------------------------------------------------------------
+
+
+class TestInterruptedLabel:
+    async def test_interrupted_partial_labeled_in_history(self, project, thread_id, fake_council) -> None:
+        """Interrupted messages with partial text should show the interrupted marker on replay."""
+        # Pre-populate a normal message and an interrupted message
+        add_message(project, BRANCH, thread_id, from_="king", to="all", body="Ask something")
+        add_message(project, BRANCH, thread_id, from_="claude", to="king", body="Normal complete response")
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="codex",
+            to="king",
+            body="Partial answer\n\n*[Interrupted — response may be incomplete]*",
+        )
+
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)):
+                log = app.query_one("#message-log", MessageLog)
+
+                # Normal response renders as MessagePanel
+                panels = log.query(MessagePanel)
+                normal = [p for p in panels if p.sender == "claude"]
+                assert len(normal) == 1
+
+                # Interrupted response should render as ErrorPanel (not MessagePanel)
+                error_panels = log.query(ErrorPanel)
+                interrupted = [p for p in error_panels if p.sender == "codex"]
+                assert len(interrupted) == 1
+
+    async def test_normal_response_not_labeled(self, project, thread_id, fake_council) -> None:
+        """Normal completed responses should not contain interrupted markers."""
+        add_message(project, BRANCH, thread_id, from_="claude", to="king", body="Complete response")
+
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)):
+                log = app.query_one("#message-log", MessageLog)
+                panels = log.query(MessagePanel)
+                assert len(panels) == 1
+                assert panels[0].sender == "claude"
+                # No error panels
+                assert len(log.query(ErrorPanel)) == 0
+
+
+# ---------------------------------------------------------------------------
 # Scenario 10: Fresh thread isolation
 # ---------------------------------------------------------------------------
 
