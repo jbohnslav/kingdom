@@ -1,0 +1,67 @@
+name: Release on Version Bump
+
+on:
+  push:
+    branches: [master]
+    paths: [pyproject.toml]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for version change
+        id: v
+        shell: bash
+        run: |
+          new=$(python3 -c "
+          import tomllib, pathlib
+          print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])
+          ")
+          if git show HEAD^:pyproject.toml > /tmp/prev.toml 2>/dev/null; then
+            old=$(python3 -c "
+          import tomllib, pathlib
+          print(tomllib.loads(pathlib.Path('/tmp/prev.toml').read_text())['project']['version'])
+          ")
+          else
+            old=""
+          fi
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          if [ "$new" = "$old" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if version unchanged
+        if: steps.v.outputs.changed != 'true'
+        run: echo "Version unchanged; skipping release."
+
+      - name: Set up uv
+        if: steps.v.outputs.changed == 'true'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build
+        if: steps.v.outputs.changed == 'true'
+        run: uv build
+
+      - name: Create GitHub Release
+        if: steps.v.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.new }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: dist/*
+
+      - name: Publish to PyPI
+        if: steps.v.outputs.changed == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
