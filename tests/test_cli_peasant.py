@@ -27,13 +27,13 @@ def setup_project(base: Path) -> None:
     set_current_run(base, BRANCH)
 
 
-def create_test_ticket(base: Path, ticket_id: str = "kin-test") -> Path:
+def create_test_ticket(base: Path, ticket_id: str = "kin-test", status: str = "open") -> Path:
     """Create a test ticket and return its path."""
     tickets_dir = base / ".kd" / "branches" / "feature-peasant-test" / "tickets"
     tickets_dir.mkdir(parents=True, exist_ok=True)
     ticket = Ticket(
         id=ticket_id,
-        status="open",
+        status=status,
         title="Test ticket",
         body="Do the thing.\n\n## Acceptance\n\n- [ ] It works",
         created=datetime.now(UTC),
@@ -842,7 +842,7 @@ class TestPeasantReview:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
-            ticket_path = create_test_ticket(base)
+            ticket_path = create_test_ticket(base, status="in_review")
 
             # Add a worklog to the ticket
             from kingdom.harness import append_worklog
@@ -854,7 +854,7 @@ class TestPeasantReview:
                 base,
                 BRANCH,
                 session_name,
-                AgentState(name=session_name, status="done"),
+                AgentState(name=session_name, status="needs_king_review"),
             )
 
             with (
@@ -885,27 +885,34 @@ class TestPeasantReview:
             assert result.exit_code == 0, result.output
             assert "PASSED" in result.output
             assert "Did some work" in result.output
-            assert "done" in result.output
+            assert "needs_king_review" in result.output
             assert "--accept" in result.output
 
     def test_review_accept_closes_ticket(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
-            create_test_ticket(base)
+            create_test_ticket(base, status="in_review")
 
             session_name = "peasant-kin-test"
             set_agent_state(
                 base,
                 BRANCH,
                 session_name,
-                AgentState(name=session_name, status="done"),
+                AgentState(name=session_name, status="needs_king_review"),
             )
 
-            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+            merge_result = MagicMock()
+            merge_result.returncode = 0
+            merge_result.stdout = "Already up to date."
+            merge_result.stderr = ""
+
+            with patch("kingdom.cli.subprocess.run", return_value=merge_result):
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
 
             assert result.exit_code == 0, result.output
             assert "accepted" in result.output
+            assert "Integrated" in result.output
 
             # Ticket should be closed
             ticket_result = find_ticket(base, "kin-test")
@@ -921,7 +928,7 @@ class TestPeasantReview:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
-            create_test_ticket(base)
+            create_test_ticket(base, status="in_review")
             thread_id = setup_work_thread(base)
 
             # Create worktree directory so reject can relaunch
@@ -933,7 +940,7 @@ class TestPeasantReview:
                 base,
                 BRANCH,
                 session_name,
-                AgentState(name=session_name, status="done", agent_backend="claude"),
+                AgentState(name=session_name, status="needs_king_review", agent_backend="claude"),
             )
 
             with patch("kingdom.cli.launch_work_background", return_value=54321) as mock_launch:
@@ -943,6 +950,12 @@ class TestPeasantReview:
             assert "rejected" in result.output
             assert "relaunched" in result.output
             assert "54321" in result.output
+
+            # Ticket should be back to in_progress
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "in_progress"
 
             # Feedback should be in the thread
             messages = list_messages(base, BRANCH, thread_id)
@@ -958,11 +971,11 @@ class TestPeasantReview:
             mock_launch.assert_called_once()
 
     def test_review_reject_relaunches_on_stale_pid(self) -> None:
-        """PID reuse: status=done but PID happens to be alive (another process). Should still relaunch."""
+        """PID reuse: status=needs_king_review but PID happens to be alive. Should still relaunch."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
-            create_test_ticket(base)
+            create_test_ticket(base, status="in_review")
             setup_work_thread(base)
 
             # Create worktree directory so reject can relaunch
@@ -970,12 +983,11 @@ class TestPeasantReview:
             worktree_dir.mkdir(parents=True, exist_ok=True)
 
             session_name = "peasant-kin-test"
-            # Status is "done" but PID is alive (os.getpid()) — simulates PID reuse
             set_agent_state(
                 base,
                 BRANCH,
                 session_name,
-                AgentState(name=session_name, status="done", pid=os.getpid(), agent_backend="claude"),
+                AgentState(name=session_name, status="needs_king_review", pid=os.getpid(), agent_backend="claude"),
             )
 
             with patch("kingdom.cli.launch_work_background", return_value=99999) as mock_launch:
@@ -985,11 +997,12 @@ class TestPeasantReview:
             assert "relaunched" in result.output
             mock_launch.assert_called_once()
 
-    def test_review_reject_no_relaunch_if_alive(self) -> None:
+    def test_review_reject_no_resume_flag(self) -> None:
+        """--no-resume sends feedback without relaunching the peasant."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
-            create_test_ticket(base)
+            create_test_ticket(base, status="in_review")
             thread_id = setup_work_thread(base)
 
             session_name = "peasant-kin-test"
@@ -997,19 +1010,28 @@ class TestPeasantReview:
                 base,
                 BRANCH,
                 session_name,
-                AgentState(name=session_name, status="working", pid=os.getpid()),
+                AgentState(name=session_name, status="needs_king_review"),
             )
 
             with patch("kingdom.cli.launch_work_background") as mock_launch:
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "try again"])
+                result = runner.invoke(
+                    cli.app,
+                    ["peasant", "review", "kin-test", "--reject", "try again", "--no-resume"],
+                )
 
             assert result.exit_code == 0, result.output
             assert "rejected" in result.output
-            assert "pick it up" in result.output
+            assert "in_progress" in result.output
             assert "relaunched" not in result.output
 
             # Should NOT have relaunched
             mock_launch.assert_not_called()
+
+            # Ticket should be back to in_progress
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "in_progress"
 
             # Feedback should still be in the thread
             messages = list_messages(base, BRANCH, thread_id)
@@ -1113,6 +1135,160 @@ class TestPeasantReview:
 
             assert result.exit_code == 1
             assert "not found" in result.output
+
+    def test_review_accept_rejects_wrong_ticket_status(self) -> None:
+        """--accept should fail if ticket is not in_review."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_progress")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+
+            assert result.exit_code == 1
+            assert "in_progress" in result.output
+            assert "in_review" in result.output
+
+    def test_review_accept_rejects_wrong_session_status(self) -> None:
+        """--accept should fail if session is not needs_king_review."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="working"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+
+            assert result.exit_code == 1
+            assert "working" in result.output
+            assert "needs_king_review" in result.output
+
+    def test_review_reject_rejects_wrong_ticket_status(self) -> None:
+        """--reject should fail if ticket is not in_review."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="open")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "nope"])
+
+            assert result.exit_code == 1
+            assert "open" in result.output
+            assert "in_review" in result.output
+
+    def test_review_accept_merge_failure_keeps_in_review(self) -> None:
+        """If git merge fails, ticket should stay in_review with recovery steps."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            # Create worktree directory for recovery instructions
+            worktree_dir = base / ".kd" / "worktrees" / "kin-test"
+            worktree_dir.mkdir(parents=True, exist_ok=True)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            merge_result = MagicMock()
+            merge_result.returncode = 1
+            merge_result.stdout = "CONFLICT (content): Merge conflict in src/foo.py"
+            merge_result.stderr = "Automatic merge failed; fix conflicts and then commit the result."
+
+            with patch("kingdom.cli.subprocess.run", return_value=merge_result):
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+
+            assert result.exit_code == 1
+            assert "Integration failed" in result.output
+            assert "Recovery steps" in result.output
+            assert "CONFLICT" in result.output
+
+            # Ticket should still be in_review
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "in_review"
+
+    def test_review_shows_council_feedback(self) -> None:
+        """Review info should include council member messages from the work thread."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base, status="in_review")
+
+            from kingdom.harness import append_worklog
+
+            append_worklog(ticket_path, "Implemented the feature")
+
+            thread_id = setup_work_thread(base)
+            # Add council feedback messages to the thread
+            add_message(base, BRANCH, thread_id, from_="claude", to="all", body="Looks good.\n\nVERDICT: APPROVED")
+            add_message(base, BRANCH, thread_id, from_="codex", to="all", body="Minor issue.\n\nVERDICT: APPROVED")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review", review_bounce_count=1),
+            )
+
+            with patch("subprocess.run") as mock_run:
+                pytest_result = MagicMock()
+                pytest_result.returncode = 0
+                pytest_result.stdout = "5 passed"
+                pytest_result.stderr = ""
+
+                ruff_result = MagicMock()
+                ruff_result.returncode = 0
+                ruff_result.stdout = ""
+                ruff_result.stderr = ""
+
+                diff_result = MagicMock()
+                diff_result.returncode = 0
+                diff_result.stdout = " src/foo.py | 5 ++-\n 1 file changed"
+                diff_result.stderr = ""
+
+                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
+
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "Council Feedback" in result.output
+            assert "Looks good" in result.output
+            assert "Minor issue" in result.output
+            assert "in_review" in result.output
+            assert "needs_king_review" in result.output
+            assert "Review bounces: 1" in result.output
+            assert "--accept" in result.output
 
 
 class TestBacklogAutoPull:

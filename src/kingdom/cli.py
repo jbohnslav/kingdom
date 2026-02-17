@@ -2206,6 +2206,7 @@ def peasant_review(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
     accept: Annotated[bool, typer.Option("--accept", help="Accept the work (close ticket).")] = False,
     reject: Annotated[str | None, typer.Option("--reject", help="Reject with feedback message.")] = None,
+    no_resume: Annotated[bool, typer.Option("--no-resume", help="Don't auto-resume peasant on reject.")] = False,
 ) -> None:
     """Run pytest + ruff, show diff and worklog. Accept or reject the work."""
     from kingdom.harness import extract_worklog
@@ -2228,6 +2229,40 @@ def peasant_review(
         raise typer.Exit(code=1)
 
     if accept:
+        # Gate: ticket must be in_review
+        if ticket.status != "in_review":
+            print_error(f"Cannot accept: ticket is '{ticket.status}', expected 'in_review'.")
+            raise typer.Exit(code=1)
+
+        # Gate: session must be needs_king_review
+        state = get_agent_state(base, feature, session_name)
+        if state.status != "needs_king_review":
+            print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
+            raise typer.Exit(code=1)
+
+        # Attempt integration from peasant worktree/branch into parent branch
+        worktree_path = worktree_path_for(base, full_ticket_id)
+        merge_result = subprocess.run(
+            ["git", "merge", branch_name, "--no-edit"],
+            capture_output=True,
+            text=True,
+            cwd=str(base),
+        )
+        if merge_result.returncode != 0:
+            # Integration failed — keep in_review, show recovery steps
+            merge_err = merge_result.stdout.strip()
+            if merge_result.stderr.strip():
+                merge_err += "\n" + merge_result.stderr.strip()
+            print_error("Integration failed — ticket remains in_review.")
+            typer.echo(f"\n{merge_err}\n")
+            typer.echo("Recovery steps:")
+            typer.echo(f"  1. cd {worktree_path}")
+            typer.echo(f"  2. git merge {feature} (resolve conflicts)")
+            typer.echo(f"  3. kd peasant review {full_ticket_id} --accept (retry)")
+            raise typer.Exit(code=1)
+
+        typer.echo(f"Integrated {branch_name} into {feature}")
+
         ticket.status = "closed"
         write_ticket(ticket, ticket_path)
         update_agent_state(
@@ -2241,6 +2276,11 @@ def peasant_review(
         return
 
     if reject is not None:
+        # Gate: ticket must be in_review
+        if ticket.status != "in_review":
+            print_error(f"Cannot reject: ticket is '{ticket.status}', expected 'in_review'.")
+            raise typer.Exit(code=1)
+
         try:
             add_message(base, feature, thread_id, from_="king", to=session_name, body=reject)
         except FileNotFoundError:
@@ -2249,17 +2289,11 @@ def peasant_review(
             )
             raise typer.Exit(code=1) from None
 
-        # Check if peasant process is still alive
-        state = get_agent_state(base, feature, session_name)
-        process_alive = False
-        if state.status == "working" and state.pid:
-            try:
-                os.kill(state.pid, 0)
-                process_alive = True
-            except OSError:
-                pass
+        # Transition ticket back to in_progress
+        ticket.status = "in_progress"
+        write_ticket(ticket, ticket_path)
 
-        if process_alive:
+        if no_resume:
             update_agent_state(
                 base,
                 feature,
@@ -2267,29 +2301,31 @@ def peasant_review(
                 status="working",
                 last_activity=datetime.now(UTC).isoformat(),
             )
-            typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant will pick it up")
-        else:
-            # Relaunch the harness
-            agent_backend = state.agent_backend or "claude"
-            worktree_path = worktree_path_for(base, full_ticket_id)
-            if not worktree_path.exists():
-                print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
-                raise typer.Exit(code=1)
+            typer.echo(f"{full_ticket_id}: rejected — feedback sent, ticket back to in_progress")
+            return
 
-            pid = launch_work_background(
-                base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
-            )
+        # Auto-resume: relaunch the peasant
+        state = get_agent_state(base, feature, session_name)
+        agent_backend = state.agent_backend or "claude"
+        worktree_path = worktree_path_for(base, full_ticket_id)
+        if not worktree_path.exists():
+            print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
+            raise typer.Exit(code=1)
 
-            now = datetime.now(UTC).isoformat()
-            update_agent_state(
-                base,
-                feature,
-                session_name,
-                status="working",
-                pid=pid,
-                last_activity=now,
-            )
-            typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant relaunched (pid {pid})")
+        pid = launch_work_background(
+            base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
+        )
+
+        now = datetime.now(UTC).isoformat()
+        update_agent_state(
+            base,
+            feature,
+            session_name,
+            status="working",
+            pid=pid,
+            last_activity=now,
+        )
+        typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant relaunched (pid {pid})")
         return
 
     # --- Show review info ---
@@ -2359,14 +2395,34 @@ def peasant_review(
     else:
         typer.echo("(no worklog entries)")
 
-    # 5. Show session status
+    # 5. Show council feedback (messages from council members in the work thread)
+    try:
+        from kingdom.thread import list_messages
+
+        messages = list_messages(base, feature, thread_id)
+        council_msgs = [m for m in messages if m.from_ not in ("king", session_name)]
+        if council_msgs:
+            feedback_parts = []
+            for msg in council_msgs:
+                feedback_parts.append(f"### {msg.from_}\n\n{msg.body}")
+            console.print(Markdown("## Council Feedback\n\n" + "\n\n---\n\n".join(feedback_parts)))
+    except FileNotFoundError:
+        pass  # No work thread yet — skip council feedback
+
+    # 6. Show session status
     state = get_agent_state(base, feature, session_name)
-    typer.echo(f"\nPeasant status: {state.status}")
+    typer.echo(f"\nTicket status: {ticket.status}")
+    typer.echo(f"Peasant status: {state.status}")
+    if state.review_bounce_count:
+        typer.echo(f"Review bounces: {state.review_bounce_count}")
 
     # Prompt for action
     all_passed = test_passed and ruff_passed
-    if all_passed:
+    can_accept = ticket.status == "in_review" and state.status == "needs_king_review"
+    if all_passed and can_accept:
         typer.echo("\nAll checks passed. Use --accept to close the ticket or --reject 'feedback' to send feedback.")
+    elif all_passed:
+        typer.echo("\nAll checks passed but ticket is not in review state. Use --reject 'feedback' to send feedback.")
     else:
         typer.echo("\nSome checks failed. Use --reject 'feedback' to send feedback.")
 
