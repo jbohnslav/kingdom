@@ -232,7 +232,7 @@ class TestFormatReplyText:
 
     def test_body_exactly_at_limit(self) -> None:
         body = "A\nB\nC\nD"
-        result = format_reply_text("cursor", body, max_quote_lines=4)
+        result = format_reply_text("codex", body, max_quote_lines=4)
         # Should not truncate (exactly 4 lines)
         assert "> ..." not in result
         assert "> A" in result
@@ -240,7 +240,7 @@ class TestFormatReplyText:
 
     def test_body_one_over_limit(self) -> None:
         body = "A\nB\nC\nD\nE"
-        result = format_reply_text("cursor", body, max_quote_lines=4)
+        result = format_reply_text("codex", body, max_quote_lines=4)
         # Should truncate (5 lines > 4 limit)
         assert "> ..." in result
         assert "> E" not in result

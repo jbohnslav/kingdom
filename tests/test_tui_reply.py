@@ -50,14 +50,14 @@ class TestFormatReplyText:
 
     def test_body_exactly_at_limit(self) -> None:
         body = "A\nB\nC\nD"
-        result = format_reply_text("cursor", body, max_quote_lines=4)
+        result = format_reply_text("codex", body, max_quote_lines=4)
         assert "> ..." not in result
         assert "> A" in result
         assert "> D" in result
 
     def test_body_one_over_limit(self) -> None:
         body = "A\nB\nC\nD\nE"
-        result = format_reply_text("cursor", body, max_quote_lines=4)
+        result = format_reply_text("codex", body, max_quote_lines=4)
         assert "> ..." in result
         assert "> E" not in result
 
