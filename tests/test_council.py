@@ -53,8 +53,6 @@ class TestCouncilMemberPermissions:
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         assert "disk-full-read-access" in " ".join(cmd)
 
-    pass  # cursor backend removed — TestCursorAgentMember tests were also removed
-
 
 class TestClaudeMember:
     def test_build_command_without_session(self) -> None:

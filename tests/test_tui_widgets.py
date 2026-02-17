@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from kingdom.tui.widgets import (
+    CommandHintBar,
     ErrorPanel,
     MessagePanel,
     StreamingPanel,
@@ -13,6 +14,7 @@ from kingdom.tui.widgets import (
     color_for_member,
     format_elapsed,
     format_error_body,
+    match_commands,
 )
 
 
@@ -58,15 +60,15 @@ class TestColorForMember:
 
     def test_different_names_can_differ(self) -> None:
         """Different names should generally produce different colors."""
-        colors = {color_for_member(name) for name in ["claude", "codex", "cursor", "alice", "bob"]}
-        # At least 2 distinct colors from 5 names
+        colors = {color_for_member(name) for name in ["claude", "codex", "alice", "bob"]}
+        # At least 2 distinct colors from 4 names
         assert len(colors) >= 2
 
     def test_returns_valid_color(self) -> None:
         from kingdom.tui.widgets import BRAND_MEMBER_COLORS, FALLBACK_COLORS
 
         all_colors = set(BRAND_MEMBER_COLORS.values()) | set(FALLBACK_COLORS)
-        for name in ["claude", "codex", "cursor"]:
+        for name in ["claude", "codex"]:
             assert color_for_member(name) in all_colors
 
     def test_claude_gets_brand_orange(self) -> None:
@@ -77,12 +79,8 @@ class TestColorForMember:
         """Codex should get OpenAI's brand green."""
         assert color_for_member("codex") == "#19c37d"
 
-    def test_cursor_gets_brand_blue(self) -> None:
-        """Cursor should get a blue accent color."""
-        assert color_for_member("cursor") == "dodgerblue"
-
     def test_brand_colors_are_distinct(self) -> None:
-        """All three brand colors must be different from each other."""
+        """All brand colors must be different from each other."""
         from kingdom.tui.widgets import BRAND_MEMBER_COLORS
 
         values = list(BRAND_MEMBER_COLORS.values())
@@ -181,10 +179,10 @@ class TestFormatErrorBody:
 
     def test_empty_response_shows_specific_hint(self) -> None:
         body = format_error_body(
-            "*Empty response — no text or error returned.*", "cursor", timed_out=False, interrupted=False
+            "*Empty response — no text or error returned.*", "codex", timed_out=False, interrupted=False
         )
         assert "**Empty response**" in body
-        assert "@cursor" in body
+        assert "@codex" in body
         assert "Retry:" in body
 
     def test_interrupted_returns_raw_error(self) -> None:
@@ -213,40 +211,40 @@ class TestFormatErrorBody:
 
 class TestErrorPanel:
     def test_stores_error(self) -> None:
-        panel = ErrorPanel(sender="cursor", error="Timeout after 600s")
-        assert panel.sender == "cursor"
+        panel = ErrorPanel(sender="codex", error="Timeout after 600s")
+        assert panel.sender == "codex"
         assert panel.error == "Timeout after 600s"
 
     def test_timed_out_flag(self) -> None:
-        panel = ErrorPanel(sender="cursor", error="Timeout", timed_out=True)
+        panel = ErrorPanel(sender="codex", error="Timeout", timed_out=True)
         assert panel.timed_out is True
 
     def test_default_not_timed_out(self) -> None:
-        panel = ErrorPanel(sender="cursor", error="Some error")
+        panel = ErrorPanel(sender="codex", error="Some error")
         assert panel.timed_out is False
 
 
 class TestThinkingPanel:
     def test_initial_state(self) -> None:
-        panel = ThinkingPanel(sender="cursor")
-        assert panel.sender == "cursor"
+        panel = ThinkingPanel(sender="codex")
+        assert panel.sender == "codex"
         assert panel.thinking_text == ""
         assert panel.expanded is True
         assert panel.user_pinned is False
 
     def test_update_thinking(self) -> None:
-        panel = ThinkingPanel(sender="cursor")
+        panel = ThinkingPanel(sender="codex")
         panel.update_thinking("Step 1")
         assert panel.thinking_text == "Step 1"
 
     def test_collapse(self) -> None:
-        panel = ThinkingPanel(sender="cursor")
+        panel = ThinkingPanel(sender="codex")
         panel.update_thinking("Reasoning...")
         panel.collapse()
         assert panel.expanded is False
 
     def test_collapse_respects_user_pinned(self) -> None:
-        panel = ThinkingPanel(sender="cursor")
+        panel = ThinkingPanel(sender="codex")
         panel.user_pinned = True
         panel.expanded = True
         panel.collapse()
@@ -254,7 +252,7 @@ class TestThinkingPanel:
         assert panel.expanded is True
 
     def test_on_click_toggles_and_pins(self) -> None:
-        panel = ThinkingPanel(sender="cursor")
+        panel = ThinkingPanel(sender="codex")
         assert panel.expanded is True
         assert panel.user_pinned is False
 
@@ -391,3 +389,69 @@ class TestMessagePanelMemberNames:
         assert panel.sender == "king"
         assert panel.body == "Hello @claude"
         assert panel.member_names == []
+
+
+class TestMatchCommands:
+    """Tests for match_commands -- slash command prefix matching."""
+
+    def test_bare_slash_returns_all(self) -> None:
+        matches = match_commands("/")
+        assert len(matches) >= 5
+
+    def test_prefix_filters(self) -> None:
+        matches = match_commands("/m")
+        cmd_words = [cmd.split()[0] for cmd, _desc in matches]
+        assert all(c.startswith("/m") for c in cmd_words)
+        assert "/mute" in cmd_words
+
+    def test_full_command_matches(self) -> None:
+        matches = match_commands("/help")
+        assert any(cmd.startswith("/help") for cmd, _desc in matches)
+
+    def test_no_match(self) -> None:
+        matches = match_commands("/zzz")
+        assert matches == []
+
+    def test_case_insensitive(self) -> None:
+        matches = match_commands("/HELP")
+        assert any("/help" in cmd for cmd, _desc in matches)
+
+    def test_h_matches_help_and_shortcut(self) -> None:
+        matches = match_commands("/h")
+        cmd_words = [cmd.split()[0] for cmd, _desc in matches]
+        assert "/help" in cmd_words
+        assert "/h" in cmd_words
+
+    def test_quit_and_exit(self) -> None:
+        q_matches = match_commands("/q")
+        assert any("/quit" in cmd for cmd, _desc in q_matches)
+        e_matches = match_commands("/e")
+        assert any("/exit" in cmd for cmd, _desc in e_matches)
+
+    def test_unmute_match(self) -> None:
+        matches = match_commands("/u")
+        cmd_words = [cmd.split()[0] for cmd, _desc in matches]
+        assert "/unmute" in cmd_words
+
+
+class TestCommandHintBar:
+    """Tests for CommandHintBar widget."""
+
+    def test_initial_state(self) -> None:
+        bar = CommandHintBar()
+        assert not bar.has_class("visible")
+
+    def test_first_match_returns_command_word(self) -> None:
+        bar = CommandHintBar()
+        assert bar.first_match("/m") == "/mute"
+        assert bar.first_match("/h") == "/help"
+        assert bar.first_match("/q") == "/quit"
+
+    def test_first_match_returns_none_for_no_match(self) -> None:
+        bar = CommandHintBar()
+        assert bar.first_match("/zzz") is None
+
+    def test_first_match_bare_slash(self) -> None:
+        bar = CommandHintBar()
+        result = bar.first_match("/")
+        assert result is not None

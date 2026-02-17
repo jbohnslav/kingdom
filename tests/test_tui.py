@@ -330,7 +330,7 @@ class TestInputArea:
     def test_tab_cycles_through_candidates(self) -> None:
         from kingdom.tui.app import InputArea
 
-        input_area = InputArea(member_names=["claude", "codex", "cursor"])
+        input_area = InputArea(member_names=["claude", "codex"])
         input_area.load_text("@c")
         input_area.move_cursor((0, 2))
         # First Tab: complete to first match
@@ -425,7 +425,7 @@ class TestParseTargets:
     def test_multiple_mentions(self, project: Path) -> None:
         from kingdom.tui.app import ChatApp
 
-        create_thread(project, BRANCH, "council-tgt4", ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, "council-tgt4", ["king", "claude", "codex"], "council")
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id="council-tgt4")
         list(app_instance.compose())
         targets = app_instance.parse_targets("@claude @codex What do you think?")
@@ -448,7 +448,7 @@ class TestSlashCommands:
         from kingdom.tui.app import ChatApp
 
         tid = "council-cmd1"
-        create_thread(project, BRANCH, tid, ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         list(app_instance.compose())
 
@@ -456,7 +456,6 @@ class TestSlashCommands:
         targets = app_instance.parse_targets("What do you think?")
         assert "codex" not in targets
         assert "claude" in targets
-        assert "cursor" in targets
 
     def test_explicit_mention_overrides_mute(self, project: Path) -> None:
         from kingdom.tui.app import ChatApp
@@ -682,28 +681,28 @@ class TestPhase1SmokeTest:
         from kingdom.tui.app import ChatApp
 
         tid = "council-compose"
-        create_thread(project, BRANCH, tid, ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         widgets = list(app_instance.compose())
 
         assert len(widgets) == 5  # header, message log, status bar, command hints, input area
-        assert app_instance.member_names == ["claude", "codex", "cursor"]
+        assert app_instance.member_names == ["claude", "codex"]
 
     def test_parse_targets_with_all_variants(self, project: Path) -> None:
         """Verify @mention parsing handles all cases."""
         from kingdom.tui.app import ChatApp
 
         tid = "council-targets"
-        create_thread(project, BRANCH, tid, ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         list(app_instance.compose())
 
         # Plain text → all members
-        assert app_instance.parse_targets("hello") == ["claude", "codex", "cursor"]
+        assert app_instance.parse_targets("hello") == ["claude", "codex"]
         # @member → one member
         assert app_instance.parse_targets("@claude hello") == ["claude"]
         # @all → all members
-        assert app_instance.parse_targets("@all hello") == ["claude", "codex", "cursor"]
+        assert app_instance.parse_targets("@all hello") == ["claude", "codex"]
         # Multiple @mentions → those members
         assert app_instance.parse_targets("@claude @codex hello") == ["claude", "codex"]
 

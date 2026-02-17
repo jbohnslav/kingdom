@@ -706,7 +706,7 @@ class TestCouncilWatch:
             result = runner.invoke(cli.app, ["council", "watch"])
 
             assert result.exit_code == 1
-            assert "No current council thread" in result.output
+            assert "No council threads" in result.output
 
     def test_watch_nonexistent_thread_errors(self) -> None:
         with runner.isolated_filesystem():
@@ -1133,7 +1133,7 @@ class TestCouncilRetry:
             result = runner.invoke(cli.app, ["council", "retry"])
 
             assert result.exit_code == 1
-            assert "No current council thread" in result.output
+            assert "No council threads" in result.output
 
     def test_retry_all_ok(self) -> None:
         """Retry when all members responded successfully should say nothing to retry."""
@@ -1228,3 +1228,227 @@ class TestCouncilRetry:
             assert result.exit_code == 0
             # Should only retry codex, not claude
             assert "Retrying: codex" in result.output
+
+
+class TestNoResultsMessages:
+    """Tests for helpful empty-state messages with next-step guidance."""
+
+    def test_council_list_empty_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "list"])
+
+            assert result.exit_code == 0
+            assert "No council threads" in result.output
+            assert "kd council ask" in result.output
+
+    def test_council_status_all_empty_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "status", "--all"])
+
+            assert result.exit_code == 0
+            assert "No council threads" in result.output
+            assert "kd council ask" in result.output
+
+    def test_council_show_last_empty_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "show", "last"])
+
+            assert result.exit_code == 1
+            assert "No council history found" in result.output
+            assert "kd council ask" in result.output
+
+    def test_council_show_thread_no_messages_shows_guidance(self) -> None:
+        from kingdom.thread import create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-empty", ["king", "claude"], "council")
+
+            result = runner.invoke(cli.app, ["council", "show", "council-empty"])
+
+            assert result.exit_code == 1
+            assert "no messages" in result.output
+            assert "kd council ask" in result.output
+
+
+class TestCouncilThreadResolution:
+    """Tests for the unified resolve_council_thread_id helper."""
+
+    def test_show_prefix_match(self) -> None:
+        """council show with a prefix should resolve to the full thread ID."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-ab12", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-ab12", from_="king", to="all", body="Hello")
+            add_message(base, BRANCH, "council-ab12", from_="claude", to="king", body="Hi")
+
+            result = runner.invoke(cli.app, ["council", "show", "council-ab"])
+
+            assert result.exit_code == 0
+            assert "council-ab12" in result.output
+
+    def test_status_prefix_match(self) -> None:
+        """council status with a prefix should resolve to the full thread ID."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-cd34", ["king", "claude"], "council")
+            set_current_thread(base, BRANCH, "council-cd34")
+            add_message(base, BRANCH, "council-cd34", from_="king", to="all", body="Q")
+            add_message(base, BRANCH, "council-cd34", from_="claude", to="king", body="A")
+
+            result = runner.invoke(cli.app, ["council", "status", "council-cd"])
+
+            assert result.exit_code == 0
+            assert "council-cd34" in result.output
+
+    def test_show_ambiguous_prefix(self) -> None:
+        """Ambiguous prefix should list matching threads."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-ab01", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-ab01", from_="king", to="all", body="Topic one")
+
+            create_thread(base, BRANCH, "council-ab02", ["king", "codex"], "council")
+            add_message(base, BRANCH, "council-ab02", from_="king", to="all", body="Topic two")
+
+            result = runner.invoke(cli.app, ["council", "show", "council-ab"])
+
+            assert result.exit_code == 1
+            assert "matches multiple threads" in result.output
+            assert "council-ab01" in result.output
+            assert "council-ab02" in result.output
+            assert "Topic one" in result.output
+            assert "Topic two" in result.output
+
+    def test_show_not_found_lists_available(self) -> None:
+        """Thread not found should list available threads with topics."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-ab12", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-ab12", from_="king", to="all", body="Known topic")
+
+            result = runner.invoke(cli.app, ["council", "show", "council-zzzz"])
+
+            assert result.exit_code == 1
+            assert "Thread not found: council-zzzz" in result.output
+            assert "Available council threads" in result.output
+            assert "council-ab12" in result.output
+            assert "Known topic" in result.output
+
+    def test_show_not_found_no_threads(self) -> None:
+        """Thread not found with no threads should say to create one."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "show", "council-zzzz"])
+
+            assert result.exit_code == 1
+            assert "Thread not found" in result.output
+            assert "kd council ask" in result.output
+
+    def test_fallback_to_most_recent_prints_thread_id(self) -> None:
+        """When falling back to most recent thread, print which thread was selected."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-first", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-first", from_="king", to="all", body="First")
+            add_message(base, BRANCH, "council-first", from_="claude", to="king", body="Reply")
+
+            # Clear the current thread pointer
+            set_current_thread(base, BRANCH, None)
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "Using most recent thread: council-first" in result.output
+
+    def test_stale_pointer_falls_back(self) -> None:
+        """A stale current_thread pointer should fall back to most recent."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-real", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-real", from_="king", to="all", body="Question")
+            add_message(base, BRANCH, "council-real", from_="claude", to="king", body="Answer")
+
+            # Set a stale pointer
+            set_current_thread(base, BRANCH, "council-deleted")
+
+            result = runner.invoke(cli.app, ["council", "status"])
+
+            assert result.exit_code == 0
+            assert "Using most recent thread: council-real" in result.output
+
+    def test_watch_prefix_match(self) -> None:
+        """council watch with prefix should resolve correctly."""
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex", "cursor")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(cli.app, ["council", "ask", "Test question"])
+
+            current = get_current_thread(base, BRANCH)
+            # Use just the first characters as prefix
+            prefix = current[:10]
+
+            result = runner.invoke(cli.app, ["council", "watch", prefix])
+
+            assert result.exit_code == 0
+            assert "All members have responded" in result.output
+
+    def test_retry_prefix_match(self) -> None:
+        """council retry with prefix should resolve correctly."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-ef56", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-ef56")
+            add_message(base, BRANCH, "council-ef56", from_="king", to="all", body="test question")
+            add_message(base, BRANCH, "council-ef56", from_="claude", to="king", body="Good response")
+            add_message(base, BRANCH, "council-ef56", from_="codex", to="king", body="Also good")
+
+            result = runner.invoke(cli.app, ["council", "retry", "council-ef"])
+
+            assert result.exit_code == 0
+            assert "Nothing to retry" in result.output

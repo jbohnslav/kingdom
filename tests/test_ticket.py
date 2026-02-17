@@ -11,6 +11,7 @@ from kingdom.ticket import (
     AmbiguousTicketMatch,
     Ticket,
     append_worklog_entry,
+    coerce_to_str_list,
     find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
@@ -22,6 +23,29 @@ from kingdom.ticket import (
     serialize_ticket,
     write_ticket,
 )
+
+
+class TestCoerceToStrList:
+    """Tests for coerce_to_str_list helper."""
+
+    def test_none_returns_empty(self) -> None:
+        assert coerce_to_str_list(None) == []
+
+    def test_empty_list_returns_empty(self) -> None:
+        assert coerce_to_str_list([]) == []
+
+    def test_list_of_strings_unchanged(self) -> None:
+        assert coerce_to_str_list(["a", "b"]) == ["a", "b"]
+
+    def test_int_wrapped_in_list(self) -> None:
+        assert coerce_to_str_list(3642) == ["3642"]
+
+    def test_string_wrapped_in_list(self) -> None:
+        assert coerce_to_str_list("abcd") == ["abcd"]
+
+    def test_list_items_coerced_to_str(self) -> None:
+        """Even if a list contains non-strings, they become strings."""
+        assert coerce_to_str_list([123, "abc"]) == ["123", "abc"]
 
 
 class TestTicketDataclass:
@@ -150,6 +174,42 @@ Body
 """
         ticket = parse_ticket(content)
         assert ticket.deps == ["kin-1234", "kin-5678"]
+
+    def test_ticket_with_scalar_dep(self) -> None:
+        """Parse ticket where deps is a bare scalar (no brackets)."""
+        content = """---
+id: kin-test
+status: open
+deps: 3642
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 2
+---
+# Test
+
+Body
+"""
+        ticket = parse_ticket(content)
+        assert ticket.deps == ["3642"], f"Scalar dep lost! deps={ticket.deps}"
+
+    def test_ticket_with_scalar_string_dep(self) -> None:
+        """Parse ticket where deps is a bare string (no brackets)."""
+        content = """---
+id: kin-test
+status: open
+deps: abcd
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 2
+---
+# Test
+
+Body
+"""
+        ticket = parse_ticket(content)
+        assert ticket.deps == ["abcd"], f"Scalar dep lost! deps={ticket.deps}"
 
     def test_ticket_with_tags(self) -> None:
         """Parse ticket with tags."""
@@ -989,9 +1049,7 @@ class TestFindNewlyUnblocked:
         created = datetime.now(UTC)
 
         blocker = Ticket(id="blk3", status="closed", title="Blocker", body="", created=created)
-        closed_dep = Ticket(
-            id="cd01", status="closed", title="Already done", body="", deps=["blk3"], created=created
-        )
+        closed_dep = Ticket(id="cd01", status="closed", title="Already done", body="", deps=["blk3"], created=created)
         write_ticket(blocker, tickets_dir / "blk3.md")
         write_ticket(closed_dep, tickets_dir / "cd01.md")
 

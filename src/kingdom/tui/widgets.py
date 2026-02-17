@@ -74,9 +74,6 @@ def format_reply_text(sender: str, body: str, max_quote_lines: int = 4) -> str:
 #             terminal backgrounds).
 #   codex   — OpenAI brand green (#19c37d is the ChatGPT/OpenAI accent
 #             green, readable and distinctive from orange/blue).
-#   cursor  — Cursor brand blue (dodgerblue; Cursor's logo uses a bright
-#             blue accent — since the logo itself is mostly black/white, blue
-#             gives a clear, readable identity in the terminal).
 #
 # Adding a new member?  Pick the closest readable, terminal-safe brand color.
 # If the brand palette is mostly black/white, choose a distinctive hue that
@@ -85,7 +82,6 @@ def format_reply_text(sender: str, body: str, max_quote_lines: int = 4) -> str:
 BRAND_MEMBER_COLORS: dict[str, str] = {
     "claude": "#d97706",
     "codex": "#19c37d",
-    "cursor": "dodgerblue",
 }
 
 # Fallback palette for unknown members, indexed by stable hash.

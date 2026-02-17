@@ -717,81 +717,8 @@ def print_turn(console: Console, turn_msgs: list, turn_number: int, total_turns:
         console.print()
 
 
-@council_app.command("show", help="Display a council thread.")
-def council_show(
-    thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
-    last_n: Annotated[int | None, typer.Option("--last", help="Show last N turns.")] = None,
-    show_all: Annotated[bool, typer.Option("--all", help="Show full thread history.")] = False,
-) -> None:
-    """Display a council thread's message history."""
-    from kingdom.thread import list_messages, list_threads, thread_dir
-
-    base = Path.cwd()
-    feature = resolve_current_run(base)
-    console = Console()
-
-    # Resolve thread_id: argument, current thread, most recent, or error
-    if thread_id is None:
-        thread_id = get_current_thread(base, feature)
-        if thread_id is None:
-            # Fall back to most recently created council thread
-            threads = list_threads(base, feature)
-            council_threads = [t for t in threads if t.pattern == "council"]
-            if council_threads:
-                thread_id = council_threads[-1].id  # sorted by created_at asc
-            else:
-                typer.echo("No council threads. Use `kd council ask` first.")
-                raise typer.Exit(code=1)
-
-    # Try as a thread first
-    tdir = thread_dir(base, feature, thread_id)
-    if tdir.exists():
-        messages = list_messages(base, feature, thread_id)
-        if not messages:
-            typer.echo(f'Thread {thread_id}: no messages. Send one with `kd council ask "prompt"`.')
-            raise typer.Exit(code=1)
-
-        turns = group_messages_into_turns(messages)
-        total_turns = len(turns)
-        total_msgs = len(messages)
-
-        # Determine which turns to show
-        if show_all:
-            visible_turns = turns
-            start_index = 0
-        elif last_n is not None:
-            n = min(last_n, total_turns)
-            visible_turns = turns[-n:]
-            start_index = total_turns - n
-        else:
-            # Default: show only the latest turn
-            visible_turns = turns[-1:]
-            start_index = total_turns - 1
-
-        visible_msgs = sum(len(t) for t in visible_turns)
-        hidden_turns = total_turns - len(visible_turns)
-
-        def pl(n: int, word: str) -> str:
-            return f"{n} {word}" if n == 1 else f"{n} {word}s"
-
-        console.print(f"[bold]Thread: {thread_id}[/bold]")
-        if hidden_turns > 0:
-            console.print(
-                f"[dim]Showing {pl(len(visible_turns), 'turn')} of {total_turns} "
-                f"({pl(visible_msgs, 'message')} of {total_msgs}). "
-                f"Use --all for full history.[/dim]"
-            )
-        else:
-            console.print(f"[dim]{pl(total_turns, 'turn')}, {pl(total_msgs, 'message')}[/dim]")
-        console.print()
-
-        for i, turn_msgs in enumerate(visible_turns):
-            turn_number = start_index + i + 1
-            print_turn(console, turn_msgs, turn_number, total_turns)
-
-        return
-
-    # Fall back to legacy run bundle in logs/council/
+def show_legacy_run(base: Path, feature: str, thread_id: str, console: Console) -> None:
+    """Display a legacy run-bundle from logs/council/."""
     council_logs_dir = council_logs_root(base, feature)
     run_dir = council_logs_dir / thread_id
     if not run_dir.exists():
@@ -806,10 +733,9 @@ def council_show(
                 raise typer.Exit(code=1)
             run_dir = max(runs, key=lambda d: d.stat().st_mtime)
         else:
-            typer.echo(f"Thread not found: {thread_id}")
+            typer.echo(f"Legacy run not found: {thread_id}")
             raise typer.Exit(code=1)
 
-    # Display legacy run
     metadata_path = run_dir / "metadata.json"
     if metadata_path.exists():
         metadata = read_json(metadata_path)
@@ -824,6 +750,71 @@ def council_show(
         console.print(Markdown(f"## {md_file.stem}\n\n{content}"))
 
     console.print(f"\n[dim]Archived session: {run_dir}[/dim]")
+
+
+@council_app.command("show", help="Display a council thread.")
+def council_show(
+    thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
+    last_n: Annotated[int | None, typer.Option("--last", help="Show last N turns.")] = None,
+    show_all: Annotated[bool, typer.Option("--all", help="Show full thread history.")] = False,
+) -> None:
+    """Display a council thread's message history."""
+    from kingdom.thread import list_messages
+
+    base = Path.cwd()
+    feature = resolve_current_run(base)
+    console = Console()
+
+    # Legacy run-bundle support: "last" alias and "run-*" IDs bypass thread resolution
+    if thread_id is not None and (thread_id == "last" or thread_id.startswith("run-")):
+        show_legacy_run(base, feature, thread_id, console)
+        return
+
+    # Resolve via prefix matching / current pointer / most-recent fallback
+    thread_id = resolve_council_thread_id(base, feature, thread_id, command="show")
+
+    messages = list_messages(base, feature, thread_id)
+    if not messages:
+        typer.echo(f'Thread {thread_id}: no messages. Send one with `kd council ask "prompt"`.')
+        raise typer.Exit(code=1)
+
+    turns = group_messages_into_turns(messages)
+    total_turns = len(turns)
+    total_msgs = len(messages)
+
+    # Determine which turns to show
+    if show_all:
+        visible_turns = turns
+        start_index = 0
+    elif last_n is not None:
+        n = min(last_n, total_turns)
+        visible_turns = turns[-n:]
+        start_index = total_turns - n
+    else:
+        # Default: show only the latest turn
+        visible_turns = turns[-1:]
+        start_index = total_turns - 1
+
+    visible_msgs = sum(len(t) for t in visible_turns)
+    hidden_turns = total_turns - len(visible_turns)
+
+    def pl(n: int, word: str) -> str:
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    console.print(f"[bold]Thread: {thread_id}[/bold]")
+    if hidden_turns > 0:
+        console.print(
+            f"[dim]Showing {pl(len(visible_turns), 'turn')} of {total_turns} "
+            f"({pl(visible_msgs, 'message')} of {total_msgs}). "
+            f"Use --all for full history.[/dim]"
+        )
+    else:
+        console.print(f"[dim]{pl(total_turns, 'turn')}, {pl(total_msgs, 'message')}[/dim]")
+    console.print()
+
+    for i, turn_msgs in enumerate(visible_turns):
+        turn_number = start_index + i + 1
+        print_turn(console, turn_msgs, turn_number, total_turns)
 
 
 @council_app.command("list", help="List all council threads.")
@@ -925,16 +916,7 @@ def council_status(
         return
 
     # Single thread mode
-    if thread_id is None:
-        thread_id = get_current_thread(base, feature)
-        if thread_id is None:
-            threads = list_threads(base, feature)
-            council_threads = [t for t in threads if t.pattern == "council"]
-            if council_threads:
-                thread_id = council_threads[-1].id
-            else:
-                typer.echo("No council threads. Use `kd council ask` first.")
-                raise typer.Exit(code=1)
+    thread_id = resolve_council_thread_id(base, feature, thread_id, command="status")
 
     status = thread_response_status(base, feature, thread_id)
     print_thread_status(status, base, feature, verbose)
@@ -1031,16 +1013,9 @@ def watch_thread(
     console = Console()
 
     # Resolve thread_id
-    if thread_id is None:
-        thread_id = get_current_thread(base, feature)
-        if thread_id is None:
-            typer.echo("No current council thread. Use `kd council ask` first.")
-            raise typer.Exit(code=1)
+    thread_id = resolve_council_thread_id(base, feature, thread_id, command="watch")
 
     tdir = thread_dir(base, feature, thread_id)
-    if not tdir.exists():
-        typer.echo(f"Thread not found: {thread_id}")
-        raise typer.Exit(code=1)
 
     # Use caller-provided expected set, or fall back to thread metadata
     if expected is not None:
@@ -1223,23 +1198,14 @@ def council_retry(
 
     Uses the original prompt from the most recent king message in the thread.
     """
-    from kingdom.thread import get_thread, is_error_response, list_messages, thread_dir
+    from kingdom.thread import get_thread, is_error_response, list_messages
 
     base = Path.cwd()
     feature = resolve_current_run(base)
     console = Console()
 
     # Resolve thread_id
-    if thread_id is None:
-        thread_id = get_current_thread(base, feature)
-        if thread_id is None:
-            typer.echo("No current council thread. Use `kd council ask` first.")
-            raise typer.Exit(code=1)
-
-    tdir = thread_dir(base, feature, thread_id)
-    if not tdir.exists():
-        typer.echo(f"Thread not found: {thread_id}")
-        raise typer.Exit(code=1)
+    thread_id = resolve_council_thread_id(base, feature, thread_id, command="retry")
 
     meta = get_thread(base, feature, thread_id)
     all_members = {m for m in meta.members if m != "king"}

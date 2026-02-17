@@ -98,6 +98,27 @@ def generate_ticket_id(tickets_dir: Path | None = None) -> str:
     raise RuntimeError(f"Failed to generate unique ticket ID after {max_attempts} attempts")
 
 
+def coerce_to_str_list(value: str | int | list[str] | None) -> list[str]:
+    """Coerce a parsed YAML value to a list of strings.
+
+    Handles the case where a YAML value that should be a list was parsed
+    as a scalar (e.g., ``deps: 3642`` instead of ``deps: [3642]``).
+    Scalars are wrapped in a single-element list; None becomes empty list.
+
+    Args:
+        value: A parsed YAML value (may be list, str, int, or None).
+
+    Returns:
+        A list of strings.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    # Scalar value — wrap in a list
+    return [str(value)]
+
+
 def parse_ticket(content: str) -> Ticket:
     """Parse ticket content from YAML frontmatter + markdown body.
 
@@ -136,22 +157,22 @@ def parse_ticket(content: str) -> Ticket:
         created = datetime.now(UTC)
 
     # Build Ticket
-    deps = frontmatter_dict.get("deps", [])
-    links = frontmatter_dict.get("links", [])
-    tags = frontmatter_dict.get("tags", [])
+    deps = coerce_to_str_list(frontmatter_dict.get("deps", []))
+    links = coerce_to_str_list(frontmatter_dict.get("links", []))
+    tags = coerce_to_str_list(frontmatter_dict.get("tags", []))
 
     return Ticket(
         id=str(frontmatter_dict.get("id", "")),
         status=str(frontmatter_dict.get("status", "open")),
-        deps=deps if isinstance(deps, list) else [],
-        links=links if isinstance(links, list) else [],
+        deps=deps,
+        links=links,
         created=created,
         type=str(frontmatter_dict.get("type", "task")),
         priority=clamp_priority(frontmatter_dict.get("priority", 2)),
         assignee=str(frontmatter_dict.get("assignee")) if frontmatter_dict.get("assignee") else None,
         title=title,
         body=body,
-        tags=tags if isinstance(tags, list) else [],
+        tags=tags,
         parent=str(frontmatter_dict.get("parent")) if frontmatter_dict.get("parent") else None,
         external_ref=(str(frontmatter_dict.get("external-ref")) if frontmatter_dict.get("external-ref") else None),
     )

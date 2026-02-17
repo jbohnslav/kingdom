@@ -527,10 +527,23 @@ class TestTicketMove:
 
             assert result.exit_code == 0, result.output
             assert "Moved" in result.output
+            assert "branch 'feature-ticket-test'" in result.output
             branch_tickets = branch_root(base, BRANCH) / "tickets" / "kin-mv01.md"
             assert branch_tickets.exists()
             # Source must be removed (no duplicate in backlog)
             assert not (backlog_dir / "kin-mv01.md").exists()
+
+    def test_move_to_backlog_shows_backlog_label(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv04")
+
+            result = runner.invoke(cli.app, ["tk", "move", "kin-mv04", "--to", "backlog"])
+
+            assert result.exit_code == 0, result.output
+            assert "Moved kin-mv04 to backlog" in result.output
 
     def test_move_already_in_destination(self) -> None:
         with runner.isolated_filesystem():
@@ -542,7 +555,7 @@ class TestTicketMove:
             result = runner.invoke(cli.app, ["tk", "move", "kin-mv02"])
 
             assert result.exit_code == 0, result.output
-            assert "already in" in result.output
+            assert "already in branch 'feature-ticket-test'" in result.output
 
     def test_move_no_active_branch_errors(self) -> None:
         with runner.isolated_filesystem():

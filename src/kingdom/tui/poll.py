@@ -192,24 +192,6 @@ class ThreadPoller:
 # ---------------------------------------------------------------------------
 
 
-def merge_assistant_snapshots(parts: list[str]) -> str:
-    """Merge Cursor assistant snapshot events into a single text.
-
-    Cursor emits cumulative assistant events -- each chunk is a full snapshot
-    of the text so far, not a delta. This merges them by detecting when a
-    new part is a superset of the accumulated text.
-    """
-    merged = ""
-    for part in parts:
-        if part.startswith(merged):
-            merged = part  # cumulative snapshot (superset)
-        elif merged.endswith(part):
-            continue  # trailing fragment already included
-        else:
-            merged += part  # new fragment
-    return merged
-
-
 def read_message_body(path: Path) -> str:
     """Read a message file and return the body (after YAML frontmatter)."""
     text = path.read_text(encoding="utf-8")
