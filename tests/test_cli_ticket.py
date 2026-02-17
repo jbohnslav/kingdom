@@ -264,7 +264,7 @@ class TestTicketPull:
             result = runner.invoke(cli.app, ["tk", "pull", "kin-pull"])
 
             assert result.exit_code == 0, result.output
-            assert "Pulled kin-pull:" in result.output
+            assert "Pulled kin-pull" in result.output
             assert "Test ticket" in result.output
             # Should be on branch now
             branch_path = branch_root(base, BRANCH) / "tickets" / "kin-pull.md"
@@ -400,7 +400,7 @@ class TestTicketPull:
             assert result.exit_code == 0, result.output
             legacy_ticket_path = base / ".kd" / "runs" / legacy_run / "tickets" / "kin-legacy.md"
             assert legacy_ticket_path.exists()
-            assert "Pulled kin-legacy:" in result.output
+            assert "Pulled kin-legacy" in result.output
 
     def test_pull_already_on_branch_errors(self) -> None:
         """Pulling a ticket that's already on the current branch should error."""
@@ -911,6 +911,22 @@ class TestTicketListTable:
             assert result.exit_code == 0
             assert "Location" not in result.output
 
+    def test_table_hides_empty_assignee_and_deps_columns(self) -> None:
+        """Assignee and Deps columns should be hidden when no ticket has data for them."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(id="aaaa", status="open", title="No extras", body="", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "Assignee" not in result.output
+            assert "Deps" not in result.output
+
     def test_json_output_unaffected(self) -> None:
         """JSON output should not contain table formatting."""
         with runner.isolated_filesystem():
@@ -1306,7 +1322,7 @@ class TestMigrate:
             result = runner.invoke(cli.app, ["migrate", "--apply"])
 
             assert result.exit_code == 0, result.output
-            assert "Migrated:" in result.output
+            assert "Migrated" in result.output
 
             # File should be renamed
             assert not (tickets_dir / "kin-ab12.md").exists()
@@ -1680,6 +1696,32 @@ class TestTicketDep:
             assert "d869" in ticket.deps, f"Second dep missing! deps={ticket.deps}"
             assert len(ticket.deps) == 2
 
+    def test_dep_survives_status_change(self) -> None:
+        """Deps must survive when ticket status changes between dep adds."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            for tid in ["cf1a", "aaaa", "bbbb"]:
+                t = Ticket(id=tid, status="open", title=f"Ticket {tid}", body="", created=datetime.now(UTC))
+                write_ticket(t, tickets_dir / f"{tid}.md")
+
+            # Add first dep
+            runner.invoke(cli.app, ["tk", "dep", "cf1a", "aaaa"])
+            # Change status (rewrites ticket)
+            runner.invoke(cli.app, ["tk", "start", "cf1a"])
+            # Add second dep
+            runner.invoke(cli.app, ["tk", "dep", "cf1a", "bbbb"])
+
+            found = find_ticket(base, "cf1a")
+            assert found is not None
+            ticket, _ = found
+            assert ticket.status == "in_progress"
+            assert "aaaa" in ticket.deps, f"First dep lost after status change! deps={ticket.deps}"
+            assert "bbbb" in ticket.deps, f"Second dep missing! deps={ticket.deps}"
+            assert len(ticket.deps) == 2
+
     def test_dep_idempotent(self) -> None:
         """Adding the same dep twice should be a no-op the second time."""
         with runner.isolated_filesystem():
@@ -1722,3 +1764,220 @@ class TestTicketDep:
             result = runner.invoke(cli.app, ["tk", "dep", "cf1a", "zzzz"])
             assert result.exit_code == 1
             assert "not found" in result.output
+
+
+class TestNoResultsMessages:
+    """Tests for helpful empty-state messages with next-step guidance."""
+
+    def test_list_empty_branch_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "No tickets found" in result.output
+            assert "kd tk create" in result.output
+
+    def test_list_empty_backlog_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "list", "--backlog"])
+
+            assert result.exit_code == 0
+            assert "No backlog tickets" in result.output
+            assert "kd tk create --backlog" in result.output
+
+    def test_list_all_empty_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "list", "--all"])
+
+            assert result.exit_code == 0
+            assert "No tickets found" in result.output
+            assert "kd tk create" in result.output
+
+    def test_ready_empty_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "ready"])
+
+            assert result.exit_code == 0
+            assert "No ready tickets" in result.output
+            assert "kd tk create" in result.output
+
+    def test_show_all_empty_branch_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "show", "--all"])
+
+            assert result.exit_code == 0
+            assert "No tickets on this branch" in result.output
+            assert "kd tk create" in result.output
+
+
+class TestFormatTicketLine:
+    """Tests for the format_ticket_line helper."""
+
+    def test_basic_line_no_deps(self) -> None:
+        from kingdom.cli import format_ticket_line
+
+        ticket = Ticket(id="ab12", status="open", title="Fix bug", body="", created=datetime.now(UTC))
+        line = format_ticket_line(ticket)
+        assert line == "ab12 [P2][open] - Fix bug"
+
+    def test_line_with_deps(self) -> None:
+        from kingdom.cli import format_ticket_line
+
+        ticket = Ticket(
+            id="ab12", status="open", title="Fix bug", body="", deps=["cd34", "ef56"], created=datetime.now(UTC)
+        )
+        line = format_ticket_line(ticket)
+        assert line == "ab12 [P2][open] - Fix bug  <- cd34, ef56"
+
+    def test_line_with_single_dep(self) -> None:
+        from kingdom.cli import format_ticket_line
+
+        ticket = Ticket(
+            id="ab12", status="in_progress", title="Work", body="", deps=["zz99"], created=datetime.now(UTC)
+        )
+        line = format_ticket_line(ticket)
+        assert line == "ab12 [P2][in_progress] - Work  <- zz99"
+
+    def test_line_with_location(self) -> None:
+        from kingdom.cli import format_ticket_line
+
+        ticket = Ticket(id="ab12", status="open", title="Task", body="", created=datetime.now(UTC))
+        line = format_ticket_line(ticket, location="backlog")
+        assert line == "ab12 [P2][open] - Task (backlog)"
+
+    def test_line_with_deps_and_location(self) -> None:
+        from kingdom.cli import format_ticket_line
+
+        ticket = Ticket(id="ab12", status="open", title="Task", body="", deps=["cd34"], created=datetime.now(UTC))
+        line = format_ticket_line(ticket, location="branch:main")
+        assert line == "ab12 [P2][open] - Task (branch:main)  <- cd34"
+
+    def test_line_with_assignee(self) -> None:
+        from kingdom.cli import format_ticket_line
+
+        ticket = Ticket(id="ab12", status="open", title="Task", body="", assignee="alice", created=datetime.now(UTC))
+        line = format_ticket_line(ticket)
+        assert line == "ab12 [P2][open] @alice - Task"
+
+    def test_line_priority_1(self) -> None:
+        from kingdom.cli import format_ticket_line
+
+        ticket = Ticket(id="ab12", status="open", title="Urgent", body="", priority=1, created=datetime.now(UTC))
+        line = format_ticket_line(ticket)
+        assert line == "ab12 [P1][open] - Urgent"
+
+
+class TestTicketListDepsJson:
+    """Tests for deps in JSON output of tk list."""
+
+    def test_json_includes_deps_field(self) -> None:
+        """JSON output should include deps array for each ticket."""
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(
+                id="aaaa",
+                status="open",
+                title="Blocked",
+                body="",
+                deps=["bbbb", "cccc"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 1
+            assert data[0]["deps"] == ["bbbb", "cccc"]
+
+    def test_json_empty_deps_array(self) -> None:
+        """Tickets with no deps should have empty deps array in JSON."""
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(id="aaaa", status="open", title="No deps", body="", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data[0]["deps"] == []
+
+    def test_json_all_includes_deps(self) -> None:
+        """--all --json should include deps field."""
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(
+                id="aaaa",
+                status="open",
+                title="With deps",
+                body="",
+                deps=["xxxx"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--all", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            matching = [t for t in data if t["id"] == "aaaa"]
+            assert len(matching) == 1
+            assert matching[0]["deps"] == ["xxxx"]
+
+    def test_json_backlog_includes_deps(self) -> None:
+        """--backlog --json should include deps field."""
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            backlog_dir = backlog_root(base) / "tickets"
+
+            ticket = Ticket(
+                id="bbbb",
+                status="open",
+                title="Backlog with deps",
+                body="",
+                deps=["aaaa"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, backlog_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--backlog", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 1
+            assert data[0]["deps"] == ["aaaa"]

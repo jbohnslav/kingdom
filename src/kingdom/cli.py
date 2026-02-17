@@ -2901,6 +2901,9 @@ def render_ticket_table(
 ) -> None:
     """Render a list of tickets as a Rich table.
 
+    Only shows Assignee, Deps, and Location columns when at least one ticket
+    has data for that column, keeping the table compact.
+
     Args:
         tickets: Tickets to display.
         show_location: Whether to include a Location column.
@@ -2908,15 +2911,20 @@ def render_ticket_table(
     """
     from rich.table import Table
 
+    has_assignee = any(t.assignee for t in tickets)
+    has_deps = any(t.deps for t in tickets)
+
     console = Console(width=max(console_width(), 120))
     table = Table(show_header=True, header_style="bold", padding=(0, 1))
 
-    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("ID", style="cyan", no_wrap=True, min_width=4)
     table.add_column("P", justify="center", no_wrap=True, min_width=2)
     table.add_column("Status", no_wrap=True, min_width=11)
-    table.add_column("Assignee", no_wrap=True)
-    table.add_column("Title", no_wrap=True)
-    table.add_column("Deps", style="dim", no_wrap=True)
+    if has_assignee:
+        table.add_column("Assignee", no_wrap=True)
+    table.add_column("Title")
+    if has_deps:
+        table.add_column("Deps", style="dim", no_wrap=True)
     if show_location:
         table.add_column("Location", no_wrap=True)
 
@@ -2929,10 +2937,12 @@ def render_ticket_table(
             ticket.id,
             f"P{ticket.priority}",
             f"[{status_style}]{ticket.status}[/{status_style}]" if status_style else ticket.status,
-            assignee_str,
-            ticket.title,
-            dep_str,
         ]
+        if has_assignee:
+            row.append(assignee_str)
+        row.append(ticket.title)
+        if has_deps:
+            row.append(dep_str)
         if show_location:
             loc = (locations or {}).get(ticket.id, "")
             row.append(loc)
