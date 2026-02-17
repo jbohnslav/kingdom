@@ -321,7 +321,8 @@ class TestPeasantLogs:
 
 
 class TestPeasantStop:
-    def test_stop_sends_sigterm(self) -> None:
+    def test_stop_kills_process_group(self) -> None:
+        """Stop sends SIGTERM to the entire process group, not just the harness PID."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -334,14 +335,80 @@ class TestPeasantStop:
                 AgentState(name="peasant-kin-test", status="working", pid=99999),
             )
 
-            with patch("os.kill") as mock_kill:
+            # killpg SIGTERM succeeds, then killpg(0) raises OSError (all dead)
+            with patch("os.killpg") as mock_killpg:
+                mock_killpg.side_effect = [None, OSError("No such process")]
                 result = runner.invoke(cli.app, ["peasant", "stop", "kin-test"])
 
             assert result.exit_code == 0
             assert "SIGTERM" in result.output
-            mock_kill.assert_called_once_with(99999, signal.SIGTERM)
+            assert "process group" in result.output
+            mock_killpg.assert_any_call(99999, signal.SIGTERM)
 
-            # Session should be updated
+            state = get_agent_state(base, BRANCH, "peasant-kin-test")
+            assert state.status == "stopped"
+
+    def test_stop_sigkill_fallback(self) -> None:
+        """If processes survive SIGTERM, SIGKILL is sent after timeout."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(name="peasant-kin-test", status="working", pid=99999),
+            )
+
+            # Simulate: SIGTERM succeeds, processes stay alive, then finally die after SIGKILL
+            call_count = 0
+
+            def killpg_side_effect(pgid: int, sig: int) -> None:
+                nonlocal call_count
+                call_count += 1
+                if sig == signal.SIGTERM:
+                    return  # SIGTERM sent OK
+                if sig == 0:
+                    return  # process still alive (probe succeeds)
+                if sig == signal.SIGKILL:
+                    return  # SIGKILL sent OK
+
+            with (
+                patch("os.killpg", side_effect=killpg_side_effect),
+                patch("time.monotonic") as mock_mono,
+                patch("time.sleep"),
+            ):
+                # First call: before deadline check; second: past deadline
+                mock_mono.side_effect = [0, 0, 6]
+                result = runner.invoke(cli.app, ["peasant", "stop", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "SIGKILL" in result.output
+
+            state = get_agent_state(base, BRANCH, "peasant-kin-test")
+            assert state.status == "stopped"
+
+    def test_stop_process_group_already_dead(self) -> None:
+        """If the process group is already dead, stop still updates session status."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(name="peasant-kin-test", status="working", pid=99999),
+            )
+
+            with patch("os.killpg", side_effect=OSError("No such process")):
+                result = runner.invoke(cli.app, ["peasant", "stop", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "not found" in result.output.lower() or "No such process" in result.output
             state = get_agent_state(base, BRANCH, "peasant-kin-test")
             assert state.status == "stopped"
 

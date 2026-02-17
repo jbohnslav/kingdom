@@ -13,6 +13,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1995,12 +1996,31 @@ def peasant_stop(
         typer.echo(f"No PID found for peasant {full_ticket_id}")
         raise typer.Exit(code=1)
 
-    # Send SIGTERM
+    # Kill the entire process group (harness + backend + children).
+    # The harness is launched with start_new_session=True, so its PID
+    # is the process group leader.
+    pgid = state.pid
     try:
-        os.kill(state.pid, signal.SIGTERM)
-        typer.echo(f"{full_ticket_id}: sent SIGTERM (pid {state.pid})")
+        os.killpg(pgid, signal.SIGTERM)
+        typer.echo(f"{full_ticket_id}: sent SIGTERM to process group (pgid {pgid})")
     except OSError as e:
-        typer.echo(f"Process {state.pid} not found: {e}")
+        typer.echo(f"Process group {pgid} not found: {e}")
+
+    # Wait for processes to exit, then SIGKILL stragglers
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)  # check if any process in group is alive
+        except OSError:
+            break  # all dead
+        time.sleep(0.2)
+    else:
+        # Still alive after timeout — force kill
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            typer.echo(f"{full_ticket_id}: sent SIGKILL to process group (pgid {pgid})")
+        except OSError:
+            pass  # already dead
 
     # Update session status
     now = datetime.now(UTC).isoformat()
