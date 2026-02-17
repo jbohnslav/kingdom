@@ -8,7 +8,6 @@ license = "Apache-2.0"
 authors = [{ name = "James Robinson-Bohnslav" }]
 keywords = ["cli", "ai", "development", "workflow", "agents", "multi-model", "tickets"]
 classifiers = [
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
