@@ -22,7 +22,7 @@ from kingdom.state import state_root
 class AgentDef:
     """User-facing agent configuration from config.json."""
 
-    backend: str  # claude_code, codex
+    backend: str  # claude_code, codex, cursor
     model: str = ""
     prompt: str = ""
     prompts: dict[str, str] = field(default_factory=dict)
@@ -95,7 +95,7 @@ def default_config() -> KingdomConfig:
 # Validation
 # ---------------------------------------------------------------------------
 
-VALID_BACKENDS = {"claude_code", "codex"}
+VALID_BACKENDS = {"claude_code", "codex", "cursor"}
 VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
 VALID_COUNCIL_KEYS = {"members", "timeout", "auto_messages", "mode", "preamble", "thinking_visibility"}

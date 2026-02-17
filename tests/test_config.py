@@ -54,12 +54,12 @@ class TestValidateConfig:
         data = {
             "agents": {
                 "claude": {"backend": "claude_code", "model": "opus-4-6"},
-                "local": {"backend": "codex", "prompt": "Be concise."},
+                "local": {"backend": "cursor", "prompt": "Be concise."},
             }
         }
         cfg = validate_config(data)
         assert cfg.agents["claude"].model == "opus-4-6"
-        assert cfg.agents["local"].backend == "codex"
+        assert cfg.agents["local"].backend == "cursor"
         assert cfg.agents["local"].prompt == "Be concise."
         # Defaults still present
         assert "codex" in cfg.agents
