@@ -65,10 +65,9 @@ class TestResolveAgent:
 
     def test_resolve_all_defaults(self) -> None:
         configs = resolve_all_agents(DEFAULT_AGENTS)
-        assert set(configs) == {"claude", "codex", "cursor"}
+        assert set(configs) == {"claude", "codex"}
         assert configs["claude"].backend == "claude_code"
         assert configs["codex"].backend == "codex"
-        assert configs["cursor"].backend == "cursor"
 
 
 class TestAgentConfig:
@@ -107,7 +106,9 @@ class TestAgentConfig:
 
 def make_config(name: str) -> AgentConfig:
     """Resolve a default agent into an AgentConfig for tests."""
-    return resolve_agent(name, DEFAULT_AGENTS[name])
+    if name in DEFAULT_AGENTS:
+        return resolve_agent(name, DEFAULT_AGENTS[name])
+    return resolve_agent(name, AgentDef(backend=name))
 
 
 class TestBuildCommand:

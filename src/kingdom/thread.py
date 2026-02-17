@@ -30,6 +30,26 @@ from pathlib import Path
 from kingdom.parsing import parse_frontmatter, serialize_yaml_value
 from kingdom.state import branch_root, ensure_dir, normalize_branch_name, read_json, write_json
 
+
+class AmbiguousThreadMatch(Exception):
+    """Raised when a partial thread ID matches multiple threads."""
+
+    def __init__(self, partial_id: str, matches: list[ThreadMeta]) -> None:
+        self.partial_id = partial_id
+        self.matches = matches
+        match_ids = [m.id for m in matches]
+        super().__init__(f"'{partial_id}' matches multiple threads: {', '.join(match_ids)}")
+
+
+class ThreadNotFoundError(Exception):
+    """Raised when a thread ID does not match any thread, with suggestions."""
+
+    def __init__(self, thread_id: str, available: list[ThreadMeta] | None = None) -> None:
+        self.thread_id = thread_id
+        self.available = available or []
+        super().__init__(f"Thread not found: {thread_id}")
+
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -197,6 +217,55 @@ def list_threads(base: Path, branch: str) -> list[ThreadMeta]:
 
     threads.sort(key=lambda t: t.created_at)
     return threads
+
+
+def resolve_thread(
+    base: Path,
+    branch: str,
+    partial_id: str,
+    pattern: str | None = None,
+) -> ThreadMeta:
+    """Resolve a thread by exact or prefix match on its ID.
+
+    Supports partial IDs so users can type ``council-cf`` instead of
+    ``council-cfa4``.  When *pattern* is given, only threads of that
+    pattern (e.g. ``"council"``) are considered.
+
+    Args:
+        base: Project root.
+        branch: Branch name.
+        partial_id: Full or prefix of a thread ID.
+        pattern: Optional pattern filter (e.g. ``"council"``).
+
+    Returns:
+        ThreadMeta for the matched thread.
+
+    Raises:
+        ThreadNotFoundError: No thread matches *partial_id*.
+        AmbiguousThreadMatch: Multiple threads match *partial_id*.
+    """
+    # Try exact match first
+    tdir = thread_dir(base, branch, partial_id)
+    if tdir.exists():
+        meta = read_thread_meta(tdir)
+        if pattern is None or meta.pattern == pattern:
+            return meta
+
+    # Prefix match across all threads
+    all_threads = list_threads(base, branch)
+    if pattern:
+        all_threads = [t for t in all_threads if t.pattern == pattern]
+
+    normalized = normalize_branch_name(partial_id)
+    matches = [t for t in all_threads if t.id.startswith(normalized)]
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise AmbiguousThreadMatch(partial_id, matches)
+
+    # No match — raise with available threads for suggestions
+    raise ThreadNotFoundError(partial_id, all_threads)
 
 
 def next_message_number(tdir: Path) -> int:

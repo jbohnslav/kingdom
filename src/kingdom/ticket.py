@@ -98,6 +98,27 @@ def generate_ticket_id(tickets_dir: Path | None = None) -> str:
     raise RuntimeError(f"Failed to generate unique ticket ID after {max_attempts} attempts")
 
 
+def coerce_to_str_list(value: str | int | list[str] | None) -> list[str]:
+    """Coerce a parsed YAML value to a list of strings.
+
+    Handles the case where a YAML value that should be a list was parsed
+    as a scalar (e.g., ``deps: 3642`` instead of ``deps: [3642]``).
+    Scalars are wrapped in a single-element list; None becomes empty list.
+
+    Args:
+        value: A parsed YAML value (may be list, str, int, or None).
+
+    Returns:
+        A list of strings.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    # Scalar value — wrap in a list
+    return [str(value)]
+
+
 def parse_ticket(content: str) -> Ticket:
     """Parse ticket content from YAML frontmatter + markdown body.
 
@@ -136,22 +157,22 @@ def parse_ticket(content: str) -> Ticket:
         created = datetime.now(UTC)
 
     # Build Ticket
-    deps = frontmatter_dict.get("deps", [])
-    links = frontmatter_dict.get("links", [])
-    tags = frontmatter_dict.get("tags", [])
+    deps = coerce_to_str_list(frontmatter_dict.get("deps", []))
+    links = coerce_to_str_list(frontmatter_dict.get("links", []))
+    tags = coerce_to_str_list(frontmatter_dict.get("tags", []))
 
     return Ticket(
         id=str(frontmatter_dict.get("id", "")),
         status=str(frontmatter_dict.get("status", "open")),
-        deps=deps if isinstance(deps, list) else [],
-        links=links if isinstance(links, list) else [],
+        deps=deps,
+        links=links,
         created=created,
         type=str(frontmatter_dict.get("type", "task")),
         priority=clamp_priority(frontmatter_dict.get("priority", 2)),
         assignee=str(frontmatter_dict.get("assignee")) if frontmatter_dict.get("assignee") else None,
         title=title,
         body=body,
-        tags=tags if isinstance(tags, list) else [],
+        tags=tags,
         parent=str(frontmatter_dict.get("parent")) if frontmatter_dict.get("parent") else None,
         external_ref=(str(frontmatter_dict.get("external-ref")) if frontmatter_dict.get("external-ref") else None),
     )
@@ -260,6 +281,86 @@ def list_tickets(directory: Path) -> list[Ticket]:
     # Sort by priority (ascending) then created date (ascending)
     tickets.sort(key=lambda t: (t.priority, t.created))
     return tickets
+
+
+def collect_all_tickets(base: Path) -> list[Ticket]:
+    """Collect all tickets across branches and backlog.
+
+    Searches branches/*/tickets/ (skipping done branches) and backlog/tickets/.
+
+    Args:
+        base: Project root directory.
+
+    Returns:
+        List of all Ticket objects found.
+    """
+    from kingdom.state import backlog_root, branches_root
+
+    all_tickets: list[Ticket] = []
+
+    # branches/*/tickets/
+    branches_dir = branches_root(base)
+    if branches_dir.exists():
+        for branch_dir in branches_dir.iterdir():
+            if branch_dir.is_dir():
+                # Skip done branches
+                state_path = branch_dir / "state.json"
+                if state_path.exists():
+                    import json
+
+                    try:
+                        state = json.loads(state_path.read_text())
+                        if state.get("status") == "done":
+                            continue
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+                tickets_dir = branch_dir / "tickets"
+                if tickets_dir.exists():
+                    all_tickets.extend(list_tickets(tickets_dir))
+
+    # backlog/tickets/
+    backlog_tickets = backlog_root(base) / "tickets"
+    if backlog_tickets.exists():
+        all_tickets.extend(list_tickets(backlog_tickets))
+
+    return all_tickets
+
+
+def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
+    """Find tickets that become unblocked when a ticket is closed.
+
+    A ticket is "newly unblocked" if:
+    - It has the closed ticket as a dependency
+    - It is not itself closed
+    - All of its dependencies are now closed
+
+    Args:
+        closed_ticket_id: ID of the ticket that was just closed.
+        base: Project root directory.
+
+    Returns:
+        List of tickets that are now unblocked.
+    """
+    all_tickets = collect_all_tickets(base)
+
+    # Build status lookup
+    status_by_id = {t.id: t.status for t in all_tickets}
+    # The just-closed ticket should be marked as closed in our lookup
+    status_by_id[closed_ticket_id] = "closed"
+
+    newly_unblocked = []
+    for ticket in all_tickets:
+        if ticket.status == "closed":
+            continue
+        if closed_ticket_id not in ticket.deps:
+            continue
+        # Check if ALL deps are now closed
+        all_deps_closed = all(status_by_id.get(dep, "unknown") == "closed" for dep in ticket.deps)
+        if all_deps_closed:
+            newly_unblocked.append(ticket)
+
+    return newly_unblocked
 
 
 class AmbiguousTicketMatch(Exception):
@@ -387,6 +488,78 @@ def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
         shutil.copy2(str(ticket_path), str(new_path))
         ticket_path.unlink()
     return new_path
+
+
+def append_worklog_entry(path: Path, message: str, timestamp: datetime | None = None) -> str:
+    """Append a timestamped entry to the ticket's ## Worklog section.
+
+    If the Worklog section doesn't exist, it is created at the end of the file.
+    Works directly on the raw markdown to avoid round-trip issues.
+
+    Args:
+        path: Path to the ticket file.
+        message: The worklog message to append.
+        timestamp: Optional timestamp; defaults to now (UTC).
+
+    Returns:
+        The formatted entry that was appended.
+
+    Raises:
+        FileNotFoundError: If the ticket file doesn't exist.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Ticket file not found: {path}")
+
+    if timestamp is None:
+        timestamp = datetime.now(UTC)
+
+    entry = f"- {timestamp.strftime('%Y-%m-%d %H:%M')} — {message}"
+
+    content = path.read_text(encoding="utf-8")
+    lines = content.split("\n")
+
+    # Find the ## Worklog section
+    worklog_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == "## Worklog":
+            worklog_idx = i
+            break
+
+    if worklog_idx is not None:
+        # Find the end of the Worklog section (next ## heading or end of file)
+        insert_idx = len(lines)
+        for i in range(worklog_idx + 1, len(lines)):
+            if lines[i].startswith("## "):
+                # Insert before the next section, with a blank line separator
+                insert_idx = i
+                break
+
+        # Insert before the next section or at end of file
+        # Strip trailing blank lines within the section before appending
+        actual_insert = insert_idx
+        while actual_insert > worklog_idx + 1 and lines[actual_insert - 1].strip() == "":
+            actual_insert -= 1
+
+        lines.insert(actual_insert, entry)
+        # Ensure a trailing newline after the entry
+        if actual_insert + 1 < len(lines) and lines[actual_insert + 1].strip() != "":
+            lines.insert(actual_insert + 1, "")
+    else:
+        # No Worklog section — create one at the end
+        # Ensure there's a blank line before the new section
+        while lines and lines[-1].strip() == "":
+            lines.pop()
+        lines.append("")
+        lines.append("## Worklog")
+        lines.append("")
+        lines.append(entry)
+
+    # Ensure file ends with a newline
+    if lines and lines[-1] != "":
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return entry
 
 
 def get_ticket_location(base: Path, ticket_id: str) -> Path | None:

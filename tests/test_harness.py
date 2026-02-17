@@ -14,6 +14,7 @@ from kingdom.harness import (
     build_prompt,
     extract_worklog,
     extract_worklog_entry,
+    format_worklog_timestamp,
     get_new_directives,
     parse_status,
     run_agent_loop,
@@ -178,7 +179,24 @@ class TestAppendWorklog:
     def test_entry_has_timestamp(self, ticket_path: Path) -> None:
         append_worklog(ticket_path, "Timed entry")
         ticket = read_ticket(ticket_path)
+        # Today's entries use [HH:MM] format
         assert re.search(r"\[\d{2}:\d{2}\]", ticket.body)
+
+    def test_entry_from_past_includes_date(self, ticket_path: Path) -> None:
+        # To test date-inclusion, we mock datetime.now to return a past date
+        # for the entry timestamp (in append_worklog) but "today" for the
+        # comparison (in format_worklog_timestamp). We achieve this by returning
+        # different values on successive calls.
+        yesterday = datetime(2025, 6, 15, 9, 30, tzinfo=UTC)
+        today = datetime.now(UTC)
+        with patch("kingdom.harness.datetime") as mock_dt:
+            # First call: append_worklog gets "yesterday" as the entry time
+            # Second call: format_worklog_timestamp gets "today" for comparison
+            mock_dt.now.side_effect = [yesterday, today]
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            append_worklog(ticket_path, "Old entry")
+        ticket = read_ticket(ticket_path)
+        assert "[2025-06-15 09:30]" in ticket.body
 
     def test_appends_to_end_of_document(self, ticket_path: Path) -> None:
         """Worklog entries append to end of document (worklog is always last section)."""
@@ -191,6 +209,38 @@ class TestAppendWorklog:
 
         # New entry should be at the very end
         assert ticket.body.rstrip().endswith("New entry")
+
+
+class TestFormatWorklogTimestamp:
+    def test_today_shows_time_only(self) -> None:
+        now = datetime.now(UTC)
+        result = format_worklog_timestamp(now)
+        assert result == f"[{now.strftime('%H:%M')}]"
+        # Should NOT contain a date
+        assert "-" not in result
+
+    def test_yesterday_shows_date_and_time(self) -> None:
+        from datetime import timedelta
+
+        yesterday = datetime.now(UTC) - timedelta(days=1)
+        result = format_worklog_timestamp(yesterday)
+        expected = f"[{yesterday.strftime('%Y-%m-%d %H:%M')}]"
+        assert result == expected
+
+    def test_old_date_shows_date_and_time(self) -> None:
+        old = datetime(2024, 1, 15, 14, 30, tzinfo=UTC)
+        result = format_worklog_timestamp(old)
+        assert result == "[2024-01-15 14:30]"
+
+    def test_format_consistency(self) -> None:
+        """Today entries use [HH:MM], older entries use [YYYY-MM-DD HH:MM]."""
+        now = datetime.now(UTC)
+        today_result = format_worklog_timestamp(now)
+        assert re.match(r"^\[\d{2}:\d{2}\]$", today_result)
+
+        old = datetime(2020, 3, 5, 8, 5, tzinfo=UTC)
+        old_result = format_worklog_timestamp(old)
+        assert re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]$", old_result)
 
 
 class TestExtractWorklog:

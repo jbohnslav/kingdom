@@ -350,7 +350,7 @@ class TestPeasantClean:
                 result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"])
 
             assert result.exit_code == 0
-            assert "Removed worktree" in result.output
+            assert "worktree removed" in result.output
             mock_remove.assert_called_once_with(base, "kin-test")
 
     def test_clean_no_worktree(self) -> None:
@@ -388,7 +388,7 @@ class TestPeasantSync:
                 result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
 
             assert result.exit_code == 0, result.output
-            assert "Sync complete" in result.output
+            assert "sync complete" in result.output
 
     def test_sync_refuses_while_running(self) -> None:
         with runner.isolated_filesystem():
@@ -439,7 +439,7 @@ class TestPeasantSync:
                 result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
 
             assert result.exit_code == 0, result.output
-            assert "Sync complete" in result.output
+            assert "sync complete" in result.output
 
     def test_sync_no_worktree(self) -> None:
         with runner.isolated_filesystem():
@@ -513,7 +513,7 @@ class TestPeasantSync:
 
             assert result.exit_code == 0, result.output
             assert "init-worktree.sh" in result.output
-            assert "Sync complete" in result.output
+            assert "sync complete" in result.output
 
     def test_sync_ticket_not_found(self) -> None:
         with runner.isolated_filesystem():
@@ -545,7 +545,7 @@ class TestPeasantMsg:
             result = runner.invoke(cli.app, ["peasant", "msg", "kin-test", "focus on tests"])
 
             assert result.exit_code == 0, result.output
-            assert "Directive sent" in result.output
+            assert "directive sent" in result.output
 
             # Message should appear in the thread
             messages = list_messages(base, BRANCH, thread_id)
@@ -599,7 +599,7 @@ class TestPeasantMsg:
             result = runner.invoke(cli.app, ["peasant", "msg", "kin-test", "do something"])
 
             assert result.exit_code == 0, result.output
-            assert "Directive sent" in result.output
+            assert "directive sent" in result.output
             assert "Warning" in result.output
             assert "not running" in result.output
 
@@ -626,7 +626,7 @@ class TestPeasantMsg:
             result = runner.invoke(cli.app, ["peasant", "msg", "kin-test", "keep going"])
 
             assert result.exit_code == 0, result.output
-            assert "Directive sent" in result.output
+            assert "directive sent" in result.output
             assert "Warning" not in result.output
 
     def test_msg_ticket_not_found(self) -> None:
@@ -1096,3 +1096,34 @@ class TestBacklogAutoPull:
             assert result.exit_code == 0, result.output
             assert "kin-list" in result.output
             assert "Listable ticket" in result.output
+
+
+class TestPeasantNoResultsMessages:
+    """Tests for helpful empty-state messages with next-step guidance."""
+
+    def test_peasant_status_empty_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["peasant", "status"])
+
+            assert result.exit_code == 0
+            assert "No active peasants" in result.output
+            assert "kd peasant start" in result.output
+
+    def test_peasant_read_no_messages_shows_context(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, "kin-rd01")
+
+            # Create work thread but no peasant messages
+            create_thread(base, BRANCH, "kin-rd01-work", ["peasant-kin-rd01", "king"], "work")
+            add_message(base, BRANCH, "kin-rd01-work", from_="king", to="peasant-kin-rd01", body="Do the thing")
+
+            result = runner.invoke(cli.app, ["peasant", "read", "kin-rd01"])
+
+            assert result.exit_code == 0
+            assert "No messages from" in result.output
+            assert "may still be working" in result.output

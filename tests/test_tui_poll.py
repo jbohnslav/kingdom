@@ -14,7 +14,6 @@ from kingdom.tui.poll import (
     StreamStarted,
     ThinkingDelta,
     ThreadPoller,
-    merge_assistant_snapshots,
     read_message_body,
     tail_stream_file,
 )
@@ -216,23 +215,6 @@ class TestThreadPollerStreaming:
 
         started = [e for e in events if isinstance(e, StreamStarted)]
         assert len(started) == 0  # Already started in first poll
-
-    def test_cursor_assistant_snapshot_chunks_should_use_latest_snapshot(self, tdir: Path) -> None:
-        """Cumulative assistant snapshots should resolve to latest snapshot, not concatenation artifacts."""
-        write_stream_line(tdir, "cursor", cursor_assistant_event("Beautiful is better than ugly."))
-        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
-        poller.poll()
-
-        write_stream_line(
-            tdir,
-            "cursor",
-            cursor_assistant_event("Beautiful is better than ugly. Explicit is better than implicit."),
-        )
-        events = poller.poll()
-
-        deltas = [e for e in events if isinstance(e, StreamDelta)]
-        assert len(deltas) == 1
-        assert deltas[0].full_text == "Beautiful is better than ugly. Explicit is better than implicit."
 
 
 class TestThreadPollerFinalization:
@@ -450,49 +432,6 @@ class TestThreadPollerThinking:
         assert len(relevant) == 2
         assert isinstance(relevant[0], ThinkingDelta)
         assert isinstance(relevant[1], StreamDelta)
-
-
-class TestMergeAssistantSnapshots:
-    def test_cumulative_snapshots(self) -> None:
-        """Each part is a superset of the previous — only latest survives."""
-        parts = ["Hello", "Hello world", "Hello world!"]
-        assert merge_assistant_snapshots(parts) == "Hello world!"
-
-    def test_trailing_fragment_deduped(self) -> None:
-        """Fragment already included at end of merged is skipped."""
-        parts = ["Hello world", "world"]
-        assert merge_assistant_snapshots(parts) == "Hello world"
-
-    def test_new_fragment_appended(self) -> None:
-        """Genuinely new text is appended."""
-        parts = ["Hello", " world"]
-        assert merge_assistant_snapshots(parts) == "Hello world"
-
-    def test_empty_list(self) -> None:
-        assert merge_assistant_snapshots([]) == ""
-
-    def test_single_part(self) -> None:
-        assert merge_assistant_snapshots(["only"]) == "only"
-
-
-class TestCursorCrossBatchSnapshot:
-    def test_cross_batch_snapshot_accumulation(self, tdir: Path) -> None:
-        """Cursor snapshots across poll batches should merge, not concatenate."""
-        write_stream_line(tdir, "cursor", cursor_assistant_event("Beautiful is better than ugly."))
-        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
-        poller.poll()
-
-        # Second batch: cumulative snapshot that extends the first
-        write_stream_line(
-            tdir,
-            "cursor",
-            cursor_assistant_event("Beautiful is better than ugly. Explicit is better than implicit."),
-        )
-        events = poller.poll()
-
-        deltas = [e for e in events if isinstance(e, StreamDelta)]
-        assert len(deltas) == 1
-        assert deltas[0].full_text == "Beautiful is better than ugly. Explicit is better than implicit."
 
 
 class TestCodexThinkingNewlines:
@@ -776,52 +715,7 @@ class TestPollerCleanupLifecycle:
 
 
 class TestCursorSnapshotEdgeCases:
-    """Edge cases for Cursor's cumulative snapshot merge logic."""
-
-    def test_three_incremental_snapshots_across_polls(self, tdir: Path) -> None:
-        """Three cumulative snapshots across three polls resolve to the final snapshot."""
-        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
-
-        write_stream_line(tdir, "cursor", cursor_assistant_event("Hello"))
-        poller.poll()
-
-        write_stream_line(tdir, "cursor", cursor_assistant_event("Hello world"))
-        poller.poll()
-
-        write_stream_line(tdir, "cursor", cursor_assistant_event("Hello world!"))
-        events = poller.poll()
-
-        deltas = [e for e in events if isinstance(e, StreamDelta)]
-        assert len(deltas) == 1
-        assert deltas[0].full_text == "Hello world!"
-
-    def test_cursor_snapshot_with_thinking_interleaved(self, tdir: Path) -> None:
-        """Thinking and text snapshots arriving in same batch both resolve correctly."""
-        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
-
-        # Batch 1: thinking
-        write_stream_line(tdir, "cursor", cursor_thinking_event("Reasoning..."))
-        poller.poll()
-
-        # Batch 2: more thinking + first text snapshot
-        write_stream_line(tdir, "cursor", cursor_thinking_event(" more reasoning"))
-        write_stream_line(tdir, "cursor", cursor_assistant_event("Answer part 1"))
-        events = poller.poll()
-
-        thinking = [e for e in events if isinstance(e, ThinkingDelta)]
-        deltas = [e for e in events if isinstance(e, StreamDelta)]
-        assert len(thinking) == 1
-        assert thinking[0].full_text == "Reasoning... more reasoning"
-        assert len(deltas) == 1
-        assert deltas[0].full_text == "Answer part 1"
-
-        # Batch 3: cumulative text snapshot extends
-        write_stream_line(tdir, "cursor", cursor_assistant_event("Answer part 1. And part 2."))
-        events = poller.poll()
-
-        deltas = [e for e in events if isinstance(e, StreamDelta)]
-        assert len(deltas) == 1
-        assert deltas[0].full_text == "Answer part 1. And part 2."
+    """Edge cases for Cursor text fragment handling."""
 
     def test_cursor_snapshot_fresh_after_finalization(self, tdir: Path) -> None:
         """Cursor snapshot state resets between rounds — no bleed from round 1."""
@@ -845,7 +739,7 @@ class TestCursorSnapshotEdgeCases:
         assert deltas[0].full_text == "Completely different"
 
     def test_cursor_non_cumulative_fragments_concatenated(self, tdir: Path) -> None:
-        """Non-overlapping Cursor text fragments are concatenated (not dropped)."""
+        """Non-overlapping Cursor text fragments are concatenated."""
         poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
 
         # Two within-batch fragments that don't overlap
@@ -855,8 +749,7 @@ class TestCursorSnapshotEdgeCases:
 
         deltas = [e for e in events if isinstance(e, StreamDelta)]
         assert len(deltas) == 1
-        # merge_assistant_snapshots: "Part A. " doesn't start with "" -> merged = "Part A. "
-        # "Part B." doesn't start with "Part A. " and "Part A. " doesn't end with "Part B." -> append
+        # Simple concatenation: "Part A. " + "Part B." = "Part A. Part B."
         assert deltas[0].full_text == "Part A. Part B."
 
 
@@ -1008,7 +901,7 @@ class TestRealCursorShortResponse:
                 }
             ),
             cursor_thinking_completed(),
-            # Fragment assistant events (NOT cumulative), then final snapshot
+            # Fragment assistant events (concatenated directly)
             json.dumps(
                 {
                     "type": "assistant",
@@ -1031,22 +924,6 @@ class TestRealCursorShortResponse:
                     "message": {"role": "assistant", "content": [{"type": "text", "text": "?"}]},
                     "session_id": "s1",
                     "timestamp_ms": 1771250877048,
-                }
-            ),
-            # Final assistant: cumulative snapshot
-            json.dumps(
-                {
-                    "type": "assistant",
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Hello King. Cursor here, ready to assist. What are we working on today?",
-                            }
-                        ],
-                    },
-                    "session_id": "s1",
                 }
             ),
             cursor_result_event("Hello King. Cursor here, ready to assist. What are we working on today?"),
@@ -1219,12 +1096,11 @@ class TestRealCursorLongResponseWithToolCalls:
         assert "**Round 1 thought**" in thinking3[0].full_text
         assert "**Round 2 thought**" in thinking3[0].full_text
 
-    def test_real_cursor_assistant_fragments_not_cumulative(self, tdir: Path) -> None:
-        """Real Cursor assistant events are fragments, not cumulative snapshots.
+    def test_real_cursor_assistant_fragments_concatenated(self, tdir: Path) -> None:
+        """Cursor assistant events are plain fragments concatenated in order.
 
         From the debug stream: line-by-line fragments like "The Zen of Python, by Tim",
-        then " Peters\\n\\nBeautiful is...", NOT cumulative. Final event is the full text.
-        merge_assistant_snapshots must handle this correctly.
+        then " Peters\\n\\nBeautiful is...", concatenated directly.
         """
         poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
 
@@ -1232,30 +1108,16 @@ class TestRealCursorLongResponseWithToolCalls:
         write_stream_line(tdir, "cursor", cursor_assistant_event("The Zen of Python, by Tim"))
         write_stream_line(tdir, "cursor", cursor_assistant_event(" Peters\n\nBeautiful is better than ugly."))
         write_stream_line(tdir, "cursor", cursor_assistant_event("\nExplicit is better than implicit."))
-        # Final cumulative snapshot
-        write_stream_line(
-            tdir,
-            "cursor",
-            cursor_assistant_event(
-                "The Zen of Python, by Tim Peters\n\nBeautiful is better than ugly."
-                "\nExplicit is better than implicit."
-            ),
-        )
 
         events = poller.poll()
         deltas = [e for e in events if isinstance(e, StreamDelta)]
         assert len(deltas) == 1
         assert deltas[0].full_text == (
-            "The Zen of Python, by Tim Peters\n\nBeautiful is better than ugly." "\nExplicit is better than implicit."
+            "The Zen of Python, by Tim Peters\n\nBeautiful is better than ugly.\nExplicit is better than implicit."
         )
 
-    def test_cursor_fragments_without_final_snapshot(self, tdir: Path) -> None:
-        """Non-cumulative fragments concatenate correctly via merge_assistant_snapshots.
-
-        Real Cursor pattern: fragments are NOT supersets, they're disjoint pieces.
-        merge_assistant_snapshots handles this because non-overlapping parts
-        fall through to the append branch.
-        """
+    def test_cursor_fragments_concatenated(self, tdir: Path) -> None:
+        """Disjoint Cursor text fragments are concatenated directly."""
         path = tdir / ".stream-cursor.jsonl"
         lines = [
             cursor_assistant_event("Hello King. Cursor here"),
@@ -1270,11 +1132,7 @@ class TestRealCursorLongResponseWithToolCalls:
         assert text == "Hello King. Cursor here, ready to assist. What are we working on today?"
 
     def test_cursor_cross_batch_fragments(self, tdir: Path) -> None:
-        """Non-cumulative fragments across poll batches concatenate correctly.
-
-        Real debug stream shows: poll 1 gets "Hello King...today", poll 2 gets "?".
-        merge_assistant_snapshots([prev, "?"]) appends since "?" is not a superset.
-        """
+        """Fragments across poll batches concatenate correctly."""
         poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
 
         write_stream_line(tdir, "cursor", cursor_assistant_event("Beautiful is better than ugly."))

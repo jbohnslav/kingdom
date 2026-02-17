@@ -117,6 +117,17 @@ def extract_worklog_entry(response_text: str) -> str:
     return entry
 
 
+def format_worklog_timestamp(dt: datetime) -> str:
+    """Format a worklog timestamp, including date when the entry is not from today.
+
+    Returns "[HH:MM]" for today's entries, "[YYYY-MM-DD HH:MM]" for older ones.
+    """
+    today = datetime.now(UTC).date()
+    if dt.date() == today:
+        return f"[{dt.strftime('%H:%M')}]"
+    return f"[{dt.strftime('%Y-%m-%d %H:%M')}]"
+
+
 def append_worklog(ticket_path: Path, entry: str) -> None:
     """Append an entry to the ticket's worklog section.
 
@@ -124,9 +135,10 @@ def append_worklog(ticket_path: Path, entry: str) -> None:
     Worklog is always the last section, so we just append to the end.
     """
     ticket = read_ticket(ticket_path)
-    timestamp = datetime.now(UTC).strftime("%H:%M")
+    now = datetime.now(UTC)
+    timestamp = format_worklog_timestamp(now)
 
-    worklog_line = f"- [{timestamp}] {entry}"
+    worklog_line = f"- {timestamp} {entry}"
 
     if "## Worklog" not in ticket.body:
         ticket.body = ticket.body.rstrip() + "\n\n## Worklog\n\n" + worklog_line

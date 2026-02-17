@@ -77,7 +77,6 @@ class KingdomConfig:
 DEFAULT_AGENTS: dict[str, AgentDef] = {
     "claude": AgentDef(backend="claude_code"),
     "codex": AgentDef(backend="codex"),
-    "cursor": AgentDef(backend="cursor"),
 }
 
 

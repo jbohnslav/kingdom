@@ -5,13 +5,10 @@
     },
     "codex": {
       "backend": "codex"
-    },
-    "cursor": {
-      "backend": "cursor"
     }
   },
   "council": {
-    "members": ["claude", "codex", "cursor"],
+    "members": ["claude", "codex"],
     "timeout": 600
   },
   "peasant": {

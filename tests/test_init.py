@@ -156,8 +156,7 @@ def test_cli_init_creates_config_with_defaults() -> None:
         assert "agents" in data
         assert "claude" in data["agents"]
         assert "codex" in data["agents"]
-        assert "cursor" in data["agents"]
-        assert data["council"]["members"] == ["claude", "codex", "cursor"]
+        assert data["council"]["members"] == ["claude", "codex"]
         assert data["peasant"]["agent"] == "claude"
 
 
@@ -205,7 +204,7 @@ def test_cli_start_initializes_design_and_prints_path() -> None:
         result = runner.invoke(cli.app, ["start", branch])
 
         assert result.exit_code == 0
-        assert f"Started session for branch: {branch}" in result.output
+        assert f"Started session for branch {branch}" in result.output
 
         design_path = branch_root(base, branch) / "design.md"
         assert design_path.exists()

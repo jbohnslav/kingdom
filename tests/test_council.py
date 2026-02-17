@@ -53,14 +53,6 @@ class TestCouncilMemberPermissions:
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         assert "disk-full-read-access" in " ".join(cmd)
 
-    def test_cursor_no_skip_permissions(self) -> None:
-        member = make_member("cursor")
-        cmd = member.build_command("hello world")
-        assert "--force" not in cmd
-        assert "--sandbox" not in cmd
-        assert "--mode" in cmd
-        assert "ask" in cmd
-
 
 class TestClaudeMember:
     def test_build_command_without_session(self) -> None:
@@ -126,35 +118,6 @@ class TestCodexMember:
         text, session_id, _raw = member.parse_response("plain text", "", 0)
         assert text == ""
         assert session_id is None
-
-
-class TestCursorAgentMember:
-    def test_build_command_without_session(self) -> None:
-        member = make_member("cursor")
-        cmd = member.build_command("hello world")
-        assert cmd[0] == "agent"
-        assert "--print" in cmd  # required for non-interactive use
-        assert "--output-format" in cmd
-        fmt_idx = cmd.index("--output-format")
-        assert cmd[fmt_idx + 1] == "stream-json"
-        assert PREAMBLE + "hello world" in cmd
-        # prompt is positional, not with -p flag
-        assert "-p" not in cmd
-
-    def test_build_command_with_session(self) -> None:
-        member = make_member("cursor")
-        member.session_id = "conv-456"
-        cmd = member.build_command("hello")
-        assert "--resume" in cmd
-        assert "conv-456" in cmd
-
-    def test_parse_response_cursor_json_format(self) -> None:
-        """Cursor returns result in 'result' key, session in 'session_id'."""
-        member = make_member("cursor")
-        stdout = '{"type":"result","subtype":"success","is_error":false,"result":"OK","session_id":"abc123"}'
-        text, session_id, _raw = member.parse_response(stdout, "", 0)
-        assert text == "OK"
-        assert session_id == "abc123"
 
 
 class TestCouncilMemberQuery:
@@ -380,7 +343,6 @@ class TestCouncilMemberQueryAllMembers:
         [
             ("claude", "claude"),
             ("codex", "codex"),
-            ("cursor", "cursor"),
         ],
     )
     def test_all_members_use_stdin_devnull(self, agent_name, expected_name) -> None:
@@ -427,9 +389,9 @@ class TestCouncilCreateValidation:
         """No .kd/config.json should use defaults without error."""
         (tmp_path / ".kd").mkdir(parents=True, exist_ok=True)
         council = Council.create(base=tmp_path)
-        assert len(council.members) == 3
+        assert len(council.members) == 2
         names = {m.name for m in council.members}
-        assert names == {"claude", "codex", "cursor"}
+        assert names == {"claude", "codex"}
 
     def test_create_respects_council_members_config(self, tmp_path: Path) -> None:
         """Council should only include agents listed in config.council.members."""
@@ -706,7 +668,7 @@ class TestQueryToThread:
         from kingdom.thread import create_thread, list_messages
 
         thread_id = "council-test"
-        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex"], "council")
 
         council = Council.create(base=project)
 
@@ -714,18 +676,18 @@ class TestQueryToThread:
             mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "test response"}\n')
             responses = council.query_to_thread("test prompt", project, BRANCH, thread_id)
 
-        assert len(responses) == 3
+        assert len(responses) == 2
         messages = list_messages(project, BRANCH, thread_id)
-        # 3 response messages (one per member)
-        assert len(messages) == 3
+        # 2 response messages (one per member)
+        assert len(messages) == 2
         senders = {m.from_ for m in messages}
-        assert senders == {"claude", "codex", "cursor"}
+        assert senders == {"claude", "codex"}
 
     def test_calls_callback_for_each_response(self, project: Path) -> None:
         from kingdom.thread import create_thread
 
         thread_id = "council-cb"
-        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex"], "council")
 
         council = Council.create(base=project)
 
@@ -738,14 +700,14 @@ class TestQueryToThread:
             mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "ok"}\n')
             council.query_to_thread("test", project, BRANCH, thread_id, callback=on_response)
 
-        assert len(callback_calls) == 3
-        assert set(callback_calls) == {"claude", "codex", "cursor"}
+        assert len(callback_calls) == 2
+        assert set(callback_calls) == {"claude", "codex"}
 
     def test_handles_errors_in_thread(self, project: Path) -> None:
         from kingdom.thread import create_thread, list_messages
 
         thread_id = "council-err"
-        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex"], "council")
 
         council = Council.create(base=project)
 
@@ -758,7 +720,7 @@ class TestQueryToThread:
 
         # All should still be written to thread
         messages = list_messages(project, BRANCH, thread_id)
-        assert len(messages) == 3
+        assert len(messages) == 2
 
 
 _has_worker = importlib.util.find_spec("kingdom.council.worker") is not None
@@ -773,7 +735,7 @@ class TestCouncilWorker:
         from kingdom.thread import create_thread, list_messages
 
         thread_id = "council-work"
-        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex"], "council")
 
         with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
             mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "worker response"}\n')
@@ -793,9 +755,9 @@ class TestCouncilWorker:
             )
 
         messages = list_messages(project, BRANCH, thread_id)
-        assert len(messages) == 3
+        assert len(messages) == 2
         senders = {m.from_ for m in messages}
-        assert senders == {"claude", "codex", "cursor"}
+        assert senders == {"claude", "codex"}
 
     def test_worker_queries_single_member(self, project: Path) -> None:
         from kingdom.council.worker import main
@@ -853,7 +815,7 @@ class TestCouncilWorker:
         from kingdom.thread import create_thread
 
         thread_id = "council-sess"
-        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex", "cursor"], "council")
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex"], "council")
 
         with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
             mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "ok", "session_id": "sess-123"}\n')

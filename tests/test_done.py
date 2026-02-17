@@ -77,7 +77,8 @@ def test_done_marks_state_and_clears_current() -> None:
         result = runner.invoke(cli.app, ["done"])
 
         assert result.exit_code == 0
-        assert "Done: 'test-feature'" in result.output
+        assert "Done:" in result.output
+        assert "test-feature" in result.output
 
         # Branch directory still exists (status-only, no move)
         branch_dir = branch_root(base, "test-feature")
@@ -120,7 +121,8 @@ def test_done_with_explicit_feature() -> None:
         result = runner.invoke(cli.app, ["done", "explicit-feature"])
 
         assert result.exit_code == 0
-        assert "Done: 'explicit-feature'" in result.output
+        assert "Done:" in result.output
+        assert "explicit-feature" in result.output
 
         # state.json updated in place
         state = read_json(branch_root(base, "explicit-feature") / "state.json")
@@ -228,7 +230,8 @@ def test_done_with_legacy_runs_structure() -> None:
         result = runner.invoke(cli.app, ["done"])
 
         assert result.exit_code == 0
-        assert "Done: 'legacy-feature'" in result.output
+        assert "Done:" in result.output
+        assert "legacy-feature" in result.output
 
         # state.json updated in the legacy location
         legacy_dir = state_root(base) / "runs" / "legacy-feature"
@@ -260,8 +263,10 @@ def test_done_blocks_when_branch_has_open_tickets() -> None:
 
         assert result.exit_code == 1
         assert "Error: 2 open ticket(s) on 'test-feature':" in result.output
-        assert "kin-open1 [open] Open ticket" in result.output
-        assert "kin-prog1 [in_progress] In progress ticket" in result.output
+        assert "kin-open1" in result.output
+        assert "Open ticket" in result.output
+        assert "kin-prog1" in result.output
+        assert "In progress ticket" in result.output
         assert "Close tickets, move them to backlog with `kd tk move`, or use --force." in result.output
 
         state = read_json(branch_dir / "state.json")
@@ -287,8 +292,38 @@ def test_done_force_overrides_open_ticket_check() -> None:
         result = runner.invoke(cli.app, ["done", "--force"])
 
         assert result.exit_code == 0
-        assert "Done: 'test-feature'" in result.output
+        assert "Done: test-feature" in result.output
         state = read_json(branch_dir / "state.json")
         assert state["status"] == "done"
         assert "done_at" in state
         assert not (base / ".kd" / "current").exists()
+
+
+def test_done_renders_rich_panel() -> None:
+    """kd done should render output inside a Rich panel with box-drawing characters."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        tickets_dir = branch_dir / "tickets"
+
+        # Create 2 closed tickets
+        for i in range(2):
+            write_ticket(
+                Ticket(id=f"t{i:03d}", status="closed", title=f"Ticket {i}", created=datetime.now(UTC)),
+                tickets_dir / f"t{i:03d}.md",
+            )
+
+        result = runner.invoke(cli.app, ["done"])
+
+        assert result.exit_code == 0
+        # Panel box-drawing characters present (top-left corner of rounded box)
+        assert "\u256d" in result.output
+        # Panel title contains branch name
+        assert "Done: test-feature" in result.output
+        # Panel body
+        assert "2 tickets closed" in result.output
+        assert "Session cleared" in result.output
