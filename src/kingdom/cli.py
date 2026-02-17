@@ -359,6 +359,107 @@ council_app = typer.Typer(name="council", help="Query council members.")
 app.add_typer(council_app, name="council")
 
 
+def resolve_council_thread_id(
+    base: Path,
+    feature: str,
+    thread_id: str | None,
+    *,
+    command: str = "show",
+) -> str:
+    """Resolve a council thread ID from user input, current pointer, or most-recent fallback.
+
+    Resolution order:
+      1. If *thread_id* is given, resolve by exact or prefix match.
+      2. If not given, use the current_thread pointer.
+      3. If no current pointer, fall back to the most recently created council thread.
+
+    Prints informative messages when falling back and detailed errors
+    (with suggestions) when resolution fails.
+
+    Returns:
+        Resolved thread ID string.
+
+    Raises:
+        typer.Exit(code=1): On any resolution failure.
+    """
+    from kingdom.thread import (
+        AmbiguousThreadMatch,
+        ThreadNotFoundError,
+        list_threads,
+        resolve_thread,
+    )
+
+    # Case 1: explicit thread_id provided -- resolve with prefix matching
+    if thread_id is not None:
+        try:
+            meta = resolve_thread(base, feature, thread_id, pattern="council")
+            return meta.id
+        except AmbiguousThreadMatch as exc:
+            typer.echo(f"'{thread_id}' matches multiple threads:")
+            for m in exc.matches:
+                topic = topic_for_thread(base, feature, m.id)
+                label = f"  {m.id}  {m.created_at.strftime('%Y-%m-%d %H:%M')}"
+                if topic:
+                    label += f"  {topic}"
+                typer.echo(label)
+            typer.echo(f"\nBe more specific, e.g.: kd council {command} {exc.matches[0].id}")
+            raise typer.Exit(code=1) from None
+        except ThreadNotFoundError as exc:
+            typer.echo(f"Thread not found: {thread_id}")
+            if exc.available:
+                typer.echo("\nAvailable council threads:")
+                for t in exc.available[-5:]:
+                    topic = topic_for_thread(base, feature, t.id)
+                    label = f"  {t.id}  {t.created_at.strftime('%Y-%m-%d %H:%M')}"
+                    if topic:
+                        label += f"  {topic}"
+                    typer.echo(label)
+                if len(exc.available) > 5:
+                    typer.echo(f"  ... and {len(exc.available) - 5} more (use `kd council list`)")
+            else:
+                typer.echo("No council threads exist. Use `kd council ask` to start one.")
+            raise typer.Exit(code=1) from None
+
+    # Case 2: no explicit thread_id -- try current_thread pointer
+    current = get_current_thread(base, feature)
+    if current is not None:
+        from kingdom.thread import thread_dir
+
+        tdir = thread_dir(base, feature, current)
+        if tdir.exists():
+            return current
+        # Stale pointer -- fall through to most-recent
+
+    # Case 3: fall back to most recently created council thread
+    threads = list_threads(base, feature)
+    council_threads = [t for t in threads if t.pattern == "council"]
+    if council_threads:
+        picked = council_threads[-1]  # sorted by created_at asc
+        typer.echo(f"Using most recent thread: {picked.id}")
+        return picked.id
+
+    # No threads at all
+    typer.echo("No council threads. Use `kd council ask` to start one.")
+    raise typer.Exit(code=1)
+
+
+def topic_for_thread(base: Path, feature: str, thread_id: str) -> str:
+    """Return the first king message body (truncated) as a topic summary, or empty string."""
+    from kingdom.thread import list_messages
+
+    try:
+        messages = list_messages(base, feature, thread_id)
+    except FileNotFoundError:
+        return ""
+    for msg in messages:
+        if msg.from_ == "king":
+            first_line = msg.body.strip().split("\n", 1)[0]
+            if len(first_line) > 60:
+                return first_line[:60] + "..."
+            return first_line
+    return ""
+
+
 @council_app.command("ask", help="Query council members.")
 def council_ask(
     prompt: Annotated[str, typer.Argument(help="Prompt to send to council members.")],
@@ -3547,9 +3648,11 @@ def ticket_move(
 
     if target.lower() == "backlog":
         dest_dir = backlog_root(base) / "tickets"
+        dest_label = "backlog"
     else:
         normalized = normalize_branch_name(target)
         dest_dir = branches_root(base) / normalized / "tickets"
+        dest_label = f"branch '{normalized}'"
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3568,14 +3671,14 @@ def ticket_move(
 
         ticket, ticket_path = result
         if ticket_path.parent.resolve() == dest_dir.resolve():
-            typer.echo(f"Ticket {ticket.id} is already in {dest_dir.parent.name}")
+            typer.echo(f"Ticket {ticket.id} is already in {dest_label}")
             continue
         validated.append((ticket, ticket_path))
 
     # Pass 2: move all validated tickets
     for ticket, ticket_path in validated:
-        new_path = move_ticket(ticket_path, dest_dir)
-        typer.echo(f"Moved {ticket.id} to {new_path.parent.parent.name} — {ticket.title}")
+        move_ticket(ticket_path, dest_dir)
+        typer.echo(f"Moved {ticket.id} to {dest_label} — {ticket.title}")
 
 
 @ticket_app.command("pull", help="Pull backlog tickets into the current branch.")
