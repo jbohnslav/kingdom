@@ -1,7 +1,7 @@
 ---
 id: "8dad"
-status: open
-deps: ["bec3", "92ce"]
+status: closed
+deps: [bec3, 92ce]
 links: []
 created: 2026-02-17T17:31:36Z
 type: task
