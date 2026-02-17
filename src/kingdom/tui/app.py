@@ -39,6 +39,35 @@ CHAT_PREAMBLE = (
 )
 
 
+def build_branch_context(base: Path, branch: str) -> str:
+    """Build a context block with the current branch name and ticket summary.
+
+    Returns a string like::
+
+        [Branch context]
+        Branch: feature/my-feature
+        Tickets:
+          e0eb  in_progress  P2  kd chat: inject branch context
+          a1b2  open         P1  Fix parsing bug
+
+    Returns an empty string if no branch info is available.
+    """
+    from kingdom.state import branch_root
+    from kingdom.ticket import list_tickets
+
+    lines = ["[Branch context]", f"Branch: {branch}"]
+
+    tickets_dir = branch_root(base, branch) / "tickets"
+    tickets = list_tickets(tickets_dir)
+    if tickets:
+        lines.append("Tickets:")
+        for t in tickets:
+            status = t.status.replace("_", " ")
+            lines.append(f"  {t.id}  {status:12s}  P{t.priority}  {t.title}")
+
+    return "\n".join(lines) + "\n\n"
+
+
 class MessageLog(VerticalScroll):
     """Scrollable container for chat messages."""
 
@@ -68,6 +97,7 @@ class InputArea(TextArea):
 
     Enter sends the message (posts Submit to the app).
     Shift+Enter inserts a newline.
+    Tab after @partial completes member names.
     """
 
     DEFAULT_CSS = """
@@ -82,13 +112,74 @@ class InputArea(TextArea):
     class Submit(Message):
         """Posted when the user presses Enter to send."""
 
+    def __init__(self, member_names: list[str] | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.member_names: list[str] = member_names or []
+        # Tab-completion state: tracks cycling through multiple matches
+        self.tab_candidates: list[str] = []
+        self.tab_index: int = 0
+        self.tab_prefix_start: tuple[int, int] = (0, 0)  # (row, col) of "@"
+        self.tab_prefix: str = ""  # the partial text after "@" that triggered completion
+
     async def _on_key(self, event) -> None:
         if event.key == "enter" and "shift" not in event.key:
             event.stop()
             event.prevent_default()
             self.post_message(self.Submit())
             return
+        if event.key == "tab":
+            event.stop()
+            event.prevent_default()
+            self.handle_tab_complete()
+            return
+        # Any non-tab key resets completion state
+        self.tab_candidates = []
+        self.tab_index = 0
         await super()._on_key(event)
+
+    def handle_tab_complete(self) -> None:
+        """Complete @mention at cursor position, cycling through matches on repeated Tab."""
+        if self.tab_candidates:
+            # Cycling: replace the previously inserted completion with the next one
+            self.tab_index = (self.tab_index + 1) % len(self.tab_candidates)
+            candidate = self.tab_candidates[self.tab_index]
+            # Replace from @ to current cursor position
+            row, col = self.cursor_location
+            start = self.tab_prefix_start
+            self.replace(f"@{candidate} ", start, (row, col), maintain_selection_offset=False)
+            return
+
+        # First Tab press: find @partial at cursor
+        row, col = self.cursor_location
+        line = self.document.get_line(row)
+        text_before_cursor = line[:col]
+
+        match = re.search(r"@(\w*)$", text_before_cursor)
+        if not match:
+            return
+
+        prefix = match.group(1).lower()
+        at_col = match.start()
+
+        # "all" is a valid completion target
+        completable = [*self.member_names, "all"]
+        if prefix:
+            candidates = [name for name in completable if name.lower().startswith(prefix)]
+        else:
+            candidates = list(completable)
+
+        if not candidates:
+            return
+
+        self.tab_candidates = candidates
+        self.tab_index = 0
+        self.tab_prefix_start = (row, at_col)
+        self.tab_prefix = prefix
+
+        candidate = candidates[0]
+        end = (row, col)
+        start = (row, at_col)
+        self.replace(f"@{candidate} ", start, end, maintain_selection_offset=False)
 
 
 class ChatApp(App):
@@ -110,7 +201,10 @@ class ChatApp(App):
     BINDINGS: ClassVar[list[BindingType]] = [
         ("escape", "interrupt", "Interrupt/Quit"),
         ("end", "scroll_bottom", "Jump to bottom"),
+        ("ctrl+t", "toggle_thinking", "Toggle thinking"),
     ]
+
+    THINKING_CYCLE: ClassVar[list[str]] = ["auto", "show", "hide"]
 
     def __init__(self, base: Path, branch: str, thread_id: str, debug_streams: bool = False) -> None:
         super().__init__()
@@ -140,8 +234,8 @@ class ChatApp(App):
             id="header-bar",
         )
         yield MessageLog(id="message-log")
-        yield StatusBar("Esc: interrupt/quit · Enter: send · Shift+Enter: newline")
-        yield InputArea(id="input-area")
+        yield StatusBar("Esc: interrupt/quit · Enter: send · Tab: @complete · Ctrl+T: thinking")
+        yield InputArea(member_names=self.member_names, id="input-area")
 
     def on_mount(self) -> None:
         """Initialize poller, council, and start polling."""
@@ -195,15 +289,51 @@ class ChatApp(App):
         log.anchor()
         self.update_status_bar(log)
 
+    def action_toggle_thinking(self) -> None:
+        """Cycle thinking visibility: auto -> show -> hide -> auto.
+
+        Updates all existing ThinkingPanel widgets to match the new mode.
+        """
+        cycle = self.THINKING_CYCLE
+        idx = cycle.index(self.thinking_visibility) if self.thinking_visibility in cycle else 0
+        self.thinking_visibility = cycle[(idx + 1) % len(cycle)]
+
+        # Apply the new mode to all existing ThinkingPanel widgets
+        self.apply_thinking_visibility()
+
+        labels = {"auto": "auto (collapse on answer)", "show": "always show", "hide": "hidden"}
+        label = labels.get(self.thinking_visibility, self.thinking_visibility)
+        self.show_system_message(f"Thinking: {label}")
+
+    def apply_thinking_visibility(self) -> None:
+        """Apply the current thinking_visibility to all existing ThinkingPanel widgets."""
+        try:
+            panels = self.query(ThinkingPanel)
+        except Exception:
+            return
+
+        for panel in panels:
+            if self.thinking_visibility == "hide":
+                panel.display = False
+            elif self.thinking_visibility == "show":
+                panel.display = True
+                if not panel.user_pinned:
+                    panel.expanded = True
+                    panel.remove_class("collapsed")
+                    panel.update_display()
+            else:
+                # auto: make visible, but respect existing collapsed/expanded state
+                panel.display = True
+
     def update_status_bar(self, log: MessageLog | None = None) -> None:
         """Update status bar to show scroll state."""
         if log is None:
             log = self.query_one("#message-log", MessageLog)
         bar = self.query_one(StatusBar)
         if log._anchor_released:
-            bar.update("Esc: interrupt/quit · Enter: send · End: jump to bottom")
+            bar.update("Esc: interrupt/quit · Enter: send · End: jump to bottom · Ctrl+T: thinking")
         else:
-            bar.update("Esc: interrupt/quit · Enter: send · Shift+Enter: newline")
+            bar.update("Esc: interrupt/quit · Enter: send · Ctrl+T: thinking")
 
     def action_interrupt(self) -> None:
         """Handle Escape: interrupt running queries or quit.
@@ -551,9 +681,12 @@ class ChatApp(App):
             "Esc: interrupt running queries / quit\n"
             "Enter: send message\n"
             "Shift+Enter: newline\n"
+            "Tab: autocomplete @mention (cycle with repeated Tab)\n"
             "End: jump to bottom (re-engage auto-follow)\n"
+            "Ctrl+T: toggle thinking visibility (auto/show/hide)\n"
             "@member: direct message\n"
-            "@all: explicit broadcast"
+            "@all: explicit broadcast\n"
+            "Click message: copy to clipboard"
         )
         self.show_system_message(help_text)
 
