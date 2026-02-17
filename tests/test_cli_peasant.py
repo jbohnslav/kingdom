@@ -1200,6 +1200,52 @@ class TestBacklogAutoPull:
             assert "Listable ticket" in result.output
 
 
+class TestPeasantStatusNewStatuses:
+    """Tests for awaiting_council and needs_king_review in peasant status display."""
+
+    def test_awaiting_council_shown_in_status(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(
+                    name="peasant-kin-test",
+                    status="awaiting_council",
+                    ticket="kin-test",
+                    agent_backend="claude",
+                ),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "status"])
+            assert result.exit_code == 0
+            assert "awaiting_council" in result.output
+
+    def test_needs_king_review_shown_in_status(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(
+                    name="peasant-kin-test",
+                    status="needs_king_review",
+                    ticket="kin-test",
+                    agent_backend="codex",
+                ),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "status"])
+            assert result.exit_code == 0
+            assert "needs_king_review" in result.output
+
+
 class TestPeasantNoResultsMessages:
     """Tests for helpful empty-state messages with next-step guidance."""
 

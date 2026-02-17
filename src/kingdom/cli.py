@@ -1918,6 +1918,8 @@ def peasant_status() -> None:
             "failed": "red",
             "stopped": "dim",
             "dead": "red",
+            "awaiting_council": "magenta",
+            "needs_king_review": "cyan",
         }.get(display_status, "")
 
         agent_display = p.agent_backend or "?"

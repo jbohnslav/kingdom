@@ -373,11 +373,17 @@ class TestRunAgentLoop:
         """Agent says DONE but tests fail — loop should continue, not accept done."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
-        call_count = 0
+        agent_call_count = 0
 
-        def mock_run(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
+        def mock_run(cmd, **kwargs):
+            nonlocal agent_call_count
+            # Skip counting git rev-parse (used for start_sha recording)
+            if cmd and "rev-parse" in cmd:
+                result = MagicMock()
+                result.stdout = "fake-sha\n"
+                result.returncode = 0
+                return result
+            agent_call_count += 1
             result = MagicMock()
             # Agent always says DONE
             result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
@@ -410,7 +416,7 @@ class TestRunAgentLoop:
             )
 
         assert status == "done"
-        assert call_count == 2  # Had to iterate again after test failure
+        assert agent_call_count == 2  # Had to iterate again after test failure
 
         # Worklog should mention the failure
         ticket = read_ticket(ticket_path)
@@ -420,11 +426,16 @@ class TestRunAgentLoop:
         """Agent says DONE but ruff fails — loop should continue."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
-        call_count = 0
+        agent_call_count = 0
 
-        def mock_run(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
+        def mock_run(cmd, **kwargs):
+            nonlocal agent_call_count
+            if cmd and "rev-parse" in cmd:
+                result = MagicMock()
+                result.stdout = "fake-sha\n"
+                result.returncode = 0
+                return result
+            agent_call_count += 1
             result = MagicMock()
             result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
             result.stderr = ""
@@ -456,7 +467,7 @@ class TestRunAgentLoop:
             )
 
         assert status == "done"
-        assert call_count == 2
+        assert agent_call_count == 2
 
         # Worklog should mention lint failure
         ticket = read_ticket(ticket_path)
@@ -592,13 +603,18 @@ class TestRunAgentLoop:
     def test_loop_continues_across_iterations(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
-        call_count = 0
+        agent_call_count = 0
 
-        def mock_run(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
+        def mock_run(cmd, **kwargs):
+            nonlocal agent_call_count
+            if cmd and "rev-parse" in cmd:
+                result = MagicMock()
+                result.stdout = "fake-sha\n"
+                result.returncode = 0
+                return result
+            agent_call_count += 1
             result = MagicMock()
-            if call_count >= 3:
+            if agent_call_count >= 3:
                 result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
             else:
                 result.stdout = '{"result": "Working on it.\\n\\nSTATUS: CONTINUE", "session_id": "s1"}'
@@ -622,7 +638,7 @@ class TestRunAgentLoop:
             )
 
         assert status == "done"
-        assert call_count == 3
+        assert agent_call_count == 3
 
     def test_loop_fails_on_unknown_agent(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
@@ -782,6 +798,75 @@ class TestRunAgentLoop:
         assert status == "stopped"
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "stopped"
+
+    def test_loop_records_start_sha(self, project: Path, ticket_path: Path) -> None:
+        """Harness should record start_sha on first run."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            # Handle git rev-parse HEAD for start_sha
+            if cmd and "rev-parse" in cmd:
+                result.stdout = "abc123def456\n"
+                result.stderr = ""
+                result.returncode = 0
+                return result
+            # Handle agent backend call
+            result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            result.stderr = ""
+            result.returncode = 0
+            return result
+
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "done"
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.start_sha == "abc123def456"
+
+    def test_loop_does_not_overwrite_existing_start_sha(self, project: Path, ticket_path: Path) -> None:
+        """If start_sha is already set, harness should not overwrite it."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        # Pre-set start_sha
+        from kingdom.session import update_agent_state as update_state
+
+        update_state(project, BRANCH, session_name, start_sha="original-sha")
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "done"
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.start_sha == "original-sha"
 
     def test_loop_picks_up_king_messages_sent_while_down(self, project: Path, ticket_path: Path) -> None:
         """King messages posted after peasant's last message should appear as directives."""

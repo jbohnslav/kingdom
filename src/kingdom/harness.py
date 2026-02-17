@@ -314,6 +314,23 @@ def run_agent_loop(
     except FileNotFoundError:
         pass
 
+    # Record start_sha on first run (for diff scoping in council review).
+    if not agent_state.start_sha:
+        try:
+            sha_result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=10,
+            )
+            if sha_result.returncode == 0:
+                start_sha = sha_result.stdout.strip()
+                update_agent_state(base, branch, session_name, start_sha=start_sha)
+                logger.info("Recorded start_sha: %s", start_sha)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            logger.warning("Could not record start_sha")
+
     final_status = "failed"
 
     for iteration in range(1, max_iterations + 1):

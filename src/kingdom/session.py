@@ -16,7 +16,8 @@ Session JSON format::
         "last_activity": null
     }
 
-Agent status values: idle, working, blocked, done, failed, stopped.
+Agent status values: idle, working, blocked, done, failed, stopped,
+awaiting_council, needs_king_review.
 """
 
 from __future__ import annotations
@@ -27,7 +28,18 @@ from typing import Any
 
 from kingdom.state import branch_root, locked_json_update, read_json, sessions_root, write_json
 
-AGENT_STATUSES = frozenset({"idle", "working", "blocked", "done", "failed", "stopped"})
+AGENT_STATUSES = frozenset(
+    {
+        "idle",
+        "working",
+        "blocked",
+        "done",
+        "failed",
+        "stopped",
+        "awaiting_council",
+        "needs_king_review",
+    }
+)
 
 
 @dataclass
@@ -43,6 +55,8 @@ class AgentState:
     agent_backend: str | None = None
     started_at: str | None = None
     last_activity: str | None = None
+    start_sha: str | None = None
+    review_bounce_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +112,8 @@ def get_agent_state(base: Path, branch: str, agent_name: str) -> AgentState:
         agent_backend=data.get("agent_backend"),
         started_at=data.get("started_at"),
         last_activity=data.get("last_activity"),
+        start_sha=data.get("start_sha"),
+        review_bounce_count=data.get("review_bounce_count", 0),
     )
 
 
@@ -144,6 +160,8 @@ def update_agent_state(base: Path, branch: str, agent_name: str, **fields: Any) 
             agent_backend=data.get("agent_backend"),
             started_at=data.get("started_at"),
             last_activity=data.get("last_activity"),
+            start_sha=data.get("start_sha"),
+            review_bounce_count=data.get("review_bounce_count", 0),
         )
         for key, value in fields.items():
             setattr(state, key, value)
@@ -166,6 +184,8 @@ def update_agent_state(base: Path, branch: str, agent_name: str, **fields: Any) 
         agent_backend=data.get("agent_backend"),
         started_at=data.get("started_at"),
         last_activity=data.get("last_activity"),
+        start_sha=data.get("start_sha"),
+        review_bounce_count=data.get("review_bounce_count", 0),
     )
 
 
