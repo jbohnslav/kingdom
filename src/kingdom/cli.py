@@ -1836,6 +1836,7 @@ def peasant_start(
         agent_backend=agent,
         started_at=now,
         last_activity=now,
+        hand_mode=hand,
     )
 
     peasant_logs_dir = logs_root(base, feature) / session_name
@@ -2240,28 +2241,46 @@ def peasant_review(
             print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
             raise typer.Exit(code=1)
 
-        # Attempt integration from peasant worktree/branch into parent branch
-        worktree_path = worktree_path_for(base, full_ticket_id)
-        merge_result = subprocess.run(
-            ["git", "merge", branch_name, "--no-edit"],
+        # Gate: must be on the feature branch
+        current_branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
             cwd=str(base),
-        )
-        if merge_result.returncode != 0:
-            # Integration failed — keep in_review, show recovery steps
-            merge_err = merge_result.stdout.strip()
-            if merge_result.stderr.strip():
-                merge_err += "\n" + merge_result.stderr.strip()
-            print_error("Integration failed — ticket remains in_review.")
-            typer.echo(f"\n{merge_err}\n")
-            typer.echo("Recovery steps:")
-            typer.echo(f"  1. cd {worktree_path}")
-            typer.echo(f"  2. git merge {feature} (resolve conflicts)")
-            typer.echo(f"  3. kd peasant review {full_ticket_id} --accept (retry)")
+        ).stdout.strip()
+        if normalize_branch_name(current_branch) != normalize_branch_name(feature):
+            print_error(
+                f"Cannot accept: expected to be on '{feature}' but HEAD is on '{current_branch}'. "
+                "Switch branches and retry."
+            )
             raise typer.Exit(code=1)
 
-        typer.echo(f"Integrated {branch_name} into {feature}")
+        if state.hand_mode:
+            # Hand mode: changes are already on the feature branch, skip merge
+            typer.echo(f"Hand mode — changes already on {feature}, skipping merge")
+        else:
+            # Worktree mode: merge ticket branch into feature branch
+            worktree_path = worktree_path_for(base, full_ticket_id)
+            merge_result = subprocess.run(
+                ["git", "merge", branch_name, "--no-edit"],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+            )
+            if merge_result.returncode != 0:
+                # Integration failed — keep in_review, show recovery steps
+                merge_err = merge_result.stdout.strip()
+                if merge_result.stderr.strip():
+                    merge_err += "\n" + merge_result.stderr.strip()
+                print_error("Integration failed — ticket remains in_review.")
+                typer.echo(f"\n{merge_err}\n")
+                typer.echo("Recovery steps:")
+                typer.echo(f"  1. cd {worktree_path}")
+                typer.echo(f"  2. git merge {feature} (resolve conflicts)")
+                typer.echo(f"  3. kd peasant review {full_ticket_id} --accept (retry)")
+                raise typer.Exit(code=1)
+
+            typer.echo(f"Integrated {branch_name} into {feature}")
 
         ticket.status = "closed"
         write_ticket(ticket, ticket_path)
@@ -2281,6 +2300,21 @@ def peasant_review(
             print_error(f"Cannot reject: ticket is '{ticket.status}', expected 'in_review'.")
             raise typer.Exit(code=1)
 
+        # Gate: session must be needs_king_review
+        state = get_agent_state(base, feature, session_name)
+        if state.status != "needs_king_review":
+            print_error(f"Cannot reject: session is '{state.status}', expected 'needs_king_review'.")
+            raise typer.Exit(code=1)
+
+        # Gate: old process must be dead before relaunching
+        if not no_resume and state.pid:
+            try:
+                os.kill(state.pid, 0)
+                print_error(f"Peasant process (pid {state.pid}) is still alive. Stop it first or use --no-resume.")
+                raise typer.Exit(code=1)
+            except OSError:
+                pass  # Process is dead, safe to relaunch
+
         try:
             add_message(base, feature, thread_id, from_="king", to=session_name, body=reject)
         except FileNotFoundError:
@@ -2299,18 +2333,40 @@ def peasant_review(
                 feature,
                 session_name,
                 status="working",
+                pid=None,
+                review_bounce_count=0,
                 last_activity=datetime.now(UTC).isoformat(),
             )
             typer.echo(f"{full_ticket_id}: rejected — feedback sent, ticket back to in_progress")
             return
 
         # Auto-resume: relaunch the peasant
-        state = get_agent_state(base, feature, session_name)
         agent_backend = state.agent_backend or "claude"
-        worktree_path = worktree_path_for(base, full_ticket_id)
-        if not worktree_path.exists():
-            print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
-            raise typer.Exit(code=1)
+
+        if state.hand_mode:
+            # Hand mode: relaunch in-place using base repo
+            from kingdom.session import list_active_agents
+
+            for active in list_active_agents(base, feature):
+                if active.name == session_name:
+                    continue
+                if active.status == "working" and active.pid and active.name.startswith("peasant-"):
+                    try:
+                        os.kill(active.pid, 0)
+                        print_error(
+                            f"Peasant {active.name} (pid {active.pid}) is already working on this checkout. "
+                            "Stop it first or use --no-resume."
+                        )
+                        raise typer.Exit(code=1)
+                    except OSError:
+                        pass
+            worktree_path = base
+        else:
+            # Worktree mode: use the ticket worktree
+            worktree_path = worktree_path_for(base, full_ticket_id)
+            if not worktree_path.exists():
+                print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
+                raise typer.Exit(code=1)
 
         pid = launch_work_background(
             base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
@@ -2323,6 +2379,7 @@ def peasant_review(
             session_name,
             status="working",
             pid=pid,
+            review_bounce_count=0,
             last_activity=now,
         )
         typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant relaunched (pid {pid})")
@@ -2373,8 +2430,16 @@ def peasant_review(
     console.print(Markdown(f"## {ruff_title}\n\n```\n{ruff_content}\n```"))
 
     # 3. Show diff
+    review_state = get_agent_state(base, feature, session_name)
+    if review_state.hand_mode:
+        if review_state.start_sha:
+            diff_spec = f"{review_state.start_sha}..HEAD"
+        else:
+            diff_spec = "HEAD"
+    else:
+        diff_spec = f"HEAD...{branch_name}"
     diff_result = subprocess.run(
-        ["git", "diff", f"HEAD...{branch_name}", "--stat"],
+        ["git", "diff", diff_spec, "--stat"],
         capture_output=True,
         text=True,
         cwd=str(base),
@@ -2382,9 +2447,9 @@ def peasant_review(
     diff_output = diff_result.stdout.strip()
     diff_err = diff_result.stderr.strip()
     if diff_result.returncode != 0 and diff_err:
-        console.print(Markdown(f"## diff error: HEAD...{branch_name}\n\n```\n{diff_err}\n```"))
+        console.print(Markdown(f"## diff error: {diff_spec}\n\n```\n{diff_err}\n```"))
     elif diff_output:
-        console.print(Markdown(f"## diff: HEAD...{branch_name}\n\n```\n{diff_output}\n```"))
+        console.print(Markdown(f"## diff: {diff_spec}\n\n```\n{diff_output}\n```"))
     else:
         typer.echo("(no diff — branch may not have diverged yet)")
 
