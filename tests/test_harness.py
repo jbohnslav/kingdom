@@ -955,6 +955,23 @@ class TestParseVerdict:
         text = "VERDICT: BLOCKING\nMore discussion\nVERDICT: APPROVED"
         assert parse_verdict(text) == "approved"
 
+    def test_bold_markdown(self) -> None:
+        assert parse_verdict("Review.\n\n**VERDICT: APPROVED**") == "approved"
+        assert parse_verdict("Review.\n\n**VERDICT: BLOCKING**") == "blocking"
+
+    def test_italic_and_backtick(self) -> None:
+        assert parse_verdict("_VERDICT: APPROVED_") == "approved"
+        assert parse_verdict("`VERDICT: BLOCKING`") == "blocking"
+
+    def test_blockquote(self) -> None:
+        assert parse_verdict("> VERDICT: APPROVED") == "approved"
+
+    def test_list_item(self) -> None:
+        assert parse_verdict("- VERDICT: BLOCKING") == "blocking"
+
+    def test_heading(self) -> None:
+        assert parse_verdict("## VERDICT: APPROVED") == "approved"
+
 
 class TestBuildReviewPrompt:
     def test_includes_ticket_info(self) -> None:
@@ -1210,6 +1227,7 @@ class TestCouncilReviewInLoop:
             patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
             patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", side_effect=mock_review),
+            patch("kingdom.harness.add_message", wraps=add_message) as mock_add_message,
         ):
             status = run_agent_loop(
                 base=project,
@@ -1228,6 +1246,12 @@ class TestCouncilReviewInLoop:
         # Bounce count should be 1
         state = get_agent_state(project, BRANCH, session_name)
         assert state.review_bounce_count == 1
+
+        # Council feedback message should have been written to the thread
+        feedback_calls = [
+            call for call in mock_add_message.call_args_list if "Council Review Feedback (BLOCKING)" in str(call)
+        ]
+        assert len(feedback_calls) == 1, f"Expected 1 council feedback message, got {len(feedback_calls)}"
 
     def test_bounce_limit_escalates(self, project: Path, ticket_path: Path) -> None:
         """After 3 bounces, should escalate to king even if still blocking."""
@@ -1253,6 +1277,7 @@ class TestCouncilReviewInLoop:
                 "kingdom.harness.run_council_review",
                 return_value=("blocking", ["[codex] Still failing.\n\nVERDICT: BLOCKING"]),
             ),
+            patch("kingdom.harness.add_message", wraps=add_message) as mock_add_message,
         ):
             status = run_agent_loop(
                 base=project,
@@ -1271,6 +1296,58 @@ class TestCouncilReviewInLoop:
         # Worklog should mention escalation
         ticket = read_ticket(ticket_path)
         assert "escalating" in ticket.body.lower()
+
+        # Council feedback written on bounces 1 and 2; bounce 3 hits limit and escalates without writing
+        feedback_calls = [
+            call for call in mock_add_message.call_args_list if "Council Review Feedback (BLOCKING)" in str(call)
+        ]
+        assert len(feedback_calls) == 2, f"Expected 2 council feedback messages, got {len(feedback_calls)}"
+
+    def test_council_feedback_filenotfound_continues(self, project: Path, ticket_path: Path) -> None:
+        """When add_message raises FileNotFoundError, bounce loop should continue gracefully."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        review_call_count = 0
+
+        def mock_review(**kwargs):
+            nonlocal review_call_count
+            review_call_count += 1
+            if review_call_count == 1:
+                return ("blocking", ["[codex] Bug found.\n\nVERDICT: BLOCKING"])
+            return ("approved", [])
+
+        def mock_run(cmd, **kwargs):
+            if cmd and "rev-parse" in cmd:
+                result = MagicMock()
+                result.stdout = "fake-sha\n"
+                result.returncode = 0
+                return result
+            result = MagicMock()
+            result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            result.stderr = ""
+            result.returncode = 0
+            return result
+
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
+            patch("kingdom.harness.run_council_review", side_effect=mock_review),
+            patch("kingdom.harness.add_message", side_effect=FileNotFoundError("thread gone")),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        # Should still complete despite feedback write failure
+        assert status == "needs_king_review"
+        assert review_call_count == 2  # Bounced once, then approved
 
     def test_no_council_skips_review(self, project: Path, ticket_path: Path) -> None:
         """When no council is configured, should go straight to needs_king_review."""

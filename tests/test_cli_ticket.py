@@ -544,6 +544,9 @@ class TestTicketMove:
 
             assert result.exit_code == 0, result.output
             assert "Moved kin-mv04 to backlog" in result.output
+            # Verify actual file state, not just CLI output
+            assert not (tickets_dir / "kin-mv04.md").exists(), "Source ticket should be removed"
+            assert (backlog_root(base) / "tickets" / "kin-mv04.md").exists(), "Ticket should exist in backlog"
 
     def test_move_already_in_destination(self) -> None:
         with runner.isolated_filesystem():

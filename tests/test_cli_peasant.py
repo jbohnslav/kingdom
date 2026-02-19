@@ -902,12 +902,20 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
-            merge_result = MagicMock()
-            merge_result.returncode = 0
-            merge_result.stdout = "Already up to date."
-            merge_result.stderr = ""
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                else:
+                    # git merge
+                    result.returncode = 0
+                    result.stdout = "Already up to date."
+                    result.stderr = ""
+                return result
 
-            with patch("kingdom.cli.subprocess.run", return_value=merge_result):
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
 
             assert result.exit_code == 0, result.output
@@ -923,6 +931,116 @@ class TestPeasantReview:
             # Session should be done
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "done"
+
+    def test_review_accept_wrong_branch_fails(self) -> None:
+        """--accept should hard-fail if HEAD is not on the feature branch."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = "master\n"
+                    result.stderr = ""
+                else:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+
+            assert result.exit_code == 1
+            assert "Cannot accept" in result.output
+            assert "master" in result.output
+
+    def test_review_accept_hand_mode_skips_merge(self) -> None:
+        """In hand mode, --accept should skip merge and close ticket directly."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review", hand_mode=True),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                else:
+                    # Should NOT be called for merge in hand mode
+                    raise AssertionError("Unexpected subprocess call in hand mode accept")
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+
+            assert result.exit_code == 0, result.output
+            assert "Hand mode" in result.output
+            assert "accepted" in result.output
+
+            # Ticket should be closed
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
+
+            # Session should be done
+            state = get_agent_state(base, BRANCH, session_name)
+            assert state.status == "done"
+
+    def test_review_reject_hand_mode_relaunches_in_place(self) -> None:
+        """In hand mode, --reject should relaunch using base dir, not worktree."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+            setup_work_thread(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review", agent_backend="claude", hand_mode=True),
+            )
+
+            with patch("kingdom.cli.launch_work_background", return_value=77777) as mock_launch:
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "try again"])
+
+            assert result.exit_code == 0, result.output
+            assert "rejected" in result.output
+            assert "relaunched" in result.output
+
+            # launch should have been called with base as worktree (not .kd/worktrees/...)
+            mock_launch.assert_called_once()
+            call_args = mock_launch.call_args
+            worktree_arg = call_args[0][4] if len(call_args[0]) > 4 else call_args[1].get("worktree_path")
+            assert worktree_arg == base, f"Expected base dir {base}, got {worktree_arg}"
+
+            # Bounce count should be reset
+            state = get_agent_state(base, BRANCH, session_name)
+            assert state.review_bounce_count == 0
 
     def test_review_reject_relaunches_dead_peasant(self) -> None:
         with runner.isolated_filesystem():
@@ -962,25 +1080,22 @@ class TestPeasantReview:
             assert len(messages) == 1
             assert "fix the edge case" in messages[0].body
 
-            # Session should be working with new PID
+            # Session should be working with new PID and reset bounce count
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "working"
             assert state.pid == 54321
+            assert state.review_bounce_count == 0
 
             # launch_harness should have been called
             mock_launch.assert_called_once()
 
-    def test_review_reject_relaunches_on_stale_pid(self) -> None:
-        """PID reuse: status=needs_king_review but PID happens to be alive. Should still relaunch."""
+    def test_review_reject_blocks_on_live_pid(self) -> None:
+        """When the old peasant PID is still alive, reject should refuse to relaunch."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
             create_test_ticket(base, status="in_review")
             setup_work_thread(base)
-
-            # Create worktree directory so reject can relaunch
-            worktree_dir = base / ".kd" / "worktrees" / "kin-test"
-            worktree_dir.mkdir(parents=True, exist_ok=True)
 
             session_name = "peasant-kin-test"
             set_agent_state(
@@ -990,12 +1105,10 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review", pid=os.getpid(), agent_backend="claude"),
             )
 
-            with patch("kingdom.cli.launch_work_background", return_value=99999) as mock_launch:
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix it"])
+            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix it"])
 
-            assert result.exit_code == 0, result.output
-            assert "relaunched" in result.output
-            mock_launch.assert_called_once()
+            assert result.exit_code == 1
+            assert "still alive" in result.output
 
     def test_review_reject_no_resume_flag(self) -> None:
         """--no-resume sends feedback without relaunching the peasant."""
@@ -1218,12 +1331,20 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
-            merge_result = MagicMock()
-            merge_result.returncode = 1
-            merge_result.stdout = "CONFLICT (content): Merge conflict in src/foo.py"
-            merge_result.stderr = "Automatic merge failed; fix conflicts and then commit the result."
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                else:
+                    # git merge — simulate conflict
+                    result.returncode = 1
+                    result.stdout = "CONFLICT (content): Merge conflict in src/foo.py"
+                    result.stderr = "Automatic merge failed; fix conflicts and then commit the result."
+                return result
 
-            with patch("kingdom.cli.subprocess.run", return_value=merge_result):
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
 
             assert result.exit_code == 1
