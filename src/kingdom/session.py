@@ -57,6 +57,7 @@ class AgentState:
     last_activity: str | None = None
     start_sha: str | None = None
     review_bounce_count: int = 0
+    hand_mode: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +115,7 @@ def get_agent_state(base: Path, branch: str, agent_name: str) -> AgentState:
         last_activity=data.get("last_activity"),
         start_sha=data.get("start_sha"),
         review_bounce_count=data.get("review_bounce_count", 0),
+        hand_mode=data.get("hand_mode", False),
     )
 
 
@@ -162,6 +164,7 @@ def update_agent_state(base: Path, branch: str, agent_name: str, **fields: Any) 
             last_activity=data.get("last_activity"),
             start_sha=data.get("start_sha"),
             review_bounce_count=data.get("review_bounce_count", 0),
+            hand_mode=data.get("hand_mode", False),
         )
         for key, value in fields.items():
             setattr(state, key, value)
@@ -186,6 +189,7 @@ def update_agent_state(base: Path, branch: str, agent_name: str, **fields: Any) 
         last_activity=data.get("last_activity"),
         start_sha=data.get("start_sha"),
         review_bounce_count=data.get("review_bounce_count", 0),
+        hand_mode=data.get("hand_mode", False),
     )
 
 

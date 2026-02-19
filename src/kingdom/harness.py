@@ -238,14 +238,36 @@ def run_lint(worktree: Path) -> tuple[bool, str]:
         return False, "Lint check timed out after 60s"
 
 
-def get_diff(worktree: Path, start_sha: str | None) -> str:
+def get_diff(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
     """Get the diff of changes for council review.
 
-    Uses start_sha..HEAD when available (hand mode / single worktree).
+    For worktree mode (feature_branch set): uses feature_branch...HEAD (three-dot
+    merge-base diff) so only the peasant's own changes appear, not other peasants'
+    work that was merged into the feature branch.
+
+    For hand mode (feature_branch=None): uses start_sha..HEAD (two-dot).
     Falls back to showing all uncommitted + recent committed changes.
     """
     try:
-        if start_sha:
+        if feature_branch:
+            # Worktree mode: three-dot merge-base diff against feature branch
+            result = subprocess.run(
+                ["git", "diff", f"{feature_branch}...HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=30,
+            )
+            # Fall back to two-dot if three-dot fails (e.g. detached HEAD, missing ref)
+            if result.returncode != 0 and start_sha:
+                result = subprocess.run(
+                    ["git", "diff", f"{start_sha}..HEAD"],
+                    capture_output=True,
+                    text=True,
+                    cwd=worktree,
+                    timeout=30,
+                )
+        elif start_sha:
             result = subprocess.run(
                 ["git", "diff", f"{start_sha}..HEAD"],
                 capture_output=True,
@@ -320,14 +342,21 @@ def build_review_prompt(ticket_title: str, ticket_body: str, diff: str, worklog:
     return "\n".join(parts)
 
 
+def strip_markdown_decoration(line: str) -> str:
+    """Strip common markdown decoration from a line for verdict matching."""
+    line = re.sub(r"[*_`]", "", line)
+    line = re.sub(r"^[\s>#\-]*", "", line)
+    return line.strip()
+
+
 def parse_verdict(response_text: str) -> str:
     """Extract VERDICT: APPROVED|BLOCKING from a council response.
 
     Returns 'approved', 'blocking', or 'approved' (default if missing, with warning).
     """
     for line in reversed(response_text.strip().splitlines()):
-        line = line.strip()
-        match = re.match(r"^VERDICT:\s*(APPROVED|BLOCKING)$", line, re.IGNORECASE)
+        cleaned = strip_markdown_decoration(line)
+        match = re.match(r"^VERDICT:\s*(APPROVED|BLOCKING)$", cleaned, re.IGNORECASE)
         if match:
             return match.group(1).lower()
     # Missing verdict — treat as approved per design doc (log warning)
@@ -343,6 +372,7 @@ def run_council_review(
     thread_id: str,
     start_sha: str | None,
     council_timeout: int,
+    hand_mode: bool = False,
 ) -> tuple[str, list[str]]:
     """Run council review and return (outcome, feedback).
 
@@ -359,9 +389,10 @@ def run_council_review(
 
     council.load_sessions(base, branch)
 
-    # Build review prompt
+    # Build review prompt — worktree mode uses three-dot diff against feature branch
     ticket = read_ticket(ticket_path)
-    diff = get_diff(worktree, start_sha)
+    feature_branch = None if hand_mode else branch
+    diff = get_diff(worktree, start_sha, feature_branch=feature_branch)
     worklog = extract_worklog(ticket_path)
     prompt = build_review_prompt(ticket.title, ticket.body, diff, worklog)
 
@@ -399,7 +430,7 @@ def run_council_review(
 
         # Check if verdict line was actually present
         has_verdict_line = any(
-            re.match(r"^VERDICT:\s*(APPROVED|BLOCKING)$", line.strip(), re.IGNORECASE)
+            re.match(r"^VERDICT:\s*(APPROVED|BLOCKING)$", strip_markdown_decoration(line), re.IGNORECASE)
             for line in response.text.strip().splitlines()
         )
         if not has_verdict_line:
@@ -667,6 +698,7 @@ def run_agent_loop(
                 thread_id=thread_id,
                 start_sha=agent_state.start_sha,
                 council_timeout=cfg.council.timeout,
+                hand_mode=agent_state.hand_mode,
             )
 
             if review_outcome == "no_council":
