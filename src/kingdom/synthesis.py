@@ -10,17 +10,6 @@ def build_synthesis_prompt(
     responses: dict[str, AgentResponse],
     member_names: list[str] | None = None,
 ) -> str:
-    """Build a prompt for the Hand to synthesize council responses.
-
-    Args:
-        user_prompt: The original user question/request
-        responses: Dict mapping member name to their AgentResponse
-        member_names: Ordered list of council member names. If None,
-            uses the keys from responses in iteration order.
-
-    Returns:
-        A prompt string for the Hand to synthesize
-    """
     if member_names is None:
         member_names = list(responses)
 

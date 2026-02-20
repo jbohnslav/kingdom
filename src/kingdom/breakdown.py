@@ -7,7 +7,6 @@ from pathlib import Path
 
 
 def build_breakdown_template(feature: str) -> str:
-    """Return a minimal `breakdown.md` template for a feature."""
     return (
         f"# Breakdown: {feature}\n\n"
         "## Design Summary\n"
@@ -27,7 +26,6 @@ def build_breakdown_template(feature: str) -> str:
 
 
 def read_breakdown(breakdown_path: Path) -> str:
-    """Read the breakdown file text (empty string if missing)."""
     if not breakdown_path.exists():
         return ""
     return breakdown_path.read_text(encoding="utf-8")

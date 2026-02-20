@@ -66,12 +66,10 @@ class AgentState:
 
 
 def session_path(base: Path, branch: str, agent_name: str) -> Path:
-    """Return path to sessions/<agent>.json for a branch."""
     return sessions_root(base, branch) / f"{agent_name}.json"
 
 
 def legacy_session_path(base: Path, branch: str, agent_name: str) -> Path:
-    """Return path to legacy sessions/<agent>.session file."""
     return sessions_root(base, branch) / f"{agent_name}.session"
 
 
