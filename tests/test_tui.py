@@ -2011,3 +2011,53 @@ class TestBuildBranchContext:
         hi_pos = ctx.index("hi01")
         lo_pos = ctx.index("lo01")
         assert hi_pos < lo_pos
+
+
+class TestSendMessageCleansUpPanels:
+    """Test that send_message removes in-flight panels before mounting new ones."""
+
+    def test_send_removes_existing_wait_panels(self, project: Path) -> None:
+        """Sending a second message should clean up WaitingPanels from the first."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp, MessageLog
+
+        tid = "council-dup1"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Track calls to remove_member_panels
+        removed = []
+        original_remove = app_instance.remove_member_panels
+
+        def tracking_remove(log, name):
+            removed.append(name)
+            original_remove(log, name)
+
+        app_instance.remove_member_panels = tracking_remove
+
+        # Mock the log and worker to prevent actual Textual operations
+        mock_log = MagicMock(spec=MessageLog)
+        mock_log.query.return_value = []
+        mock_log.scroll_if_following = MagicMock()
+
+        from kingdom.tui.app import InputArea
+
+        mock_input = MagicMock(spec=InputArea)
+        mock_input.text = "Hello"
+        mock_input.has_focus = True
+
+        def fake_query_one(sel_or_cls, cls=None):
+            if sel_or_cls == "#input-area" or cls is InputArea:
+                return mock_input
+            return mock_log
+
+        app_instance.query_one = fake_query_one
+        app_instance.run_worker = MagicMock()
+
+        app_instance.send_message()
+
+        # remove_member_panels should have been called for "claude"
+        assert "claude" in removed

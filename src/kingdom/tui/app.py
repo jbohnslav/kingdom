@@ -585,6 +585,11 @@ class ChatApp(App):
 
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
+        # Clean up any in-flight panels from previous exchange to avoid
+        # duplicate widget IDs when mounting new WaitingPanels.
+        for name in targets:
+            self.remove_member_panels(log, name)
+
         if to == "all":
             # Broadcast: coordinator handles initial round + auto-turns.
             # Mount all WaitingPanels upfront for the first exchange (parallel
