@@ -47,7 +47,7 @@ jobs:
 
       - name: Set up uv
         if: steps.v.outputs.changed == 'true'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@2bc602ff898ad0e7220b651a4a0f450b5ba2cd40 # v5
 
       - name: Build
         if: steps.v.outputs.changed == 'true'
