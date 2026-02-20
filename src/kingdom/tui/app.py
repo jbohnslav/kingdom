@@ -9,9 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import BindingType
 from textual.containers import VerticalScroll
+from textual.css.query import QueryError
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
@@ -158,7 +159,7 @@ class InputArea(TextArea):
         self.tab_prefix_start: tuple[int, int] = (0, 0)  # (row, col) of "@"
         self.tab_prefix: str = ""  # the partial text after "@" that triggered completion
 
-    async def _on_key(self, event) -> None:
+    async def handle_key(self, event) -> None:
         if event.key == "enter" and "shift" not in event.key:
             event.stop()
             event.prevent_default()
@@ -173,6 +174,8 @@ class InputArea(TextArea):
         self.tab_candidates = []
         self.tab_index = 0
         await super()._on_key(event)
+
+    _on_key = handle_key
 
     def handle_tab_complete(self) -> None:
         """Complete @mention or /command at cursor position, cycling on repeated Tab."""
@@ -376,11 +379,7 @@ class ChatApp(App):
 
     def apply_thinking_visibility(self) -> None:
         """Apply the current thinking_visibility to all existing ThinkingPanel widgets."""
-        try:
-            panels = self.query(ThinkingPanel)
-        except Exception:
-            return
-
+        panels = self.query(ThinkingPanel)
         for panel in panels:
             if self.thinking_visibility == "hide":
                 panel.display = False
@@ -417,7 +416,7 @@ class ChatApp(App):
             if input_area.text.strip():
                 input_area.clear()
                 return
-        except Exception:
+        except (QueryError, ScreenStackError):
             logger.debug("Could not query input area during interrupt", exc_info=True)
 
         if not self.council:
@@ -455,7 +454,7 @@ class ChatApp(App):
                     )
                     log.mount(error_panel, before=panel)
                     panel.remove()
-                except Exception:
+                except QueryError:
                     logger.debug("Could not replace panel %s during interrupt", panel_id, exc_info=True)
 
     def load_history(self) -> None:
@@ -611,8 +610,9 @@ class ChatApp(App):
             # Always persist response to thread files (source of truth)
             add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=body)
 
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             # Persist the exception as an error message
+            logger.exception("Member query failed for %s", member.name)
             error_body = f"*Error: {exc}*"
             add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=error_body)
         finally:
@@ -859,14 +859,12 @@ class ChatApp(App):
         )
 
         # Handle thinking panel persistence
-        try:
-            thinking_panel = log.query_one(f"#{thinking_id}", ThinkingPanel)
+        thinking_panels = list(log.query(f"#{thinking_id}"))
+        if thinking_panels:
+            thinking_panel = thinking_panels[0]
             if self.thinking_visibility == "auto":
                 thinking_panel.collapse()
-            # Rename to archive it, so next turn gets a new panel
             thinking_panel.id = f"thinking-{event.sender}-{event.sequence}"
-        except Exception:
-            pass
 
         # Detect error/interrupted responses from thread message body
         if event.sender != "king" and is_error_response(event.body):
@@ -920,44 +918,41 @@ class ChatApp(App):
             return
 
         panel_id = f"thinking-{event.member}"
-        try:
-            panel = self.query_one(f"#{panel_id}", ThinkingPanel)
+        existing = list(log.query(f"#{panel_id}"))
+        if existing:
+            panel = existing[0]
             panel.update_thinking(event.full_text)
-        except Exception:
-            # First thinking event — mount a ThinkingPanel before the streaming panel
-            panel = ThinkingPanel(sender=event.member, id=panel_id)
-            stream_id = f"stream-{event.member}"
-            wait_id = f"wait-{event.member}"
-            anchor = list(log.query(f"#{stream_id}")) + list(log.query(f"#{wait_id}"))
-            if anchor:
-                log.mount(panel, before=anchor[0])
-            else:
-                log.mount(panel)
-            panel.update_thinking(event.full_text)
+            return
+
+        panel = ThinkingPanel(sender=event.member, id=panel_id)
+        stream_id = f"stream-{event.member}"
+        wait_id = f"wait-{event.member}"
+        anchor = list(log.query(f"#{stream_id}")) + list(log.query(f"#{wait_id}"))
+        if anchor:
+            log.mount(panel, before=anchor[0])
+        else:
+            log.mount(panel)
+        panel.update_thinking(event.full_text)
 
     def handle_stream_delta(self, log: MessageLog, event: StreamDelta) -> None:
         """Update the streaming panel with new text. Auto-collapse thinking."""
         # Auto-collapse thinking panel on first answer token
         if self.thinking_visibility == "auto":
             thinking_id = f"thinking-{event.member}"
-            try:
-                thinking_panel = self.query_one(f"#{thinking_id}", ThinkingPanel)
+            panels = list(log.query(f"#{thinking_id}"))
+            if panels:
+                thinking_panel = panels[0]
                 thinking_panel.collapse()
-            except Exception:
-                pass
 
         panel_id = f"stream-{event.member}"
-        try:
-            panel = self.query_one(f"#{panel_id}", StreamingPanel)
+        panels = list(log.query(f"#{panel_id}"))
+        if panels:
+            panel = panels[0]
             panel.update_content(event.full_text)
-        except Exception:
-            pass  # Panel may have been replaced by finalized message
 
     def handle_stream_finished(self, event: StreamFinished) -> None:
         """Remove the streaming panel (finalized message replaces it)."""
         panel_id = f"stream-{event.member}"
-        try:
-            panel = self.query_one(f"#{panel_id}")
-            panel.remove()
-        except Exception:
-            pass
+        panels = list(self.query(f"#{panel_id}"))
+        if panels:
+            panels[0].remove()
