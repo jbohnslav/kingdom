@@ -144,7 +144,7 @@ class TestChatApp:
         assert app_instance.thread_id == "council-abc"
 
     def test_app_no_auto_scroll_attr(self) -> None:
-        """auto_scroll stub removed — anchor()/is_following handles scroll follow."""
+        """auto_scroll stub removed — anchor()/scroll_if_following handles scroll follow."""
         from kingdom.tui.app import ChatApp
 
         app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
@@ -185,6 +185,32 @@ class TestMessageLogScroll:
         log._anchored = True
         log._anchor_released = True
         assert log.is_following is False
+
+    def test_scroll_if_following_scrolls_when_following(self) -> None:
+        """scroll_if_following should call scroll_end when is_following is True."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        log._anchored = True
+        log._anchor_released = False
+        log.scroll_end = MagicMock()
+        log.scroll_if_following()
+        log.scroll_end.assert_called_once_with(animate=False)
+
+    def test_scroll_if_following_skips_when_scrolled_up(self) -> None:
+        """scroll_if_following should not scroll when user has scrolled up."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        log._anchored = True
+        log._anchor_released = True
+        log.scroll_end = MagicMock()
+        log.scroll_if_following()
+        log.scroll_end.assert_not_called()
 
     def test_update_status_bar_uses_is_following(self, project: Path) -> None:
         """update_status_bar should use is_following (not _anchor_released directly)."""

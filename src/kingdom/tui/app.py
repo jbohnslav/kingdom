@@ -115,6 +115,16 @@ class MessageLog(VerticalScroll):
         """
         return not self._anchor_released
 
+    def scroll_if_following(self) -> None:
+        """Scroll to bottom if the user hasn't scrolled up.
+
+        Textual's anchor() alone doesn't reliably scroll when new widgets
+        are mounted.  Call this after mounting content to keep the view
+        pinned to the bottom while respecting manual scroll-up.
+        """
+        if self.is_following:
+            self.scroll_end(animate=False)
+
 
 class StatusBar(Static):
     """Keybinding hints at the bottom."""
@@ -144,6 +154,7 @@ class InputArea(TextArea):
         height: auto;
         min-height: 3;
         max-height: 10;
+        scrollbar-size-vertical: 0;
     }
     """
 
@@ -498,6 +509,8 @@ class ChatApp(App):
         if self.poller and messages:
             self.poller.last_sequence = messages[-1].sequence
 
+        log.scroll_end(animate=False)
+
     def on_key(self, event) -> None:
         """Handle Enter to send, let Shift+Enter pass through for newline."""
         if event.key == "enter":
@@ -590,6 +603,8 @@ class ChatApp(App):
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
                 self.run_worker(self.run_query(member, stream_path), exclusive=False)
+
+        log.scroll_if_following()
 
     async def run_query(self, member, stream_path: Path) -> None:
         """Run a member query with full thread context, then persist and clean up."""
@@ -697,6 +712,7 @@ class ChatApp(App):
                 log = self.query_one("#message-log", MessageLog)
                 self.remove_member_panels(log, name)
                 log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+                log.scroll_if_following()
                 stream_path = tdir / f".stream-{name}.jsonl"
                 await self.run_query(member, stream_path)
                 messages_sent += 1
@@ -825,6 +841,7 @@ class ChatApp(App):
         log = self.query_one("#message-log", MessageLog)
         panel = Static(text, classes="system-message")
         log.mount(panel)
+        log.scroll_if_following()
 
     # -- Polling ----------------------------------------------------------
 
@@ -850,6 +867,8 @@ class ChatApp(App):
                 self.handle_stream_delta(log, event)
             elif isinstance(event, StreamFinished):
                 self.handle_stream_finished(event)
+
+        log.scroll_if_following()
 
         # Update status bar to reflect scroll state
         self.update_status_bar(log)
