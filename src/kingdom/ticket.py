@@ -55,14 +55,6 @@ class Ticket:
 
 
 def clamp_priority(value: int | str | None) -> int:
-    """Clamp priority to valid range (1-3).
-
-    Args:
-        value: Priority value (may be int, str, or None).
-
-    Returns:
-        Integer priority clamped to 1-3 range. Defaults to 2 if None or invalid.
-    """
     if value is None:
         return 2
     try:
@@ -101,18 +93,7 @@ def generate_ticket_id(tickets_dir: Path | None = None) -> str:
 
 
 def coerce_to_str_list(value: str | int | list[str] | None) -> list[str]:
-    """Coerce a parsed YAML value to a list of strings.
-
-    Handles the case where a YAML value that should be a list was parsed
-    as a scalar (e.g., ``deps: 3642`` instead of ``deps: [3642]``).
-    Scalars are wrapped in a single-element list; None becomes empty list.
-
-    Args:
-        value: A parsed YAML value (may be list, str, int, or None).
-
-    Returns:
-        A list of strings.
-    """
+    """Wrap scalars in a list so ``deps: 3642`` is treated like ``deps: [3642]``."""
     if value is None:
         return []
     if isinstance(value, list):
@@ -122,17 +103,6 @@ def coerce_to_str_list(value: str | int | list[str] | None) -> list[str]:
 
 
 def parse_ticket(content: str) -> Ticket:
-    """Parse ticket content from YAML frontmatter + markdown body.
-
-    Args:
-        content: The full ticket file content.
-
-    Returns:
-        A Ticket instance.
-
-    Raises:
-        ValueError: If the content doesn't have valid frontmatter.
-    """
     frontmatter_dict, body_content = parse_frontmatter(content)
 
     # Extract title from body (first # heading)
@@ -181,14 +151,6 @@ def parse_ticket(content: str) -> Ticket:
 
 
 def serialize_ticket(ticket: Ticket) -> str:
-    """Convert a Ticket back to YAML frontmatter + markdown format.
-
-    Args:
-        ticket: The Ticket to serialize.
-
-    Returns:
-        The ticket content as a string.
-    """
     lines = ["---"]
 
     # Required fields in standard order
@@ -227,18 +189,6 @@ def serialize_ticket(ticket: Ticket) -> str:
 
 
 def read_ticket(path: Path) -> Ticket:
-    """Read and parse a ticket file.
-
-    Args:
-        path: Path to the ticket file.
-
-    Returns:
-        A Ticket instance.
-
-    Raises:
-        FileNotFoundError: If the file doesn't exist.
-        ValueError: If the file content is invalid.
-    """
     if not path.exists():
         raise FileNotFoundError(f"Ticket file not found: {path}")
 
@@ -247,27 +197,13 @@ def read_ticket(path: Path) -> Ticket:
 
 
 def write_ticket(ticket: Ticket, path: Path) -> None:
-    """Write a ticket to a file.
-
-    Args:
-        ticket: The Ticket to write.
-        path: Path where to write the ticket file.
-    """
     content = serialize_ticket(ticket)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
 
 
 def list_tickets(directory: Path) -> list[Ticket]:
-    """List all tickets in a directory, sorted by priority then created date.
-
-    Args:
-        directory: Path to the directory containing ticket files.
-
-    Returns:
-        List of Ticket objects sorted by priority (ascending, 1 is highest)
-        then by created date (ascending, oldest first).
-    """
+    """Sorted by priority (ascending) then created date (ascending)."""
     if not directory.exists():
         return []
 
@@ -464,18 +400,6 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> tuple
 
 
 def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
-    """Move a ticket file to a new directory.
-
-    Args:
-        ticket_path: Path to the ticket file to move.
-        dest_dir: Destination directory.
-
-    Returns:
-        New path to the moved ticket file.
-
-    Raises:
-        FileNotFoundError: If the ticket file doesn't exist.
-    """
     if not ticket_path.exists():
         raise FileNotFoundError(f"Ticket file not found: {ticket_path}")
 
@@ -493,21 +417,9 @@ def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
 
 
 def append_worklog_entry(path: Path, message: str, timestamp: datetime | None = None) -> str:
-    """Append a timestamped entry to the ticket's ## Worklog section.
+    """Append to the ticket's ``## Worklog`` section (created if missing).
 
-    If the Worklog section doesn't exist, it is created at the end of the file.
-    Works directly on the raw markdown to avoid round-trip issues.
-
-    Args:
-        path: Path to the ticket file.
-        message: The worklog message to append.
-        timestamp: Optional timestamp; defaults to now (UTC).
-
-    Returns:
-        The formatted entry that was appended.
-
-    Raises:
-        FileNotFoundError: If the ticket file doesn't exist.
+    Works on raw markdown to avoid round-trip issues with frontmatter parsing.
     """
     if not path.exists():
         raise FileNotFoundError(f"Ticket file not found: {path}")
@@ -565,18 +477,6 @@ def append_worklog_entry(path: Path, message: str, timestamp: datetime | None = 
 
 
 def get_ticket_location(base: Path, ticket_id: str) -> Path | None:
-    """Find where a ticket file is located.
-
-    Args:
-        base: Project root directory.
-        ticket_id: Full or partial ticket ID.
-
-    Returns:
-        Full path to the ticket file, or None if not found.
-
-    Raises:
-        AmbiguousTicketMatch: If multiple tickets match the ID.
-    """
     result = find_ticket(base, ticket_id)
     if result is None:
         return None

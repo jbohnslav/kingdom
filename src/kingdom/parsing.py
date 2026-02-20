@@ -12,20 +12,6 @@ import re
 
 
 def parse_yaml_value(value: str) -> str | int | list[str] | None:
-    """Parse a single YAML value (simple types only).
-
-    Handles:
-        - Strings (quoted or unquoted)
-        - Integers
-        - Lists in [item1, item2] format
-        - null/empty
-
-    Args:
-        value: The raw YAML value string.
-
-    Returns:
-        Parsed Python value.
-    """
     value = value.strip()
 
     # Handle empty/null
@@ -58,14 +44,6 @@ def parse_yaml_value(value: str) -> str | int | list[str] | None:
 
 
 def serialize_yaml_value(value: str | int | list[str] | None) -> str:
-    """Serialize a Python value to YAML format.
-
-    Args:
-        value: The Python value to serialize.
-
-    Returns:
-        YAML-formatted string.
-    """
     if value is None:
         return ""
     if isinstance(value, bool):
