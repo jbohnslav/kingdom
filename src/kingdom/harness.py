@@ -223,6 +223,36 @@ def run_lint(worktree: Path) -> tuple[bool, str]:
         return False, "Lint check timed out after 60s"
 
 
+def has_code_changes(worktree: Path, start_sha: str | None) -> bool:
+    """Check whether the worktree has any changes (committed or uncommitted) since start_sha."""
+    try:
+        # Uncommitted changes (staged + unstaged)
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return True
+        # Committed changes since start_sha
+        if start_sha:
+            result = subprocess.run(
+                ["git", "log", "--oneline", f"{start_sha}..HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        # Can't determine — assume there might be changes
+        return True
+    return False
+
+
 def get_diff(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
     """Get the diff of changes for council review.
 
@@ -631,6 +661,16 @@ def run_agent_loop(
 
         # Check stop conditions
         if status == "done":
+            # Guard: reject DONE if the agent hasn't made any actual changes
+            agent_state = get_agent_state(base, branch, session_name)
+            if not has_code_changes(worktree, agent_state.start_sha):
+                logger.warning("Agent reports DONE but no code changes detected — rejecting")
+                append_worklog(
+                    ticket_path,
+                    "DONE rejected — no code changes detected. Actually implement the changes before reporting DONE.",
+                )
+                continue
+
             # Verify by running quality gates (pytest + ruff) before accepting done
             logger.info("Agent reports DONE — running quality gates...")
             tests_passed, test_output = run_tests(worktree)

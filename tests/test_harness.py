@@ -18,6 +18,7 @@ from kingdom.harness import (
     format_worklog_timestamp,
     get_diff,
     get_new_directives,
+    has_code_changes,
     parse_status,
     parse_verdict,
     run_agent_loop,
@@ -345,6 +346,62 @@ class TestRunAgentLoop:
         ticket = read_ticket(ticket_path)
         assert "quality gates passed" in ticket.body.lower()
 
+    def test_loop_rejects_done_without_changes(self, project: Path, ticket_path: Path) -> None:
+        """Agent says DONE but no code changes — should reject and continue."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        agent_call_count = 0
+
+        def mock_run(cmd, **kwargs):
+            nonlocal agent_call_count
+            if cmd and cmd[0] == "git":
+                result = MagicMock()
+                result.stdout = "fake-sha\n"
+                result.returncode = 0
+                return result
+            agent_call_count += 1
+            result = MagicMock()
+            if agent_call_count >= 2:
+                result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            else:
+                # First call: DONE with no changes — will be rejected
+                result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            result.stderr = ""
+            result.returncode = 0
+            return result
+
+        changes_call_count = 0
+
+        def mock_has_changes(worktree, start_sha):
+            nonlocal changes_call_count
+            changes_call_count += 1
+            # First check: no changes. Second check: changes present.
+            return changes_call_count >= 2
+
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.has_code_changes", side_effect=mock_has_changes),
+            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
+            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
+            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "needs_king_review"
+        assert agent_call_count == 2  # First DONE rejected, second accepted
+
+        # Worklog should mention the rejection
+        ticket = read_ticket(ticket_path)
+        assert "no code changes detected" in ticket.body.lower()
+
     def test_loop_passes_peasant_identity_env(self, project: Path, ticket_path: Path, monkeypatch) -> None:
         """Backend subprocess should receive peasant identity env vars."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
@@ -372,7 +429,9 @@ class TestRunAgentLoop:
             )
 
         assert status == "needs_king_review"
-        env = mock_run.call_args.kwargs["env"]
+        # Find the backend call (the one with env= kwarg)
+        backend_call = next(c for c in mock_run.call_args_list if "env" in c.kwargs)
+        env = backend_call.kwargs["env"]
         assert env["KD_ROLE"] == "peasant"
         assert env["KD_AGENT_NAME"] == session_name
         assert "CLAUDECODE" not in env
@@ -385,8 +444,8 @@ class TestRunAgentLoop:
 
         def mock_run(cmd, **kwargs):
             nonlocal agent_call_count
-            # Skip counting git rev-parse (used for start_sha recording)
-            if cmd and "rev-parse" in cmd:
+            # Skip git commands (rev-parse, status, log — used by harness internals)
+            if cmd and cmd[0] == "git":
                 result = MagicMock()
                 result.stdout = "fake-sha\n"
                 result.returncode = 0
@@ -413,6 +472,7 @@ class TestRunAgentLoop:
             patch("kingdom.harness.run_tests", side_effect=mock_tests),
             patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.has_code_changes", return_value=True),
         ):
             status = run_agent_loop(
                 base=project,
@@ -465,6 +525,7 @@ class TestRunAgentLoop:
             patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
             patch("kingdom.harness.run_lint", side_effect=mock_lint),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.has_code_changes", return_value=True),
         ):
             status = run_agent_loop(
                 base=project,
@@ -640,6 +701,7 @@ class TestRunAgentLoop:
             patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
             patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.has_code_changes", return_value=True),
         ):
             status = run_agent_loop(
                 base=project,
@@ -1002,6 +1064,46 @@ class TestBuildReviewPrompt:
         assert "VERDICT: BLOCKING" in prompt
 
 
+class TestHasCodeChanges:
+    def test_detects_uncommitted_changes(self, tmp_path: Path) -> None:
+        with patch("kingdom.harness.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=" M src/foo.py\n")
+            assert has_code_changes(tmp_path, "abc123") is True
+
+    def test_detects_committed_changes(self, tmp_path: Path) -> None:
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            if "status" in cmd:
+                result.stdout = ""  # No uncommitted changes
+            else:
+                result.stdout = "abc456 Add feature\n"  # Committed changes
+            return result
+
+        with patch("kingdom.harness.subprocess.run", side_effect=mock_run):
+            assert has_code_changes(tmp_path, "abc123") is True
+
+    def test_no_changes(self, tmp_path: Path) -> None:
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            return result
+
+        with patch("kingdom.harness.subprocess.run", side_effect=mock_run):
+            assert has_code_changes(tmp_path, "abc123") is False
+
+    def test_no_start_sha_no_uncommitted(self, tmp_path: Path) -> None:
+        with patch("kingdom.harness.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            assert has_code_changes(tmp_path, None) is False
+
+    def test_returns_true_on_error(self, tmp_path: Path) -> None:
+        """On git failure, assume changes exist to avoid false rejections."""
+        with patch("kingdom.harness.subprocess.run", side_effect=FileNotFoundError):
+            assert has_code_changes(tmp_path, "abc123") is True
+
+
 class TestGetDiff:
     def test_with_start_sha(self, tmp_path: Path) -> None:
         with patch("kingdom.harness.subprocess.run") as mock_run:
@@ -1228,6 +1330,7 @@ class TestCouncilReviewInLoop:
             patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", side_effect=mock_review),
             patch("kingdom.harness.add_message", wraps=add_message) as mock_add_message,
+            patch("kingdom.harness.has_code_changes", return_value=True),
         ):
             status = run_agent_loop(
                 base=project,
