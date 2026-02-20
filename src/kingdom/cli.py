@@ -332,7 +332,6 @@ def done(
     if session_cleared:
         lines.append("Session cleared")
 
-    # Check for unpushed commits
     push_reminder = ""
     try:
         rev_result = subprocess.run(
@@ -346,8 +345,8 @@ def done(
                 push_reminder = f"[yellow]{ahead} unpushed commit(s) — remember to push[/yellow]"
         else:
             push_reminder = "[yellow]No upstream branch — remember to push[/yellow]"
-    except (subprocess.SubprocessError, ValueError):
-        pass
+    except (subprocess.SubprocessError, ValueError) as exc:
+        push_reminder = f"[yellow]Could not check upstream status: {exc}[/yellow]"
 
     if push_reminder:
         lines.append(push_reminder)
@@ -1034,8 +1033,6 @@ def watch_thread(
         meta = get_thread(base, feature, thread_id)
         expected_members = {m for m in meta.members if m != "king"}
 
-    # Load agent configs for stream text extraction (best-effort — bad config
-    # shouldn't prevent watching for finalized messages)
     member_backends: dict[str, str] = {}
     try:
         cfg = load_config(base)
@@ -1044,8 +1041,10 @@ def watch_thread(
             ac = agent_configs.get(name)
             if ac:
                 member_backends[name] = ac.backend
-    except Exception:
-        pass  # Streaming preview won't work, but final messages still display
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        console.print(
+            f"[yellow]Warning:[/yellow] stream preview disabled ({exc}); finalized messages will still appear."
+        )
 
     console.print(f"[bold]Watching: {thread_id}[/bold]")
     console.print(f"[dim]Expecting: {', '.join(sorted(expected_members))}[/dim]\n")
@@ -1540,7 +1539,6 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
 
     branch_name = f"ticket/{full_ticket_id}"
 
-    # Check if branch exists
     result = subprocess.run(
         ["git", "rev-parse", "--verify", branch_name],
         capture_output=True,
@@ -1564,7 +1562,6 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
     if result.returncode != 0:
         raise RuntimeError(f"Error creating worktree: {result.stderr.strip()}")
 
-    # Run init-worktree.sh if it exists
     init_script = state_root(base) / "init-worktree.sh"
     if init_script.exists() and os.access(init_script, os.X_OK):
         init_result = subprocess.run(
@@ -1579,7 +1576,6 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
             if init_result.stderr.strip():
                 typer.echo(init_result.stderr.strip())
 
-    # Track in state.json
     try:
         feature = resolve_current_run(base)
         _, state_path = get_design_paths(base, feature)
@@ -1588,8 +1584,8 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
         worktrees[full_ticket_id] = str(worktree_path)
         state["worktrees"] = worktrees
         write_json(state_path, state)
-    except RuntimeError:
-        pass
+    except RuntimeError as exc:
+        typer.echo(f"Warning: could not record worktree in state.json: {exc}")
 
     return worktree_path
 
@@ -1617,8 +1613,8 @@ def remove_worktree(base: Path, full_ticket_id: str) -> None:
         worktrees.pop(full_ticket_id, None)
         state["worktrees"] = worktrees
         write_json(state_path, state)
-    except RuntimeError:
-        pass
+    except RuntimeError as exc:
+        typer.echo(f"Warning: could not update state.json worktree map: {exc}")
 
 
 class PeasantContext(NamedTuple):
@@ -3085,6 +3081,18 @@ def format_ticket_summary(tickets: list) -> str:
     return " · ".join(parts)
 
 
+def filter_tickets_by_status(
+    tickets: list[Ticket],
+    status: str | None,
+    include_closed: bool,
+) -> list[Ticket]:
+    if status is not None:
+        return [ticket for ticket in tickets if ticket.status == status]
+    if not include_closed:
+        return [ticket for ticket in tickets if ticket.status != "closed"]
+    return tickets
+
+
 def format_ticket_line(ticket: Ticket, location: str | None = None) -> str:
     """Format a single ticket as a one-line string for list output.
 
@@ -3203,20 +3211,12 @@ def ticket_list(
             typer.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
             raise typer.Exit(code=1)
 
-    def apply_status_filter(tickets: list) -> list:
-        """Filter tickets based on --status or --include-closed flags."""
-        if status is not None:
-            return [t for t in tickets if t.status == status]
-        if not include_closed:
-            return [t for t in tickets if t.status != "closed"]
-        return tickets
-
     base = Path.cwd()
 
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
         all_backlog_tickets = list_tickets(backlog_dir) if backlog_dir.exists() else []
-        tickets = apply_status_filter(all_backlog_tickets)
+        tickets = filter_tickets_by_status(all_backlog_tickets, status, include_closed)
 
         if output_json:
             results = [
@@ -3263,7 +3263,7 @@ def ticket_list(
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
             all_unfiltered.extend(tickets)
-            filtered = apply_status_filter(tickets)
+            filtered = filter_tickets_by_status(tickets, status, include_closed)
             for ticket in filtered:
                 location_map[ticket.id] = location_name
             all_filtered.extend(filtered)
@@ -3291,7 +3291,7 @@ def ticket_list(
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
         all_branch_tickets = list_tickets(tickets_dir)
-        tickets = apply_status_filter(all_branch_tickets)
+        tickets = filter_tickets_by_status(all_branch_tickets, status, include_closed)
 
         if output_json:
             results = [
