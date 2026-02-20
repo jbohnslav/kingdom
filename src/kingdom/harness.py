@@ -18,7 +18,6 @@ import logging
 import re
 import signal
 import subprocess
-import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -70,11 +69,14 @@ def build_prompt(
     parts.append("## Instructions")
     parts.append(f"This is iteration {iteration} of {max_iterations}.")
     parts.append("Work on the ticket. Commit your changes as you go with descriptive commit messages.")
+    parts.append(
+        "Before reporting DONE, run the project's tests, linter, and pre-commit hooks to make sure everything passes."
+    )
     parts.append("When you respond, structure your output as:")
     parts.append("1. What you did this iteration")
     parts.append("2. Your status: DONE, BLOCKED, or CONTINUE")
     parts.append("3. If BLOCKED, explain what you need help with")
-    parts.append("4. If DONE, confirm all acceptance criteria are met")
+    parts.append("4. If DONE, confirm all acceptance criteria are met and tests/lint pass")
     parts.append("")
     parts.append("End your response with exactly one of these status lines:")
     parts.append("STATUS: DONE")
@@ -164,63 +166,6 @@ def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: i
         max_seq = max(max_seq, msg.sequence)
 
     return directives, max_seq
-
-
-def worktree_python(worktree: Path) -> str:
-    """Return the Python executable for a worktree's venv.
-
-    Falls back to sys.executable if no venv is found.
-    """
-    venv_python = worktree / ".venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
-    return sys.executable
-
-
-def run_tests(worktree: Path) -> tuple[bool, str]:
-    """Run pytest in the worktree to verify work.
-
-    Returns (passed, output): passed is True if tests pass.
-    """
-    try:
-        result = subprocess.run(
-            [worktree_python(worktree), "-m", "pytest", "-x", "-q", "--tb=short"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=worktree,
-        )
-        output = result.stdout.strip()
-        if result.stderr.strip():
-            output += "\n" + result.stderr.strip()
-        return result.returncode == 0, output
-    except FileNotFoundError:
-        return True, "pytest not found, skipping verification"
-    except subprocess.TimeoutExpired:
-        return False, "Test suite timed out after 120s"
-
-
-def run_lint(worktree: Path) -> tuple[bool, str]:
-    """Run ruff check in the worktree to verify lint.
-
-    Returns (passed, output): passed is True if lint passes.
-    """
-    try:
-        result = subprocess.run(
-            [worktree_python(worktree), "-m", "ruff", "check", "."],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=worktree,
-        )
-        output = result.stdout.strip()
-        if result.stderr.strip():
-            output += "\n" + result.stderr.strip()
-        return result.returncode == 0, output
-    except FileNotFoundError:
-        return True, "ruff not found, skipping lint check"
-    except subprocess.TimeoutExpired:
-        return False, "Lint check timed out after 60s"
 
 
 def has_code_changes(worktree: Path, start_sha: str | None) -> bool:
@@ -343,7 +288,7 @@ def build_review_prompt(ticket_title: str, ticket_body: str, diff: str, worklog:
             "- Correctness: does it do what the ticket asks?",
             "- Edge cases: are there unhandled scenarios?",
             "- Code quality: is it readable, maintainable, and well-structured?",
-            "- Tests: are the changes adequately tested?",
+            "- Tests: are the changes adequately tested? Run the project's test suite and linter to verify.",
             "",
             "End your review with exactly one of these verdict lines:",
             "VERDICT: APPROVED",
@@ -670,31 +615,6 @@ def run_agent_loop(
                     "DONE rejected — no code changes detected. Actually implement the changes before reporting DONE.",
                 )
                 continue
-
-            # Verify by running quality gates (pytest + ruff) before accepting done
-            logger.info("Agent reports DONE — running quality gates...")
-            tests_passed, test_output = run_tests(worktree)
-            lint_passed, lint_output = run_lint(worktree)
-
-            if not (tests_passed and lint_passed):
-                failures = []
-                if not tests_passed:
-                    failures.append(f"pytest:\n{test_output}")
-                if not lint_passed:
-                    failures.append(f"ruff:\n{lint_output}")
-                failure_detail = "\n\n".join(failures)
-                logger.warning("Quality gates failed, overriding DONE to CONTINUE:\n%s", failure_detail)
-                summary = []
-                if not tests_passed:
-                    summary.append("pytest failed")
-                if not lint_passed:
-                    summary.append("ruff failed")
-                append_worklog(ticket_path, f"DONE rejected ({', '.join(summary)}). See logs for details.")
-                # Don't break — continue the loop so agent can fix
-                continue
-
-            logger.info("Quality gates passed (pytest + ruff)")
-            append_worklog(ticket_path, "Quality gates passed (pytest + ruff)")
 
             # --- Council review phase ---
             # Transition ticket to in_review, session to awaiting_council

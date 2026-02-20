@@ -2205,7 +2205,7 @@ def peasant_review(
     reject: Annotated[str | None, typer.Option("--reject", help="Reject with feedback message.")] = None,
     no_resume: Annotated[bool, typer.Option("--no-resume", help="Don't auto-resume peasant on reject.")] = False,
 ) -> None:
-    """Run pytest + ruff, show diff and worklog. Accept or reject the work."""
+    """Show diff, worklog, and council feedback. Accept or reject the work."""
     from kingdom.harness import extract_worklog
     from kingdom.session import get_agent_state, update_agent_state
     from kingdom.thread import add_message
@@ -2383,49 +2383,7 @@ def peasant_review(
 
     # --- Show review info ---
 
-    # 1. Run pytest
-    worktree_path = worktree_path_for(base, full_ticket_id)
-    if worktree_path.exists():
-        test_cwd = str(worktree_path)
-    else:
-        test_cwd = str(base)
-
-    typer.echo("Running pytest...")
-    test_result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-x", "-q", "--tb=short"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        cwd=test_cwd,
-    )
-    test_passed = test_result.returncode == 0
-    test_output = test_result.stdout.strip()
-    if test_result.stderr.strip():
-        test_output += "\n" + test_result.stderr.strip()
-
-    test_title = "pytest: PASSED" if test_passed else "pytest: FAILED"
-    test_content = test_output or "(no output)"
-    console.print(Markdown(f"## {test_title}\n\n```\n{test_content}\n```"))
-
-    # 2. Run ruff
-    typer.echo("Running ruff...")
-    ruff_result = subprocess.run(
-        [sys.executable, "-m", "ruff", "check", "."],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        cwd=test_cwd,
-    )
-    ruff_passed = ruff_result.returncode == 0
-    ruff_output = ruff_result.stdout.strip()
-    if ruff_result.stderr.strip():
-        ruff_output += "\n" + ruff_result.stderr.strip()
-
-    ruff_title = "ruff: PASSED" if ruff_passed else "ruff: ISSUES"
-    ruff_content = ruff_output or "All checks passed!"
-    console.print(Markdown(f"## {ruff_title}\n\n```\n{ruff_content}\n```"))
-
-    # 3. Show diff
+    # 1. Show diff
     review_state = get_agent_state(base, feature, session_name)
     if review_state.hand_mode:
         if review_state.start_sha:
@@ -2478,14 +2436,11 @@ def peasant_review(
         typer.echo(f"Review bounces: {state.review_bounce_count}")
 
     # Prompt for action
-    all_passed = test_passed and ruff_passed
     can_accept = ticket.status == "in_review" and state.status == "needs_king_review"
-    if all_passed and can_accept:
-        typer.echo("\nAll checks passed. Use --accept to close the ticket or --reject 'feedback' to send feedback.")
-    elif all_passed:
-        typer.echo("\nAll checks passed but ticket is not in review state. Use --reject 'feedback' to send feedback.")
+    if can_accept:
+        typer.echo("\nUse --accept to close the ticket or --reject 'feedback' to send feedback.")
     else:
-        typer.echo("\nSome checks failed. Use --reject 'feedback' to send feedback.")
+        typer.echo("\nUse --reject 'feedback' to send feedback.")
 
 
 @app.command("work", help="Run autonomous agent loop on a ticket.")

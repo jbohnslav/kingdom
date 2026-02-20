@@ -32,10 +32,6 @@ from kingdom.ticket import Ticket, read_ticket, write_ticket
 BRANCH = "feature/harness-test"
 
 # Common mock return values
-TESTS_PASS = (True, "4 passed")
-TESTS_FAIL = (False, "FAILED test_foo.py::test_bar - AssertionError")
-LINT_PASS = (True, "All checks passed!")
-LINT_FAIL = (False, "src/foo.py:1:1: F401 `os` imported but unused")
 COUNCIL_APPROVED = ("approved", [])
 COUNCIL_NO_COUNCIL = ("no_council", [])
 
@@ -324,8 +320,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -341,10 +335,6 @@ class TestRunAgentLoop:
         assert status == "needs_king_review"
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "needs_king_review"
-
-        # Worklog should mention quality gates
-        ticket = read_ticket(ticket_path)
-        assert "quality gates passed" in ticket.body.lower()
 
     def test_loop_rejects_done_without_changes(self, project: Path, ticket_path: Path) -> None:
         """Agent says DONE but no code changes — should reject and continue."""
@@ -381,8 +371,6 @@ class TestRunAgentLoop:
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
             patch("kingdom.harness.has_code_changes", side_effect=mock_has_changes),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -414,8 +402,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result) as mock_run,
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -435,114 +421,6 @@ class TestRunAgentLoop:
         assert env["KD_ROLE"] == "peasant"
         assert env["KD_AGENT_NAME"] == session_name
         assert "CLAUDECODE" not in env
-
-    def test_loop_continues_when_done_but_tests_fail(self, project: Path, ticket_path: Path) -> None:
-        """Agent says DONE but tests fail — loop should continue, not accept done."""
-        thread_id, session_name = self.setup_for_loop(project, ticket_path)
-
-        agent_call_count = 0
-
-        def mock_run(cmd, **kwargs):
-            nonlocal agent_call_count
-            # Skip git commands (rev-parse, status, log — used by harness internals)
-            if cmd and cmd[0] == "git":
-                result = MagicMock()
-                result.stdout = "fake-sha\n"
-                result.returncode = 0
-                return result
-            agent_call_count += 1
-            result = MagicMock()
-            # Agent always says DONE
-            result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
-            result.stderr = ""
-            result.returncode = 0
-            return result
-
-        test_call_count = 0
-
-        def mock_tests(*args, **kwargs):
-            nonlocal test_call_count
-            test_call_count += 1
-            if test_call_count >= 2:
-                return TESTS_PASS
-            return TESTS_FAIL
-
-        with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", side_effect=mock_tests),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
-            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
-            patch("kingdom.harness.has_code_changes", return_value=True),
-        ):
-            status = run_agent_loop(
-                base=project,
-                branch=BRANCH,
-                agent_name="claude",
-                ticket_id="kin-test",
-                worktree=project,
-                thread_id=thread_id,
-                session_name=session_name,
-            )
-
-        assert status == "needs_king_review"
-        assert agent_call_count == 2  # Had to iterate again after test failure
-
-        # Worklog should mention the failure
-        ticket = read_ticket(ticket_path)
-        assert "pytest failed" in ticket.body.lower()
-
-    def test_loop_continues_when_done_but_lint_fails(self, project: Path, ticket_path: Path) -> None:
-        """Agent says DONE but ruff fails — loop should continue."""
-        thread_id, session_name = self.setup_for_loop(project, ticket_path)
-
-        agent_call_count = 0
-
-        def mock_run(cmd, **kwargs):
-            nonlocal agent_call_count
-            if cmd and "rev-parse" in cmd:
-                result = MagicMock()
-                result.stdout = "fake-sha\n"
-                result.returncode = 0
-                return result
-            agent_call_count += 1
-            result = MagicMock()
-            result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
-            result.stderr = ""
-            result.returncode = 0
-            return result
-
-        lint_call_count = 0
-
-        def mock_lint(*args, **kwargs):
-            nonlocal lint_call_count
-            lint_call_count += 1
-            if lint_call_count >= 2:
-                return LINT_PASS
-            return LINT_FAIL
-
-        with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", side_effect=mock_lint),
-            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
-            patch("kingdom.harness.has_code_changes", return_value=True),
-        ):
-            status = run_agent_loop(
-                base=project,
-                branch=BRANCH,
-                agent_name="claude",
-                ticket_id="kin-test",
-                worktree=project,
-                thread_id=thread_id,
-                session_name=session_name,
-            )
-
-        assert status == "needs_king_review"
-        assert agent_call_count == 2
-
-        # Worklog should mention lint failure
-        ticket = read_ticket(ticket_path)
-        assert "ruff failed" in ticket.body.lower()
 
     def test_loop_blocked(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
@@ -600,8 +478,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             run_agent_loop(
@@ -629,8 +505,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             run_agent_loop(
@@ -657,8 +531,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             run_agent_loop(
@@ -698,8 +570,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
             patch("kingdom.harness.has_code_changes", return_value=True),
         ):
@@ -778,8 +648,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
             patch("kingdom.harness.logger") as mock_logger,
         ):
@@ -799,53 +667,6 @@ class TestRunAgentLoop:
         assert "Agent stdout" in log_text
         assert "Agent stderr" in log_text
         assert "some debug info from agent" in log_text
-
-    def test_gate_failure_details_logged(self, project: Path, ticket_path: Path) -> None:
-        """Full pytest/ruff failure output must appear in log records when gates fail."""
-        thread_id, session_name = self.setup_for_loop(project, ticket_path)
-
-        call_count = 0
-
-        def mock_run(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            result = MagicMock()
-            result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
-            result.stderr = ""
-            result.returncode = 0
-            return result
-
-        lint_fail_output = "src/foo.py:10:1: F401 `os` imported but unused"
-        lint_call_count = 0
-
-        def mock_lint(*args, **kwargs):
-            nonlocal lint_call_count
-            lint_call_count += 1
-            if lint_call_count >= 2:
-                return LINT_PASS
-            return (False, lint_fail_output)
-
-        with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", side_effect=mock_lint),
-            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
-            patch("kingdom.harness.logger") as mock_logger,
-        ):
-            run_agent_loop(
-                base=project,
-                branch=BRANCH,
-                agent_name="claude",
-                ticket_id="kin-test",
-                worktree=project,
-                thread_id=thread_id,
-                session_name=session_name,
-            )
-
-        # Full ruff failure output should appear in a warning log
-        warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
-        warning_text = "\n".join(warning_calls)
-        assert lint_fail_output in warning_text
 
     def test_loop_stopped_by_signal_after_backend(self, project: Path, ticket_path: Path) -> None:
         """SIGTERM during backend call should stop after it returns."""
@@ -897,8 +718,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -930,8 +749,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -973,8 +790,6 @@ class TestRunAgentLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
             patch("kingdom.harness.build_prompt", wraps=build_prompt) as mock_build_prompt,
         ):
@@ -1273,8 +1088,6 @@ class TestCouncilReviewInLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -1326,8 +1139,6 @@ class TestCouncilReviewInLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", side_effect=mock_review),
             patch("kingdom.harness.add_message", wraps=add_message) as mock_add_message,
             patch("kingdom.harness.has_code_changes", return_value=True),
@@ -1374,8 +1185,6 @@ class TestCouncilReviewInLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch(
                 "kingdom.harness.run_council_review",
                 return_value=("blocking", ["[codex] Still failing.\n\nVERDICT: BLOCKING"]),
@@ -1433,8 +1242,6 @@ class TestCouncilReviewInLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", side_effect=mock_run),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", side_effect=mock_review),
             patch("kingdom.harness.add_message", side_effect=FileNotFoundError("thread gone")),
         ):
@@ -1463,8 +1270,6 @@ class TestCouncilReviewInLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_NO_COUNCIL),
         ):
             status = run_agent_loop(
@@ -1492,8 +1297,6 @@ class TestCouncilReviewInLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", return_value=("timeout", [])),
         ):
             status = run_agent_loop(
@@ -1534,8 +1337,6 @@ class TestCouncilReviewInLoop:
 
         with (
             patch("kingdom.harness.subprocess.run", return_value=mock_result),
-            patch("kingdom.harness.run_tests", return_value=TESTS_PASS),
-            patch("kingdom.harness.run_lint", return_value=LINT_PASS),
             patch("kingdom.harness.run_council_review", side_effect=mock_review),
         ):
             run_agent_loop(
