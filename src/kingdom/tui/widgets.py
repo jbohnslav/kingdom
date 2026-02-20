@@ -472,8 +472,8 @@ def suggest_command(unknown: str) -> str | None:
     """Suggest the closest known command for a mistyped one.
 
     Returns the command word (e.g. "/writable") or None if nothing is close.
-    Uses longest common prefix as a simple heuristic — a match needs at least
-    2 characters beyond the "/" to count.
+    Uses longest common prefix — needs at least 1 character beyond the "/"
+    to count (i.e. prefix length >= 2 including the slash).
     """
     unknown = unknown.lower()
     # Collect unique command words
@@ -486,11 +486,15 @@ def suggest_command(unknown: str) -> str | None:
             candidates.append(word)
 
     best: str | None = None
-    best_overlap = 1  # require at least 2 chars of overlap (the "/" alone doesn't count)
+    best_prefix_len = 1  # require prefix > 1 char (/ + at least 1 real char)
     for candidate in candidates:
-        overlap = sum(1 for a, b in zip(unknown, candidate, strict=False) if a == b)
-        if overlap > best_overlap:
-            best_overlap = overlap
+        prefix_len = 0
+        for a, b in zip(unknown, candidate, strict=False):
+            if a != b:
+                break
+            prefix_len += 1
+        if prefix_len > best_prefix_len:
+            best_prefix_len = prefix_len
             best = candidate
     return best
 

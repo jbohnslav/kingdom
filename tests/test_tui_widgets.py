@@ -465,6 +465,19 @@ class TestSuggestCommand:
         """A single-char unknown like /z shouldn't suggest anything."""
         assert suggest_command("/z") is None
 
+    def test_bogus_no_false_positive(self) -> None:
+        """/bogus shares only '/' with commands — should not suggest anything."""
+        assert suggest_command("/bogus") is None
+
+    def test_qit_suggests_quit(self) -> None:
+        """/qit shares '/q' plus 'i' with /quit — should suggest /quit."""
+        result = suggest_command("/qit")
+        assert result == "/quit"
+
+    def test_unrelated_no_suggestion(self) -> None:
+        """/foo has no meaningful prefix overlap — should return None."""
+        assert suggest_command("/foo") is None
+
 
 class TestCommandHintBar:
     """Tests for CommandHintBar widget."""

@@ -571,6 +571,7 @@ class TestSlashCommands:
         app_instance.show_system_message.assert_called_once()
         msg = app_instance.show_system_message.call_args[0][0]
         assert "Unknown command" in msg
+        assert "Did you mean" not in msg  # /bogus has no close prefix match
 
     def test_unknown_command_suggests_close_match(self, project: Path) -> None:
         from unittest.mock import MagicMock
