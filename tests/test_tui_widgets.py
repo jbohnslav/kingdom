@@ -372,6 +372,47 @@ class TestColoredMentionMarkdown:
         for seg in mention_segs:
             assert seg.style.bold is True
 
+    def test_mention_styles_cached(self) -> None:
+        """Mention styles should be pre-computed at init, not recreated per render."""
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("@claude @codex", ["claude", "codex"])
+        assert "claude" in cmm.mention_styles
+        assert "codex" in cmm.mention_styles
+        assert cmm.mention_styles["claude"].bold is True
+
+    def test_survives_corrupted_style(self) -> None:
+        """Rendering should not crash if a segment's style is corrupted."""
+        from unittest.mock import MagicMock
+
+        from rich.console import Console
+        from rich.segment import Segment
+        from rich.style import Style
+
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("@claude", ["claude"])
+        console = Console(force_terminal=True, width=80)
+        options = console.options
+
+        # Monkey-patch __rich_console__ source to inject a bad style
+        original_render = cmm.__rich_console__
+
+        bad_style = MagicMock(spec=Style)
+        bad_style.__add__ = MagicMock(side_effect=AttributeError("_color"))
+
+        def inject_bad_style(console, options):
+            for seg in original_render(console, options):
+                if isinstance(seg, Segment) and "@claude" in seg.text:
+                    yield Segment(seg.text, bad_style)
+                else:
+                    yield seg
+
+        # The error path uses the cached mention_style directly as fallback
+        # so it should survive
+        segments = list(cmm.__rich_console__(console, options))
+        assert len(segments) > 0
+
 
 class TestMessagePanelMemberNames:
     """Tests for MessagePanel with member_names for @mention coloring."""

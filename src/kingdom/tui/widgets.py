@@ -124,6 +124,10 @@ class ColoredMentionMarkdown:
             self.member_colors[name] = color_for_member(name)
         self.member_colors["all"] = "white"
         self.member_colors["king"] = "white"
+        # Cache Style objects per color to avoid creating new ones on every render
+        self.mention_styles: dict[str, Style] = {
+            name: Style(color=color, bold=True) for name, color in self.member_colors.items()
+        }
         # Pre-compile pattern
         if self.member_colors:
             names = "|".join(re.escape(n) for n in self.member_colors)
@@ -155,8 +159,11 @@ class ColoredMentionMarkdown:
                 if not part:
                     continue
                 if i % 2 == 1:
-                    color = self.member_colors.get(part, "white")
-                    mention_style = style + Style(color=color, bold=True)
+                    cached = self.mention_styles.get(part, self.mention_styles.get("all"))
+                    try:
+                        mention_style = style + cached if cached else style
+                    except (AttributeError, TypeError):
+                        mention_style = cached or style
                     yield Segment(f"@{part}", mention_style)
                 else:
                     yield Segment(part, style)
