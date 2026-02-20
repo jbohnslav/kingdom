@@ -730,6 +730,8 @@ class ChatApp(App):
 
     def handle_slash_command(self, text: str) -> None:
         """Dispatch slash commands."""
+        from .widgets import suggest_command
+
         parts = text.split(None, 1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -738,14 +740,20 @@ class ChatApp(App):
             self.cmd_mute(arg)
         elif cmd == "/unmute":
             self.cmd_unmute(arg)
-        elif cmd == "/writable":
+        elif cmd in ("/writable", "/writeable"):
             self.cmd_writable()
         elif cmd in ("/help", "/h"):
             self.cmd_help()
         elif cmd in ("/quit", "/exit"):
             self.exit()
         else:
-            self.show_system_message(f"Unknown command: {cmd}. Type /help for available commands.")
+            suggestion = suggest_command(cmd)
+            if suggestion:
+                self.show_system_message(
+                    f"Unknown command: {cmd}. Did you mean {suggestion}? Type /help for available commands."
+                )
+            else:
+                self.show_system_message(f"Unknown command: {cmd}. Type /help for available commands.")
 
     def cmd_mute(self, arg: str) -> None:
         """Mute a member — exclude from broadcast queries."""

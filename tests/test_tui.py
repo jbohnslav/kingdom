@@ -540,6 +540,22 @@ class TestSlashCommands:
         app_instance.handle_slash_command("/exit")
         assert exited == [True]
 
+    def test_writeable_alias_dispatches(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd-writeable"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/writeable")
+        app_instance.show_system_message.assert_called_once()
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "Writable mode" in msg
+
     def test_unknown_command_shows_error(self, project: Path) -> None:
         from unittest.mock import MagicMock
 
@@ -555,6 +571,22 @@ class TestSlashCommands:
         app_instance.show_system_message.assert_called_once()
         msg = app_instance.show_system_message.call_args[0][0]
         assert "Unknown command" in msg
+
+    def test_unknown_command_suggests_close_match(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd-suggest"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/halp")
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "Did you mean" in msg
+        assert "/help" in msg
 
     def test_mute_invalid_member_shows_error(self, project: Path) -> None:
         from unittest.mock import MagicMock

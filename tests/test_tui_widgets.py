@@ -15,6 +15,7 @@ from kingdom.tui.widgets import (
     format_elapsed,
     format_error_body,
     match_commands,
+    suggest_command,
 )
 
 
@@ -432,6 +433,37 @@ class TestMatchCommands:
         matches = match_commands("/u")
         cmd_words = [cmd.split()[0] for cmd, _desc in matches]
         assert "/unmute" in cmd_words
+
+    def test_writeable_alias_discoverable(self) -> None:
+        """Typing /writeable should show the writeable alias."""
+        matches = match_commands("/writeable")
+        cmd_words = [cmd.split()[0] for cmd, _desc in matches]
+        assert "/writeable" in cmd_words
+
+    def test_writable_prefix_matches_both(self) -> None:
+        """Typing /writ should show both /writable and /writeable."""
+        matches = match_commands("/writ")
+        cmd_words = [cmd.split()[0] for cmd, _desc in matches]
+        assert "/writable" in cmd_words
+        assert "/writeable" in cmd_words
+
+
+class TestSuggestCommand:
+    """Tests for suggest_command — 'did you mean?' for unknown commands."""
+
+    def test_close_misspelling(self) -> None:
+        assert suggest_command("/halp") == "/help"
+
+    def test_no_match_for_gibberish(self) -> None:
+        assert suggest_command("/zzz") is None
+
+    def test_suggest_for_truncated_command(self) -> None:
+        result = suggest_command("/mut")
+        assert result == "/mute"
+
+    def test_exact_unknown_no_suggestion(self) -> None:
+        """A single-char unknown like /z shouldn't suggest anything."""
+        assert suggest_command("/z") is None
 
 
 class TestCommandHintBar:

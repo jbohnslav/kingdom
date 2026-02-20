@@ -446,6 +446,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/mute", "show currently muted members"),
     ("/unmute <member>", "re-include member in broadcast"),
     ("/writable", "toggle writable mode (allow/deny file edits)"),
+    ("/writeable", "toggle writable mode (alias)"),
     ("/quit", "quit kd chat"),
     ("/exit", "quit kd chat"),
 ]
@@ -465,6 +466,33 @@ def match_commands(prefix: str) -> list[tuple[str, str]]:
         if cmd_word.startswith(prefix):
             matches.append((cmd, desc))
     return matches
+
+
+def suggest_command(unknown: str) -> str | None:
+    """Suggest the closest known command for a mistyped one.
+
+    Returns the command word (e.g. "/writable") or None if nothing is close.
+    Uses longest common prefix as a simple heuristic — a match needs at least
+    2 characters beyond the "/" to count.
+    """
+    unknown = unknown.lower()
+    # Collect unique command words
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for cmd, _desc in SLASH_COMMANDS:
+        word = cmd.split()[0]
+        if word not in seen:
+            seen.add(word)
+            candidates.append(word)
+
+    best: str | None = None
+    best_overlap = 1  # require at least 2 chars of overlap (the "/" alone doesn't count)
+    for candidate in candidates:
+        overlap = sum(1 for a, b in zip(unknown, candidate, strict=False) if a == b)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = candidate
+    return best
 
 
 class CommandHintBar(Static):
