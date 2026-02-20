@@ -251,15 +251,24 @@ class CouncilMember:
             err_thread.join(timeout=2)
 
             partial = "".join(stdout_lines)
+            stderr = "".join(stderr_lines)
+
+            # Parse partial output so codex JSONL gets extracted to readable text
+            text, new_session_id, raw = self.parse_response(partial, stderr, -9)
+            if new_session_id:
+                self.session_id = new_session_id
+            # Fall back to raw partial for backends that don't need parsing
+            if not text:
+                text = partial
 
             response = AgentResponse(
                 name=self.name,
-                text=partial,
+                text=text,
                 error=error,
                 elapsed=elapsed,
-                raw=partial,
+                raw=raw,
             )
-            self.log(prompt, partial, error, elapsed)
+            self.log(prompt, text, error, elapsed)
             return response
 
         except FileNotFoundError:

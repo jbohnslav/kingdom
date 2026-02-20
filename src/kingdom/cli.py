@@ -13,6 +13,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +53,7 @@ from kingdom.state import (
     write_json,
 )
 from kingdom.ticket import (
+    STATUSES,
     AmbiguousTicketMatch,
     Ticket,
     find_newly_unblocked,
@@ -1740,6 +1742,16 @@ def peasant_start(
     ctx = resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
 
+    # Block starting work on tickets that are in_review or closed
+    if ticket.status in ("in_review", "closed"):
+        typer.echo(f"Cannot start work on {full_ticket_id}: ticket is {ticket.status}")
+        raise typer.Exit(code=1)
+
+    # Transition open → in_progress
+    if ticket.status == "open":
+        ticket.status = "in_progress"
+        write_ticket(ticket, ctx.ticket_path)
+
     # Default agent from config if not specified on CLI
     if agent is None:
         cfg = load_config(base)
@@ -1824,6 +1836,7 @@ def peasant_start(
         agent_backend=agent,
         started_at=now,
         last_activity=now,
+        hand_mode=hand,
     )
 
     peasant_logs_dir = logs_root(base, feature) / session_name
@@ -1906,6 +1919,8 @@ def peasant_status() -> None:
             "failed": "red",
             "stopped": "dim",
             "dead": "red",
+            "awaiting_council": "magenta",
+            "needs_king_review": "cyan",
         }.get(display_status, "")
 
         agent_display = p.agent_backend or "?"
@@ -1984,12 +1999,31 @@ def peasant_stop(
         typer.echo(f"No PID found for peasant {full_ticket_id}")
         raise typer.Exit(code=1)
 
-    # Send SIGTERM
+    # Kill the entire process group (harness + backend + children).
+    # The harness is launched with start_new_session=True, so its PID
+    # is the process group leader.
+    pgid = state.pid
     try:
-        os.kill(state.pid, signal.SIGTERM)
-        typer.echo(f"{full_ticket_id}: sent SIGTERM (pid {state.pid})")
+        os.killpg(pgid, signal.SIGTERM)
+        typer.echo(f"{full_ticket_id}: sent SIGTERM to process group (pgid {pgid})")
     except OSError as e:
-        typer.echo(f"Process {state.pid} not found: {e}")
+        typer.echo(f"Process group {pgid} not found: {e}")
+
+    # Wait for processes to exit, then SIGKILL stragglers
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)  # check if any process in group is alive
+        except OSError:
+            break  # all dead
+        time.sleep(0.2)
+    else:
+        # Still alive after timeout — force kill
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            typer.echo(f"{full_ticket_id}: sent SIGKILL to process group (pgid {pgid})")
+        except OSError:
+            pass  # already dead
 
     # Update session status
     now = datetime.now(UTC).isoformat()
@@ -2173,6 +2207,7 @@ def peasant_review(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
     accept: Annotated[bool, typer.Option("--accept", help="Accept the work (close ticket).")] = False,
     reject: Annotated[str | None, typer.Option("--reject", help="Reject with feedback message.")] = None,
+    no_resume: Annotated[bool, typer.Option("--no-resume", help="Don't auto-resume peasant on reject.")] = False,
 ) -> None:
     """Run pytest + ruff, show diff and worklog. Accept or reject the work."""
     from kingdom.harness import extract_worklog
@@ -2195,6 +2230,58 @@ def peasant_review(
         raise typer.Exit(code=1)
 
     if accept:
+        # Gate: ticket must be in_review
+        if ticket.status != "in_review":
+            print_error(f"Cannot accept: ticket is '{ticket.status}', expected 'in_review'.")
+            raise typer.Exit(code=1)
+
+        # Gate: session must be needs_king_review
+        state = get_agent_state(base, feature, session_name)
+        if state.status != "needs_king_review":
+            print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
+            raise typer.Exit(code=1)
+
+        # Gate: must be on the feature branch
+        current_branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=str(base),
+        ).stdout.strip()
+        if normalize_branch_name(current_branch) != normalize_branch_name(feature):
+            print_error(
+                f"Cannot accept: expected to be on '{feature}' but HEAD is on '{current_branch}'. "
+                "Switch branches and retry."
+            )
+            raise typer.Exit(code=1)
+
+        if state.hand_mode:
+            # Hand mode: changes are already on the feature branch, skip merge
+            typer.echo(f"Hand mode — changes already on {feature}, skipping merge")
+        else:
+            # Worktree mode: merge ticket branch into feature branch
+            worktree_path = worktree_path_for(base, full_ticket_id)
+            merge_result = subprocess.run(
+                ["git", "merge", branch_name, "--no-edit"],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+            )
+            if merge_result.returncode != 0:
+                # Integration failed — keep in_review, show recovery steps
+                merge_err = merge_result.stdout.strip()
+                if merge_result.stderr.strip():
+                    merge_err += "\n" + merge_result.stderr.strip()
+                print_error("Integration failed — ticket remains in_review.")
+                typer.echo(f"\n{merge_err}\n")
+                typer.echo("Recovery steps:")
+                typer.echo(f"  1. cd {worktree_path}")
+                typer.echo(f"  2. git merge {feature} (resolve conflicts)")
+                typer.echo(f"  3. kd peasant review {full_ticket_id} --accept (retry)")
+                raise typer.Exit(code=1)
+
+            typer.echo(f"Integrated {branch_name} into {feature}")
+
         ticket.status = "closed"
         write_ticket(ticket, ticket_path)
         update_agent_state(
@@ -2208,6 +2295,26 @@ def peasant_review(
         return
 
     if reject is not None:
+        # Gate: ticket must be in_review
+        if ticket.status != "in_review":
+            print_error(f"Cannot reject: ticket is '{ticket.status}', expected 'in_review'.")
+            raise typer.Exit(code=1)
+
+        # Gate: session must be needs_king_review
+        state = get_agent_state(base, feature, session_name)
+        if state.status != "needs_king_review":
+            print_error(f"Cannot reject: session is '{state.status}', expected 'needs_king_review'.")
+            raise typer.Exit(code=1)
+
+        # Gate: old process must be dead before relaunching
+        if not no_resume and state.pid:
+            try:
+                os.kill(state.pid, 0)
+                print_error(f"Peasant process (pid {state.pid}) is still alive. Stop it first or use --no-resume.")
+                raise typer.Exit(code=1)
+            except OSError:
+                pass  # Process is dead, safe to relaunch
+
         try:
             add_message(base, feature, thread_id, from_="king", to=session_name, body=reject)
         except FileNotFoundError:
@@ -2216,47 +2323,66 @@ def peasant_review(
             )
             raise typer.Exit(code=1) from None
 
-        # Check if peasant process is still alive
-        state = get_agent_state(base, feature, session_name)
-        process_alive = False
-        if state.status == "working" and state.pid:
-            try:
-                os.kill(state.pid, 0)
-                process_alive = True
-            except OSError:
-                pass
+        # Transition ticket back to in_progress
+        ticket.status = "in_progress"
+        write_ticket(ticket, ticket_path)
 
-        if process_alive:
+        if no_resume:
             update_agent_state(
                 base,
                 feature,
                 session_name,
                 status="working",
+                pid=None,
+                review_bounce_count=0,
                 last_activity=datetime.now(UTC).isoformat(),
             )
-            typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant will pick it up")
+            typer.echo(f"{full_ticket_id}: rejected — feedback sent, ticket back to in_progress")
+            return
+
+        # Auto-resume: relaunch the peasant
+        agent_backend = state.agent_backend or "claude"
+
+        if state.hand_mode:
+            # Hand mode: relaunch in-place using base repo
+            from kingdom.session import list_active_agents
+
+            for active in list_active_agents(base, feature):
+                if active.name == session_name:
+                    continue
+                if active.status == "working" and active.pid and active.name.startswith("peasant-"):
+                    try:
+                        os.kill(active.pid, 0)
+                        print_error(
+                            f"Peasant {active.name} (pid {active.pid}) is already working on this checkout. "
+                            "Stop it first or use --no-resume."
+                        )
+                        raise typer.Exit(code=1)
+                    except OSError:
+                        pass
+            worktree_path = base
         else:
-            # Relaunch the harness
-            agent_backend = state.agent_backend or "claude"
+            # Worktree mode: use the ticket worktree
             worktree_path = worktree_path_for(base, full_ticket_id)
             if not worktree_path.exists():
                 print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
                 raise typer.Exit(code=1)
 
-            pid = launch_work_background(
-                base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
-            )
+        pid = launch_work_background(
+            base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
+        )
 
-            now = datetime.now(UTC).isoformat()
-            update_agent_state(
-                base,
-                feature,
-                session_name,
-                status="working",
-                pid=pid,
-                last_activity=now,
-            )
-            typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant relaunched (pid {pid})")
+        now = datetime.now(UTC).isoformat()
+        update_agent_state(
+            base,
+            feature,
+            session_name,
+            status="working",
+            pid=pid,
+            review_bounce_count=0,
+            last_activity=now,
+        )
+        typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant relaunched (pid {pid})")
         return
 
     # --- Show review info ---
@@ -2304,8 +2430,16 @@ def peasant_review(
     console.print(Markdown(f"## {ruff_title}\n\n```\n{ruff_content}\n```"))
 
     # 3. Show diff
+    review_state = get_agent_state(base, feature, session_name)
+    if review_state.hand_mode:
+        if review_state.start_sha:
+            diff_spec = f"{review_state.start_sha}..HEAD"
+        else:
+            diff_spec = "HEAD"
+    else:
+        diff_spec = f"HEAD...{branch_name}"
     diff_result = subprocess.run(
-        ["git", "diff", f"HEAD...{branch_name}", "--stat"],
+        ["git", "diff", diff_spec, "--stat"],
         capture_output=True,
         text=True,
         cwd=str(base),
@@ -2313,9 +2447,9 @@ def peasant_review(
     diff_output = diff_result.stdout.strip()
     diff_err = diff_result.stderr.strip()
     if diff_result.returncode != 0 and diff_err:
-        console.print(Markdown(f"## diff error: HEAD...{branch_name}\n\n```\n{diff_err}\n```"))
+        console.print(Markdown(f"## diff error: {diff_spec}\n\n```\n{diff_err}\n```"))
     elif diff_output:
-        console.print(Markdown(f"## diff: HEAD...{branch_name}\n\n```\n{diff_output}\n```"))
+        console.print(Markdown(f"## diff: {diff_spec}\n\n```\n{diff_output}\n```"))
     else:
         typer.echo("(no diff — branch may not have diverged yet)")
 
@@ -2326,14 +2460,34 @@ def peasant_review(
     else:
         typer.echo("(no worklog entries)")
 
-    # 5. Show session status
+    # 5. Show council feedback (messages from council members in the work thread)
+    try:
+        from kingdom.thread import list_messages
+
+        messages = list_messages(base, feature, thread_id)
+        council_msgs = [m for m in messages if m.from_ not in ("king", session_name)]
+        if council_msgs:
+            feedback_parts = []
+            for msg in council_msgs:
+                feedback_parts.append(f"### {msg.from_}\n\n{msg.body}")
+            console.print(Markdown("## Council Feedback\n\n" + "\n\n---\n\n".join(feedback_parts)))
+    except FileNotFoundError:
+        pass  # No work thread yet — skip council feedback
+
+    # 6. Show session status
     state = get_agent_state(base, feature, session_name)
-    typer.echo(f"\nPeasant status: {state.status}")
+    typer.echo(f"\nTicket status: {ticket.status}")
+    typer.echo(f"Peasant status: {state.status}")
+    if state.review_bounce_count:
+        typer.echo(f"Review bounces: {state.review_bounce_count}")
 
     # Prompt for action
     all_passed = test_passed and ruff_passed
-    if all_passed:
+    can_accept = ticket.status == "in_review" and state.status == "needs_king_review"
+    if all_passed and can_accept:
         typer.echo("\nAll checks passed. Use --accept to close the ticket or --reject 'feedback' to send feedback.")
+    elif all_passed:
+        typer.echo("\nAll checks passed but ticket is not in review state. Use --reject 'feedback' to send feedback.")
     else:
         typer.echo("\nSome checks failed. Use --reject 'feedback' to send feedback.")
 
@@ -2478,12 +2632,12 @@ def status(
     tickets = list_tickets(tickets_dir) if tickets_dir.exists() else []
 
     # Count by status
-    status_counts = {"open": 0, "in_progress": 0, "closed": 0}
+    status_counts = {"open": 0, "in_progress": 0, "in_review": 0, "closed": 0}
     for ticket in tickets:
         if ticket.status in status_counts:
             status_counts[ticket.status] += 1
 
-    # Count ready tickets (open/in_progress with all deps closed)
+    # Count ready tickets (open/in_progress with all deps closed — excludes in_review)
     status_by_id = {t.id: t.status for t in tickets}
     ready_count = 0
     for ticket in tickets:
@@ -2534,7 +2688,9 @@ def status(
         typer.echo()
         total = sum(status_counts.values())
         typer.echo(
-            f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, {status_counts['closed']} closed, {ready_count} ready ({total} total)"
+            f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, "
+            f"{status_counts['in_review']} in review, {status_counts['closed']} closed, "
+            f"{ready_count} ready ({total} total)"
         )
 
         if assigned:
@@ -2922,7 +3078,7 @@ def format_ticket_summary(tickets: list) -> str:
     total = len(tickets)
     # Fixed display order
     parts = []
-    for label in ("open", "in_progress", "closed"):
+    for label in ("open", "in_progress", "in_review", "closed"):
         if counts[label]:
             parts.append(f"{counts[label]} {label}")
     parts.append(f"{total} total")
@@ -2959,6 +3115,7 @@ def console_width() -> int:
 STATUS_STYLES = {
     "open": "green",
     "in_progress": "yellow",
+    "in_review": "magenta",
     "closed": "dim",
 }
 
@@ -3031,18 +3188,19 @@ def ticket_list(
     status: Annotated[
         str | None,
         typer.Option(
-            "--status", "-s", help="Filter by status (open, in_progress, closed). Overrides --include-closed."
+            "--status",
+            "-s",
+            help="Filter by status (open, in_progress, in_review, closed). Overrides --include-closed.",
         ),
     ] = None,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List tickets in the current branch or all locations."""
-    valid_statuses = {"open", "in_progress", "closed"}
     if status is not None:
         status = status.lower()
-        if status not in valid_statuses:
-            typer.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(valid_statuses))}")
+        if status not in STATUSES:
+            typer.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
             raise typer.Exit(code=1)
 
     def apply_status_filter(tickets: list) -> list:
@@ -3175,7 +3333,7 @@ def resolve_dep_status(base: Path, dep_id: str) -> str:
     return dep_ticket.status
 
 
-STATUS_COLORS = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
+STATUS_COLORS = {"open": "yellow", "in_progress": "cyan", "in_review": "magenta", "closed": "green"}
 
 
 def render_ticket_panel(ticket: Ticket, ticket_path: Path, base: Path) -> Panel:
@@ -3411,7 +3569,7 @@ def ticket_current(
         console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
         console.print(Rule(style="dim"))
 
-        status_colors = {"open": "yellow", "in_progress": "cyan", "closed": "green"}
+        status_colors = {"open": "yellow", "in_progress": "cyan", "in_review": "magenta", "closed": "green"}
         status_color = status_colors.get(ticket.status, "white")
         console.print(
             f"[bold]{ticket.id}[/bold]  "

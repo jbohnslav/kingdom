@@ -224,6 +224,79 @@ class TestListActiveAgents:
         assert list_active_agents(tmp_path, "no-such-branch") == []
 
 
+class TestNewSessionFields:
+    """Tests for start_sha, review_bounce_count, and new statuses."""
+
+    def test_new_statuses_in_agent_statuses(self) -> None:
+        from kingdom.session import AGENT_STATUSES
+
+        assert "awaiting_council" in AGENT_STATUSES
+        assert "needs_king_review" in AGENT_STATUSES
+
+    def test_start_sha_defaults_to_none(self, project: Path) -> None:
+        state = get_agent_state(project, BRANCH, "claude")
+        assert state.start_sha is None
+
+    def test_review_bounce_count_defaults_to_zero(self, project: Path) -> None:
+        state = get_agent_state(project, BRANCH, "claude")
+        assert state.review_bounce_count == 0
+
+    def test_start_sha_persists(self, project: Path) -> None:
+        set_agent_state(
+            project,
+            BRANCH,
+            "claude",
+            AgentState(name="claude", status="working", start_sha="abc123def"),
+        )
+        state = get_agent_state(project, BRANCH, "claude")
+        assert state.start_sha == "abc123def"
+
+    def test_review_bounce_count_persists(self, project: Path) -> None:
+        set_agent_state(
+            project,
+            BRANCH,
+            "claude",
+            AgentState(name="claude", status="working", review_bounce_count=2),
+        )
+        state = get_agent_state(project, BRANCH, "claude")
+        assert state.review_bounce_count == 2
+
+    def test_update_start_sha(self, project: Path) -> None:
+        set_agent_state(project, BRANCH, "claude", AgentState(name="claude"))
+        updated = update_agent_state(project, BRANCH, "claude", start_sha="deadbeef")
+        assert updated.start_sha == "deadbeef"
+        reread = get_agent_state(project, BRANCH, "claude")
+        assert reread.start_sha == "deadbeef"
+
+    def test_update_review_bounce_count(self, project: Path) -> None:
+        set_agent_state(project, BRANCH, "claude", AgentState(name="claude"))
+        updated = update_agent_state(project, BRANCH, "claude", review_bounce_count=3)
+        assert updated.review_bounce_count == 3
+        reread = get_agent_state(project, BRANCH, "claude")
+        assert reread.review_bounce_count == 3
+
+    def test_backward_compat_old_session_without_new_fields(self, project: Path) -> None:
+        """Old session files without start_sha/review_bounce_count load with safe defaults."""
+        p = session_path(project, BRANCH, "claude")
+        p.write_text(
+            json.dumps({"name": "claude", "status": "working", "pid": 1234}) + "\n",
+            encoding="utf-8",
+        )
+        state = get_agent_state(project, BRANCH, "claude")
+        assert state.start_sha is None
+        assert state.review_bounce_count == 0
+        assert state.status == "working"
+        assert state.pid == 1234
+
+    def test_new_statuses_work_with_list_active(self, project: Path) -> None:
+        set_agent_state(project, BRANCH, "p1", AgentState(name="p1", status="awaiting_council"))
+        set_agent_state(project, BRANCH, "p2", AgentState(name="p2", status="needs_king_review"))
+        active = list_active_agents(project, BRANCH)
+        statuses = {a.name: a.status for a in active}
+        assert statuses["p1"] == "awaiting_council"
+        assert statuses["p2"] == "needs_king_review"
+
+
 class TestCurrentThread:
     def test_get_returns_none_when_unset(self, project: Path) -> None:
         assert get_current_thread(project, BRANCH) is None
