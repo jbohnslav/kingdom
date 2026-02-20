@@ -19,6 +19,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -237,6 +238,215 @@ def run_lint(worktree: Path) -> tuple[bool, str]:
         return False, "Lint check timed out after 60s"
 
 
+def get_diff(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
+    """Get the diff of changes for council review.
+
+    For worktree mode (feature_branch set): uses feature_branch...HEAD (three-dot
+    merge-base diff) so only the peasant's own changes appear, not other peasants'
+    work that was merged into the feature branch.
+
+    For hand mode (feature_branch=None): uses start_sha..HEAD (two-dot).
+    Falls back to showing all uncommitted + recent committed changes.
+    """
+    try:
+        if feature_branch:
+            # Worktree mode: three-dot merge-base diff against feature branch
+            result = subprocess.run(
+                ["git", "diff", f"{feature_branch}...HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=30,
+            )
+            # Fall back to two-dot if three-dot fails (e.g. detached HEAD, missing ref)
+            if result.returncode != 0 and start_sha:
+                result = subprocess.run(
+                    ["git", "diff", f"{start_sha}..HEAD"],
+                    capture_output=True,
+                    text=True,
+                    cwd=worktree,
+                    timeout=30,
+                )
+        elif start_sha:
+            result = subprocess.run(
+                ["git", "diff", f"{start_sha}..HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=30,
+            )
+        else:
+            # No start_sha — show diff of staged + unstaged changes
+            result = subprocess.run(
+                ["git", "diff", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=30,
+            )
+        if result.returncode == 0 and result.stdout.strip():
+            diff = result.stdout.strip()
+            # Truncate very large diffs to avoid overwhelming the council
+            if len(diff) > 50000:
+                diff = diff[:50000] + "\n\n... (diff truncated at 50k chars)"
+            return diff
+        return "(no changes detected)"
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "(could not generate diff)"
+
+
+def build_review_prompt(ticket_title: str, ticket_body: str, diff: str, worklog: str) -> str:
+    """Build the prompt sent to council members for review."""
+    parts = [
+        "## Code Review Request",
+        "",
+        f"**Ticket:** {ticket_title}",
+        "",
+        "### Ticket Description",
+        ticket_body.split("## Worklog")[0].strip() if "## Worklog" in ticket_body else ticket_body.strip(),
+        "",
+        "### Changes (diff)",
+        "```diff",
+        diff,
+        "```",
+    ]
+
+    if worklog:
+        parts.extend(
+            [
+                "",
+                "### Worklog",
+                worklog,
+            ]
+        )
+
+    parts.extend(
+        [
+            "",
+            "### Instructions",
+            "Review this code change. Consider:",
+            "- Correctness: does it do what the ticket asks?",
+            "- Edge cases: are there unhandled scenarios?",
+            "- Code quality: is it readable, maintainable, and well-structured?",
+            "- Tests: are the changes adequately tested?",
+            "",
+            "End your review with exactly one of these verdict lines:",
+            "VERDICT: APPROVED",
+            "VERDICT: BLOCKING",
+            "",
+            "Use BLOCKING only for issues that must be fixed before merge.",
+            "Use APPROVED if the changes are acceptable (minor suggestions are fine with APPROVED).",
+        ]
+    )
+
+    return "\n".join(parts)
+
+
+def strip_markdown_decoration(line: str) -> str:
+    """Strip common markdown decoration from a line for verdict matching."""
+    line = re.sub(r"[*_`]", "", line)
+    line = re.sub(r"^[\s>#\-]*", "", line)
+    return line.strip()
+
+
+def parse_verdict(response_text: str) -> str:
+    """Extract VERDICT: APPROVED|BLOCKING from a council response.
+
+    Returns 'approved', 'blocking', or 'approved' (default if missing, with warning).
+    """
+    for line in reversed(response_text.strip().splitlines()):
+        cleaned = strip_markdown_decoration(line)
+        match = re.match(r"^VERDICT:\s*(APPROVED|BLOCKING)$", cleaned, re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+    # Missing verdict — treat as approved per design doc (log warning)
+    return "approved"
+
+
+def run_council_review(
+    base: Path,
+    branch: str,
+    worktree: Path,
+    ticket_path: Path,
+    session_name: str,
+    thread_id: str,
+    start_sha: str | None,
+    council_timeout: int,
+    hand_mode: bool = False,
+) -> tuple[str, list[str]]:
+    """Run council review and return (outcome, feedback).
+
+    outcome: 'approved', 'blocking', 'timeout', 'no_council'
+    feedback: list of blocking feedback strings from councillors.
+    """
+    from kingdom.council.council import Council
+
+    # Create council from config
+    council = Council.create(base=base)
+    if not council.members:
+        logger.warning("No council members configured — skipping council review")
+        return "no_council", []
+
+    council.load_sessions(base, branch)
+
+    # Build review prompt — worktree mode uses three-dot diff against feature branch
+    ticket = read_ticket(ticket_path)
+    feature_branch = None if hand_mode else branch
+    diff = get_diff(worktree, start_sha, feature_branch=feature_branch)
+    worklog = extract_worklog(ticket_path)
+    prompt = build_review_prompt(ticket.title, ticket.body, diff, worklog)
+
+    # Write king's review request to thread
+    add_message(base, branch, thread_id, from_="king", to="council", body=prompt)
+
+    logger.info("Council review dispatched to %d members (timeout: %ds)", len(council.members), council_timeout)
+
+    # Query council with timeout — this blocks until all respond or timeout
+    start_time = time.monotonic()
+    responses = council.query_to_thread(
+        prompt=prompt,
+        base=base,
+        branch=branch,
+        thread_id=thread_id,
+    )
+    elapsed = time.monotonic() - start_time
+
+    council.save_sessions(base, branch)
+
+    # Check for timeout (council.query_to_thread handles per-member timeouts,
+    # but we also check wall-clock time)
+    if elapsed >= council_timeout:
+        logger.warning("Council review timed out after %.0fs", elapsed)
+        return "timeout", []
+
+    # Parse verdicts
+    blocking_feedback = []
+    for name, response in responses.items():
+        if response.error:
+            logger.warning("Council member %s errored: %s", name, response.error)
+            continue
+
+        verdict = parse_verdict(response.text)
+
+        # Check if verdict line was actually present
+        has_verdict_line = any(
+            re.match(r"^VERDICT:\s*(APPROVED|BLOCKING)$", strip_markdown_decoration(line), re.IGNORECASE)
+            for line in response.text.strip().splitlines()
+        )
+        if not has_verdict_line:
+            logger.warning("Council member %s did not include a VERDICT line — treating as APPROVED", name)
+
+        if verdict == "blocking":
+            logger.info("Council member %s: BLOCKING", name)
+            blocking_feedback.append(f"[{name}] {response.text}")
+        else:
+            logger.info("Council member %s: APPROVED", name)
+
+    if blocking_feedback:
+        return "blocking", blocking_feedback
+    return "approved", []
+
+
 def run_agent_loop(
     base: Path,
     branch: str,
@@ -313,6 +523,23 @@ def run_agent_loop(
                 break
     except FileNotFoundError:
         pass
+
+    # Record start_sha on first run (for diff scoping in council review).
+    if not agent_state.start_sha:
+        try:
+            sha_result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=10,
+            )
+            if sha_result.returncode == 0:
+                start_sha = sha_result.stdout.strip()
+                update_agent_state(base, branch, session_name, start_sha=start_sha)
+                logger.info("Recorded start_sha: %s", start_sha)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            logger.warning("Could not record start_sha")
 
     final_status = "failed"
 
@@ -426,11 +653,7 @@ def run_agent_loop(
             tests_passed, test_output = run_tests(worktree)
             lint_passed, lint_output = run_lint(worktree)
 
-            if tests_passed and lint_passed:
-                final_status = "done"
-                logger.info("Quality gates passed (pytest + ruff), accepting DONE")
-                append_worklog(ticket_path, "Quality gates passed (pytest + ruff) — marking done")
-            else:
+            if not (tests_passed and lint_passed):
                 failures = []
                 if not tests_passed:
                     failures.append(f"pytest:\n{test_output}")
@@ -446,7 +669,87 @@ def run_agent_loop(
                 append_worklog(ticket_path, f"DONE rejected ({', '.join(summary)}). See logs for details.")
                 # Don't break — continue the loop so agent can fix
                 continue
-            break
+
+            logger.info("Quality gates passed (pytest + ruff)")
+            append_worklog(ticket_path, "Quality gates passed (pytest + ruff)")
+
+            # --- Council review phase ---
+            # Transition ticket to in_review, session to awaiting_council
+            ticket_obj = read_ticket(ticket_path)
+            ticket_obj.status = "in_review"
+            write_ticket(ticket_obj, ticket_path)
+
+            now = datetime.now(UTC).isoformat()
+            update_agent_state(
+                base,
+                branch,
+                session_name,
+                status="awaiting_council",
+                last_activity=now,
+            )
+
+            agent_state = get_agent_state(base, branch, session_name)
+            review_outcome, blocking_feedback = run_council_review(
+                base=base,
+                branch=branch,
+                worktree=worktree,
+                ticket_path=ticket_path,
+                session_name=session_name,
+                thread_id=thread_id,
+                start_sha=agent_state.start_sha,
+                council_timeout=cfg.council.timeout,
+                hand_mode=agent_state.hand_mode,
+            )
+
+            if review_outcome == "no_council":
+                # No council configured — go straight to needs_king_review
+                final_status = "needs_king_review"
+                append_worklog(ticket_path, "No council configured — awaiting king review")
+                break
+
+            if review_outcome == "timeout":
+                # Council timed out — escalate to king
+                final_status = "needs_king_review"
+                append_worklog(ticket_path, "Council review timed out — escalating to king")
+                break
+
+            if review_outcome == "approved":
+                final_status = "needs_king_review"
+                append_worklog(ticket_path, "Council review: APPROVED — awaiting king review")
+                break
+
+            # Blocking feedback — check bounce limit
+            bounce_count = agent_state.review_bounce_count + 1
+            update_agent_state(base, branch, session_name, review_bounce_count=bounce_count)
+
+            if bounce_count >= 3:
+                # Escalate after 3 bounces
+                final_status = "needs_king_review"
+                append_worklog(
+                    ticket_path,
+                    f"Council review: BLOCKING (bounce {bounce_count}/3) — escalating to king",
+                )
+                logger.warning("Review bounce limit reached (%d), escalating to king", bounce_count)
+                break
+
+            # Bounce back to working — inject feedback as directives
+            logger.info("Council review: BLOCKING (bounce %d/3), returning to working", bounce_count)
+            append_worklog(ticket_path, f"Council review: BLOCKING (bounce {bounce_count}/3) — returning to working")
+
+            # Revert ticket to in_progress, session to working
+            ticket_obj = read_ticket(ticket_path)
+            ticket_obj.status = "in_progress"
+            write_ticket(ticket_obj, ticket_path)
+
+            # Add blocking feedback as a directive message in the thread
+            feedback_body = "## Council Review Feedback (BLOCKING)\n\n" + "\n\n---\n\n".join(blocking_feedback)
+            try:
+                add_message(base, branch, thread_id, from_="king", to=session_name, body=feedback_body)
+            except FileNotFoundError:
+                logger.warning("Could not write council feedback to thread %s", thread_id)
+
+            # Continue the loop — agent will pick up feedback as directives
+            continue
         elif status == "blocked":
             final_status = "blocked"
             logger.info("Agent reports BLOCKED")

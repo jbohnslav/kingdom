@@ -145,6 +145,45 @@ class TestTicketCurrent:
             assert "high" in result.output
             assert "Higher priority" in result.output
 
+    def test_current_ignores_in_review(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            review_ticket = Ticket(
+                id="rev1", status="in_review", title="Under review", body="", created=datetime.now(UTC)
+            )
+            ip_ticket = Ticket(
+                id="ip01", status="in_progress", title="The current one", body="", created=datetime.now(UTC)
+            )
+            write_ticket(review_ticket, tickets_dir / "rev1.md")
+            write_ticket(ip_ticket, tickets_dir / "ip01.md")
+
+            result = runner.invoke(cli.app, ["tk", "current"])
+
+            assert result.exit_code == 0, result.output
+            assert "ip01" in result.output
+            assert "The current one" in result.output
+            # in_review ticket should not appear
+            assert "rev1" not in result.output
+
+    def test_current_only_in_review_exits_1(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            review_ticket = Ticket(
+                id="rev1", status="in_review", title="Under review", body="", created=datetime.now(UTC)
+            )
+            write_ticket(review_ticket, tickets_dir / "rev1.md")
+
+            result = runner.invoke(cli.app, ["tk", "current"])
+
+            assert result.exit_code == 1
+            assert "No in-progress ticket" in result.output
+
     def test_current_ignores_closed_and_open(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

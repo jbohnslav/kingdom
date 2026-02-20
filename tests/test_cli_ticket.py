@@ -544,6 +544,9 @@ class TestTicketMove:
 
             assert result.exit_code == 0, result.output
             assert "Moved kin-mv04 to backlog" in result.output
+            # Verify actual file state, not just CLI output
+            assert not (tickets_dir / "kin-mv04.md").exists(), "Source ticket should be removed"
+            assert (backlog_root(base) / "tickets" / "kin-mv04.md").exists(), "Ticket should exist in backlog"
 
     def test_move_already_in_destination(self) -> None:
         with runner.isolated_filesystem():
@@ -694,6 +697,41 @@ class TestTicketList:
             assert result.exit_code == 0
             assert "Open ticket" not in result.output
             assert "Closed ticket" in result.output
+
+    def test_list_status_filter_in_review(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            open_ticket = Ticket(id="aaaa", status="open", title="Open ticket", body="", created=datetime.now(UTC))
+            review_ticket = Ticket(
+                id="bbbb", status="in_review", title="Review ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(review_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--status", "in_review"])
+
+            assert result.exit_code == 0
+            assert "Open ticket" not in result.output
+            assert "Review ticket" in result.output
+
+    def test_list_shows_in_review_by_default(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            review_ticket = Ticket(
+                id="aaaa", status="in_review", title="Review ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(review_ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "Review ticket" in result.output
 
     def test_list_status_filter_invalid(self) -> None:
         with runner.isolated_filesystem():
@@ -1825,6 +1863,25 @@ class TestNoResultsMessages:
             assert result.exit_code == 0
             assert "No ready tickets" in result.output
             assert "kd tk create" in result.output
+
+    def test_ready_excludes_in_review(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            open_ticket = Ticket(id="aaaa", status="open", title="Open ticket", body="", created=datetime.now(UTC))
+            review_ticket = Ticket(
+                id="bbbb", status="in_review", title="Review ticket", body="", created=datetime.now(UTC)
+            )
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(review_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "ready"])
+
+            assert result.exit_code == 0
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
 
     def test_show_all_empty_branch_shows_guidance(self) -> None:
         with runner.isolated_filesystem():
