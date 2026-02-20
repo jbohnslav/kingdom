@@ -26,7 +26,7 @@ from pathlib import Path
 from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.thread import add_message, list_messages
-from kingdom.ticket import find_ticket, read_ticket, write_ticket
+from kingdom.ticket import append_worklog_entry, find_ticket, read_ticket, write_ticket
 
 logger = logging.getLogger("kingdom.harness")
 
@@ -130,23 +130,8 @@ def format_worklog_timestamp(dt: datetime) -> str:
 
 
 def append_worklog(ticket_path: Path, entry: str) -> None:
-    """Append an entry to the ticket's worklog section.
-
-    If no worklog section exists, creates one at the end of the ticket body.
-    Worklog is always the last section, so we just append to the end.
-    """
-    ticket = read_ticket(ticket_path)
     now = datetime.now(UTC)
-    timestamp = format_worklog_timestamp(now)
-
-    worklog_line = f"- {timestamp} {entry}"
-
-    if "## Worklog" not in ticket.body:
-        ticket.body = ticket.body.rstrip() + "\n\n## Worklog\n\n" + worklog_line
-    else:
-        ticket.body = ticket.body.rstrip() + "\n" + worklog_line
-
-    write_ticket(ticket, ticket_path)
+    append_worklog_entry(ticket_path, entry, timestamp=now, timestamp_text=format_worklog_timestamp(now))
 
 
 def extract_worklog(ticket_path: Path) -> str:
@@ -548,8 +533,6 @@ def run_agent_loop(
             final_status = "stopped"
             logger.info("Stopping at iteration %d (signal received)", iteration)
             break
-
-        logger.info("=== Iteration %d ===", iteration)
 
         # Update session: working
         now = datetime.now(UTC).isoformat()
