@@ -136,6 +136,14 @@ class TestMessagePanel:
         panel = MessagePanel(sender="king", body="Question?")
         assert panel.sender == "king"
 
+    def test_click_stops_event(self) -> None:
+        from unittest.mock import MagicMock
+
+        panel = MessagePanel(sender="king", body="Hello")
+        event = MagicMock()
+        panel.on_click(event)
+        event.stop.assert_called_once()
+
 
 class TestStreamingPanel:
     def test_initial_state(self) -> None:
@@ -253,15 +261,20 @@ class TestThinkingPanel:
         assert panel.expanded is True
 
     def test_on_click_toggles_and_pins(self) -> None:
+        from unittest.mock import MagicMock
+
         panel = ThinkingPanel(sender="codex")
         assert panel.expanded is True
         assert panel.user_pinned is False
 
-        panel.on_click()
+        event = MagicMock()
+        panel.on_click(event)
         assert panel.expanded is False
         assert panel.user_pinned is True
+        event.stop.assert_called_once()
 
-        panel.on_click()
+        event2 = MagicMock()
+        panel.on_click(event2)
         assert panel.expanded is True
         assert panel.user_pinned is True
 

@@ -221,6 +221,7 @@ class MessagePanel(Static):
 
     def on_click(self, event) -> None:
         """Handle click: reply (default) or copy (shift)."""
+        event.stop()
         if self.sender == "king":
             return
         if event.shift:
@@ -406,8 +407,9 @@ class ThinkingPanel(Static):
         self.styles.border = ("dashed", color)
         self.update_display()
 
-    def on_click(self) -> None:
+    def on_click(self, event) -> None:
         """Toggle expanded/collapsed on click."""
+        event.stop()
         self.user_pinned = True
         self.expanded = not self.expanded
         if self.expanded:
