@@ -259,8 +259,8 @@ class TestExtractWorklog:
         assert "Entry 1" in worklog
         assert "Entry 2" in worklog
 
-    def test_returns_everything_after_header(self, ticket_path: Path) -> None:
-        """Worklog is always the last section, so everything after header is worklog."""
+    def test_returns_entries_from_worklog_section(self, ticket_path: Path) -> None:
+        """Extracts entries from the Worklog section."""
         ticket = read_ticket(ticket_path)
         ticket.body += "\n\n## Worklog\n\n- Entry 1\n- Entry 2"
         write_ticket(ticket, ticket_path)
@@ -268,6 +268,17 @@ class TestExtractWorklog:
         worklog = extract_worklog(ticket_path)
         assert "Entry 1" in worklog
         assert "Entry 2" in worklog
+
+    def test_stops_at_next_heading(self, ticket_path: Path) -> None:
+        """extract_worklog should not include content from sections after Worklog."""
+        ticket = read_ticket(ticket_path)
+        ticket.body += "\n\n## Worklog\n\n- Entry 1\n\n## Notes\n\nThis is not worklog."
+        write_ticket(ticket, ticket_path)
+
+        worklog = extract_worklog(ticket_path)
+        assert "Entry 1" in worklog
+        assert "Notes" not in worklog
+        assert "not worklog" not in worklog
 
 
 class TestGetNewDirectives:

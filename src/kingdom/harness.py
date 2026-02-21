@@ -137,16 +137,20 @@ def append_worklog(ticket_path: Path, entry: str) -> None:
 
 
 def extract_worklog(ticket_path: Path) -> str:
-    """Extract the worklog section from a ticket.
-
-    Worklog is always the last section, so everything after the header is worklog.
-    """
+    """Extract the worklog section from a ticket, stopping at the next heading."""
     ticket = read_ticket(ticket_path)
     if "## Worklog" not in ticket.body:
         return ""
 
     _, after_header = ticket.body.split("## Worklog", 1)
-    return after_header.strip()
+    # Stop at the next ## heading if one exists
+    lines = after_header.split("\n")
+    result = []
+    for line in lines:
+        if line.startswith("## "):
+            break
+        result.append(line)
+    return "\n".join(result).strip()
 
 
 def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: int) -> tuple[list[str], int]:
