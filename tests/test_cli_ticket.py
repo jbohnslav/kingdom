@@ -1880,8 +1880,50 @@ class TestNoResultsMessages:
             result = runner.invoke(cli.app, ["tk", "ready"])
 
             assert result.exit_code == 0
+            assert "Branch:" in result.output
             assert "aaaa" in result.output
             assert "bbbb" not in result.output
+
+    def test_ready_separates_branch_and_backlog(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            backlog_dir = backlog_root(base) / "tickets"
+            backlog_dir.mkdir(parents=True, exist_ok=True)
+
+            branch_tk = Ticket(id="aaaa", status="open", title="Branch task", body="", created=datetime.now(UTC))
+            backlog_tk = Ticket(id="bbbb", status="open", title="Backlog task", body="", created=datetime.now(UTC))
+            write_ticket(branch_tk, tickets_dir / "aaaa.md")
+            write_ticket(backlog_tk, backlog_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "ready"])
+
+            assert result.exit_code == 0
+            lines = result.output.strip().split("\n")
+            assert lines[0] == "Branch:"
+            assert "aaaa" in lines[1]
+            # blank line separator
+            assert lines[2] == ""
+            assert lines[3] == "Backlog:"
+            assert "bbbb" in lines[4]
+
+    def test_ready_backlog_only(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            backlog_dir = backlog_root(base) / "tickets"
+            backlog_dir.mkdir(parents=True, exist_ok=True)
+
+            backlog_tk = Ticket(id="cccc", status="open", title="Backlog only", body="", created=datetime.now(UTC))
+            write_ticket(backlog_tk, backlog_dir / "cccc.md")
+
+            result = runner.invoke(cli.app, ["tk", "ready"])
+
+            assert result.exit_code == 0
+            assert "Branch:" not in result.output
+            assert "Backlog:" in result.output
+            assert "cccc" in result.output
 
     def test_show_all_empty_branch_shows_guidance(self) -> None:
         with runner.isolated_filesystem():

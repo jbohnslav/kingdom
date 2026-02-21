@@ -3901,8 +3901,23 @@ def ticket_ready(
         if not ready_tickets:
             typer.echo('No ready tickets. Create one with `kd tk create "title"` or check deps with `kd tk list`.')
             return
-        for ticket, _ in ready_tickets:
-            typer.echo(f"{ticket.id} [P{ticket.priority}][{ticket.status}] - {ticket.title}")
+
+        branch_tickets = [(t, loc) for t, loc in ready_tickets if loc != "backlog"]
+        backlog_tickets_list = [(t, loc) for t, loc in ready_tickets if loc == "backlog"]
+
+        def format_ticket(ticket: Ticket) -> str:
+            return f"  {ticket.id} [P{ticket.priority}][{ticket.status}] {ticket.title}"
+
+        if branch_tickets:
+            typer.echo("Branch:")
+            for ticket, _ in branch_tickets:
+                typer.echo(format_ticket(ticket))
+        if backlog_tickets_list:
+            if branch_tickets:
+                typer.echo("")
+            typer.echo("Backlog:")
+            for ticket, _ in backlog_tickets_list:
+                typer.echo(format_ticket(ticket))
 
 
 @ticket_app.command("log", help="Append a worklog entry to a ticket.")
