@@ -171,6 +171,8 @@ def init(
         }
         config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
+    install_skill()
+
     typer.echo(f"Initialized {paths['state_root']}")
 
 
@@ -204,6 +206,34 @@ def setup_skill() -> None:
 
     target.symlink_to(source)
     typer.echo(f"Linked {target} -> {source}")
+
+
+def install_skill() -> None:
+    """Install the bundled kingdom skill to ~/.claude/skills/kingdom/.
+
+    Copies SKILL.md and reference files from the package into the Claude
+    skills directory.  Skips if the target is a symlink (dev setup).
+    """
+    from importlib.resources import as_file, files
+
+    target = Path.home() / ".claude" / "skills" / "kingdom"
+
+    # Don't overwrite a dev symlink
+    if target.is_symlink():
+        return
+
+    skill_pkg = files("kingdom.skill")
+
+    target.mkdir(parents=True, exist_ok=True)
+    with as_file(skill_pkg / "SKILL.md") as src:
+        (target / "SKILL.md").write_bytes(src.read_bytes())
+
+    refs_target = target / "references"
+    refs_target.mkdir(exist_ok=True)
+    refs_pkg = skill_pkg / "references"
+    for name in ("council.md", "peasants.md", "tickets.md"):
+        with as_file(refs_pkg / name) as src:
+            (refs_target / name).write_bytes(src.read_bytes())
 
 
 def get_current_git_branch() -> str | None:

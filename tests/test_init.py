@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
 from kingdom import cli
+from kingdom.cli import install_skill
 from kingdom.state import branch_root, ensure_base_layout, ensure_run_layout
 
 
@@ -230,3 +232,70 @@ def test_cli_design_is_idempotent_after_start() -> None:
         assert design_result.exit_code == 0
         assert "Design already exists at" in design_result.output
         assert design_path.read_text(encoding="utf-8") == before
+
+
+def test_install_skill_copies_files(tmp_path: Path) -> None:
+    """install_skill copies SKILL.md and references to ~/.claude/skills/kingdom/."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    with patch("kingdom.cli.Path.home", return_value=fake_home):
+        install_skill()
+
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "references" / "council.md").exists()
+    assert (skill_dir / "references" / "peasants.md").exists()
+    assert (skill_dir / "references" / "tickets.md").exists()
+
+    # Verify content is non-empty
+    assert len((skill_dir / "SKILL.md").read_text()) > 100
+
+
+def test_install_skill_skips_symlink(tmp_path: Path) -> None:
+    """install_skill should not overwrite a dev symlink."""
+    fake_home = tmp_path / "home"
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    skill_dir.mkdir(parents=True)
+
+    # Create a symlink to simulate dev setup
+    real_target = tmp_path / "real_skill"
+    real_target.mkdir()
+    skill_dir.rmdir()
+    skill_dir.symlink_to(real_target)
+
+    with patch("kingdom.cli.Path.home", return_value=fake_home):
+        install_skill()
+
+    # Should still be a symlink, not overwritten
+    assert skill_dir.is_symlink()
+    assert not (skill_dir / "SKILL.md").exists()
+
+
+def test_install_skill_idempotent(tmp_path: Path) -> None:
+    """install_skill can be called multiple times without error."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    with patch("kingdom.cli.Path.home", return_value=fake_home):
+        install_skill()
+        install_skill()
+
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    assert (skill_dir / "SKILL.md").exists()
+
+
+def test_cli_init_installs_skill(tmp_path: Path) -> None:
+    """kd init should install the skill as part of initialization."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    runner = CliRunner()
+
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        with patch("kingdom.cli.Path.home", return_value=fake_home):
+            result = runner.invoke(cli.app, ["init"])
+
+    assert result.exit_code == 0
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    assert (skill_dir / "SKILL.md").exists()
