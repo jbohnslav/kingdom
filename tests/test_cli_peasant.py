@@ -857,33 +857,17 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
-            with (
-                patch("subprocess.run") as mock_run,
-            ):
-                # pytest result
-                pytest_result = MagicMock()
-                pytest_result.returncode = 0
-                pytest_result.stdout = "5 passed"
-                pytest_result.stderr = ""
-
-                # ruff result
-                ruff_result = MagicMock()
-                ruff_result.returncode = 0
-                ruff_result.stdout = ""
-                ruff_result.stderr = ""
-
-                # git diff result
+            with patch("subprocess.run") as mock_run:
                 diff_result = MagicMock()
                 diff_result.returncode = 0
                 diff_result.stdout = " src/foo.py | 5 ++-\n 1 file changed"
                 diff_result.stderr = ""
 
-                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
+                mock_run.return_value = diff_result
 
                 result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
 
             assert result.exit_code == 0, result.output
-            assert "PASSED" in result.output
             assert "Did some work" in result.output
             assert "needs_king_review" in result.output
             assert "--accept" in result.output
@@ -1151,45 +1135,6 @@ class TestPeasantReview:
             assert len(messages) == 1
             assert "try again" in messages[0].body
 
-    def test_review_shows_failures(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            create_test_ticket(base)
-
-            session_name = "peasant-kin-test"
-            set_agent_state(
-                base,
-                BRANCH,
-                session_name,
-                AgentState(name=session_name, status="done"),
-            )
-
-            with patch("subprocess.run") as mock_run:
-                pytest_result = MagicMock()
-                pytest_result.returncode = 1
-                pytest_result.stdout = "FAILED test_foo.py"
-                pytest_result.stderr = ""
-
-                ruff_result = MagicMock()
-                ruff_result.returncode = 1
-                ruff_result.stdout = "E501 line too long"
-                ruff_result.stderr = ""
-
-                diff_result = MagicMock()
-                diff_result.returncode = 0
-                diff_result.stdout = ""
-                diff_result.stderr = ""
-
-                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
-
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
-
-            assert result.exit_code == 0, result.output
-            assert "FAILED" in result.output
-            assert "ISSUES" in result.output
-            assert "--reject" in result.output
-
     def test_review_accept_reject_mutually_exclusive(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -1216,22 +1161,12 @@ class TestPeasantReview:
             )
 
             with patch("subprocess.run") as mock_run:
-                pytest_result = MagicMock()
-                pytest_result.returncode = 0
-                pytest_result.stdout = "5 passed"
-                pytest_result.stderr = ""
-
-                ruff_result = MagicMock()
-                ruff_result.returncode = 0
-                ruff_result.stdout = ""
-                ruff_result.stderr = ""
-
                 diff_result = MagicMock()
                 diff_result.returncode = 128
                 diff_result.stdout = ""
                 diff_result.stderr = "fatal: bad revision 'HEAD...ticket/kin-test'"
 
-                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
+                mock_run.return_value = diff_result
 
                 result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
 
@@ -1383,22 +1318,12 @@ class TestPeasantReview:
             )
 
             with patch("subprocess.run") as mock_run:
-                pytest_result = MagicMock()
-                pytest_result.returncode = 0
-                pytest_result.stdout = "5 passed"
-                pytest_result.stderr = ""
-
-                ruff_result = MagicMock()
-                ruff_result.returncode = 0
-                ruff_result.stdout = ""
-                ruff_result.stderr = ""
-
                 diff_result = MagicMock()
                 diff_result.returncode = 0
                 diff_result.stdout = " src/foo.py | 5 ++-\n 1 file changed"
                 diff_result.stderr = ""
 
-                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
+                mock_run.return_value = diff_result
 
                 result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
 
@@ -1410,6 +1335,35 @@ class TestPeasantReview:
             assert "needs_king_review" in result.output
             assert "Review bounces: 1" in result.output
             assert "--accept" in result.output
+
+    def test_review_warns_on_no_diff(self) -> None:
+        """Review should warn when peasant reports done but has no code changes."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            with patch("subprocess.run") as mock_run:
+                diff_result = MagicMock()
+                diff_result.returncode = 0
+                diff_result.stdout = ""  # No diff
+                diff_result.stderr = ""
+
+                mock_run.return_value = diff_result
+
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "no code diff" in result.output.lower()
+            assert "Warning" in result.output
 
 
 class TestBacklogAutoPull:

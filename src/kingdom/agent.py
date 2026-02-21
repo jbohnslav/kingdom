@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 from kingdom.config import AgentDef
 
@@ -301,7 +301,9 @@ def parse_cursor_response(stdout: str, stderr: str, code: int) -> tuple[str, str
     return "", session_id, raw
 
 
-RESPONSE_PARSERS: dict[str, Any] = {
+ResponseParser = Callable[[str, str, int], tuple[str, str | None, str]]
+
+RESPONSE_PARSERS: dict[str, ResponseParser] = {
     "claude_code": parse_claude_response,
     "codex": parse_codex_response,
     "cursor": parse_cursor_response,
@@ -424,7 +426,9 @@ def build_cursor_command(
     return cmd
 
 
-COMMAND_BUILDERS: dict[str, Any] = {
+CommandBuilder = Callable[[AgentConfig, str, str | None, bool, bool], list[str]]
+
+COMMAND_BUILDERS: dict[str, CommandBuilder] = {
     "claude_code": build_claude_command,
     "codex": build_codex_command,
     "cursor": build_cursor_command,
@@ -561,7 +565,9 @@ def extract_cursor_stream_text(line: str) -> str | None:
     return None
 
 
-STREAM_TEXT_EXTRACTORS: dict[str, Any] = {
+StreamExtractor = Callable[[str], str | None]
+
+STREAM_TEXT_EXTRACTORS: dict[str, StreamExtractor] = {
     "claude_code": extract_claude_stream_text,
     "codex": extract_codex_stream_text,
     "cursor": extract_cursor_stream_text,
@@ -624,7 +630,7 @@ def extract_codex_stream_thinking(line: str) -> str | None:
     return None
 
 
-STREAM_THINKING_EXTRACTORS: dict[str, Any] = {
+STREAM_THINKING_EXTRACTORS: dict[str, StreamExtractor] = {
     "codex": extract_codex_stream_thinking,
     "cursor": extract_cursor_stream_thinking,
 }

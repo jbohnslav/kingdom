@@ -74,17 +74,17 @@ class Council:
 
             for future in as_completed(futures):
                 member = futures[future]
-                try:
-                    response = future.result()
-                    responses[member.name] = response
-                except Exception as e:
+                error = future.exception()
+                if error is not None:
                     responses[member.name] = AgentResponse(
                         name=member.name,
                         text="",
-                        error=str(e),
+                        error=str(error),
                         elapsed=0.0,
                         raw="",
                     )
+                    continue
+                responses[member.name] = future.result()
 
         return responses
 
@@ -96,18 +96,7 @@ class Council:
         thread_id: str,
         callback: Callable[[str, AgentResponse], None] | None = None,
     ) -> dict[str, AgentResponse]:
-        """Query all members, writing each response to a thread as it arrives.
-
-        Args:
-            prompt: The query prompt.
-            base: Project root.
-            branch: Branch name.
-            thread_id: Thread ID to write responses to.
-            callback: Optional function called with (name, response) as each arrives.
-
-        Returns:
-            Dict mapping member name to AgentResponse.
-        """
+        """Query all members and persist each response to the thread immediately."""
         from kingdom.thread import add_message, thread_dir
 
         responses: dict[str, AgentResponse] = {}
@@ -123,10 +112,11 @@ class Council:
 
             for future in as_completed(futures):
                 member, stream_path = futures[future]
-                try:
+                error = future.exception()
+                if error is not None:
+                    response = AgentResponse(name=member.name, text="", error=str(error), elapsed=0.0, raw="")
+                else:
                     response = future.result()
-                except Exception as e:
-                    response = AgentResponse(name=member.name, text="", error=str(e), elapsed=0.0, raw="")
 
                 responses[member.name] = response
 
@@ -143,25 +133,21 @@ class Council:
         return responses
 
     def reset_sessions(self) -> None:
-        """Reset all member sessions."""
         for member in self.members:
             member.reset_session()
 
     def get_member(self, name: str) -> CouncilMember | None:
-        """Get a member by name."""
         for member in self.members:
             if member.name == name:
                 return member
         return None
 
     def load_sessions(self, base: Path, branch: str) -> None:
-        """Load session IDs from agent state files."""
         for member in self.members:
             state = get_agent_state(base, branch, member.name)
             if state.resume_id:
                 member.session_id = state.resume_id
 
     def save_sessions(self, base: Path, branch: str) -> None:
-        """Save session IDs to agent state files."""
         for member in self.members:
             update_agent_state(base, branch, member.name, resume_id=member.session_id)

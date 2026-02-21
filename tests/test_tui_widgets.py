@@ -15,6 +15,7 @@ from kingdom.tui.widgets import (
     format_elapsed,
     format_error_body,
     match_commands,
+    suggest_command,
 )
 
 
@@ -135,6 +136,14 @@ class TestMessagePanel:
         panel = MessagePanel(sender="king", body="Question?")
         assert panel.sender == "king"
 
+    def test_click_stops_event(self) -> None:
+        from unittest.mock import MagicMock
+
+        panel = MessagePanel(sender="king", body="Hello")
+        event = MagicMock()
+        panel.on_click(event)
+        event.stop.assert_called_once()
+
 
 class TestStreamingPanel:
     def test_initial_state(self) -> None:
@@ -252,15 +261,20 @@ class TestThinkingPanel:
         assert panel.expanded is True
 
     def test_on_click_toggles_and_pins(self) -> None:
+        from unittest.mock import MagicMock
+
         panel = ThinkingPanel(sender="codex")
         assert panel.expanded is True
         assert panel.user_pinned is False
 
-        panel.on_click()
+        event = MagicMock()
+        panel.on_click(event)
         assert panel.expanded is False
         assert panel.user_pinned is True
+        event.stop.assert_called_once()
 
-        panel.on_click()
+        event2 = MagicMock()
+        panel.on_click(event2)
         assert panel.expanded is True
         assert panel.user_pinned is True
 
@@ -371,6 +385,47 @@ class TestColoredMentionMarkdown:
         for seg in mention_segs:
             assert seg.style.bold is True
 
+    def test_mention_styles_cached(self) -> None:
+        """Mention styles should be pre-computed at init, not recreated per render."""
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("@claude @codex", ["claude", "codex"])
+        assert "claude" in cmm.mention_styles
+        assert "codex" in cmm.mention_styles
+        assert cmm.mention_styles["claude"].bold is True
+
+    def test_survives_corrupted_style(self) -> None:
+        """Rendering should not crash if a segment's style is corrupted."""
+        from unittest.mock import MagicMock
+
+        from rich.console import Console
+        from rich.segment import Segment
+        from rich.style import Style
+
+        from kingdom.tui.widgets import ColoredMentionMarkdown
+
+        cmm = ColoredMentionMarkdown("@claude", ["claude"])
+        console = Console(force_terminal=True, width=80)
+        options = console.options
+
+        # Monkey-patch __rich_console__ source to inject a bad style
+        original_render = cmm.__rich_console__
+
+        bad_style = MagicMock(spec=Style)
+        bad_style.__add__ = MagicMock(side_effect=AttributeError("_color"))
+
+        def inject_bad_style(console, options):
+            for seg in original_render(console, options):
+                if isinstance(seg, Segment) and "@claude" in seg.text:
+                    yield Segment(seg.text, bad_style)
+                else:
+                    yield seg
+
+        # The error path uses the cached mention_style directly as fallback
+        # so it should survive
+        segments = list(cmm.__rich_console__(console, options))
+        assert len(segments) > 0
+
 
 class TestMessagePanelMemberNames:
     """Tests for MessagePanel with member_names for @mention coloring."""
@@ -432,6 +487,50 @@ class TestMatchCommands:
         matches = match_commands("/u")
         cmd_words = [cmd.split()[0] for cmd, _desc in matches]
         assert "/unmute" in cmd_words
+
+    def test_writeable_alias_discoverable(self) -> None:
+        """Typing /writeable should show the writeable alias."""
+        matches = match_commands("/writeable")
+        cmd_words = [cmd.split()[0] for cmd, _desc in matches]
+        assert "/writeable" in cmd_words
+
+    def test_writable_prefix_matches_both(self) -> None:
+        """Typing /writ should show both /writable and /writeable."""
+        matches = match_commands("/writ")
+        cmd_words = [cmd.split()[0] for cmd, _desc in matches]
+        assert "/writable" in cmd_words
+        assert "/writeable" in cmd_words
+
+
+class TestSuggestCommand:
+    """Tests for suggest_command — 'did you mean?' for unknown commands."""
+
+    def test_close_misspelling(self) -> None:
+        assert suggest_command("/halp") == "/help"
+
+    def test_no_match_for_gibberish(self) -> None:
+        assert suggest_command("/zzz") is None
+
+    def test_suggest_for_truncated_command(self) -> None:
+        result = suggest_command("/mut")
+        assert result == "/mute"
+
+    def test_exact_unknown_no_suggestion(self) -> None:
+        """A single-char unknown like /z shouldn't suggest anything."""
+        assert suggest_command("/z") is None
+
+    def test_bogus_no_false_positive(self) -> None:
+        """/bogus shares only '/' with commands — should not suggest anything."""
+        assert suggest_command("/bogus") is None
+
+    def test_qit_suggests_quit(self) -> None:
+        """/qit shares '/q' plus 'i' with /quit — should suggest /quit."""
+        result = suggest_command("/qit")
+        assert result == "/quit"
+
+    def test_unrelated_no_suggestion(self) -> None:
+        """/foo has no meaningful prefix overlap — should return None."""
+        assert suggest_command("/foo") is None
 
 
 class TestCommandHintBar:

@@ -9,9 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import BindingType
 from textual.containers import VerticalScroll
+from textual.css.query import QueryError
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
@@ -114,6 +115,16 @@ class MessageLog(VerticalScroll):
         """
         return not self._anchor_released
 
+    def scroll_if_following(self) -> None:
+        """Scroll to bottom if the user hasn't scrolled up.
+
+        Textual's anchor() alone doesn't reliably scroll when new widgets
+        are mounted.  Call this after mounting content to keep the view
+        pinned to the bottom while respecting manual scroll-up.
+        """
+        if self.is_following:
+            self.scroll_end(animate=False)
+
 
 class StatusBar(Static):
     """Keybinding hints at the bottom."""
@@ -143,6 +154,7 @@ class InputArea(TextArea):
         height: auto;
         min-height: 3;
         max-height: 10;
+        scrollbar-size-vertical: 0;
     }
     """
 
@@ -158,7 +170,7 @@ class InputArea(TextArea):
         self.tab_prefix_start: tuple[int, int] = (0, 0)  # (row, col) of "@"
         self.tab_prefix: str = ""  # the partial text after "@" that triggered completion
 
-    async def _on_key(self, event) -> None:
+    async def handle_key(self, event) -> None:
         if event.key == "enter" and "shift" not in event.key:
             event.stop()
             event.prevent_default()
@@ -173,6 +185,8 @@ class InputArea(TextArea):
         self.tab_candidates = []
         self.tab_index = 0
         await super()._on_key(event)
+
+    _on_key = handle_key
 
     def handle_tab_complete(self) -> None:
         """Complete @mention or /command at cursor position, cycling on repeated Tab."""
@@ -376,11 +390,7 @@ class ChatApp(App):
 
     def apply_thinking_visibility(self) -> None:
         """Apply the current thinking_visibility to all existing ThinkingPanel widgets."""
-        try:
-            panels = self.query(ThinkingPanel)
-        except Exception:
-            return
-
+        panels = self.query(ThinkingPanel)
         for panel in panels:
             if self.thinking_visibility == "hide":
                 panel.display = False
@@ -417,7 +427,7 @@ class ChatApp(App):
             if input_area.text.strip():
                 input_area.clear()
                 return
-        except Exception:
+        except (QueryError, ScreenStackError):
             logger.debug("Could not query input area during interrupt", exc_info=True)
 
         if not self.council:
@@ -444,19 +454,22 @@ class ChatApp(App):
         # Replace waiting/streaming panels with interrupted indicators immediately
         log = self.query_one("#message-log", MessageLog)
         for member in active:
+            replaced = False
             for prefix in ("wait", "stream", "thinking"):
                 panel_id = f"{prefix}-{member.name}"
                 try:
                     panel = log.query_one(f"#{panel_id}")
-                    error_panel = ErrorPanel(
-                        sender=member.name,
-                        error="*Interrupted*",
-                        id=f"interrupted-{member.name}",
-                    )
-                    log.mount(error_panel, before=panel)
+                    if not replaced:
+                        error_panel = ErrorPanel(
+                            sender=member.name,
+                            error="*Interrupted*",
+                            id=f"interrupted-{member.name}",
+                        )
+                        log.mount(error_panel, before=panel)
+                        replaced = True
                     panel.remove()
-                except Exception:
-                    logger.debug("Could not replace panel %s during interrupt", panel_id, exc_info=True)
+                except QueryError:
+                    pass
 
     def load_history(self) -> None:
         """Load existing messages and render them in the message log."""
@@ -498,6 +511,8 @@ class ChatApp(App):
         # Update poller so it doesn't re-report these messages
         if self.poller and messages:
             self.poller.last_sequence = messages[-1].sequence
+
+        log.scroll_end(animate=False)
 
     def on_key(self, event) -> None:
         """Handle Enter to send, let Shift+Enter pass through for newline."""
@@ -573,16 +588,18 @@ class ChatApp(App):
 
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
+        # Clean up any in-flight panels from previous exchange to avoid
+        # duplicate widget IDs when mounting new WaitingPanels.
+        for name in targets:
+            self.remove_member_panels(log, name)
+
         if to == "all":
-            # Broadcast: coordinator handles initial round + auto-turns.
-            # Mount all WaitingPanels upfront for the first exchange (parallel
-            # broadcast).  For follow-ups the coordinator mounts them one at a
-            # time as sequential turns proceed.
+            # Broadcast: always query all targets in parallel, then optionally
+            # run auto-turn follow-ups (sequential round-robin).
+            for name in targets:
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             prior_messages = list_messages(self.base, self.branch, self.thread_id)
             is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
-            if is_first_exchange:
-                for name in targets:
-                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
         else:
             # Directed: single query, no auto-turns
@@ -590,15 +607,28 @@ class ChatApp(App):
             member = self.council.get_member(targets[0]) if self.council else None
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
-                self.run_worker(self.run_query(member, stream_path), exclusive=False)
+                self.run_worker(self.run_query(member, stream_path, generation=gen), exclusive=False)
 
-    async def run_query(self, member, stream_path: Path) -> None:
-        """Run a member query with full thread context, then persist and clean up."""
+        log.scroll_if_following()
+
+    async def run_query(self, member, stream_path: Path, generation: int | None = None) -> None:
+        """Run a member query with full thread context, then persist and clean up.
+
+        When *generation* is passed, the response is discarded if ``self.generation``
+        has moved on (meaning the user sent a new message while this query was in flight).
+        """
         try:
             timeout = self.council.timeout if self.council else 600
             tdir = thread_dir(self.base, self.branch, self.thread_id)
             prompt_with_history = format_thread_history(tdir, member.name)
             response = await asyncio.to_thread(member.query, prompt_with_history, timeout, stream_path, max_retries=0)
+
+            # Discard stale results when the user has already sent a new message.
+            if generation is not None and self.generation != generation:
+                logger.debug(
+                    "Discarding stale response from %s (gen %d != %d)", member.name, generation, self.generation
+                )
+                return
 
             # Use cleaner message for interrupted queries with no useful text
             if self.interrupted and not response.text:
@@ -611,8 +641,9 @@ class ChatApp(App):
             # Always persist response to thread files (source of truth)
             add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=body)
 
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             # Persist the exception as an error message
+            logger.exception("Member query failed for %s", member.name)
             error_body = f"*Error: {exc}*"
             add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=error_body)
         finally:
@@ -638,39 +669,41 @@ class ChatApp(App):
     async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
         """Coordinate a chat round after the king sends a message.
 
-        First exchange: parallel broadcast — every member responds at once,
-        then we stop and wait for the king.
-
-        Follow-up exchanges: sequential round-robin — members take turns, one
-        at a time, up to a message budget. No broadcast.
+        Always starts with a parallel broadcast for the initial response to the
+        king's message.  On follow-up exchanges (not the first), continues with
+        sequential round-robin auto-turns after the broadcast.
         """
         if not self.council:
             return
 
-        if is_first_exchange:
-            # Parallel broadcast (or sequential if configured).  WaitingPanels
-            # are already mounted by send_message().
-            mode = self.council.mode
-            if mode == "broadcast" and len(targets) > 1:
-                coros = []
-                for name in targets:
-                    member = self.council.get_member(name)
-                    if member:
-                        stream_path = tdir / f".stream-{name}.jsonl"
-                        coros.append(self.run_query(member, stream_path))
-                await asyncio.gather(*coros)
-            else:
-                for name in targets:
-                    if self.interrupted or self.generation != generation:
-                        return
-                    member = self.council.get_member(name)
-                    if not member:
-                        continue
+        # Parallel broadcast (or sequential if configured).  WaitingPanels
+        # are already mounted by send_message().
+        mode = self.council.mode
+        if mode == "broadcast" and len(targets) > 1:
+            coros = []
+            for name in targets:
+                member = self.council.get_member(name)
+                if member:
                     stream_path = tdir / f".stream-{name}.jsonl"
-                    await self.run_query(member, stream_path)
+                    coros.append(self.run_query(member, stream_path, generation=generation))
+            await asyncio.gather(*coros)
+            if self.generation != generation:
+                return
+        else:
+            for name in targets:
+                if self.interrupted or self.generation != generation:
+                    return
+                member = self.council.get_member(name)
+                if not member:
+                    continue
+                stream_path = tdir / f".stream-{name}.jsonl"
+                await self.run_query(member, stream_path, generation=generation)
+
+        # First exchange: broadcast only, no auto-turns.
+        if is_first_exchange:
             return
 
-        # Follow-up: sequential round-robin, no broadcast.
+        # Follow-up: sequential round-robin auto-turns after the broadcast.
         active = [n for n in self.member_names if n not in self.muted]
         budget = self.council.auto_messages
         if budget == 0:
@@ -697,13 +730,14 @@ class ChatApp(App):
                 log = self.query_one("#message-log", MessageLog)
                 self.remove_member_panels(log, name)
                 log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+                log.scroll_if_following()
                 stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path)
+                await self.run_query(member, stream_path, generation=generation)
                 messages_sent += 1
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove any existing wait/stream/thinking/interrupted panels for a member."""
-        for prefix in ("wait", "stream", "interrupted"):
+        for prefix in ("wait", "stream", "thinking", "interrupted"):
             for panel in list(log.query(f"#{prefix}-{name}")):
                 panel.remove()
 
@@ -730,6 +764,8 @@ class ChatApp(App):
 
     def handle_slash_command(self, text: str) -> None:
         """Dispatch slash commands."""
+        from .widgets import suggest_command
+
         parts = text.split(None, 1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -738,14 +774,20 @@ class ChatApp(App):
             self.cmd_mute(arg)
         elif cmd == "/unmute":
             self.cmd_unmute(arg)
-        elif cmd == "/writable":
+        elif cmd in ("/writable", "/writeable"):
             self.cmd_writable()
         elif cmd in ("/help", "/h"):
             self.cmd_help()
         elif cmd in ("/quit", "/exit"):
             self.exit()
         else:
-            self.show_system_message(f"Unknown command: {cmd}. Type /help for available commands.")
+            suggestion = suggest_command(cmd)
+            if suggestion:
+                self.show_system_message(
+                    f"Unknown command: {cmd}. Did you mean {suggestion}? Type /help for available commands."
+                )
+            else:
+                self.show_system_message(f"Unknown command: {cmd}. Type /help for available commands.")
 
     def cmd_mute(self, arg: str) -> None:
         """Mute a member — exclude from broadcast queries."""
@@ -817,6 +859,7 @@ class ChatApp(App):
         log = self.query_one("#message-log", MessageLog)
         panel = Static(text, classes="system-message")
         log.mount(panel)
+        log.scroll_if_following()
 
     # -- Polling ----------------------------------------------------------
 
@@ -843,6 +886,8 @@ class ChatApp(App):
             elif isinstance(event, StreamFinished):
                 self.handle_stream_finished(event)
 
+        log.scroll_if_following()
+
         # Update status bar to reflect scroll state
         self.update_status_bar(log)
 
@@ -859,14 +904,12 @@ class ChatApp(App):
         )
 
         # Handle thinking panel persistence
-        try:
-            thinking_panel = log.query_one(f"#{thinking_id}", ThinkingPanel)
+        thinking_panels = list(log.query(f"#{thinking_id}"))
+        if thinking_panels:
+            thinking_panel = thinking_panels[0]
             if self.thinking_visibility == "auto":
                 thinking_panel.collapse()
-            # Rename to archive it, so next turn gets a new panel
             thinking_panel.id = f"thinking-{event.sender}-{event.sequence}"
-        except Exception:
-            pass
 
         # Detect error/interrupted responses from thread message body
         if event.sender != "king" and is_error_response(event.body):
@@ -920,44 +963,41 @@ class ChatApp(App):
             return
 
         panel_id = f"thinking-{event.member}"
-        try:
-            panel = self.query_one(f"#{panel_id}", ThinkingPanel)
+        existing = list(log.query(f"#{panel_id}"))
+        if existing:
+            panel = existing[0]
             panel.update_thinking(event.full_text)
-        except Exception:
-            # First thinking event — mount a ThinkingPanel before the streaming panel
-            panel = ThinkingPanel(sender=event.member, id=panel_id)
-            stream_id = f"stream-{event.member}"
-            wait_id = f"wait-{event.member}"
-            anchor = list(log.query(f"#{stream_id}")) + list(log.query(f"#{wait_id}"))
-            if anchor:
-                log.mount(panel, before=anchor[0])
-            else:
-                log.mount(panel)
-            panel.update_thinking(event.full_text)
+            return
+
+        panel = ThinkingPanel(sender=event.member, id=panel_id)
+        stream_id = f"stream-{event.member}"
+        wait_id = f"wait-{event.member}"
+        anchor = list(log.query(f"#{stream_id}")) + list(log.query(f"#{wait_id}"))
+        if anchor:
+            log.mount(panel, before=anchor[0])
+        else:
+            log.mount(panel)
+        panel.update_thinking(event.full_text)
 
     def handle_stream_delta(self, log: MessageLog, event: StreamDelta) -> None:
         """Update the streaming panel with new text. Auto-collapse thinking."""
         # Auto-collapse thinking panel on first answer token
         if self.thinking_visibility == "auto":
             thinking_id = f"thinking-{event.member}"
-            try:
-                thinking_panel = self.query_one(f"#{thinking_id}", ThinkingPanel)
+            panels = list(log.query(f"#{thinking_id}"))
+            if panels:
+                thinking_panel = panels[0]
                 thinking_panel.collapse()
-            except Exception:
-                pass
 
         panel_id = f"stream-{event.member}"
-        try:
-            panel = self.query_one(f"#{panel_id}", StreamingPanel)
+        panels = list(log.query(f"#{panel_id}"))
+        if panels:
+            panel = panels[0]
             panel.update_content(event.full_text)
-        except Exception:
-            pass  # Panel may have been replaced by finalized message
 
     def handle_stream_finished(self, event: StreamFinished) -> None:
         """Remove the streaming panel (finalized message replaces it)."""
         panel_id = f"stream-{event.member}"
-        try:
-            panel = self.query_one(f"#{panel_id}")
-            panel.remove()
-        except Exception:
-            pass
+        panels = list(self.query(f"#{panel_id}"))
+        if panels:
+            panels[0].remove()

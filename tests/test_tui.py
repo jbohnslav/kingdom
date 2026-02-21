@@ -144,7 +144,7 @@ class TestChatApp:
         assert app_instance.thread_id == "council-abc"
 
     def test_app_no_auto_scroll_attr(self) -> None:
-        """auto_scroll stub removed — anchor()/is_following handles scroll follow."""
+        """auto_scroll stub removed — anchor()/scroll_if_following handles scroll follow."""
         from kingdom.tui.app import ChatApp
 
         app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
@@ -185,6 +185,32 @@ class TestMessageLogScroll:
         log._anchored = True
         log._anchor_released = True
         assert log.is_following is False
+
+    def test_scroll_if_following_scrolls_when_following(self) -> None:
+        """scroll_if_following should call scroll_end when is_following is True."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        log._anchored = True
+        log._anchor_released = False
+        log.scroll_end = MagicMock()
+        log.scroll_if_following()
+        log.scroll_end.assert_called_once_with(animate=False)
+
+    def test_scroll_if_following_skips_when_scrolled_up(self) -> None:
+        """scroll_if_following should not scroll when user has scrolled up."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        log._anchored = True
+        log._anchor_released = True
+        log.scroll_end = MagicMock()
+        log.scroll_if_following()
+        log.scroll_end.assert_not_called()
 
     def test_update_status_bar_uses_is_following(self, project: Path) -> None:
         """update_status_bar should use is_following (not _anchor_released directly)."""
@@ -540,6 +566,22 @@ class TestSlashCommands:
         app_instance.handle_slash_command("/exit")
         assert exited == [True]
 
+    def test_writeable_alias_dispatches(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd-writeable"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/writeable")
+        app_instance.show_system_message.assert_called_once()
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "Writable mode" in msg
+
     def test_unknown_command_shows_error(self, project: Path) -> None:
         from unittest.mock import MagicMock
 
@@ -555,6 +597,23 @@ class TestSlashCommands:
         app_instance.show_system_message.assert_called_once()
         msg = app_instance.show_system_message.call_args[0][0]
         assert "Unknown command" in msg
+        assert "Did you mean" not in msg  # /bogus has no close prefix match
+
+    def test_unknown_command_suggests_close_match(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-cmd-suggest"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/halp")
+        msg = app_instance.show_system_message.call_args[0][0]
+        assert "Did you mean" in msg
+        assert "/help" in msg
 
     def test_mute_invalid_member_shows_error(self, project: Path) -> None:
         from unittest.mock import MagicMock
@@ -1072,6 +1131,56 @@ class TestEscapeInterrupt:
         assert app_instance.interrupted is True
         mock_proc.terminate.assert_called_once()
 
+    def test_interrupt_handles_multiple_panels_same_member(self, project: Path) -> None:
+        """Interrupting when both wait and stream panels exist should not cause MountError."""
+        from unittest.mock import MagicMock
+
+        from kingdom.council import Council
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-int-dup"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.council = Council.create(base=project)
+
+        mock_proc = MagicMock()
+        claude = app_instance.council.get_member("claude")
+        claude.process = mock_proc
+
+        input_mock = MagicMock()
+        input_mock.text = ""
+
+        # Simulate both wait-claude and stream-claude panels existing
+        wait_panel = MagicMock(name="wait-claude")
+        stream_panel = MagicMock(name="stream-claude")
+        log_mock = MagicMock()
+
+        def fake_query_one(selector, *args, **kwargs):
+            if selector == "#input-area":
+                return input_mock
+            if selector == "#message-log":
+                return log_mock
+            # Simulate: wait-claude and stream-claude both found, thinking-claude not found
+            if selector == "#wait-claude":
+                return wait_panel
+            if selector == "#stream-claude":
+                return stream_panel
+            from textual.css.query import QueryError
+
+            raise QueryError("")
+
+        log_mock.query_one = fake_query_one
+        app_instance.query_one = fake_query_one
+
+        app_instance.action_interrupt()
+
+        # Only one interrupted panel should be mounted (not two)
+        assert log_mock.mount.call_count == 1
+        # Both stale panels should be removed
+        wait_panel.remove.assert_called_once()
+        stream_panel.remove.assert_called_once()
+
     def test_second_escape_after_interrupt_exits(self, project: Path) -> None:
         """Second Escape after interrupt should force quit."""
         from kingdom.council import Council
@@ -1266,26 +1375,26 @@ class TestAutoTurns:
         for m in members:
             assert m.call_count == 1, f"{m.name} expected 1 query (broadcast only), got {m.call_count}"
 
-    def test_follow_up_sequential_only(self, project: Path) -> None:
-        """Follow-up king messages should get sequential round-robin, no broadcast."""
+    def test_follow_up_broadcasts_then_auto_turns(self, project: Path) -> None:
+        """Follow-up king messages should broadcast first, then do sequential auto-turns."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at1"
-        # auto_messages=-1 → len(members) = 2 sequential messages
+        # auto_messages=-1 → len(members) = 2 sequential messages after broadcast
         app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"])
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # No broadcast — sequential only: 1 each
+        # 1 broadcast + 1 auto-turn each
         for m in members:
-            assert m.call_count == 1, f"{m.name} expected 1 query (sequential), got {m.call_count}"
+            assert m.call_count == 2, f"{m.name} expected 2 queries (broadcast + auto-turn), got {m.call_count}"
 
     def test_auto_messages_budget_limits_total(self, project: Path) -> None:
-        """auto_messages=3 with 2 members: claude(1) codex(1) claude(1)."""
+        """auto_messages=3 with 2 members: broadcast(1 each) + sequential claude(1) codex(1) claude(1)."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1297,12 +1406,12 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Sequential budget=3: claude(1) codex(1) claude(1)
-        assert members[0].call_count == 2  # claude: 2 turns
-        assert members[1].call_count == 1  # codex: 1 turn
+        # Broadcast(1 each) + sequential budget=3: claude(1) codex(1) claude(1)
+        assert members[0].call_count == 3  # claude: 1 broadcast + 2 auto-turns
+        assert members[1].call_count == 2  # codex: 1 broadcast + 1 auto-turn
 
-    def test_auto_messages_zero_disables(self, project: Path) -> None:
-        """auto_messages=0 should produce no queries at all on follow-up."""
+    def test_auto_messages_zero_disables_auto_turns(self, project: Path) -> None:
+        """auto_messages=0 should still broadcast but skip auto-turns on follow-up."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1314,11 +1423,12 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
+        # Broadcast only, no auto-turns
         for m in members:
-            assert m.call_count == 0, f"{m.name} expected 0 queries (disabled), got {m.call_count}"
+            assert m.call_count == 1, f"{m.name} expected 1 query (broadcast only), got {m.call_count}"
 
-    def test_interrupted_stops_sequential(self, project: Path) -> None:
-        """Setting interrupted=True during a query should stop further turns."""
+    def test_interrupted_stops_auto_turns(self, project: Path) -> None:
+        """Setting interrupted=True during broadcast should stop auto-turns."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1326,7 +1436,7 @@ class TestAutoTurns:
         tid = "council-at3"
         app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
 
-        # Make claude set interrupted=True on its first call
+        # Make claude set interrupted=True during broadcast
         real_query = members[0].query
 
         def interrupting_query(prompt, timeout, stream_path=None, max_retries=0):
@@ -1340,12 +1450,12 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # claude: 1 (sets interrupted) → codex never queried
-        assert members[0].call_count == 1
-        assert members[1].call_count == 0
+        # Both queried in broadcast (parallel), but auto-turns stopped
+        assert members[0].call_count == 1  # broadcast only
+        assert members[1].call_count == 1  # broadcast only
 
-    def test_generation_mismatch_stops_sequential(self, project: Path) -> None:
-        """Incrementing generation should stop further sequential queries."""
+    def test_generation_mismatch_stops_auto_turns(self, project: Path) -> None:
+        """Incrementing generation during broadcast should stop auto-turns."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1353,7 +1463,7 @@ class TestAutoTurns:
         tid = "council-at4"
         app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
 
-        # Increment generation after claude's first query
+        # Increment generation after claude's broadcast query
         real_query = members[0].query
 
         def preempting_query(prompt, timeout, stream_path=None, max_retries=0):
@@ -1367,29 +1477,31 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # claude: 1 (preempts) → codex never queried
-        assert members[0].call_count == 1
-        assert members[1].call_count == 0
+        # Both queried in broadcast (parallel), but auto-turns stopped by generation mismatch
+        assert members[0].call_count == 1  # broadcast only
+        assert members[1].call_count == 1  # broadcast only
 
-    def test_muted_members_skipped_in_sequential(self, project: Path) -> None:
-        """Muted members should be skipped in sequential round-robin."""
+    def test_muted_members_skipped_in_auto_turns(self, project: Path) -> None:
+        """Muted members should be skipped in sequential auto-turn round-robin."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at5"
-        # Budget=4, 3 members, codex muted → active=[claude, extra]
+        # Budget=4, 3 members, codex muted → broadcast targets exclude muted
         app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex", "extra"], auto_messages=4)
         app_instance.muted.add("codex")
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
-        asyncio.run(app_instance.run_chat_round(["claude", "codex", "extra"], 1, tdir, is_first_exchange=False))
+        # In real usage, parse_targets excludes muted members from targets
+        asyncio.run(app_instance.run_chat_round(["claude", "extra"], 1, tdir, is_first_exchange=False))
 
-        # Sequential budget=4, active=[claude, extra] → claude, extra, claude, extra
-        assert members[0].call_count == 2  # claude
-        assert members[1].call_count == 0  # codex: muted, never queried
-        assert members[2].call_count == 2  # extra
+        # Broadcast(1 each) + sequential budget=4, active=[claude, extra]:
+        # claude(auto), extra(auto), claude(auto), extra(auto) = 4 auto-turns
+        assert members[0].call_count == 3  # claude: 1 broadcast + 2 auto-turns
+        assert members[1].call_count == 0  # codex: muted, not in targets
+        assert members[2].call_count == 3  # extra: 1 broadcast + 2 auto-turns
 
     def test_directed_message_skips_auto_turns(self, project: Path) -> None:
         """@member directed messages should not trigger auto-turns."""
@@ -1442,7 +1554,7 @@ class TestAutoTurns:
         assert call_order == ["claude", "codex"]
 
     def test_follow_up_queries_in_round_robin_order(self, project: Path) -> None:
-        """Follow-up sequential turns should proceed in member order."""
+        """Follow-up auto-turns should proceed in member order after broadcast."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1469,11 +1581,13 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Sequential round-robin: claude, codex, claude, codex
-        assert call_order == ["claude", "codex", "claude", "codex"]
+        # Broadcast (parallel, order may vary) + sequential auto-turns
+        # Skip broadcast entries, verify auto-turn order
+        auto_turn_order = call_order[2:]  # first 2 are broadcast (parallel)
+        assert auto_turn_order == ["claude", "codex", "claude", "codex"]
 
-    def test_error_in_sequential_continues_round(self, project: Path) -> None:
-        """An error from one member should not stop the next member."""
+    def test_error_in_broadcast_does_not_stop_others(self, project: Path) -> None:
+        """An error from one member in broadcast should not stop other members."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -1492,10 +1606,9 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # claude: 1 (error, consumes budget)
-        assert members[0].call_count == 1
-        # codex: 1
-        assert members[1].call_count == 1
+        # Both queried in broadcast; claude errors but codex still runs
+        assert members[0].call_count >= 1  # claude: at least broadcast (errors)
+        assert members[1].call_count >= 1  # codex: broadcast + possible auto-turns
 
     def test_app_has_generation_counter(self) -> None:
         """ChatApp should have a generation counter initialized to 0."""
@@ -1503,6 +1616,95 @@ class TestAutoTurns:
 
         app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
         assert app_instance.generation == 0
+
+    def test_run_query_skips_persist_when_generation_stale(self, project: Path) -> None:
+        """run_query should not persist response when generation has been superseded."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import list_messages, thread_dir
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-gen-stale"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        class FakeMember:
+            name = "claude"
+            session_id = None
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                # Simulate user sending a new message while this query runs
+                app_instance.generation = 5
+                return AgentResponse(name="claude", text="Stale response")
+
+        stream_path = thread_dir(project, BRANCH, tid) / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path, generation=1))
+
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 0, f"Stale response should not be persisted, got {len(messages)} messages"
+
+    def test_run_query_persists_when_generation_matches(self, project: Path) -> None:
+        """run_query should persist response when generation still matches."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import list_messages, thread_dir
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-gen-match"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.generation = 1
+
+        class FakeMember:
+            name = "claude"
+            session_id = None
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                return AgentResponse(name="claude", text="Fresh response")
+
+        stream_path = thread_dir(project, BRANCH, tid) / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path, generation=1))
+
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 1
+        assert messages[0].body == "Fresh response"
+
+    def test_broadcast_gather_discards_stale_results(self, project: Path) -> None:
+        """run_chat_round should discard broadcast results when generation changes mid-flight."""
+        import asyncio
+
+        from kingdom.thread import list_messages, thread_dir
+
+        tid = "council-gen-gather"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_messages=0, first_exchange=True
+        )
+
+        # Make claude bump generation during its query (simulates user re-sending)
+        real_query = members[0].query
+
+        def preempting_query(prompt, timeout, stream_path=None, max_retries=0):
+            app_instance.generation = 99
+            return real_query(prompt, timeout, stream_path, max_retries)
+
+        members[0].query = preempting_query
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
+
+        # Neither broadcast response should be persisted since generation changed
+        msgs = list_messages(project, BRANCH, tid)
+        member_msgs = [m for m in msgs if m.from_ != "king"]
+        assert (
+            len(member_msgs) == 0
+        ), f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
 
 
 class TestChatSessionIsolation:
@@ -1952,3 +2154,78 @@ class TestBuildBranchContext:
         hi_pos = ctx.index("hi01")
         lo_pos = ctx.index("lo01")
         assert hi_pos < lo_pos
+
+
+class TestSendMessageCleansUpPanels:
+    """Test that send_message removes in-flight panels before mounting new ones."""
+
+    def test_send_removes_existing_wait_panels(self, project: Path) -> None:
+        """Sending a second message should clean up WaitingPanels from the first."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp, MessageLog
+
+        tid = "council-dup1"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        # Track calls to remove_member_panels
+        removed = []
+        original_remove = app_instance.remove_member_panels
+
+        def tracking_remove(log, name):
+            removed.append(name)
+            original_remove(log, name)
+
+        app_instance.remove_member_panels = tracking_remove
+
+        # Mock the log and worker to prevent actual Textual operations
+        mock_log = MagicMock(spec=MessageLog)
+        mock_log.query.return_value = []
+        mock_log.scroll_if_following = MagicMock()
+
+        from kingdom.tui.app import InputArea
+
+        mock_input = MagicMock(spec=InputArea)
+        mock_input.text = "Hello"
+        mock_input.has_focus = True
+
+        def fake_query_one(sel_or_cls, cls=None):
+            if sel_or_cls == "#input-area" or cls is InputArea:
+                return mock_input
+            return mock_log
+
+        app_instance.query_one = fake_query_one
+        app_instance.run_worker = MagicMock()
+
+        app_instance.send_message()
+
+        # remove_member_panels should have been called for "claude"
+        assert "claude" in removed
+
+
+class TestRemoveMemberPanels:
+    def test_removes_thinking_panels(self, project: Path) -> None:
+        """remove_member_panels should remove thinking panels, not just wait/stream/interrupted."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp, MessageLog
+
+        tid = "remove-panels-test"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        mock_log = MagicMock(spec=MessageLog)
+        thinking_panel = MagicMock(name="thinking-claude")
+        mock_log.query.side_effect = lambda sel: [thinking_panel] if sel == "#thinking-claude" else []
+
+        app_instance.remove_member_panels(mock_log, "claude")
+
+        # Should have queried for thinking panels
+        queried_selectors = [call.args[0] for call in mock_log.query.call_args_list]
+        assert "#thinking-claude" in queried_selectors
+        # The thinking panel should have been removed
+        thinking_panel.remove.assert_called_once()

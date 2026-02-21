@@ -83,12 +83,10 @@ class ThreadMeta:
 
 
 def threads_root(base: Path, branch: str) -> Path:
-    """Return path to .kd/branches/<branch>/threads/."""
     return branch_root(base, branch) / "threads"
 
 
 def thread_dir(base: Path, branch: str, thread_id: str) -> Path:
-    """Return path to a specific thread directory."""
     normalized = normalize_branch_name(thread_id)
     return threads_root(base, branch) / normalized
 

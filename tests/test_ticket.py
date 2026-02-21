@@ -734,7 +734,7 @@ class TestListTickets:
 class TestFindTicket:
     """Tests for find_ticket function."""
 
-    def _create_test_structure(self, base: Path) -> None:
+    def create_test_structure(self, base: Path) -> None:
         """Create a test directory structure with tickets."""
         from kingdom.state import ensure_base_layout, ensure_branch_layout
 
@@ -765,7 +765,7 @@ class TestFindTicket:
 
     def test_find_by_full_id(self, tmp_path: Path) -> None:
         """find_ticket finds by full ID including kin- prefix."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = find_ticket(tmp_path, "kin-a1b2")
         assert result is not None
@@ -775,7 +775,7 @@ class TestFindTicket:
 
     def test_find_by_partial_id(self, tmp_path: Path) -> None:
         """find_ticket finds by partial ID without prefix."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = find_ticket(tmp_path, "a1b2")
         assert result is not None
@@ -784,7 +784,7 @@ class TestFindTicket:
 
     def test_find_by_prefix(self, tmp_path: Path) -> None:
         """find_ticket finds by ID prefix."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = find_ticket(tmp_path, "a1")
         assert result is not None
@@ -793,7 +793,7 @@ class TestFindTicket:
 
     def test_find_in_backlog(self, tmp_path: Path) -> None:
         """find_ticket finds tickets in backlog."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = find_ticket(tmp_path, "e5f6")
         assert result is not None
@@ -803,7 +803,7 @@ class TestFindTicket:
 
     def test_find_in_archive(self, tmp_path: Path) -> None:
         """find_ticket finds tickets in archive."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = find_ticket(tmp_path, "g7h8")
         assert result is not None
@@ -813,14 +813,14 @@ class TestFindTicket:
 
     def test_find_not_found(self, tmp_path: Path) -> None:
         """find_ticket returns None when ticket not found."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = find_ticket(tmp_path, "xxxx")
         assert result is None
 
     def test_find_ambiguous_match(self, tmp_path: Path) -> None:
         """find_ticket raises AmbiguousTicketMatch for multiple matches."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         # Create another ticket with similar ID prefix
         created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
@@ -835,7 +835,7 @@ class TestFindTicket:
 
     def test_find_case_insensitive(self, tmp_path: Path) -> None:
         """find_ticket is case-insensitive."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = find_ticket(tmp_path, "A1B2")
         assert result is not None
@@ -960,7 +960,7 @@ class TestMoveTicket:
 class TestGetTicketLocation:
     """Tests for get_ticket_location function."""
 
-    def _create_test_structure(self, base: Path) -> None:
+    def create_test_structure(self, base: Path) -> None:
         """Create a test directory structure with tickets."""
         from kingdom.state import ensure_base_layout, ensure_branch_layout
 
@@ -973,7 +973,7 @@ class TestGetTicketLocation:
 
     def test_get_location_found(self, tmp_path: Path) -> None:
         """get_ticket_location returns path when found."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = get_ticket_location(tmp_path, "abcd")
         assert result is not None
@@ -982,14 +982,14 @@ class TestGetTicketLocation:
 
     def test_get_location_not_found(self, tmp_path: Path) -> None:
         """get_ticket_location returns None when not found."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         result = get_ticket_location(tmp_path, "zzzz")
         assert result is None
 
     def test_get_location_ambiguous(self, tmp_path: Path) -> None:
         """get_ticket_location raises AmbiguousTicketMatch for multiple matches."""
-        self._create_test_structure(tmp_path)
+        self.create_test_structure(tmp_path)
 
         # Create another ticket with similar prefix
         created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)

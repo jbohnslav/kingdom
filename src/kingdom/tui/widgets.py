@@ -124,6 +124,10 @@ class ColoredMentionMarkdown:
             self.member_colors[name] = color_for_member(name)
         self.member_colors["all"] = "white"
         self.member_colors["king"] = "white"
+        # Cache Style objects per color to avoid creating new ones on every render
+        self.mention_styles: dict[str, Style] = {
+            name: Style(color=color, bold=True) for name, color in self.member_colors.items()
+        }
         # Pre-compile pattern
         if self.member_colors:
             names = "|".join(re.escape(n) for n in self.member_colors)
@@ -155,8 +159,11 @@ class ColoredMentionMarkdown:
                 if not part:
                     continue
                 if i % 2 == 1:
-                    color = self.member_colors.get(part, "white")
-                    mention_style = style + Style(color=color, bold=True)
+                    cached = self.mention_styles.get(part, self.mention_styles.get("all"))
+                    try:
+                        mention_style = style + cached if cached else style
+                    except (AttributeError, TypeError):
+                        mention_style = cached or style
                     yield Segment(f"@{part}", mention_style)
                 else:
                     yield Segment(part, style)
@@ -214,6 +221,7 @@ class MessagePanel(Static):
 
     def on_click(self, event) -> None:
         """Handle click: reply (default) or copy (shift)."""
+        event.stop()
         if self.sender == "king":
             return
         if event.shift:
@@ -399,8 +407,9 @@ class ThinkingPanel(Static):
         self.styles.border = ("dashed", color)
         self.update_display()
 
-    def on_click(self) -> None:
+    def on_click(self, event) -> None:
         """Toggle expanded/collapsed on click."""
+        event.stop()
         self.user_pinned = True
         self.expanded = not self.expanded
         if self.expanded:
@@ -446,6 +455,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/mute", "show currently muted members"),
     ("/unmute <member>", "re-include member in broadcast"),
     ("/writable", "toggle writable mode (allow/deny file edits)"),
+    ("/writeable", "toggle writable mode (alias)"),
     ("/quit", "quit kd chat"),
     ("/exit", "quit kd chat"),
 ]
@@ -465,6 +475,37 @@ def match_commands(prefix: str) -> list[tuple[str, str]]:
         if cmd_word.startswith(prefix):
             matches.append((cmd, desc))
     return matches
+
+
+def suggest_command(unknown: str) -> str | None:
+    """Suggest the closest known command for a mistyped one.
+
+    Returns the command word (e.g. "/writable") or None if nothing is close.
+    Uses longest common prefix — needs at least 1 character beyond the "/"
+    to count (i.e. prefix length >= 2 including the slash).
+    """
+    unknown = unknown.lower()
+    # Collect unique command words
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for cmd, _desc in SLASH_COMMANDS:
+        word = cmd.split()[0]
+        if word not in seen:
+            seen.add(word)
+            candidates.append(word)
+
+    best: str | None = None
+    best_prefix_len = 1  # require prefix > 1 char (/ + at least 1 real char)
+    for candidate in candidates:
+        prefix_len = 0
+        for a, b in zip(unknown, candidate, strict=False):
+            if a != b:
+                break
+            prefix_len += 1
+        if prefix_len > best_prefix_len:
+            best_prefix_len = prefix_len
+            best = candidate
+    return best
 
 
 class CommandHintBar(Static):

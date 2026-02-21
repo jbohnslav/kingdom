@@ -17,7 +17,7 @@ from kingdom.state import (
     ensure_run_layout,
     set_current_run,
 )
-from kingdom.ticket import Ticket, find_ticket, write_ticket
+from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
 runner = CliRunner()
 
@@ -515,6 +515,166 @@ class TestTicketCloseReason:
             assert "## Worklog" not in content
 
 
+class TestTicketCloseDuplicate:
+    def test_duplicate_of_sets_field_and_closes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-dup1")
+            create_ticket_in(branch_dir, "kin-orig")
+
+            result = runner.invoke(cli.app, ["tk", "close", "kin-dup1", "--duplicate-of", "kin-orig"])
+
+            assert result.exit_code == 0, result.output
+            assert "closed" in result.output
+            ticket = read_ticket(branch_dir / "kin-dup1.md")
+            assert ticket.status == "closed"
+            assert ticket.duplicate_of == "kin-orig"
+
+    def test_duplicate_of_adds_worklog(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-dup2")
+            create_ticket_in(branch_dir, "kin-xyz")
+
+            runner.invoke(cli.app, ["tk", "close", "kin-dup2", "--duplicate-of", "kin-xyz"])
+
+            content = path.read_text()
+            assert "Closed: Duplicate of kin-xyz" in content
+
+    def test_duplicate_of_with_custom_reason(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-dup3")
+            create_ticket_in(branch_dir, "kin-xyz")
+
+            runner.invoke(
+                cli.app, ["tk", "close", "kin-dup3", "--duplicate-of", "kin-xyz", "-m", "Merged into kin-xyz"]
+            )
+
+            content = path.read_text()
+            assert "Closed: Merged into kin-xyz" in content
+
+    def test_duplicate_of_serialized_in_frontmatter(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-dup4")
+            create_ticket_in(branch_dir, "kin-orig")
+
+            runner.invoke(cli.app, ["tk", "close", "kin-dup4", "--duplicate-of", "kin-orig"])
+
+            content = (branch_dir / "kin-dup4.md").read_text()
+            assert "duplicate-of: kin-orig" in content
+
+
+class TestTicketCloseDuplicateValidation:
+    def test_duplicate_of_rejects_nonexistent_target(self) -> None:
+        """--duplicate-of should fail if the target ticket doesn't exist."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-dup1")
+
+            result = runner.invoke(cli.app, ["tk", "close", "kin-dup1", "--duplicate-of", "nonexistent"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output.lower() or "nonexistent" in result.output.lower()
+            # Ticket should NOT be closed
+            ticket = read_ticket(branch_dir / "kin-dup1.md")
+            assert ticket.status != "closed"
+
+    def test_duplicate_of_rejects_self_reference(self) -> None:
+        """--duplicate-of should fail if the target is the same ticket."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-self")
+
+            result = runner.invoke(cli.app, ["tk", "close", "kin-self", "--duplicate-of", "kin-self"])
+
+            assert result.exit_code == 1
+            assert "itself" in result.output.lower() or "self" in result.output.lower()
+            ticket = read_ticket(branch_dir / "kin-self.md")
+            assert ticket.status != "closed"
+
+    def test_duplicate_of_stores_canonical_id(self) -> None:
+        """--duplicate-of should resolve and store the full canonical ticket ID."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-dup5")
+            create_ticket_in(branch_dir, "kin-target")
+
+            # Use partial ID
+            result = runner.invoke(cli.app, ["tk", "close", "kin-dup5", "--duplicate-of", "kin-target"])
+
+            assert result.exit_code == 0, result.output
+            ticket = read_ticket(branch_dir / "kin-dup5.md")
+            assert ticket.duplicate_of == "kin-target"
+
+
+class TestTicketDelete:
+    def test_delete_removes_file(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-del1")
+
+            result = runner.invoke(cli.app, ["tk", "delete", "kin-del1", "--force"])
+
+            assert result.exit_code == 0, result.output
+            assert "Deleted" in result.output
+            assert "kin-del1" in result.output
+            assert not path.exists()
+
+    def test_delete_not_found(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "delete", "nope", "--force"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output.lower()
+
+    def test_delete_cancelled(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-del2")
+
+            result = runner.invoke(cli.app, ["tk", "delete", "kin-del2"], input="n\n")
+
+            assert result.exit_code == 0
+            assert "Cancelled" in result.output
+            assert path.exists()
+
+    def test_delete_confirmed(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-del3")
+
+            result = runner.invoke(cli.app, ["tk", "delete", "kin-del3"], input="y\n")
+
+            assert result.exit_code == 0, result.output
+            assert "Deleted" in result.output
+            assert not path.exists()
+
+
 class TestTicketMove:
     def test_move_defaults_to_current_branch(self) -> None:
         with runner.isolated_filesystem():
@@ -733,6 +893,27 @@ class TestTicketList:
             assert result.exit_code == 0
             assert "Review ticket" in result.output
 
+    def test_list_status_filter_summary_reflects_filter(self) -> None:
+        """Summary line should count only filtered tickets."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t1 = Ticket(id="aaaa", status="open", title="Open one", body="", created=datetime.now(UTC))
+            t2 = Ticket(id="bbbb", status="closed", title="Closed one", body="", created=datetime.now(UTC))
+            t3 = Ticket(id="cccc", status="closed", title="Closed two", body="", created=datetime.now(UTC))
+            write_ticket(t1, tickets_dir / "aaaa.md")
+            write_ticket(t2, tickets_dir / "bbbb.md")
+            write_ticket(t3, tickets_dir / "cccc.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--status", "closed"])
+
+            assert result.exit_code == 0
+            assert "2 closed" in result.output
+            assert "2 total" in result.output
+            assert "3 total" not in result.output
+
     def test_list_status_filter_invalid(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -803,11 +984,11 @@ class TestTicketList:
             result = runner.invoke(cli.app, ["tk", "list"])
 
             assert result.exit_code == 0
-            # Summary should show all statuses including closed (even though closed tickets are hidden)
+            # Summary should only count displayed tickets (closed are hidden by default)
             assert "1 open" in result.output
             assert "1 in_progress" in result.output
-            assert "1 closed" in result.output
-            assert "3 total" in result.output
+            assert "1 closed" not in result.output
+            assert "2 total" in result.output
 
     def test_list_summary_line_not_in_json_output(self) -> None:
         with runner.isolated_filesystem():
@@ -840,8 +1021,9 @@ class TestTicketList:
 
             assert result.exit_code == 0
             assert "1 open" in result.output
-            assert "1 closed" in result.output
-            assert "2 total" in result.output
+            # Closed tickets are hidden by default, so summary should not include them
+            assert "1 closed" not in result.output
+            assert "1 total" in result.output
 
     def test_list_no_tickets_shows_no_summary(self) -> None:
         with runner.isolated_filesystem():
@@ -852,6 +1034,74 @@ class TestTicketList:
 
             assert result.exit_code == 0
             assert "total" not in result.output
+
+
+class TestTicketListPriority:
+    def test_priority_filter_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            p1 = Ticket(id="aaaa", status="open", title="Urgent", body="", priority=1, created=datetime.now(UTC))
+            p2 = Ticket(id="bbbb", status="open", title="Normal", body="", priority=2, created=datetime.now(UTC))
+            write_ticket(p1, tickets_dir / "aaaa.md")
+            write_ticket(p2, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "-p", "1"])
+
+            assert result.exit_code == 0
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
+
+    def test_priority_filter_backlog(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            backlog_dir = backlog_root(base) / "tickets"
+            backlog_dir.mkdir(parents=True, exist_ok=True)
+
+            p1 = Ticket(id="aaaa", status="open", title="Urgent", body="", priority=1, created=datetime.now(UTC))
+            p2 = Ticket(id="bbbb", status="open", title="Normal", body="", priority=2, created=datetime.now(UTC))
+            write_ticket(p1, backlog_dir / "aaaa.md")
+            write_ticket(p2, backlog_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--backlog", "-p", "1"])
+
+            assert result.exit_code == 0
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
+
+    def test_summary_reflects_filter(self) -> None:
+        """Summary line should count only filtered tickets, not all tickets."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            p1 = Ticket(id="aaaa", status="open", title="Urgent", body="", priority=1, created=datetime.now(UTC))
+            p2 = Ticket(id="bbbb", status="open", title="Normal", body="", priority=2, created=datetime.now(UTC))
+            p3 = Ticket(id="cccc", status="open", title="Also normal", body="", priority=2, created=datetime.now(UTC))
+            write_ticket(p1, tickets_dir / "aaaa.md")
+            write_ticket(p2, tickets_dir / "bbbb.md")
+            write_ticket(p3, tickets_dir / "cccc.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "-p", "1"])
+
+            assert result.exit_code == 0
+            # Summary should say "1 open · 1 total", not "3 open · 3 total"
+            assert "1 total" in result.output
+            assert "3 total" not in result.output
+
+    def test_priority_filter_invalid(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "list", "-p", "5"])
+
+            assert result.exit_code == 1
+            assert "Invalid priority" in result.output
 
 
 class TestTicketListTable:
@@ -1817,6 +2067,60 @@ class TestTicketDep:
             assert "not found" in result.output
 
 
+class TestTicketUndep:
+    """Tests for kd tk undep — removing dependencies."""
+
+    def test_undep_removes_dependency(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["aaaa"], created=datetime.now(UTC))
+            write_ticket(t, tickets_dir / "cf1a.md")
+
+            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "aaaa"])
+
+            assert result.exit_code == 0, result.output
+            assert "removed dependency" in result.output
+            found = find_ticket(base, "cf1a")
+            assert found is not None
+            ticket, _ = found
+            assert "aaaa" not in ticket.deps
+
+    def test_undep_not_a_dep(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t = Ticket(id="cf1a", status="open", title="Target", body="", created=datetime.now(UTC))
+            write_ticket(t, tickets_dir / "cf1a.md")
+
+            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "zzzz"])
+
+            assert result.exit_code == 1
+            assert "does not depend on" in result.output
+
+    def test_undep_partial_match(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["abcd1234"], created=datetime.now(UTC))
+            write_ticket(t, tickets_dir / "cf1a.md")
+
+            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "abcd"])
+
+            assert result.exit_code == 0, result.output
+            assert "removed dependency" in result.output
+            found = find_ticket(base, "cf1a")
+            assert found is not None
+            ticket, _ = found
+            assert ticket.deps == []
+
+
 class TestNoResultsMessages:
     """Tests for helpful empty-state messages with next-step guidance."""
 
@@ -1880,8 +2184,50 @@ class TestNoResultsMessages:
             result = runner.invoke(cli.app, ["tk", "ready"])
 
             assert result.exit_code == 0
+            assert "Branch:" in result.output
             assert "aaaa" in result.output
             assert "bbbb" not in result.output
+
+    def test_ready_separates_branch_and_backlog(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            backlog_dir = backlog_root(base) / "tickets"
+            backlog_dir.mkdir(parents=True, exist_ok=True)
+
+            branch_tk = Ticket(id="aaaa", status="open", title="Branch task", body="", created=datetime.now(UTC))
+            backlog_tk = Ticket(id="bbbb", status="open", title="Backlog task", body="", created=datetime.now(UTC))
+            write_ticket(branch_tk, tickets_dir / "aaaa.md")
+            write_ticket(backlog_tk, backlog_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "ready"])
+
+            assert result.exit_code == 0
+            lines = result.output.strip().split("\n")
+            assert lines[0] == "Branch:"
+            assert "aaaa" in lines[1]
+            # blank line separator
+            assert lines[2] == ""
+            assert lines[3] == "Backlog:"
+            assert "bbbb" in lines[4]
+
+    def test_ready_backlog_only(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            backlog_dir = backlog_root(base) / "tickets"
+            backlog_dir.mkdir(parents=True, exist_ok=True)
+
+            backlog_tk = Ticket(id="cccc", status="open", title="Backlog only", body="", created=datetime.now(UTC))
+            write_ticket(backlog_tk, backlog_dir / "cccc.md")
+
+            result = runner.invoke(cli.app, ["tk", "ready"])
+
+            assert result.exit_code == 0
+            assert "Branch:" not in result.output
+            assert "Backlog:" in result.output
+            assert "cccc" in result.output
 
     def test_show_all_empty_branch_shows_guidance(self) -> None:
         with runner.isolated_filesystem():

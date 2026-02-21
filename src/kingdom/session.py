@@ -66,12 +66,10 @@ class AgentState:
 
 
 def session_path(base: Path, branch: str, agent_name: str) -> Path:
-    """Return path to sessions/<agent>.json for a branch."""
     return sessions_root(base, branch) / f"{agent_name}.json"
 
 
 def legacy_session_path(base: Path, branch: str, agent_name: str) -> Path:
-    """Return path to legacy sessions/<agent>.session file."""
     return sessions_root(base, branch) / f"{agent_name}.session"
 
 
@@ -80,11 +78,31 @@ def legacy_session_path(base: Path, branch: str, agent_name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def get_agent_state(base: Path, branch: str, agent_name: str) -> AgentState:
-    """Read agent state from sessions/<agent>.json.
+def agent_state_from_dict(data: dict[str, Any], name: str) -> AgentState:
+    """Reconstruct AgentState from a persisted JSON dict, filling defaults for missing keys."""
+    return AgentState(
+        name=data.get("name", name),
+        status=data.get("status", "idle"),
+        resume_id=data.get("resume_id"),
+        pid=data.get("pid"),
+        ticket=data.get("ticket"),
+        thread=data.get("thread"),
+        agent_backend=data.get("agent_backend"),
+        started_at=data.get("started_at"),
+        last_activity=data.get("last_activity"),
+        start_sha=data.get("start_sha"),
+        review_bounce_count=data.get("review_bounce_count", 0),
+        hand_mode=data.get("hand_mode", False),
+    )
 
-    If a legacy ``.session`` file exists and no ``.json`` file exists,
-    migrates automatically (reads resume_id, writes new format, removes old file).
+
+def agent_state_to_dict(state: AgentState) -> dict[str, Any]:
+    """Serialize AgentState to a dict, dropping None values."""
+    return {k: v for k, v in asdict(state).items() if v is not None}
+
+
+def get_agent_state(base: Path, branch: str, agent_name: str) -> AgentState:
+    """Read agent state, migrating legacy .session files if needed.
 
     Returns default idle state if no session file exists.
     """
@@ -102,47 +120,21 @@ def get_agent_state(base: Path, branch: str, agent_name: str) -> AgentState:
     if not json_path.exists():
         return AgentState(name=agent_name)
 
-    data = read_json(json_path)
-    return AgentState(
-        name=data.get("name", agent_name),
-        status=data.get("status", "idle"),
-        resume_id=data.get("resume_id"),
-        pid=data.get("pid"),
-        ticket=data.get("ticket"),
-        thread=data.get("thread"),
-        agent_backend=data.get("agent_backend"),
-        started_at=data.get("started_at"),
-        last_activity=data.get("last_activity"),
-        start_sha=data.get("start_sha"),
-        review_bounce_count=data.get("review_bounce_count", 0),
-        hand_mode=data.get("hand_mode", False),
-    )
+    return agent_state_from_dict(read_json(json_path), agent_name)
 
 
 def set_agent_state(base: Path, branch: str, agent_name: str, state: AgentState) -> None:
-    """Write agent state to sessions/<agent>.json."""
     json_path = session_path(base, branch, agent_name)
     json_path.parent.mkdir(parents=True, exist_ok=True)
-
     state.name = agent_name
-    data: dict[str, Any] = {}
-    for key, value in asdict(state).items():
-        if value is not None:
-            data[key] = value
-
-    write_json(json_path, data)
+    write_json(json_path, agent_state_to_dict(state))
 
 
 def update_agent_state(base: Path, branch: str, agent_name: str, **fields: Any) -> AgentState:
-    """Read-modify-write agent state with the given field updates.
+    """Read-modify-write agent state under exclusive file lock.
 
-    Acquires an exclusive file lock so concurrent callers (harness, CLI) cannot
-    interleave their read-modify-write cycles and lose updates.
-
-    Returns:
-        Updated AgentState.
+    Concurrent callers (harness, CLI) won't interleave and lose updates.
     """
-    # Validate field names before acquiring lock.
     dummy = AgentState(name=agent_name)
     for key in fields:
         if not hasattr(dummy, key):
@@ -150,47 +142,15 @@ def update_agent_state(base: Path, branch: str, agent_name: str, **fields: Any) 
 
     json_path = session_path(base, branch, agent_name)
 
-    def _apply(data: dict[str, Any]) -> dict[str, Any]:
-        # Reconstruct AgentState from persisted dict.
-        state = AgentState(
-            name=data.get("name", agent_name),
-            status=data.get("status", "idle"),
-            resume_id=data.get("resume_id"),
-            pid=data.get("pid"),
-            ticket=data.get("ticket"),
-            thread=data.get("thread"),
-            agent_backend=data.get("agent_backend"),
-            started_at=data.get("started_at"),
-            last_activity=data.get("last_activity"),
-            start_sha=data.get("start_sha"),
-            review_bounce_count=data.get("review_bounce_count", 0),
-            hand_mode=data.get("hand_mode", False),
-        )
+    def apply_fields(data: dict[str, Any]) -> dict[str, Any]:
+        state = agent_state_from_dict(data, agent_name)
         for key, value in fields.items():
             setattr(state, key, value)
         state.name = agent_name
-        out: dict[str, Any] = {}
-        for k, v in asdict(state).items():
-            if v is not None:
-                out[k] = v
-        return out
+        return agent_state_to_dict(state)
 
-    data = locked_json_update(json_path, _apply)
-
-    return AgentState(
-        name=data.get("name", agent_name),
-        status=data.get("status", "idle"),
-        resume_id=data.get("resume_id"),
-        pid=data.get("pid"),
-        ticket=data.get("ticket"),
-        thread=data.get("thread"),
-        agent_backend=data.get("agent_backend"),
-        started_at=data.get("started_at"),
-        last_activity=data.get("last_activity"),
-        start_sha=data.get("start_sha"),
-        review_bounce_count=data.get("review_bounce_count", 0),
-        hand_mode=data.get("hand_mode", False),
-    )
+    data = locked_json_update(json_path, apply_fields)
+    return agent_state_from_dict(data, agent_name)
 
 
 def list_active_agents(base: Path, branch: str) -> list[AgentState]:
@@ -238,11 +198,11 @@ def set_current_thread(base: Path, branch: str, thread_id: str | None) -> None:
     """
     state_path = branch_root(base, branch) / "state.json"
 
-    def _apply(data: dict[str, Any]) -> dict[str, Any]:
+    def apply_thread(data: dict[str, Any]) -> dict[str, Any]:
         if thread_id is None:
             data.pop("current_thread", None)
         else:
             data["current_thread"] = thread_id
         return data
 
-    locked_json_update(state_path, _apply)
+    locked_json_update(state_path, apply_thread)

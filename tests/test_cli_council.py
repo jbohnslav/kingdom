@@ -613,7 +613,7 @@ class TestCouncilList:
             assert "responded" not in result.output
 
 
-def _patch_async_dispatch():
+def patch_async_dispatch():
     """Patch the background dispatch used by council ask (default async mode).
 
     Mocks subprocess.Popen to prevent a real worker subprocess from launching.
@@ -621,7 +621,7 @@ def _patch_async_dispatch():
     return contextlib.ExitStack()
 
 
-def _enter_async_patches(stack):
+def enter_async_patches(stack):
     """Enter Popen patch, return mock_popen."""
     mock_popen = stack.enter_context(patch("kingdom.cli.subprocess.Popen"))
     return mock_popen
@@ -633,8 +633,8 @@ class TestCouncilAskAsync:
             base = Path.cwd()
             setup_project(base)
 
-            with _patch_async_dispatch() as stack:
-                mock_popen = _enter_async_patches(stack)
+            with patch_async_dispatch() as stack:
+                mock_popen = enter_async_patches(stack)
                 result = runner.invoke(cli.app, ["council", "ask", "--async", "--no-watch", "Test async"])
 
             assert result.exit_code == 0
@@ -651,8 +651,8 @@ class TestCouncilAskAsync:
             base = Path.cwd()
             setup_project(base)
 
-            with _patch_async_dispatch() as stack:
-                _enter_async_patches(stack)
+            with patch_async_dispatch() as stack:
+                enter_async_patches(stack)
                 runner.invoke(cli.app, ["council", "ask", "--async", "--no-watch", "Async question"])
 
             current = get_current_thread(base, BRANCH)
@@ -670,8 +670,8 @@ class TestCouncilAskAsync:
             base = Path.cwd()
             setup_project(base)
 
-            with _patch_async_dispatch() as stack:
-                mock_popen = _enter_async_patches(stack)
+            with patch_async_dispatch() as stack:
+                mock_popen = enter_async_patches(stack)
                 runner.invoke(cli.app, ["council", "ask", "--async", "--no-watch", "--to", "codex", "Test targeted"])
 
             # Verify --to flag is passed to the worker subprocess

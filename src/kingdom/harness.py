@@ -18,7 +18,6 @@ import logging
 import re
 import signal
 import subprocess
-import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +25,7 @@ from pathlib import Path
 from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.thread import add_message, list_messages
-from kingdom.ticket import find_ticket, read_ticket, write_ticket
+from kingdom.ticket import append_worklog_entry, find_ticket, read_ticket, write_ticket
 
 logger = logging.getLogger("kingdom.harness")
 
@@ -70,11 +69,14 @@ def build_prompt(
     parts.append("## Instructions")
     parts.append(f"This is iteration {iteration} of {max_iterations}.")
     parts.append("Work on the ticket. Commit your changes as you go with descriptive commit messages.")
+    parts.append(
+        "Before reporting DONE, run the project's tests, linter, and pre-commit hooks to make sure everything passes."
+    )
     parts.append("When you respond, structure your output as:")
     parts.append("1. What you did this iteration")
     parts.append("2. Your status: DONE, BLOCKED, or CONTINUE")
     parts.append("3. If BLOCKED, explain what you need help with")
-    parts.append("4. If DONE, confirm all acceptance criteria are met")
+    parts.append("4. If DONE, confirm all acceptance criteria are met and tests/lint pass")
     parts.append("")
     parts.append("End your response with exactly one of these status lines:")
     parts.append("STATUS: DONE")
@@ -130,36 +132,25 @@ def format_worklog_timestamp(dt: datetime) -> str:
 
 
 def append_worklog(ticket_path: Path, entry: str) -> None:
-    """Append an entry to the ticket's worklog section.
-
-    If no worklog section exists, creates one at the end of the ticket body.
-    Worklog is always the last section, so we just append to the end.
-    """
-    ticket = read_ticket(ticket_path)
     now = datetime.now(UTC)
-    timestamp = format_worklog_timestamp(now)
-
-    worklog_line = f"- {timestamp} {entry}"
-
-    if "## Worklog" not in ticket.body:
-        ticket.body = ticket.body.rstrip() + "\n\n## Worklog\n\n" + worklog_line
-    else:
-        ticket.body = ticket.body.rstrip() + "\n" + worklog_line
-
-    write_ticket(ticket, ticket_path)
+    append_worklog_entry(ticket_path, entry, timestamp=now, timestamp_text=format_worklog_timestamp(now))
 
 
 def extract_worklog(ticket_path: Path) -> str:
-    """Extract the worklog section from a ticket.
-
-    Worklog is always the last section, so everything after the header is worklog.
-    """
+    """Extract the worklog section from a ticket, stopping at the next heading."""
     ticket = read_ticket(ticket_path)
     if "## Worklog" not in ticket.body:
         return ""
 
     _, after_header = ticket.body.split("## Worklog", 1)
-    return after_header.strip()
+    # Stop at the next ## heading if one exists
+    lines = after_header.split("\n")
+    result = []
+    for line in lines:
+        if line.startswith("## "):
+            break
+        result.append(line)
+    return "\n".join(result).strip()
 
 
 def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: int) -> tuple[list[str], int]:
@@ -181,61 +172,38 @@ def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: i
     return directives, max_seq
 
 
-def worktree_python(worktree: Path) -> str:
-    """Return the Python executable for a worktree's venv.
-
-    Falls back to sys.executable if no venv is found.
-    """
-    venv_python = worktree / ".venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
-    return sys.executable
-
-
-def run_tests(worktree: Path) -> tuple[bool, str]:
-    """Run pytest in the worktree to verify work.
-
-    Returns (passed, output): passed is True if tests pass.
-    """
+def has_code_changes(worktree: Path, start_sha: str | None) -> bool:
+    """Check whether the worktree has any changes (committed or uncommitted) since start_sha."""
     try:
+        # Uncommitted changes (staged + unstaged)
         result = subprocess.run(
-            [worktree_python(worktree), "-m", "pytest", "-x", "-q", "--tb=short"],
+            ["git", "status", "--porcelain"],
             capture_output=True,
             text=True,
-            timeout=120,
             cwd=worktree,
+            timeout=10,
         )
-        output = result.stdout.strip()
-        if result.stderr.strip():
-            output += "\n" + result.stderr.strip()
-        return result.returncode == 0, output
-    except FileNotFoundError:
-        return True, "pytest not found, skipping verification"
-    except subprocess.TimeoutExpired:
-        return False, "Test suite timed out after 120s"
-
-
-def run_lint(worktree: Path) -> tuple[bool, str]:
-    """Run ruff check in the worktree to verify lint.
-
-    Returns (passed, output): passed is True if lint passes.
-    """
-    try:
-        result = subprocess.run(
-            [worktree_python(worktree), "-m", "ruff", "check", "."],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=worktree,
-        )
-        output = result.stdout.strip()
-        if result.stderr.strip():
-            output += "\n" + result.stderr.strip()
-        return result.returncode == 0, output
-    except FileNotFoundError:
-        return True, "ruff not found, skipping lint check"
-    except subprocess.TimeoutExpired:
-        return False, "Lint check timed out after 60s"
+        if result.returncode == 0 and result.stdout.strip():
+            return True
+        # Committed changes since start_sha
+        if start_sha:
+            result = subprocess.run(
+                ["git", "log", "--oneline", f"{start_sha}..HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return True
+        else:
+            # No baseline — can't determine whether committed changes exist.
+            # Assume they do to avoid rejecting valid work.
+            return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        # Can't determine — assume there might be changes
+        return True
+    return False
 
 
 def get_diff(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
@@ -328,7 +296,7 @@ def build_review_prompt(ticket_title: str, ticket_body: str, diff: str, worklog:
             "- Correctness: does it do what the ticket asks?",
             "- Edge cases: are there unhandled scenarios?",
             "- Code quality: is it readable, maintainable, and well-structured?",
-            "- Tests: are the changes adequately tested?",
+            "- Tests: are the changes adequately tested? Run the project's test suite and linter to verify.",
             "",
             "End your review with exactly one of these verdict lines:",
             "VERDICT: APPROVED",
@@ -549,8 +517,6 @@ def run_agent_loop(
             logger.info("Stopping at iteration %d (signal received)", iteration)
             break
 
-        logger.info("=== Iteration %d ===", iteration)
-
         # Update session: working
         now = datetime.now(UTC).isoformat()
         update_agent_state(
@@ -648,30 +614,15 @@ def run_agent_loop(
 
         # Check stop conditions
         if status == "done":
-            # Verify by running quality gates (pytest + ruff) before accepting done
-            logger.info("Agent reports DONE — running quality gates...")
-            tests_passed, test_output = run_tests(worktree)
-            lint_passed, lint_output = run_lint(worktree)
-
-            if not (tests_passed and lint_passed):
-                failures = []
-                if not tests_passed:
-                    failures.append(f"pytest:\n{test_output}")
-                if not lint_passed:
-                    failures.append(f"ruff:\n{lint_output}")
-                failure_detail = "\n\n".join(failures)
-                logger.warning("Quality gates failed, overriding DONE to CONTINUE:\n%s", failure_detail)
-                summary = []
-                if not tests_passed:
-                    summary.append("pytest failed")
-                if not lint_passed:
-                    summary.append("ruff failed")
-                append_worklog(ticket_path, f"DONE rejected ({', '.join(summary)}). See logs for details.")
-                # Don't break — continue the loop so agent can fix
+            # Guard: reject DONE if the agent hasn't made any actual changes
+            agent_state = get_agent_state(base, branch, session_name)
+            if not has_code_changes(worktree, agent_state.start_sha):
+                logger.warning("Agent reports DONE but no code changes detected — rejecting")
+                append_worklog(
+                    ticket_path,
+                    "DONE rejected — no code changes detected. Actually implement the changes before reporting DONE.",
+                )
                 continue
-
-            logger.info("Quality gates passed (pytest + ruff)")
-            append_worklog(ticket_path, "Quality gates passed (pytest + ruff)")
 
             # --- Council review phase ---
             # Transition ticket to in_review, session to awaiting_council
