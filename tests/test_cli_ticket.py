@@ -571,6 +571,58 @@ class TestTicketCloseDuplicate:
             assert "duplicate-of: kin-orig" in content
 
 
+class TestTicketDelete:
+    def test_delete_removes_file(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-del1")
+
+            result = runner.invoke(cli.app, ["tk", "delete", "kin-del1", "--force"])
+
+            assert result.exit_code == 0, result.output
+            assert "Deleted" in result.output
+            assert "kin-del1" in result.output
+            assert not path.exists()
+
+    def test_delete_not_found(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "delete", "nope", "--force"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output.lower()
+
+    def test_delete_cancelled(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-del2")
+
+            result = runner.invoke(cli.app, ["tk", "delete", "kin-del2"], input="n\n")
+
+            assert result.exit_code == 0
+            assert "Cancelled" in result.output
+            assert path.exists()
+
+    def test_delete_confirmed(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-del3")
+
+            result = runner.invoke(cli.app, ["tk", "delete", "kin-del3"], input="y\n")
+
+            assert result.exit_code == 0, result.output
+            assert "Deleted" in result.output
+            assert not path.exists()
+
+
 class TestTicketMove:
     def test_move_defaults_to_current_branch(self) -> None:
         with runner.isolated_filesystem():

@@ -3634,6 +3634,34 @@ def ticket_reopen(
     update_ticket_status(ticket_id, "open")
 
 
+@ticket_app.command("delete", help="Permanently delete a ticket file.")
+def ticket_delete(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt.")] = False,
+) -> None:
+    """Remove a ticket file from disk."""
+    base = Path.cwd()
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        print_error(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+    if not force:
+        confirm = typer.confirm(f"Delete {ticket.id} — {ticket.title}?")
+        if not confirm:
+            typer.echo("Cancelled.")
+            raise typer.Exit(code=0)
+
+    ticket_path.unlink()
+    typer.echo(f"Deleted {ticket.id} — {ticket.title}")
+
+
 @ticket_app.command("dep", help="Add a dependency to a ticket.")
 def ticket_dep(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
