@@ -724,7 +724,7 @@ class ChatApp(App):
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove any existing wait/stream/thinking/interrupted panels for a member."""
-        for prefix in ("wait", "stream", "interrupted"):
+        for prefix in ("wait", "stream", "thinking", "interrupted"):
             for panel in list(log.query(f"#{prefix}-{name}")):
                 panel.remove()
 

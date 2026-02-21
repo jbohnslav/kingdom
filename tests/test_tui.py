@@ -2115,3 +2115,28 @@ class TestSendMessageCleansUpPanels:
 
         # remove_member_panels should have been called for "claude"
         assert "claude" in removed
+
+
+class TestRemoveMemberPanels:
+    def test_removes_thinking_panels(self, project: Path) -> None:
+        """remove_member_panels should remove thinking panels, not just wait/stream/interrupted."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp, MessageLog
+
+        tid = "remove-panels-test"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        mock_log = MagicMock(spec=MessageLog)
+        thinking_panel = MagicMock(name="thinking-claude")
+        mock_log.query.side_effect = lambda sel: [thinking_panel] if sel == "#thinking-claude" else []
+
+        app_instance.remove_member_panels(mock_log, "claude")
+
+        # Should have queried for thinking panels
+        queried_selectors = [call.args[0] for call in mock_log.query.call_args_list]
+        assert "#thinking-claude" in queried_selectors
+        # The thinking panel should have been removed
+        thinking_panel.remove.assert_called_once()
