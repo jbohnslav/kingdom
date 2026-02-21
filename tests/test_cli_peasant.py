@@ -490,6 +490,9 @@ class TestPeasantSync:
                 result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
 
             assert result.exit_code == 0, result.output
+            assert "[1/2]" in result.output
+            assert "[2/2]" in result.output
+            assert "Already up to date" in result.output
             assert "sync complete" in result.output
 
     def test_sync_refuses_while_running(self) -> None:

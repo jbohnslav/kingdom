@@ -2154,7 +2154,7 @@ def peasant_sync(
 
     # Merge parent branch into worktree
     parent_branch = feature
-    typer.echo(f"Merging {parent_branch} into worktree for {full_ticket_id}...")
+    typer.echo(f"[1/2] Merging {parent_branch} into worktree for {full_ticket_id}...")
     merge_result = subprocess.run(
         ["git", "merge", parent_branch, "--no-edit"],
         capture_output=True,
@@ -2163,24 +2163,25 @@ def peasant_sync(
     )
 
     if merge_result.returncode != 0:
-        # Check for merge conflict
         typer.echo("Merge failed.")
         if merge_result.stdout.strip():
             typer.echo(merge_result.stdout.strip())
         if merge_result.stderr.strip():
             typer.echo(merge_result.stderr.strip())
-        # Abort the merge so we don't leave the worktree in a dirty state
         subprocess.run(["git", "merge", "--abort"], capture_output=True, cwd=worktree_path)
         typer.echo(f"\nMerge aborted. To resolve manually:\n  cd {worktree_path}\n  git merge {parent_branch}")
         raise typer.Exit(code=1)
 
-    if merge_result.stdout.strip():
-        typer.echo(merge_result.stdout.strip())
+    merge_out = merge_result.stdout.strip()
+    if "Already up to date" in merge_out:
+        typer.echo("Already up to date.")
+    elif merge_out:
+        typer.echo(merge_out)
 
     # Run init-worktree.sh to refresh dependencies
     init_script = state_root(base) / "init-worktree.sh"
     if init_script.exists() and os.access(init_script, os.X_OK):
-        typer.echo("Running init-worktree.sh...")
+        typer.echo("[2/2] Running init-worktree.sh...")
         init_result = subprocess.run(
             [str(init_script), str(worktree_path)],
             capture_output=True,
@@ -2192,6 +2193,8 @@ def peasant_sync(
             typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
             if init_result.stderr.strip():
                 typer.echo(init_result.stderr.strip())
+    else:
+        typer.echo("[2/2] No init-worktree.sh found, skipping dependency refresh.")
 
     typer.echo(f"{full_ticket_id}: sync complete")
 
