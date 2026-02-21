@@ -2120,6 +2120,24 @@ class TestTicketUndep:
             ticket, _ = found
             assert ticket.deps == []
 
+    def test_undep_preserves_other_deps(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            for tid in ["aaaa", "bbbb", "cccc"]:
+                t = Ticket(id=tid, status="open", title=f"Ticket {tid}", body="", created=datetime.now(UTC))
+                write_ticket(t, tickets_dir / f"{tid}.md")
+
+            runner.invoke(cli.app, ["tk", "dep", "aaaa", "bbbb"])
+            runner.invoke(cli.app, ["tk", "dep", "aaaa", "cccc"])
+            runner.invoke(cli.app, ["tk", "undep", "aaaa", "bbbb"])
+
+            found = find_ticket(base, "aaaa")
+            assert found is not None
+            ticket, _ = found
+            assert ticket.deps == ["cccc"]
 
 class TestNoResultsMessages:
     """Tests for helpful empty-state messages with next-step guidance."""
