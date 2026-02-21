@@ -17,7 +17,7 @@ from kingdom.state import (
     ensure_run_layout,
     set_current_run,
 )
-from kingdom.ticket import Ticket, find_ticket, write_ticket
+from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
 runner = CliRunner()
 
@@ -513,6 +513,62 @@ class TestTicketCloseReason:
             assert result.exit_code == 0, result.output
             content = path.read_text()
             assert "## Worklog" not in content
+
+
+class TestTicketCloseDuplicate:
+    def test_duplicate_of_sets_field_and_closes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-dup1")
+            create_ticket_in(branch_dir, "kin-orig")
+
+            result = runner.invoke(cli.app, ["tk", "close", "kin-dup1", "--duplicate-of", "kin-orig"])
+
+            assert result.exit_code == 0, result.output
+            assert "closed" in result.output
+            ticket = read_ticket(branch_dir / "kin-dup1.md")
+            assert ticket.status == "closed"
+            assert ticket.duplicate_of == "kin-orig"
+
+    def test_duplicate_of_adds_worklog(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-dup2")
+
+            runner.invoke(cli.app, ["tk", "close", "kin-dup2", "--duplicate-of", "kin-xyz"])
+
+            content = path.read_text()
+            assert "Closed: Duplicate of kin-xyz" in content
+
+    def test_duplicate_of_with_custom_reason(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-dup3")
+
+            runner.invoke(
+                cli.app, ["tk", "close", "kin-dup3", "--duplicate-of", "kin-xyz", "-m", "Merged into kin-xyz"]
+            )
+
+            content = path.read_text()
+            assert "Closed: Merged into kin-xyz" in content
+
+    def test_duplicate_of_serialized_in_frontmatter(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-dup4")
+
+            runner.invoke(cli.app, ["tk", "close", "kin-dup4", "--duplicate-of", "kin-orig"])
+
+            content = (branch_dir / "kin-dup4.md").read_text()
+            assert "duplicate-of: kin-orig" in content
 
 
 class TestTicketMove:

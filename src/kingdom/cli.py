@@ -3595,12 +3595,30 @@ def ticket_close(
     reason: Annotated[
         str | None, typer.Option("--reason", "-m", help="Reason for closing (appended to worklog).")
     ] = None,
+    duplicate_of: Annotated[
+        str | None, typer.Option("--duplicate-of", help="Mark as duplicate of another ticket ID.")
+    ] = None,
 ) -> None:
     """Set ticket status to closed."""
+    base = Path.cwd()
+
+    if duplicate_of:
+        try:
+            result = find_ticket(base, ticket_id)
+        except AmbiguousTicketMatch as e:
+            print_error(f"{e}")
+            raise typer.Exit(code=1) from None
+        if result is None:
+            print_error(f"Ticket not found: {ticket_id}")
+            raise typer.Exit(code=1)
+        ticket, ticket_path = result
+        ticket.duplicate_of = duplicate_of
+        write_ticket(ticket, ticket_path)
+        reason = reason or f"Duplicate of {duplicate_of}"
+
     if reason:
         from kingdom.harness import append_worklog
 
-        base = Path.cwd()
         result = find_ticket(base, ticket_id)
         if result is not None:
             _, ticket_path = result

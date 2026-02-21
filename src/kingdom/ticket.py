@@ -52,6 +52,7 @@ class Ticket:
     tags: list[str] = field(default_factory=list)
     parent: str | None = None
     external_ref: str | None = None
+    duplicate_of: str | None = None
 
 
 def clamp_priority(value: int | str | None) -> int:
@@ -130,6 +131,7 @@ def parse_ticket(content: str) -> Ticket:
         tags=tags,
         parent=str(frontmatter_dict.get("parent")) if frontmatter_dict.get("parent") else None,
         external_ref=(str(frontmatter_dict.get("external-ref")) if frontmatter_dict.get("external-ref") else None),
+        duplicate_of=(str(frontmatter_dict.get("duplicate-of")) if frontmatter_dict.get("duplicate-of") else None),
     )
 
 
@@ -155,6 +157,8 @@ def serialize_ticket(ticket: Ticket) -> str:
         lines.append(f"parent: {ticket.parent}")
     if ticket.tags:
         lines.append(f"tags: {serialize_yaml_value(ticket.tags)}")
+    if ticket.duplicate_of:
+        lines.append(f"duplicate-of: {ticket.duplicate_of}")
 
     lines.append("---")
 
