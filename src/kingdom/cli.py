@@ -3258,7 +3258,7 @@ def ticket_list(
                 typer.echo('No backlog tickets. Create one with `kd tk create --backlog "title"`.')
                 return
             render_ticket_table(tickets)
-            typer.echo(format_ticket_summary(all_backlog_tickets))
+            typer.echo(format_ticket_summary(tickets))
         return
 
     if all_tickets:
@@ -3280,11 +3280,9 @@ def ticket_list(
             locations.append(("backlog", backlog_tickets))
 
         all_filtered: list[Ticket] = []
-        all_unfiltered: list[Ticket] = []
         location_map: dict[str, str] = {}
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
-            all_unfiltered.extend(tickets)
             filtered = apply_priority(filter_tickets_by_status(tickets, status, include_closed))
             for ticket in filtered:
                 location_map[ticket.id] = location_name
@@ -3308,7 +3306,7 @@ def ticket_list(
                 typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
                 return
             render_ticket_table(all_filtered, show_location=True, locations=location_map)
-            typer.echo(format_ticket_summary(all_unfiltered))
+            typer.echo(format_ticket_summary(all_filtered))
     else:
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
@@ -3332,7 +3330,7 @@ def ticket_list(
                 typer.echo('No tickets found. Create one with `kd tk create "title"`.')
                 return
             render_ticket_table(tickets)
-            typer.echo(format_ticket_summary(all_branch_tickets))
+            typer.echo(format_ticket_summary(tickets))
 
 
 def resolve_dep_status(base: Path, dep_id: str) -> str:

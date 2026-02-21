@@ -893,6 +893,27 @@ class TestTicketList:
             assert result.exit_code == 0
             assert "Review ticket" in result.output
 
+    def test_list_status_filter_summary_reflects_filter(self) -> None:
+        """Summary line should count only filtered tickets."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t1 = Ticket(id="aaaa", status="open", title="Open one", body="", created=datetime.now(UTC))
+            t2 = Ticket(id="bbbb", status="closed", title="Closed one", body="", created=datetime.now(UTC))
+            t3 = Ticket(id="cccc", status="closed", title="Closed two", body="", created=datetime.now(UTC))
+            write_ticket(t1, tickets_dir / "aaaa.md")
+            write_ticket(t2, tickets_dir / "bbbb.md")
+            write_ticket(t3, tickets_dir / "cccc.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--status", "closed"])
+
+            assert result.exit_code == 0
+            assert "2 closed" in result.output
+            assert "2 total" in result.output
+            assert "3 total" not in result.output
+
     def test_list_status_filter_invalid(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -963,11 +984,11 @@ class TestTicketList:
             result = runner.invoke(cli.app, ["tk", "list"])
 
             assert result.exit_code == 0
-            # Summary should show all statuses including closed (even though closed tickets are hidden)
+            # Summary should only count displayed tickets (closed are hidden by default)
             assert "1 open" in result.output
             assert "1 in_progress" in result.output
-            assert "1 closed" in result.output
-            assert "3 total" in result.output
+            assert "1 closed" not in result.output
+            assert "2 total" in result.output
 
     def test_list_summary_line_not_in_json_output(self) -> None:
         with runner.isolated_filesystem():
@@ -1000,8 +1021,9 @@ class TestTicketList:
 
             assert result.exit_code == 0
             assert "1 open" in result.output
-            assert "1 closed" in result.output
-            assert "2 total" in result.output
+            # Closed tickets are hidden by default, so summary should not include them
+            assert "1 closed" not in result.output
+            assert "1 total" in result.output
 
     def test_list_no_tickets_shows_no_summary(self) -> None:
         with runner.isolated_filesystem():
@@ -1049,6 +1071,27 @@ class TestTicketListPriority:
             assert result.exit_code == 0
             assert "aaaa" in result.output
             assert "bbbb" not in result.output
+
+    def test_summary_reflects_filter(self) -> None:
+        """Summary line should count only filtered tickets, not all tickets."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            p1 = Ticket(id="aaaa", status="open", title="Urgent", body="", priority=1, created=datetime.now(UTC))
+            p2 = Ticket(id="bbbb", status="open", title="Normal", body="", priority=2, created=datetime.now(UTC))
+            p3 = Ticket(id="cccc", status="open", title="Also normal", body="", priority=2, created=datetime.now(UTC))
+            write_ticket(p1, tickets_dir / "aaaa.md")
+            write_ticket(p2, tickets_dir / "bbbb.md")
+            write_ticket(p3, tickets_dir / "cccc.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "-p", "1"])
+
+            assert result.exit_code == 0
+            # Summary should say "1 open · 1 total", not "3 open · 3 total"
+            assert "1 total" in result.output
+            assert "3 total" not in result.output
 
     def test_priority_filter_invalid(self) -> None:
         with runner.isolated_filesystem():
