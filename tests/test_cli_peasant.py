@@ -1174,6 +1174,43 @@ class TestPeasantReview:
             assert "diff error" in result.output
             assert "fatal" in result.output
 
+    def test_review_flags_no_diff(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            with patch("subprocess.run") as mock_run:
+                pytest_result = MagicMock()
+                pytest_result.returncode = 0
+                pytest_result.stdout = "5 passed"
+                pytest_result.stderr = ""
+
+                ruff_result = MagicMock()
+                ruff_result.returncode = 0
+                ruff_result.stdout = ""
+                ruff_result.stderr = ""
+
+                diff_result = MagicMock()
+                diff_result.returncode = 0
+                diff_result.stdout = ""
+                diff_result.stderr = ""
+
+                mock_run.side_effect = [pytest_result, ruff_result, diff_result]
+
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "No code diff" in result.output
+
     def test_review_ticket_not_found(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

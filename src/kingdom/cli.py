@@ -2479,7 +2479,7 @@ def peasant_review(
         has_diff = True
         console.print(Markdown(f"## diff: {diff_spec}\n\n```\n{diff_output}\n```"))
     else:
-        typer.echo("(no diff — branch may not have diverged yet)")
+        typer.secho("⚠ No code diff — the peasant may not have made any changes.", fg=typer.colors.YELLOW)
 
     # 4. Show worklog
     worklog = extract_worklog(ticket_path)
