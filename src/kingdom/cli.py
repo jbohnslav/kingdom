@@ -3195,6 +3195,10 @@ def ticket_list(
             help="Filter by status (open, in_progress, in_review, closed). Overrides --include-closed.",
         ),
     ] = None,
+    priority: Annotated[
+        int | None,
+        typer.Option("--priority", "-p", help="Filter by priority (1-3)."),
+    ] = None,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
@@ -3205,12 +3209,21 @@ def ticket_list(
             typer.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
             raise typer.Exit(code=1)
 
+    if priority is not None and priority not in (1, 2, 3):
+        typer.echo(f"Invalid priority {priority}. Must be 1, 2, or 3.")
+        raise typer.Exit(code=1)
+
+    def apply_priority(tickets: list[Ticket]) -> list[Ticket]:
+        if priority is None:
+            return tickets
+        return [t for t in tickets if t.priority == priority]
+
     base = Path.cwd()
 
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
         all_backlog_tickets = list_tickets(backlog_dir) if backlog_dir.exists() else []
-        tickets = filter_tickets_by_status(all_backlog_tickets, status, include_closed)
+        tickets = apply_priority(filter_tickets_by_status(all_backlog_tickets, status, include_closed))
 
         if output_json:
             results = [
@@ -3257,7 +3270,7 @@ def ticket_list(
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
             all_unfiltered.extend(tickets)
-            filtered = filter_tickets_by_status(tickets, status, include_closed)
+            filtered = apply_priority(filter_tickets_by_status(tickets, status, include_closed))
             for ticket in filtered:
                 location_map[ticket.id] = location_name
             all_filtered.extend(filtered)
@@ -3285,7 +3298,7 @@ def ticket_list(
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
         all_branch_tickets = list_tickets(tickets_dir)
-        tickets = filter_tickets_by_status(all_branch_tickets, status, include_closed)
+        tickets = apply_priority(filter_tickets_by_status(all_branch_tickets, status, include_closed))
 
         if output_json:
             results = [

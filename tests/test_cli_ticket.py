@@ -962,6 +962,53 @@ class TestTicketList:
             assert "total" not in result.output
 
 
+class TestTicketListPriority:
+    def test_priority_filter_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            p1 = Ticket(id="aaaa", status="open", title="Urgent", body="", priority=1, created=datetime.now(UTC))
+            p2 = Ticket(id="bbbb", status="open", title="Normal", body="", priority=2, created=datetime.now(UTC))
+            write_ticket(p1, tickets_dir / "aaaa.md")
+            write_ticket(p2, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "-p", "1"])
+
+            assert result.exit_code == 0
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
+
+    def test_priority_filter_backlog(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            backlog_dir = backlog_root(base) / "tickets"
+            backlog_dir.mkdir(parents=True, exist_ok=True)
+
+            p1 = Ticket(id="aaaa", status="open", title="Urgent", body="", priority=1, created=datetime.now(UTC))
+            p2 = Ticket(id="bbbb", status="open", title="Normal", body="", priority=2, created=datetime.now(UTC))
+            write_ticket(p1, backlog_dir / "aaaa.md")
+            write_ticket(p2, backlog_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--backlog", "-p", "1"])
+
+            assert result.exit_code == 0
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
+
+    def test_priority_filter_invalid(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "list", "-p", "5"])
+
+            assert result.exit_code == 1
+            assert "Invalid priority" in result.output
+
+
 class TestTicketListTable:
     """Tests for Rich table formatting in tk list."""
 
