@@ -2427,9 +2427,11 @@ def peasant_review(
     )
     diff_output = diff_result.stdout.strip()
     diff_err = diff_result.stderr.strip()
+    has_diff = False
     if diff_result.returncode != 0 and diff_err:
         console.print(Markdown(f"## diff error: {diff_spec}\n\n```\n{diff_err}\n```"))
     elif diff_output:
+        has_diff = True
         console.print(Markdown(f"## diff: {diff_spec}\n\n```\n{diff_output}\n```"))
     else:
         typer.echo("(no diff — branch may not have diverged yet)")
@@ -2461,6 +2463,10 @@ def peasant_review(
     typer.echo(f"Peasant status: {state.status}")
     if state.review_bounce_count:
         typer.echo(f"Review bounces: {state.review_bounce_count}")
+
+    # Warn if no code diff
+    if not has_diff and state.status == "needs_king_review":
+        typer.echo("\n⚠ Warning: no code diff detected — peasant may not have made meaningful changes.")
 
     # Prompt for action
     can_accept = ticket.status == "in_review" and state.status == "needs_king_review"

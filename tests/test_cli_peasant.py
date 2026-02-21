@@ -1336,6 +1336,35 @@ class TestPeasantReview:
             assert "Review bounces: 1" in result.output
             assert "--accept" in result.output
 
+    def test_review_warns_on_no_diff(self) -> None:
+        """Review should warn when peasant reports done but has no code changes."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            with patch("subprocess.run") as mock_run:
+                diff_result = MagicMock()
+                diff_result.returncode = 0
+                diff_result.stdout = ""  # No diff
+                diff_result.stderr = ""
+
+                mock_run.return_value = diff_result
+
+                result = runner.invoke(cli.app, ["peasant", "review", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "no code diff" in result.output.lower()
+            assert "Warning" in result.output or "⚠" in result.output
+
 
 class TestBacklogAutoPull:
     def test_start_moves_backlog_ticket_to_branch(self) -> None:
