@@ -591,15 +591,12 @@ class ChatApp(App):
             self.remove_member_panels(log, name)
 
         if to == "all":
-            # Broadcast: coordinator handles initial round + auto-turns.
-            # Mount all WaitingPanels upfront for the first exchange (parallel
-            # broadcast).  For follow-ups the coordinator mounts them one at a
-            # time as sequential turns proceed.
+            # Broadcast: always query all targets in parallel, then optionally
+            # run auto-turn follow-ups (sequential round-robin).
+            for name in targets:
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             prior_messages = list_messages(self.base, self.branch, self.thread_id)
             is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
-            if is_first_exchange:
-                for name in targets:
-                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
         else:
             # Directed: single query, no auto-turns
@@ -658,39 +655,39 @@ class ChatApp(App):
     async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
         """Coordinate a chat round after the king sends a message.
 
-        First exchange: parallel broadcast — every member responds at once,
-        then we stop and wait for the king.
-
-        Follow-up exchanges: sequential round-robin — members take turns, one
-        at a time, up to a message budget. No broadcast.
+        Always starts with a parallel broadcast for the initial response to the
+        king's message.  On follow-up exchanges (not the first), continues with
+        sequential round-robin auto-turns after the broadcast.
         """
         if not self.council:
             return
 
-        if is_first_exchange:
-            # Parallel broadcast (or sequential if configured).  WaitingPanels
-            # are already mounted by send_message().
-            mode = self.council.mode
-            if mode == "broadcast" and len(targets) > 1:
-                coros = []
-                for name in targets:
-                    member = self.council.get_member(name)
-                    if member:
-                        stream_path = tdir / f".stream-{name}.jsonl"
-                        coros.append(self.run_query(member, stream_path))
-                await asyncio.gather(*coros)
-            else:
-                for name in targets:
-                    if self.interrupted or self.generation != generation:
-                        return
-                    member = self.council.get_member(name)
-                    if not member:
-                        continue
+        # Parallel broadcast (or sequential if configured).  WaitingPanels
+        # are already mounted by send_message().
+        mode = self.council.mode
+        if mode == "broadcast" and len(targets) > 1:
+            coros = []
+            for name in targets:
+                member = self.council.get_member(name)
+                if member:
                     stream_path = tdir / f".stream-{name}.jsonl"
-                    await self.run_query(member, stream_path)
+                    coros.append(self.run_query(member, stream_path))
+            await asyncio.gather(*coros)
+        else:
+            for name in targets:
+                if self.interrupted or self.generation != generation:
+                    return
+                member = self.council.get_member(name)
+                if not member:
+                    continue
+                stream_path = tdir / f".stream-{name}.jsonl"
+                await self.run_query(member, stream_path)
+
+        # First exchange: broadcast only, no auto-turns.
+        if is_first_exchange:
             return
 
-        # Follow-up: sequential round-robin, no broadcast.
+        # Follow-up: sequential round-robin auto-turns after the broadcast.
         active = [n for n in self.member_names if n not in self.muted]
         budget = self.council.auto_messages
         if budget == 0:
