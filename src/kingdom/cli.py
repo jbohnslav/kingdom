@@ -2718,6 +2718,12 @@ def config_show() -> None:
         typer.secho(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from None
 
+    config_path = state_root(base) / "config.json"
+    if config_path.exists():
+        typer.echo(f"Source: {config_path}")
+    else:
+        typer.echo("Source: defaults (no config file)")
+
     def strip_empty(obj: object) -> object:
         if isinstance(obj, dict):
             return {k: v for k, v in ((k, strip_empty(v)) for k, v in obj.items()) if v not in ("", [], {}, None)}

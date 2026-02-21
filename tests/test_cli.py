@@ -163,19 +163,32 @@ def test_doctor_unknown_backend(tmp_path) -> None:
 # -- kd config show ---
 
 
-def test_config_show_defaults() -> None:
+def extract_json(output: str) -> dict:
+    """Extract JSON from config show output (skip the Source: header line)."""
+    return json.loads(output[output.index("{") :])
+
+
+def test_config_show_defaults(tmp_path) -> None:
     """Test kd config show prints default config as valid JSON."""
-    result = runner.invoke(cli.app, ["config", "show"])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert "agents" in data
-    assert "council" in data
-    assert "peasant" in data
-    # prompts section is stripped when all values are empty defaults
-    # Check defaults
-    assert "claude" in data["agents"]
-    assert data["peasant"]["agent"] == "claude"
-    assert data["council"]["timeout"] == 600
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+
+    with (
+        patch("kingdom.config.state_root", return_value=kd_dir),
+        patch("kingdom.cli.state_root", return_value=kd_dir),
+    ):
+        result = runner.invoke(cli.app, ["config", "show"])
+        assert result.exit_code == 0
+        assert "Source: defaults" in result.output
+        data = extract_json(result.output)
+        assert "agents" in data
+        assert "council" in data
+        assert "peasant" in data
+        # prompts section is stripped when all values are empty defaults
+        # Check defaults
+        assert "claude" in data["agents"]
+        assert data["peasant"]["agent"] == "claude"
+        assert data["council"]["timeout"] == 600
 
 
 def test_config_show_with_overrides(tmp_path) -> None:
@@ -185,10 +198,15 @@ def test_config_show_with_overrides(tmp_path) -> None:
     config = {"council": {"timeout": 300}, "peasant": {"agent": "codex"}}
     (kd_dir / "config.json").write_text(json.dumps(config))
 
-    with patch("kingdom.config.state_root", return_value=kd_dir):
+    with (
+        patch("kingdom.config.state_root", return_value=kd_dir),
+        patch("kingdom.cli.state_root", return_value=kd_dir),
+    ):
         result = runner.invoke(cli.app, ["config", "show"])
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        assert "Source:" in result.output
+        assert "config.json" in result.output
+        data = extract_json(result.output)
         assert data["council"]["timeout"] == 300
         assert data["peasant"]["agent"] == "codex"
 
