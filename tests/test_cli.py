@@ -317,3 +317,34 @@ class TestSetupSkill:
             assert result.exit_code == 0, result.output
             assert "Updating" in result.output
             assert target.resolve() == (base / "skills" / "kingdom").resolve()
+
+
+class TestNoColor:
+    def test_styled_echo_strips_color_when_no_color(self) -> None:
+        """styled_echo should not pass fg when NO_COLOR is set."""
+        with patch.object(cli, "NO_COLOR", True):
+            result = runner.invoke(cli.app, ["doctor"])
+            # Output should not contain ANSI escape codes
+            assert "\x1b[" not in result.output
+
+    def test_no_color_flag_detects_env(self) -> None:
+        """NO_COLOR module flag should reflect environment."""
+        import importlib
+
+        with patch.dict("os.environ", {"NO_COLOR": "1"}):
+            importlib.reload(cli)
+            assert cli.NO_COLOR is True
+
+        with patch.dict("os.environ", {"TERM": "dumb"}, clear=False):
+            # Remove NO_COLOR if present
+            import os
+
+            env = os.environ.copy()
+            env.pop("NO_COLOR", None)
+            env["TERM"] = "dumb"
+            with patch.dict("os.environ", env, clear=True):
+                importlib.reload(cli)
+                assert cli.NO_COLOR is True
+
+        # Restore normal state
+        importlib.reload(cli)

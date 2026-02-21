@@ -67,6 +67,13 @@ from kingdom.ticket import (
 
 error_console = Console(stderr=True)
 
+NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
+
+
+def styled_echo(message: str, *, fg: str | None = None, err: bool = False) -> None:
+    """typer.secho wrapper that respects NO_COLOR and TERM=dumb."""
+    typer.secho(message, fg=None if NO_COLOR else fg, err=err)
+
 
 def print_error(message: str) -> None:
     """Print a consistently styled error message to stderr."""
@@ -2718,7 +2725,7 @@ def config_show() -> None:
     try:
         cfg = load_config(base)
     except ValueError as e:
-        typer.secho(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
+        styled_echo(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from None
 
     config_path = state_root(base) / "config.json"
@@ -2808,11 +2815,11 @@ def doctor(
     else:
         typer.echo("\nConfig:")
         if not config_path.exists():
-            typer.secho("  ○ No config.json (using defaults)", fg=typer.colors.YELLOW)
+            styled_echo("  ○ No config.json (using defaults)", fg=typer.colors.YELLOW)
         elif config_ok:
-            typer.secho("  ✓ config.json valid", fg=typer.colors.GREEN)
+            styled_echo("  ✓ config.json valid", fg=typer.colors.GREEN)
         else:
-            typer.secho(f"  ✗ config.json: {config_error}", fg=typer.colors.RED)
+            styled_echo(f"  ✗ config.json: {config_error}", fg=typer.colors.RED)
 
     # 2. Agent CLI checks (skip if config is invalid — can't resolve agents)
     cli_results: dict[str, dict[str, bool | str | None]] = {}
@@ -2832,16 +2839,16 @@ def doctor(
     else:
         if not config_ok:
             typer.echo("\nAgent CLIs:")
-            typer.secho("  ○ Skipped (fix config first)", fg=typer.colors.YELLOW)
+            styled_echo("  ○ Skipped (fix config first)", fg=typer.colors.YELLOW)
         else:
             typer.echo("\nAgent CLIs:")
             for check in doctor_checks:
                 name = check["name"]
                 result = cli_results[name]
                 if result["installed"]:
-                    typer.secho(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
+                    styled_echo(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
                 else:
-                    typer.secho(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
+                    styled_echo(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
 
             if cli_issues:
                 typer.echo("\nIssues found:")
