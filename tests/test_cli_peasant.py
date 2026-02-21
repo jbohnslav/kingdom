@@ -1363,7 +1363,7 @@ class TestPeasantReview:
 
             assert result.exit_code == 0, result.output
             assert "no code diff" in result.output.lower()
-            assert "Warning" in result.output or "⚠" in result.output
+            assert "Warning" in result.output
 
 
 class TestBacklogAutoPull:

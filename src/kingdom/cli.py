@@ -2481,7 +2481,7 @@ def peasant_review(
 
     # Warn if no code diff
     if not has_diff and state.status == "needs_king_review":
-        typer.echo("\n⚠ Warning: no code diff detected — peasant may not have made meaningful changes.")
+        styled_echo("\nWarning: no code diff detected — peasant may not have made meaningful changes.", fg="yellow")
 
     # Prompt for action
     can_accept = ticket.status == "in_review" and state.status == "needs_king_review"
