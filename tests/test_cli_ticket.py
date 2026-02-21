@@ -538,6 +538,7 @@ class TestTicketCloseDuplicate:
             setup_project(base)
             branch_dir = branch_root(base, BRANCH) / "tickets"
             path = create_ticket_in(branch_dir, "kin-dup2")
+            create_ticket_in(branch_dir, "kin-xyz")
 
             runner.invoke(cli.app, ["tk", "close", "kin-dup2", "--duplicate-of", "kin-xyz"])
 
@@ -550,6 +551,7 @@ class TestTicketCloseDuplicate:
             setup_project(base)
             branch_dir = branch_root(base, BRANCH) / "tickets"
             path = create_ticket_in(branch_dir, "kin-dup3")
+            create_ticket_in(branch_dir, "kin-xyz")
 
             runner.invoke(
                 cli.app, ["tk", "close", "kin-dup3", "--duplicate-of", "kin-xyz", "-m", "Merged into kin-xyz"]
@@ -564,11 +566,61 @@ class TestTicketCloseDuplicate:
             setup_project(base)
             branch_dir = branch_root(base, BRANCH) / "tickets"
             create_ticket_in(branch_dir, "kin-dup4")
+            create_ticket_in(branch_dir, "kin-orig")
 
             runner.invoke(cli.app, ["tk", "close", "kin-dup4", "--duplicate-of", "kin-orig"])
 
             content = (branch_dir / "kin-dup4.md").read_text()
             assert "duplicate-of: kin-orig" in content
+
+
+class TestTicketCloseDuplicateValidation:
+    def test_duplicate_of_rejects_nonexistent_target(self) -> None:
+        """--duplicate-of should fail if the target ticket doesn't exist."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-dup1")
+
+            result = runner.invoke(cli.app, ["tk", "close", "kin-dup1", "--duplicate-of", "nonexistent"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output.lower() or "nonexistent" in result.output.lower()
+            # Ticket should NOT be closed
+            ticket = read_ticket(branch_dir / "kin-dup1.md")
+            assert ticket.status != "closed"
+
+    def test_duplicate_of_rejects_self_reference(self) -> None:
+        """--duplicate-of should fail if the target is the same ticket."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-self")
+
+            result = runner.invoke(cli.app, ["tk", "close", "kin-self", "--duplicate-of", "kin-self"])
+
+            assert result.exit_code == 1
+            assert "itself" in result.output.lower() or "self" in result.output.lower()
+            ticket = read_ticket(branch_dir / "kin-self.md")
+            assert ticket.status != "closed"
+
+    def test_duplicate_of_stores_canonical_id(self) -> None:
+        """--duplicate-of should resolve and store the full canonical ticket ID."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(branch_dir, "kin-dup5")
+            create_ticket_in(branch_dir, "kin-target")
+
+            # Use partial ID
+            result = runner.invoke(cli.app, ["tk", "close", "kin-dup5", "--duplicate-of", "kin-target"])
+
+            assert result.exit_code == 0, result.output
+            ticket = read_ticket(branch_dir / "kin-dup5.md")
+            assert ticket.duplicate_of == "kin-target"
 
 
 class TestTicketDelete:

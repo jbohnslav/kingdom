@@ -3637,8 +3637,21 @@ def ticket_close(
     ticket, ticket_path = result
 
     if duplicate_of:
-        ticket.duplicate_of = duplicate_of
-        reason = reason or f"Duplicate of {duplicate_of}"
+        # Validate target exists and is not self-referencing
+        try:
+            dup_result = find_ticket(base, duplicate_of)
+        except AmbiguousTicketMatch as e:
+            print_error(f"Duplicate target: {e}")
+            raise typer.Exit(code=1) from None
+        if dup_result is None:
+            print_error(f"Duplicate target not found: {duplicate_of}")
+            raise typer.Exit(code=1)
+        dup_ticket, _ = dup_result
+        if dup_ticket.id == ticket.id:
+            print_error("A ticket cannot be a duplicate of itself")
+            raise typer.Exit(code=1)
+        ticket.duplicate_of = dup_ticket.id
+        reason = reason or f"Duplicate of {dup_ticket.id}"
 
     old_status = ticket.status
     ticket.status = "closed"
