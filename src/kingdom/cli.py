@@ -2751,10 +2751,10 @@ app.add_typer(config_app, name="config")
 
 @config_app.command("show", help="Print the effective configuration.")
 def config_show() -> None:
-    """Print the merged config (defaults + user overrides) as JSON."""
+    """Print the effective config with source annotations (config file vs defaults)."""
     import dataclasses
 
-    from kingdom.config import load_config
+    from kingdom.config import load_config, load_raw_config
 
     base = Path.cwd()
     try:
@@ -2763,21 +2763,44 @@ def config_show() -> None:
         styled_echo(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from None
 
-    config_path = state_root(base) / "config.json"
-    if config_path.exists():
-        typer.echo(f"Source: {config_path}")
-    else:
-        typer.echo("Source: defaults (no config file)")
+    raw = load_raw_config(base)
 
-    def strip_empty(obj: object) -> object:
+    def flatten(obj, prefix=""):
+        items = []
         if isinstance(obj, dict):
-            return {k: v for k, v in ((k, strip_empty(v)) for k, v in obj.items()) if v not in ("", [], {}, None)}
-        if isinstance(obj, list):
-            return [strip_empty(item) for item in obj]
-        return obj
+            for k, v in obj.items():
+                items.extend(flatten(v, f"{prefix}{k}."))
+        elif isinstance(obj, list):
+            items.append((prefix.rstrip("."), ", ".join(str(x) for x in obj)))
+        else:
+            items.append((prefix.rstrip("."), obj))
+        return items
 
-    console = Console()
-    console.print_json(json.dumps(strip_empty(dataclasses.asdict(cfg)), indent=2))
+    def is_in_raw(dotted_key: str) -> bool:
+        """Check if a dotted key was explicitly set in the config file."""
+        parts = dotted_key.split(".")
+        node = raw
+        for part in parts:
+            if not isinstance(node, dict) or part not in node:
+                return False
+            node = node[part]
+        return True
+
+    effective = dataclasses.asdict(cfg)
+    entries = flatten(effective)
+
+    # Filter out empty values (empty strings, empty lists, empty dicts)
+    entries = [(k, v) for k, v in entries if v not in ("", [], {}, None)]
+
+    if not entries:
+        typer.echo("(all defaults, no config file)")
+        return
+
+    key_width = max(len(k) for k, _ in entries)
+    for key, value in entries:
+        source = "config" if is_in_raw(key) else "default"
+        color = typer.colors.CYAN if source == "config" else None
+        typer.secho(f"  {key:<{key_width}}  {value!s:<20}  ({source})", fg=color)
 
 
 # ---------------------------------------------------------------------------

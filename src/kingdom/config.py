@@ -340,6 +340,18 @@ def validate_config(data: dict) -> KingdomConfig:
 # ---------------------------------------------------------------------------
 
 
+def load_raw_config(base: Path) -> dict:
+    """Return the raw dict from .kd/config.json, or {} if absent/empty."""
+    config_path = state_root(base) / "config.json"
+    if not config_path.exists():
+        return {}
+    text = config_path.read_text(encoding="utf-8").strip()
+    if not text or text == "{}":
+        return {}
+    data = json.loads(text)
+    return data if isinstance(data, dict) else {}
+
+
 def load_config(base: Path) -> KingdomConfig:
     """Load configuration from .kd/config.json, falling back to defaults.
 

@@ -164,32 +164,21 @@ def test_doctor_unknown_backend(tmp_path) -> None:
 # -- kd config show ---
 
 
-def extract_json(output: str) -> dict:
-    """Extract JSON from config show output (skip the Source: header line)."""
-    return json.loads(output[output.index("{") :])
-
-
 def test_config_show_defaults(tmp_path) -> None:
-    """Test kd config show prints default config as valid JSON."""
+    """Test kd config show prints all-default config with source annotations."""
     kd_dir = tmp_path / ".kd"
     kd_dir.mkdir()
-
-    with (
-        patch("kingdom.config.state_root", return_value=kd_dir),
-        patch("kingdom.cli.state_root", return_value=kd_dir),
-    ):
+    # No config.json — everything should be "default"
+    with patch("kingdom.config.state_root", return_value=kd_dir):
         result = runner.invoke(cli.app, ["config", "show"])
         assert result.exit_code == 0
-        assert "Source: defaults" in result.output
-        data = extract_json(result.output)
-        assert "agents" in data
-        assert "council" in data
-        assert "peasant" in data
-        # prompts section is stripped when all values are empty defaults
-        # Check defaults
-        assert "claude" in data["agents"]
-        assert data["peasant"]["agent"] == "claude"
-        assert data["council"]["timeout"] == 600
+        lines = [ln for ln in result.output.splitlines() if ln.strip()]
+        assert len(lines) > 0
+        for line in lines:
+            assert "default" in line
+        # Spot-check a few known defaults
+        assert any("peasant.agent" in ln and "claude" in ln for ln in lines)
+        assert any("council.timeout" in ln and "600" in ln for ln in lines)
 
 
 def test_config_show_with_overrides(tmp_path) -> None:
@@ -205,11 +194,37 @@ def test_config_show_with_overrides(tmp_path) -> None:
     ):
         result = runner.invoke(cli.app, ["config", "show"])
         assert result.exit_code == 0
-        assert "Source:" in result.output
-        assert "config.json" in result.output
-        data = extract_json(result.output)
-        assert data["council"]["timeout"] == 300
-        assert data["peasant"]["agent"] == "codex"
+        assert "council.timeout" in result.output
+        assert "300" in result.output
+        assert "config" in result.output  # source annotation for overridden value
+
+
+def test_config_show_indicates_sources(tmp_path) -> None:
+    """Test kd config show annotates each value with its source."""
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config = {"council": {"timeout": 300}}
+    (kd_dir / "config.json").write_text(json.dumps(config))
+
+    with patch("kingdom.config.state_root", return_value=kd_dir):
+        result = runner.invoke(cli.app, ["config", "show"])
+        assert result.exit_code == 0
+        # Overridden value shows "config" source
+        for line in result.output.splitlines():
+            if "council.timeout" in line:
+                assert "300" in line
+                assert "config" in line
+                break
+        else:
+            raise AssertionError("council.timeout not found in output")
+        # Default value shows "default" source
+        for line in result.output.splitlines():
+            if "council.mode" in line:
+                assert "broadcast" in line
+                assert "default" in line
+                break
+        else:
+            raise AssertionError("council.mode not found in output")
 
 
 def test_config_show_invalid_config(tmp_path) -> None:
