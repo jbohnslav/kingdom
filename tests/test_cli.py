@@ -204,3 +204,98 @@ def test_config_show_invalid_config(tmp_path) -> None:
         assert result.exit_code == 1
         assert "invalid config" in result.output
         assert "timout" in result.output
+
+
+class TestSetupSkill:
+    def test_creates_symlink(self, tmp_path) -> None:
+        # Create skills directory in fake project
+        skill_dir = tmp_path / "skills" / "kingdom"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Skill")
+
+        claude_skills = tmp_path / ".claude_skills"
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=tmp_path),
+            patch("kingdom.cli.Path.home", return_value=tmp_path),
+        ):
+            # Patch the home directory to use tmp_path
+            claude_skills / "kingdom"
+            with patch.object(cli, "Path"):
+                # This is complex to mock; use runner with isolated fs instead
+                pass
+
+        # Simpler: test via runner.isolated_filesystem
+        with runner.isolated_filesystem():
+            from pathlib import Path as P
+
+            base = P.cwd()
+            (base / "skills" / "kingdom").mkdir(parents=True)
+            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
+
+            fake_home = base / "fakehome"
+            fake_home.mkdir()
+
+            with (
+                patch("kingdom.cli.Path.home", return_value=fake_home),
+            ):
+                result = runner.invoke(cli.app, ["setup-skill"])
+
+            assert result.exit_code == 0, result.output
+            assert "Linked" in result.output
+
+            link = fake_home / ".claude" / "skills" / "kingdom"
+            assert link.is_symlink()
+            assert link.resolve() == (base / "skills" / "kingdom").resolve()
+
+    def test_already_linked(self) -> None:
+        with runner.isolated_filesystem():
+            from pathlib import Path as P
+
+            base = P.cwd()
+            (base / "skills" / "kingdom").mkdir(parents=True)
+            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
+
+            fake_home = base / "fakehome"
+            target = fake_home / ".claude" / "skills" / "kingdom"
+            target.parent.mkdir(parents=True)
+            target.symlink_to(base / "skills" / "kingdom")
+
+            with patch("kingdom.cli.Path.home", return_value=fake_home):
+                result = runner.invoke(cli.app, ["setup-skill"])
+
+            assert result.exit_code == 0, result.output
+            assert "Already linked" in result.output
+
+    def test_no_skill_dir(self) -> None:
+        with runner.isolated_filesystem():
+            from pathlib import Path as P
+
+            fake_home = P.cwd() / "fakehome"
+            fake_home.mkdir()
+
+            with patch("kingdom.cli.Path.home", return_value=fake_home):
+                result = runner.invoke(cli.app, ["setup-skill"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output
+
+    def test_updates_stale_symlink(self) -> None:
+        with runner.isolated_filesystem():
+            from pathlib import Path as P
+
+            base = P.cwd()
+            (base / "skills" / "kingdom").mkdir(parents=True)
+            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
+
+            fake_home = base / "fakehome"
+            target = fake_home / ".claude" / "skills" / "kingdom"
+            target.parent.mkdir(parents=True)
+            target.symlink_to("/nonexistent/old/path")
+
+            with patch("kingdom.cli.Path.home", return_value=fake_home):
+                result = runner.invoke(cli.app, ["setup-skill"])
+
+            assert result.exit_code == 0, result.output
+            assert "Updating" in result.output
+            assert target.resolve() == (base / "skills" / "kingdom").resolve()

@@ -167,6 +167,33 @@ def init(
     typer.echo(f"Initialized {paths['state_root']}")
 
 
+@app.command("setup-skill", help="Symlink the kingdom agent skill into ~/.claude/skills/.")
+def setup_skill() -> None:
+    """Create a symlink from ~/.claude/skills/kingdom to skills/kingdom/ in this repo."""
+    base = Path.cwd()
+    source = base / "skills" / "kingdom"
+    if not source.exists():
+        print_error(f"Skill directory not found: {source}")
+        raise typer.Exit(code=1)
+
+    target = Path.home() / ".claude" / "skills" / "kingdom"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if target.is_symlink():
+        existing = target.resolve()
+        if existing == source.resolve():
+            typer.echo(f"Already linked: {target} -> {source}")
+            return
+        typer.echo(f"Updating symlink: {target} (was -> {existing})")
+        target.unlink()
+    elif target.exists():
+        print_error(f"{target} exists and is not a symlink. Remove it manually to proceed.")
+        raise typer.Exit(code=1)
+
+    target.symlink_to(source)
+    typer.echo(f"Linked {target} -> {source}")
+
+
 def get_current_git_branch() -> str | None:
     """Get the current git branch name, or None if detached HEAD."""
     result = subprocess.run(
