@@ -1617,6 +1617,95 @@ class TestAutoTurns:
         app_instance = ChatApp(base=Path("/tmp"), branch="main", thread_id="council-abc")
         assert app_instance.generation == 0
 
+    def test_run_query_skips_persist_when_generation_stale(self, project: Path) -> None:
+        """run_query should not persist response when generation has been superseded."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import list_messages, thread_dir
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-gen-stale"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        class FakeMember:
+            name = "claude"
+            session_id = None
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                # Simulate user sending a new message while this query runs
+                app_instance.generation = 5
+                return AgentResponse(name="claude", text="Stale response")
+
+        stream_path = thread_dir(project, BRANCH, tid) / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path, generation=1))
+
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 0, f"Stale response should not be persisted, got {len(messages)} messages"
+
+    def test_run_query_persists_when_generation_matches(self, project: Path) -> None:
+        """run_query should persist response when generation still matches."""
+        import asyncio
+
+        from kingdom.council.base import AgentResponse
+        from kingdom.thread import list_messages, thread_dir
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-gen-match"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.generation = 1
+
+        class FakeMember:
+            name = "claude"
+            session_id = None
+
+            def query(self, prompt, timeout, stream_path=None, max_retries=0):
+                return AgentResponse(name="claude", text="Fresh response")
+
+        stream_path = thread_dir(project, BRANCH, tid) / ".stream-claude.jsonl"
+        asyncio.run(app_instance.run_query(FakeMember(), stream_path, generation=1))
+
+        messages = list_messages(project, BRANCH, tid)
+        assert len(messages) == 1
+        assert messages[0].body == "Fresh response"
+
+    def test_broadcast_gather_discards_stale_results(self, project: Path) -> None:
+        """run_chat_round should discard broadcast results when generation changes mid-flight."""
+        import asyncio
+
+        from kingdom.thread import list_messages, thread_dir
+
+        tid = "council-gen-gather"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_messages=0, first_exchange=True
+        )
+
+        # Make claude bump generation during its query (simulates user re-sending)
+        real_query = members[0].query
+
+        def preempting_query(prompt, timeout, stream_path=None, max_retries=0):
+            app_instance.generation = 99
+            return real_query(prompt, timeout, stream_path, max_retries)
+
+        members[0].query = preempting_query
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
+
+        # Neither broadcast response should be persisted since generation changed
+        msgs = list_messages(project, BRANCH, tid)
+        member_msgs = [m for m in msgs if m.from_ != "king"]
+        assert (
+            len(member_msgs) == 0
+        ), f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
+
 
 class TestChatSessionIsolation:
     """Test that chat queries don't write to shared session state files.

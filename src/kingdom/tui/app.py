@@ -607,17 +607,28 @@ class ChatApp(App):
             member = self.council.get_member(targets[0]) if self.council else None
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
-                self.run_worker(self.run_query(member, stream_path), exclusive=False)
+                self.run_worker(self.run_query(member, stream_path, generation=gen), exclusive=False)
 
         log.scroll_if_following()
 
-    async def run_query(self, member, stream_path: Path) -> None:
-        """Run a member query with full thread context, then persist and clean up."""
+    async def run_query(self, member, stream_path: Path, generation: int | None = None) -> None:
+        """Run a member query with full thread context, then persist and clean up.
+
+        When *generation* is passed, the response is discarded if ``self.generation``
+        has moved on (meaning the user sent a new message while this query was in flight).
+        """
         try:
             timeout = self.council.timeout if self.council else 600
             tdir = thread_dir(self.base, self.branch, self.thread_id)
             prompt_with_history = format_thread_history(tdir, member.name)
             response = await asyncio.to_thread(member.query, prompt_with_history, timeout, stream_path, max_retries=0)
+
+            # Discard stale results when the user has already sent a new message.
+            if generation is not None and self.generation != generation:
+                logger.debug(
+                    "Discarding stale response from %s (gen %d != %d)", member.name, generation, self.generation
+                )
+                return
 
             # Use cleaner message for interrupted queries with no useful text
             if self.interrupted and not response.text:
@@ -674,8 +685,10 @@ class ChatApp(App):
                 member = self.council.get_member(name)
                 if member:
                     stream_path = tdir / f".stream-{name}.jsonl"
-                    coros.append(self.run_query(member, stream_path))
+                    coros.append(self.run_query(member, stream_path, generation=generation))
             await asyncio.gather(*coros)
+            if self.generation != generation:
+                return
         else:
             for name in targets:
                 if self.interrupted or self.generation != generation:
@@ -684,7 +697,7 @@ class ChatApp(App):
                 if not member:
                     continue
                 stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path)
+                await self.run_query(member, stream_path, generation=generation)
 
         # First exchange: broadcast only, no auto-turns.
         if is_first_exchange:
@@ -719,7 +732,7 @@ class ChatApp(App):
                 log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
                 log.scroll_if_following()
                 stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path)
+                await self.run_query(member, stream_path, generation=generation)
                 messages_sent += 1
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
