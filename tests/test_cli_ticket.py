@@ -1972,6 +1972,60 @@ class TestTicketDep:
             assert "not found" in result.output
 
 
+class TestTicketUndep:
+    """Tests for kd tk undep — removing dependencies."""
+
+    def test_undep_removes_dependency(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["aaaa"], created=datetime.now(UTC))
+            write_ticket(t, tickets_dir / "cf1a.md")
+
+            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "aaaa"])
+
+            assert result.exit_code == 0, result.output
+            assert "removed dependency" in result.output
+            found = find_ticket(base, "cf1a")
+            assert found is not None
+            ticket, _ = found
+            assert "aaaa" not in ticket.deps
+
+    def test_undep_not_a_dep(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t = Ticket(id="cf1a", status="open", title="Target", body="", created=datetime.now(UTC))
+            write_ticket(t, tickets_dir / "cf1a.md")
+
+            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "zzzz"])
+
+            assert result.exit_code == 1
+            assert "does not depend on" in result.output
+
+    def test_undep_partial_match(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["abcd1234"], created=datetime.now(UTC))
+            write_ticket(t, tickets_dir / "cf1a.md")
+
+            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "abcd"])
+
+            assert result.exit_code == 0, result.output
+            assert "removed dependency" in result.output
+            found = find_ticket(base, "cf1a")
+            assert found is not None
+            ticket, _ = found
+            assert ticket.deps == []
+
+
 class TestNoResultsMessages:
     """Tests for helpful empty-state messages with next-step guidance."""
 
