@@ -177,7 +177,12 @@ def init(
 @app.command("setup-skill", help="Symlink the kingdom agent skill into ~/.claude/skills/.")
 def setup_skill() -> None:
     """Create a symlink from ~/.claude/skills/kingdom to skills/kingdom/ in this repo."""
-    base = Path.cwd()
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    base = Path(result.stdout.strip()) if result.returncode == 0 and result.stdout.strip() else Path.cwd()
     source = base / "skills" / "kingdom"
     if not source.exists():
         print_error(f"Skill directory not found: {source}")

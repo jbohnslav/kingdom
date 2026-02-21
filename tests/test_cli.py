@@ -1,5 +1,6 @@
 import json
-from unittest.mock import patch
+import subprocess
+from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
@@ -317,6 +318,40 @@ class TestSetupSkill:
             assert result.exit_code == 0, result.output
             assert "Updating" in result.output
             assert target.resolve() == (base / "skills" / "kingdom").resolve()
+
+    def test_works_from_subdirectory(self) -> None:
+        """setup-skill should resolve repo root via git, not cwd."""
+        with runner.isolated_filesystem():
+            from pathlib import Path as P
+
+            base = P.cwd()
+            (base / "skills" / "kingdom").mkdir(parents=True)
+            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
+            subdir = base / "src" / "deep"
+            subdir.mkdir(parents=True)
+
+            fake_home = base / "fakehome"
+            fake_home.mkdir()
+
+            original_run = subprocess.run
+
+            def mock_run(cmd, **kwargs):
+                if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                    return MagicMock(returncode=0, stdout=str(base) + "\n")
+                return original_run(cmd, **kwargs)
+
+            with (
+                patch("kingdom.cli.Path.home", return_value=fake_home),
+                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+                patch("kingdom.cli.Path.cwd", return_value=subdir),
+            ):
+                result = runner.invoke(cli.app, ["setup-skill"])
+
+            assert result.exit_code == 0, result.output
+            assert "Linked" in result.output
+            link = fake_home / ".claude" / "skills" / "kingdom"
+            assert link.is_symlink()
+            assert link.resolve() == (base / "skills" / "kingdom").resolve()
 
 
 class TestNoColor:
