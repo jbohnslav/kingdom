@@ -454,19 +454,22 @@ class ChatApp(App):
         # Replace waiting/streaming panels with interrupted indicators immediately
         log = self.query_one("#message-log", MessageLog)
         for member in active:
+            replaced = False
             for prefix in ("wait", "stream", "thinking"):
                 panel_id = f"{prefix}-{member.name}"
                 try:
                     panel = log.query_one(f"#{panel_id}")
-                    error_panel = ErrorPanel(
-                        sender=member.name,
-                        error="*Interrupted*",
-                        id=f"interrupted-{member.name}",
-                    )
-                    log.mount(error_panel, before=panel)
+                    if not replaced:
+                        error_panel = ErrorPanel(
+                            sender=member.name,
+                            error="*Interrupted*",
+                            id=f"interrupted-{member.name}",
+                        )
+                        log.mount(error_panel, before=panel)
+                        replaced = True
                     panel.remove()
                 except QueryError:
-                    logger.debug("Could not replace panel %s during interrupt", panel_id, exc_info=True)
+                    pass
 
     def load_history(self) -> None:
         """Load existing messages and render them in the message log."""

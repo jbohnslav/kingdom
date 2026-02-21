@@ -1131,6 +1131,56 @@ class TestEscapeInterrupt:
         assert app_instance.interrupted is True
         mock_proc.terminate.assert_called_once()
 
+    def test_interrupt_handles_multiple_panels_same_member(self, project: Path) -> None:
+        """Interrupting when both wait and stream panels exist should not cause MountError."""
+        from unittest.mock import MagicMock
+
+        from kingdom.council import Council
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-int-dup"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+        app_instance.council = Council.create(base=project)
+
+        mock_proc = MagicMock()
+        claude = app_instance.council.get_member("claude")
+        claude.process = mock_proc
+
+        input_mock = MagicMock()
+        input_mock.text = ""
+
+        # Simulate both wait-claude and stream-claude panels existing
+        wait_panel = MagicMock(name="wait-claude")
+        stream_panel = MagicMock(name="stream-claude")
+        log_mock = MagicMock()
+
+        def fake_query_one(selector, *args, **kwargs):
+            if selector == "#input-area":
+                return input_mock
+            if selector == "#message-log":
+                return log_mock
+            # Simulate: wait-claude and stream-claude both found, thinking-claude not found
+            if selector == "#wait-claude":
+                return wait_panel
+            if selector == "#stream-claude":
+                return stream_panel
+            from textual.css.query import QueryError
+
+            raise QueryError("")
+
+        log_mock.query_one = fake_query_one
+        app_instance.query_one = fake_query_one
+
+        app_instance.action_interrupt()
+
+        # Only one interrupted panel should be mounted (not two)
+        assert log_mock.mount.call_count == 1
+        # Both stale panels should be removed
+        wait_panel.remove.assert_called_once()
+        stream_panel.remove.assert_called_once()
+
     def test_second_escape_after_interrupt_exits(self, project: Path) -> None:
         """Second Escape after interrupt should force quit."""
         from kingdom.council import Council
