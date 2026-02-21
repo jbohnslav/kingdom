@@ -1574,12 +1574,14 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
     branch_exists = result.returncode == 0
 
     if branch_exists:
+        typer.echo(f"Creating worktree from existing branch {branch_name}...")
         result = subprocess.run(
             ["git", "worktree", "add", str(worktree_path), branch_name],
             capture_output=True,
             text=True,
         )
     else:
+        typer.echo(f"Creating worktree with new branch {branch_name}...")
         result = subprocess.run(
             ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
             capture_output=True,
@@ -1591,6 +1593,7 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
 
     init_script = state_root(base) / "init-worktree.sh"
     if init_script.exists() and os.access(init_script, os.X_OK):
+        typer.echo("Running init-worktree.sh...")
         init_result = subprocess.run(
             [str(init_script), str(worktree_path)],
             capture_output=True,
