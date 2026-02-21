@@ -3625,28 +3625,44 @@ def ticket_close(
     """Set ticket status to closed."""
     base = Path.cwd()
 
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+    if result is None:
+        print_error(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+
     if duplicate_of:
-        try:
-            result = find_ticket(base, ticket_id)
-        except AmbiguousTicketMatch as e:
-            print_error(f"{e}")
-            raise typer.Exit(code=1) from None
-        if result is None:
-            print_error(f"Ticket not found: {ticket_id}")
-            raise typer.Exit(code=1)
-        ticket, ticket_path = result
         ticket.duplicate_of = duplicate_of
-        write_ticket(ticket, ticket_path)
         reason = reason or f"Duplicate of {duplicate_of}"
+
+    old_status = ticket.status
+    ticket.status = "closed"
+    write_ticket(ticket, ticket_path)
 
     if reason:
         from kingdom.harness import append_worklog
 
-        result = find_ticket(base, ticket_id)
-        if result is not None:
-            _, ticket_path = result
-            append_worklog(ticket_path, f"Closed: {reason}")
-    update_ticket_status(ticket_id, "closed")
+        append_worklog(ticket_path, f"Closed: {reason}")
+
+    # Auto-archive: closing a backlog ticket moves it to archive/backlog/tickets/
+    backlog_tickets = backlog_root(base) / "tickets"
+    archive_backlog_tickets = archive_root(base) / "backlog" / "tickets"
+    if ticket_path.parent.resolve() == backlog_tickets.resolve():
+        ticket_path = move_ticket(ticket_path, archive_backlog_tickets)
+
+    typer.echo(f"{ticket.id}: {old_status} → closed — {ticket.title}")
+
+    unblocked = find_newly_unblocked(ticket.id, base)
+    if unblocked:
+        typer.echo("")
+        typer.echo(f"Unblocked {len(unblocked)} ticket(s):")
+        for t in unblocked:
+            typer.echo(f"  {t.id} [P{t.priority}] — {t.title}")
 
 
 @ticket_app.command("reopen", help="Reopen a closed ticket.")
