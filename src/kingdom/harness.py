@@ -192,6 +192,10 @@ def has_code_changes(worktree: Path, start_sha: str | None) -> bool:
             )
             if result.returncode == 0 and result.stdout.strip():
                 return True
+        else:
+            # No baseline — can't determine whether committed changes exist.
+            # Assume they do to avoid rejecting valid work.
+            return True
     except (subprocess.TimeoutExpired, FileNotFoundError):
         # Can't determine — assume there might be changes
         return True

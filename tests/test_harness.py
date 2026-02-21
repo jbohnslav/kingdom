@@ -908,10 +908,15 @@ class TestHasCodeChanges:
         with patch("kingdom.harness.subprocess.run", side_effect=mock_run):
             assert has_code_changes(tmp_path, "abc123") is False
 
-    def test_no_start_sha_no_uncommitted(self, tmp_path: Path) -> None:
+    def test_no_start_sha_no_uncommitted_assumes_changes(self, tmp_path: Path) -> None:
+        """When start_sha is None and working tree is clean, assume changes exist.
+
+        We can't determine whether committed changes exist without a baseline,
+        so the safe default is True (avoid rejecting valid work).
+        """
         with patch("kingdom.harness.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="")
-            assert has_code_changes(tmp_path, None) is False
+            assert has_code_changes(tmp_path, None) is True
 
     def test_returns_true_on_error(self, tmp_path: Path) -> None:
         """On git failure, assume changes exist to avoid false rejections."""
