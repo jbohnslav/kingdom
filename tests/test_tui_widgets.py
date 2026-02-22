@@ -168,6 +168,14 @@ class TestWaitingPanel:
         panel = WaitingPanel(sender="codex")
         assert panel.sender == "codex"
 
+    def test_composes_loading_indicator(self) -> None:
+        from textual.widgets import LoadingIndicator
+
+        panel = WaitingPanel(sender="claude")
+        children = list(panel.compose())
+        assert len(children) == 1
+        assert isinstance(children[0], LoadingIndicator)
+
 
 class TestFormatErrorBody:
     """Tests for format_error_body — user-friendly error display."""

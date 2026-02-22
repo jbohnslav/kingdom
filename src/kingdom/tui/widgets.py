@@ -18,7 +18,8 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.segment import Segment
 from rich.style import Style
 from textual.message import Message
-from textual.widgets import Static
+from textual.widget import Widget
+from textual.widgets import LoadingIndicator, Static
 
 from kingdom.tui.clipboard import ClipboardUnavailableError, copy_to_clipboard
 
@@ -290,21 +291,24 @@ class StreamingPanel(Static):
         self.update(text + "\u258d")  # cursor
 
 
-class WaitingPanel(Static):
-    """A collapsed placeholder shown before streaming starts."""
+class WaitingPanel(Widget):
+    """Animated placeholder shown before streaming starts."""
 
     DEFAULT_CSS = """
     WaitingPanel {
         margin: 0 1;
         padding: 0;
         border: dashed $secondary;
-        height: 1;
+        height: 3;
     }
     """
 
     def __init__(self, sender: str, **kwargs) -> None:
         super().__init__(**kwargs)
         self.sender = sender
+
+    def compose(self):
+        yield LoadingIndicator()
 
     def on_mount(self) -> None:
         color = color_for_member(self.sender)

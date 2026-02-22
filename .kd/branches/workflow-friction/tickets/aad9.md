@@ -1,6 +1,6 @@
 ---
 id: "aad9"
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-17T03:15:56Z
@@ -17,8 +17,15 @@ Textual provides a built-in `LoadingIndicator` widget with pulsating dots animat
 
 ## Acceptance Criteria
 
-- [ ] WaitingPanel uses Textual's LoadingIndicator or equivalent animated feedback
-- [ ] Member name and "waiting" label remain visible
-- [ ] Colored border per member is preserved
-- [ ] Existing tests pass; WaitingPanel tests updated for new widget
-- [ ] Quick win: estimated ~30 min
+- [x] WaitingPanel uses Textual's LoadingIndicator or equivalent animated feedback
+- [x] Member name and "waiting" label remain visible
+- [x] Colored border per member is preserved
+- [x] Existing tests pass; WaitingPanel tests updated for new widget
+- [x] Quick win: estimated ~30 min
+
+## Worklog
+
+- Changed WaitingPanel base class from Static to Widget, added compose() yielding LoadingIndicator
+- Height bumped from 1 to 3 to fit animation within border
+- Border title and per-member color preserved
+- 1 new test (composes_loading_indicator); full suite: 1255 passed
