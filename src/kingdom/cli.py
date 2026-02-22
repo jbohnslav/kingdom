@@ -1978,8 +1978,13 @@ def peasant_start(
     typer.echo(f"  Logs: {peasant_logs_dir}")
 
 
+TERMINAL_STATUSES = {"done", "failed", "stopped"}
+
+
 @peasant_app.command("status", help="Show active peasants.")
-def peasant_status() -> None:
+def peasant_status(
+    show_all: Annotated[bool, typer.Option("--all", "-a", help="Include completed/stopped peasants.")] = False,
+) -> None:
     """Show table of active peasants: ticket, agent, status, elapsed, last activity."""
 
     from kingdom.session import list_active_agents
@@ -1997,8 +2002,18 @@ def peasant_status() -> None:
     # Filter to peasant sessions only
     peasants = [a for a in active if a.name.startswith("peasant-")]
 
+    # By default, hide terminal sessions
+    hidden_count = 0
+    if not show_all:
+        all_peasants = peasants
+        peasants = [p for p in peasants if p.status not in TERMINAL_STATUSES]
+        hidden_count = len(all_peasants) - len(peasants)
+
     if not peasants:
-        typer.echo("No active peasants. Start one with `kd peasant start <ticket-id>`.")
+        if hidden_count:
+            typer.echo(f"No active peasants ({hidden_count} completed — use --all to show).")
+        else:
+            typer.echo("No active peasants. Start one with `kd peasant start <ticket-id>`.")
         return
 
     table = Table(title="Active Peasants")
@@ -2064,6 +2079,8 @@ def peasant_status() -> None:
         )
 
     console.print(table)
+    if hidden_count:
+        console.print(f"[dim]{hidden_count} completed peasant(s) hidden — use --all to show[/dim]")
 
 
 @peasant_app.command("logs", help="Show peasant logs.")
