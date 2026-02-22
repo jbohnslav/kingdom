@@ -2787,14 +2787,27 @@ def config_show() -> None:
         return items
 
     def is_in_raw(dotted_key: str) -> bool:
-        """Check if a dotted key was explicitly set in the config file."""
-        parts = dotted_key.split(".")
-        node = raw
-        for part in parts:
-            if not isinstance(node, dict) or part not in node:
+        """Check if a dotted key was explicitly set in the config file.
+
+        Tries all possible split points to handle keys containing dots
+        (e.g. agent names like 'gpt.4o').
+        """
+
+        def walk(key: str, node: dict) -> bool:
+            if not isinstance(node, dict):
                 return False
-            node = node[part]
-        return True
+            # Try each possible split: first segment as dict key, rest recursed
+            for i in range(1, len(key) + 1):
+                prefix = key[:i]
+                rest = key[i + 1 :]  # skip the dot
+                if prefix in node:
+                    if not rest:
+                        return True
+                    if walk(rest, node[prefix]):
+                        return True
+            return False
+
+        return walk(dotted_key, raw)
 
     effective = dataclasses.asdict(cfg)
     entries = flatten(effective)

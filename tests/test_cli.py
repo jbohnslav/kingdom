@@ -227,6 +227,24 @@ def test_config_show_indicates_sources(tmp_path) -> None:
             raise AssertionError("council.mode not found in output")
 
 
+def test_config_show_dotted_agent_name(tmp_path) -> None:
+    """Agent names containing dots should show correct source annotation."""
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config = {"agents": {"gpt.4o": {"backend": "codex", "model": "gpt-4o"}}}
+    (kd_dir / "config.json").write_text(json.dumps(config))
+
+    with patch("kingdom.config.state_root", return_value=kd_dir):
+        result = runner.invoke(cli.app, ["config", "show"])
+        assert result.exit_code == 0
+        for line in result.output.splitlines():
+            if "gpt.4o" in line and "backend" in line:
+                assert "config" in line, f"Expected (config) source but got: {line}"
+                break
+        else:
+            raise AssertionError("agents.gpt.4o.backend not found in output")
+
+
 def test_config_show_invalid_config(tmp_path) -> None:
     """Test kd config show shows clean error on invalid config."""
     kd_dir = tmp_path / ".kd"
