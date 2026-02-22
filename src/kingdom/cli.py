@@ -4027,17 +4027,29 @@ def ticket_undep(
 
     ticket, ticket_path = result
 
-    # Find the full ID of the dependency to remove
-    matching_deps = [d for d in ticket.deps if depends_on in d]
-    if not matching_deps:
+    # Resolve the dependency ID via find_ticket (handles partial IDs properly)
+    try:
+        dep_result = find_ticket(base, depends_on)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+
+    if dep_result is not None:
+        dep_id = dep_result[0].id
+    elif depends_on in ticket.deps:
+        # Dep ticket no longer exists but is in deps list — allow exact removal
+        dep_id = depends_on
+    else:
         typer.echo(f"{ticket.id} does not depend on {depends_on}")
         raise typer.Exit(code=1)
 
-    for dep_id in matching_deps:
-        ticket.deps.remove(dep_id)
-        typer.echo(f"{ticket.id}: removed dependency → {dep_id}")
+    if dep_id not in ticket.deps:
+        typer.echo(f"{ticket.id} does not depend on {dep_id}")
+        raise typer.Exit(code=1)
 
+    ticket.deps.remove(dep_id)
     write_ticket(ticket, ticket_path)
+    typer.echo(f"{ticket.id}: removed dependency → {dep_id}")
 
 
 @ticket_app.command("dep-tree", help="Show dependency tree for a ticket.")

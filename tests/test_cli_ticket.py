@@ -2130,6 +2130,10 @@ class TestTicketUndep:
             setup_project(base)
             tickets_dir = branch_root(base, BRANCH) / "tickets"
 
+            # Create the dep ticket so find_ticket can resolve "abcd" → "abcd1234"
+            dep = Ticket(id="abcd1234", status="open", title="Dep ticket", body="", created=datetime.now(UTC))
+            write_ticket(dep, tickets_dir / "abcd1234.md")
+
             t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["abcd1234"], created=datetime.now(UTC))
             write_ticket(t, tickets_dir / "cf1a.md")
 
@@ -2141,6 +2145,35 @@ class TestTicketUndep:
             assert found is not None
             ticket, _ = found
             assert ticket.deps == []
+
+    def test_undep_resolves_via_find_ticket(self) -> None:
+        """undep should use find_ticket() for ID resolution, not substring match."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            # Create tickets whose IDs share a common prefix
+            for tid in ["ab01", "ab02", "cc03"]:
+                t = Ticket(id=tid, status="open", title=f"Ticket {tid}", body="", created=datetime.now(UTC))
+                write_ticket(t, tickets_dir / f"{tid}.md")
+
+            # Set up deps with both ab-prefixed tickets
+            target = Ticket(
+                id="cc03", status="open", title="Target", body="", deps=["ab01", "ab02"], created=datetime.now(UTC)
+            )
+            write_ticket(target, tickets_dir / "cc03.md")
+
+            # "ab" is ambiguous — should error, not silently remove both
+            result = runner.invoke(cli.app, ["tk", "undep", "cc03", "ab"])
+            # With proper resolution, this should fail as ambiguous
+            assert result.exit_code == 1, f"Expected failure for ambiguous 'ab' but got: {result.output}"
+
+            # Both deps should still be present
+            found = find_ticket(base, "cc03")
+            assert found is not None
+            ticket, _ = found
+            assert len(ticket.deps) == 2, f"Expected 2 deps but got {ticket.deps}"
 
     def test_undep_preserves_other_deps(self) -> None:
         with runner.isolated_filesystem():
