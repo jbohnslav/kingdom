@@ -568,10 +568,11 @@ def council_ask(
     timeout = c.timeout
     c.load_sessions(base, feature)
 
-    # Parse @mentions from prompt (kin-09c9)
+    # Parse @mentions from prompt (kin-09c9), ignoring content inside code blocks
     available_names = {m.name for m in c.members}
     if not to:
-        mentions = re.findall(r"(?<!\w)@(\w+)", prompt)
+        prompt_without_code = re.sub(r"```[\s\S]*?```", "", prompt)
+        mentions = re.findall(r"(?<!\w)@(\w+)", prompt_without_code)
         if mentions:
             if "all" in mentions:
                 # @all = query everyone, strip @all from prompt
