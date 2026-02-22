@@ -2568,6 +2568,25 @@ class TestTicketDepTree:
             assert result.exit_code == 0
             assert "see above" in result.output
 
+    def test_tree_full_with_cycle_does_not_recurse_infinitely(self) -> None:
+        """dep-tree --full should detect cycles instead of infinite recursion."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            # A → B → A (cycle)
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="A", body="", deps=["bbbb"], created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "dep-tree", "--full", "aaaa"])
+            assert result.exit_code == 0
+            assert "cycle" in result.output
+
 
 class TestTicketDepCycle:
     """Tests for kd tk dep-cycle."""
@@ -2739,6 +2758,29 @@ class TestTicketClosed:
             old_pos = result.output.index("old1")
             new_pos = result.output.index("new1")
             assert old_pos < new_pos, "Expected old1 (closed later) to appear first"
+
+    def test_includes_archived_backlog_tickets(self) -> None:
+        """kd tk closed should show tickets that were closed from backlog (archived)."""
+        with runner.isolated_filesystem():
+            from kingdom.state import archive_root
+
+            base = Path.cwd()
+            setup_project(base)
+
+            # Place a closed ticket in the archive (as ticket_close does for backlog tickets)
+            archive_tickets = archive_root(base) / "backlog" / "tickets"
+            archive_tickets.mkdir(parents=True)
+            write_ticket(
+                Ticket(
+                    id="arch1", status="closed", title="Archived backlog ticket", body="", created=datetime.now(UTC)
+                ),
+                archive_tickets / "arch1.md",
+            )
+
+            result = runner.invoke(cli.app, ["tk", "closed"])
+            assert result.exit_code == 0
+            assert "arch1" in result.output
+            assert "Archived backlog ticket" in result.output
 
 
 class TestTicketAddNote:

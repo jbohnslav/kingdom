@@ -4093,10 +4093,15 @@ def ticket_dep_tree(
     root_ticket = result[0]
     seen: set[str] = set()
 
-    def print_tree(tid: str, prefix: str = "", last: bool = True) -> None:
+    def print_tree(tid: str, prefix: str = "", last: bool = True, ancestors: frozenset[str] = frozenset()) -> None:
         t = ticket_map.get(tid)
         connector = "└── " if last else "├── "
         label = f"{tid} [{t.status}] {t.title}" if t else f"{tid} [unknown]"
+
+        # Always detect cycles to prevent infinite recursion
+        if tid in ancestors:
+            typer.echo(f"{prefix}{connector}{label} (↻ cycle)")
+            return
 
         if not full and tid in seen:
             typer.echo(f"{prefix}{connector}{label} (↑ see above)")
@@ -4107,15 +4112,17 @@ def ticket_dep_tree(
 
         if t and t.deps:
             child_prefix = prefix + ("    " if last else "│   ")
+            child_ancestors = ancestors | {tid}
             for i, dep_id in enumerate(t.deps):
-                print_tree(dep_id, child_prefix, last=(i == len(t.deps) - 1))
+                print_tree(dep_id, child_prefix, last=(i == len(t.deps) - 1), ancestors=child_ancestors)
 
     # Print root
     label = f"{root_ticket.id} [{root_ticket.status}] {root_ticket.title}"
     typer.echo(label)
     seen.add(root_ticket.id)
+    root_ancestors = frozenset({root_ticket.id})
     for i, dep_id in enumerate(root_ticket.deps):
-        print_tree(dep_id, "", last=(i == len(root_ticket.deps) - 1))
+        print_tree(dep_id, "", last=(i == len(root_ticket.deps) - 1), ancestors=root_ancestors)
 
 
 @ticket_app.command("dep-cycle", help="Detect dependency cycles.")
@@ -4526,7 +4533,7 @@ def ticket_closed(
 ) -> None:
     """List recently closed tickets across all locations, sorted by close date (newest first)."""
     base = Path.cwd()
-    all_tickets = collect_all_tickets(base)
+    all_tickets = collect_all_tickets(base, include_archive=True)
 
     closed = [t for t in all_tickets if t.status == "closed"]
     if assignee:

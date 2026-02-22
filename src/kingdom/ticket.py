@@ -212,12 +212,13 @@ def list_tickets(directory: Path) -> list[Ticket]:
     return tickets
 
 
-def collect_all_tickets(base: Path) -> list[Ticket]:
-    """Collect all tickets across branches and backlog.
+def collect_all_tickets(base: Path, *, include_archive: bool = False) -> list[Ticket]:
+    """Collect all tickets across branches, backlog, and optionally archive.
 
     Searches branches/*/tickets/ (skipping done branches) and backlog/tickets/.
+    With include_archive=True, also searches archive/*/tickets/.
     """
-    from kingdom.state import backlog_root, branches_root
+    from kingdom.state import archive_root, backlog_root, branches_root
 
     all_tickets: list[Ticket] = []
 
@@ -243,6 +244,15 @@ def collect_all_tickets(base: Path) -> list[Ticket]:
     backlog_tickets = backlog_root(base) / "tickets"
     if backlog_tickets.exists():
         all_tickets.extend(list_tickets(backlog_tickets))
+
+    if include_archive:
+        archive_dir = archive_root(base)
+        if archive_dir.exists():
+            for archive_item in archive_dir.iterdir():
+                if archive_item.is_dir():
+                    tickets_dir = archive_item / "tickets"
+                    if tickets_dir.exists():
+                        all_tickets.extend(list_tickets(tickets_dir))
 
     return all_tickets
 
