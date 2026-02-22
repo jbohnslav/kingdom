@@ -57,6 +57,7 @@ from kingdom.ticket import (
     STATUSES,
     AmbiguousTicketMatch,
     Ticket,
+    collect_all_tickets,
     find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
@@ -3160,6 +3161,8 @@ def ticket_create(
     ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
+    parent: Annotated[str | None, typer.Option("--parent", help="Parent ticket ID.")] = None,
+    tags: Annotated[str | None, typer.Option("--tags", help="Comma-separated tags.")] = None,
 ) -> None:
     """Create a new ticket in the current branch or backlog."""
     from datetime import datetime
@@ -3191,6 +3194,22 @@ def ticket_create(
                 raise typer.Exit(code=1)
             resolved_deps.append(dep_result[0].id)
 
+    # Resolve parent
+    resolved_parent = None
+    if parent:
+        try:
+            parent_result = find_ticket(base, parent)
+        except AmbiguousTicketMatch as e:
+            print_error(f"{e}")
+            raise typer.Exit(code=1) from None
+        if parent_result is None:
+            typer.echo(f"Parent ticket not found: {parent}")
+            raise typer.Exit(code=1)
+        resolved_parent = parent_result[0].id
+
+    # Parse tags
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
     # Generate unique ID
     ticket_id = generate_ticket_id(tickets_dir)
 
@@ -3210,6 +3229,8 @@ def ticket_create(
         priority=priority,
         title=title,
         body=body,
+        parent=resolved_parent,
+        tags=tag_list,
     )
 
     ticket_path = tickets_dir / f"{ticket_id}.md"
@@ -3369,6 +3390,8 @@ def ticket_list(
         typer.Option("--priority", "-p", help="Filter by priority (1-3)."),
     ] = None,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
+    assignee: Annotated[str | None, typer.Option("--assignee", "-A", help="Filter by assignee.")] = None,
+    tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List tickets in the current branch or all locations."""
@@ -3382,6 +3405,14 @@ def ticket_list(
         typer.echo(f"Invalid priority {priority}. Must be 1, 2, or 3.")
         raise typer.Exit(code=1)
 
+    def apply_filters(tickets: list[Ticket]) -> list[Ticket]:
+        result = tickets
+        if assignee:
+            result = [t for t in result if t.assignee == assignee]
+        if tag:
+            result = [t for t in result if tag in t.tags]
+        return result
+
     def apply_priority(tickets: list[Ticket]) -> list[Ticket]:
         if priority is None:
             return tickets
@@ -3392,7 +3423,7 @@ def ticket_list(
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
         all_backlog_tickets = list_tickets(backlog_dir) if backlog_dir.exists() else []
-        tickets = apply_priority(filter_tickets_by_status(all_backlog_tickets, status, include_closed))
+        tickets = apply_filters(apply_priority(filter_tickets_by_status(all_backlog_tickets, status, include_closed)))
 
         if output_json:
             results = [
@@ -3437,7 +3468,7 @@ def ticket_list(
         location_map: dict[str, str] = {}
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
-            filtered = apply_priority(filter_tickets_by_status(tickets, status, include_closed))
+            filtered = apply_filters(apply_priority(filter_tickets_by_status(tickets, status, include_closed)))
             for ticket in filtered:
                 location_map[ticket.id] = location_name
             all_filtered.extend(filtered)
@@ -3465,7 +3496,7 @@ def ticket_list(
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
         all_branch_tickets = list_tickets(tickets_dir)
-        tickets = apply_priority(filter_tickets_by_status(all_branch_tickets, status, include_closed))
+        tickets = apply_filters(apply_priority(filter_tickets_by_status(all_branch_tickets, status, include_closed)))
 
         if output_json:
             results = [
@@ -3546,11 +3577,62 @@ def render_ticket_panel(ticket: Ticket, ticket_path: Path, base: Path) -> Panel:
     if ticket.links:
         meta.add_row("links", ", ".join(ticket.links))
 
+    if ticket.parent:
+        meta.add_row("parent", ticket.parent)
+
+    if ticket.tags:
+        meta.add_row("tags", ", ".join(ticket.tags))
+
     # Build body content (markdown)
     parts: list[object] = [meta]
     if ticket.body.strip():
         parts.append(Text())  # blank line separator
         parts.append(Markdown(ticket.body))
+
+    # Relationship sections: blockers, blocking, children, linked
+    all_tickets = collect_all_tickets(base)
+    relations: list[str] = []
+
+    # Blockers: unclosed deps
+    if ticket.deps:
+        blockers = []
+        for dep_id in ticket.deps:
+            dep_status = resolve_dep_status(base, dep_id)
+            if dep_status != "closed":
+                blockers.append(f"- {dep_id} ({dep_status})")
+        if blockers:
+            relations.append("**Blockers**\n" + "\n".join(blockers))
+
+    # Blocking: tickets that depend on this one
+    blocking = [t for t in all_tickets if ticket.id in t.deps and t.status != "closed"]
+    if blocking:
+        lines = [f"- {t.id} ({t.status}) {t.title}" for t in blocking]
+        relations.append("**Blocking**\n" + "\n".join(lines))
+
+    # Children: tickets with this as parent
+    children = [t for t in all_tickets if t.parent == ticket.id]
+    if children:
+        lines = [f"- {t.id} ({t.status}) {t.title}" for t in children]
+        relations.append("**Children**\n" + "\n".join(lines))
+
+    # Linked: resolve link targets
+    if ticket.links:
+        lines = []
+        for link_id in ticket.links:
+            try:
+                link_result = find_ticket(base, link_id)
+            except AmbiguousTicketMatch:
+                link_result = None
+            if link_result:
+                lt, _ = link_result
+                lines.append(f"- {lt.id} ({lt.status}) {lt.title}")
+            else:
+                lines.append(f"- {link_id} (not found)")
+        relations.append("**Linked**\n" + "\n".join(lines))
+
+    if relations:
+        parts.append(Text())
+        parts.append(Markdown("\n\n".join(relations)))
 
     subtitle = str(ticket_path.relative_to(base))
     return Panel(
@@ -3955,6 +4037,209 @@ def ticket_undep(
     write_ticket(ticket, ticket_path)
 
 
+@ticket_app.command("dep-tree", help="Show dependency tree for a ticket.")
+def ticket_dep_tree(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    full: Annotated[bool, typer.Option("--full", help="Show duplicate subtrees instead of deduplicating.")] = False,
+) -> None:
+    """Display the dependency tree rooted at a ticket."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    all_tickets = collect_all_tickets(base)
+    ticket_map = {t.id: t for t in all_tickets}
+
+    root_ticket = result[0]
+    seen: set[str] = set()
+
+    def print_tree(tid: str, prefix: str = "", last: bool = True) -> None:
+        t = ticket_map.get(tid)
+        connector = "└── " if last else "├── "
+        label = f"{tid} [{t.status}] {t.title}" if t else f"{tid} [unknown]"
+
+        if not full and tid in seen:
+            typer.echo(f"{prefix}{connector}{label} (↑ see above)")
+            return
+
+        typer.echo(f"{prefix}{connector}{label}")
+        seen.add(tid)
+
+        if t and t.deps:
+            child_prefix = prefix + ("    " if last else "│   ")
+            for i, dep_id in enumerate(t.deps):
+                print_tree(dep_id, child_prefix, last=(i == len(t.deps) - 1))
+
+    # Print root
+    label = f"{root_ticket.id} [{root_ticket.status}] {root_ticket.title}"
+    typer.echo(label)
+    seen.add(root_ticket.id)
+    for i, dep_id in enumerate(root_ticket.deps):
+        print_tree(dep_id, "", last=(i == len(root_ticket.deps) - 1))
+
+
+@ticket_app.command("dep-cycle", help="Detect dependency cycles.")
+def ticket_dep_cycle() -> None:
+    """Find and report any dependency cycles among open tickets."""
+    base = Path.cwd()
+    all_tickets = collect_all_tickets(base)
+    ticket_map = {t.id: t for t in all_tickets}
+
+    # DFS cycle detection
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {t.id: WHITE for t in all_tickets}
+    cycles: list[list[str]] = []
+
+    def dfs(tid: str, path: list[str]) -> None:
+        color[tid] = GRAY
+        t = ticket_map.get(tid)
+        if t:
+            for dep_id in t.deps:
+                if dep_id not in color:
+                    continue
+                if color[dep_id] == GRAY:
+                    # Found a cycle — extract it
+                    cycle_start = path.index(dep_id)
+                    cycles.append(path[cycle_start:] + [dep_id])
+                elif color[dep_id] == WHITE:
+                    dfs(dep_id, [*path, dep_id])
+        color[tid] = BLACK
+
+    for tid in color:
+        if color[tid] == WHITE:
+            dfs(tid, [tid])
+
+    if not cycles:
+        typer.echo("No dependency cycles found.")
+    else:
+        typer.echo(f"Found {len(cycles)} cycle(s):")
+        for cycle in cycles:
+            typer.echo(f"  {' → '.join(cycle)}")
+        raise typer.Exit(code=1)
+
+
+@ticket_app.command("blocked", help="List tickets blocked by unresolved dependencies.")
+def ticket_blocked(
+    assignee: Annotated[str | None, typer.Option("--assignee", "-a", help="Filter by assignee.")] = None,
+    tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
+) -> None:
+    """List open tickets that have at least one unresolved dependency."""
+    base = Path.cwd()
+    all_tickets = collect_all_tickets(base)
+    status_by_id = {t.id: t.status for t in all_tickets}
+
+    blocked = []
+    for ticket in all_tickets:
+        if ticket.status in ("closed",):
+            continue
+        if not ticket.deps:
+            continue
+        open_deps = [d for d in ticket.deps if status_by_id.get(d, "unknown") != "closed"]
+        if not open_deps:
+            continue
+        if assignee and ticket.assignee != assignee:
+            continue
+        if tag and tag not in ticket.tags:
+            continue
+        blocked.append((ticket, open_deps))
+
+    if not blocked:
+        typer.echo("No blocked tickets.")
+        return
+
+    for ticket, open_deps in blocked:
+        dep_str = ", ".join(open_deps)
+        typer.echo(f"  {ticket.id} [P{ticket.priority}][{ticket.status}] {ticket.title}")
+        typer.echo(f"         blocked by: {dep_str}")
+
+
+@ticket_app.command("link", help="Add symmetric links between tickets.")
+def ticket_link(
+    ticket_ids: Annotated[list[str], typer.Argument(help="Two or more ticket IDs to link together.")],
+) -> None:
+    """Create symmetric links between all given tickets."""
+    if len(ticket_ids) < 2:
+        typer.echo("Need at least two ticket IDs to link.")
+        raise typer.Exit(code=1)
+
+    base = Path.cwd()
+
+    # Resolve all tickets first
+    resolved: list[tuple[Ticket, Path]] = []
+    for tid in ticket_ids:
+        try:
+            result = find_ticket(base, tid)
+        except AmbiguousTicketMatch as e:
+            print_error(f"{e}")
+            raise typer.Exit(code=1) from None
+        if result is None:
+            typer.echo(f"Ticket not found: {tid}")
+            raise typer.Exit(code=1)
+        resolved.append(result)
+
+    # Add symmetric links
+    for i, (ticket, ticket_path) in enumerate(resolved):
+        changed = False
+        for j, (other, _) in enumerate(resolved):
+            if i != j and other.id not in ticket.links:
+                ticket.links.append(other.id)
+                changed = True
+        if changed:
+            write_ticket(ticket, ticket_path)
+
+    ids = [t.id for t, _ in resolved]
+    typer.echo(f"Linked: {' ↔ '.join(ids)}")
+
+
+@ticket_app.command("unlink", help="Remove a link between two tickets.")
+def ticket_unlink(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    target_id: Annotated[str, typer.Argument(help="ID of ticket to unlink from.")],
+) -> None:
+    """Remove a symmetric link between two tickets."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+        target_result = find_ticket(base, target_id)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+    if target_result is None:
+        typer.echo(f"Ticket not found: {target_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+    target, target_path = target_result
+
+    removed = False
+    if target.id in ticket.links:
+        ticket.links.remove(target.id)
+        write_ticket(ticket, ticket_path)
+        removed = True
+    if ticket.id in target.links:
+        target.links.remove(ticket.id)
+        write_ticket(target, target_path)
+        removed = True
+
+    if removed:
+        typer.echo(f"Unlinked: {ticket.id} ↔ {target.id}")
+    else:
+        typer.echo(f"No link between {ticket.id} and {target.id}")
+
+
 @ticket_app.command("assign", help="Assign a ticket to an agent.")
 def ticket_assign(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
@@ -4195,6 +4480,117 @@ def ticket_ready(
             typer.echo("Backlog:")
             for ticket, _ in backlog_tickets_list:
                 typer.echo(format_ticket(ticket))
+
+
+@ticket_app.command("closed", help="List recently closed tickets.")
+def ticket_closed(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max tickets to show.")] = 20,
+    assignee: Annotated[str | None, typer.Option("--assignee", "-a", help="Filter by assignee.")] = None,
+    tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
+) -> None:
+    """List recently closed tickets across all locations, sorted by creation date (newest first)."""
+    base = Path.cwd()
+    all_tickets = collect_all_tickets(base)
+
+    closed = [t for t in all_tickets if t.status == "closed"]
+    if assignee:
+        closed = [t for t in closed if t.assignee == assignee]
+    if tag:
+        closed = [t for t in closed if tag in t.tags]
+    closed.sort(key=lambda t: t.created, reverse=True)
+    closed = closed[:limit]
+
+    if not closed:
+        typer.echo("No closed tickets found.")
+        return
+
+    render_ticket_table(closed)
+    typer.echo(f"{len(closed)} closed ticket(s)")
+
+
+@ticket_app.command("add-note", help="Append a timestamped note to a ticket.")
+def ticket_add_note(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    text: Annotated[str | None, typer.Argument(help="Note text. Reads from stdin if omitted.")] = None,
+) -> None:
+    """Append a timestamped note to the ticket body."""
+    base = Path.cwd()
+
+    try:
+        result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    ticket, ticket_path = result
+
+    if text is None:
+        text = sys.stdin.read().strip()
+        if not text:
+            typer.echo("No note text provided.")
+            raise typer.Exit(code=1)
+
+    now = datetime.now(UTC)
+    timestamp = now.strftime("%Y-%m-%d %H:%M")
+    note = f"\n**Note ({timestamp}):** {text}\n"
+
+    content = ticket_path.read_text(encoding="utf-8")
+    if not content.endswith("\n"):
+        content += "\n"
+    content += note
+    ticket_path.write_text(content, encoding="utf-8")
+
+    typer.echo(f"{ticket.id}: note added")
+
+
+@ticket_app.command("query", help="Output tickets as JSON with optional jq filtering.")
+def ticket_query(
+    jq_filter: Annotated[str | None, typer.Argument(help="Optional jq filter expression.")] = None,
+) -> None:
+    """Output all non-closed tickets as JSON. Pipe through jq if a filter is given."""
+    base = Path.cwd()
+    all_tickets = collect_all_tickets(base)
+
+    data = [
+        {
+            "id": t.id,
+            "status": t.status,
+            "priority": t.priority,
+            "type": t.type,
+            "title": t.title,
+            "assignee": t.assignee,
+            "deps": t.deps,
+            "links": t.links,
+            "tags": t.tags,
+            "parent": t.parent,
+            "created": t.created.isoformat(),
+        }
+        for t in all_tickets
+        if t.status != "closed"
+    ]
+
+    if jq_filter:
+        import shutil as sh
+
+        if not sh.which("jq"):
+            typer.echo("jq is not installed. Install it or omit the filter.")
+            raise typer.Exit(code=1)
+        proc = subprocess.run(
+            ["jq", jq_filter],
+            input=json.dumps(data),
+            capture_output=True,
+            text=True,
+        )
+        typer.echo(proc.stdout.rstrip())
+        if proc.returncode != 0:
+            typer.echo(proc.stderr.rstrip(), err=True)
+            raise typer.Exit(code=proc.returncode)
+    else:
+        typer.echo(json.dumps(data, indent=2))
 
 
 @ticket_app.command("log", help="Append a worklog entry to a ticket.")

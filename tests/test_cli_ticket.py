@@ -2438,3 +2438,400 @@ class TestTicketListDepsJson:
             data = json.loads(result.output)
             assert len(data) == 1
             assert data[0]["deps"] == ["aaaa"]
+
+
+class TestTicketLink:
+    """Tests for kd tk link / unlink."""
+
+    def test_link_creates_symmetric_links(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            for tid in ["aaaa", "bbbb"]:
+                write_ticket(
+                    Ticket(id=tid, status="open", title=f"T {tid}", body="", created=datetime.now(UTC)),
+                    tickets_dir / f"{tid}.md",
+                )
+            result = runner.invoke(cli.app, ["tk", "link", "aaaa", "bbbb"])
+            assert result.exit_code == 0
+            assert "Linked" in result.output
+
+            a = read_ticket(tickets_dir / "aaaa.md")
+            b = read_ticket(tickets_dir / "bbbb.md")
+            assert "bbbb" in a.links
+            assert "aaaa" in b.links
+
+    def test_unlink_removes_symmetric_links(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            for tid, links in [("aaaa", ["bbbb"]), ("bbbb", ["aaaa"])]:
+                write_ticket(
+                    Ticket(id=tid, status="open", title=f"T {tid}", body="", links=links, created=datetime.now(UTC)),
+                    tickets_dir / f"{tid}.md",
+                )
+            result = runner.invoke(cli.app, ["tk", "unlink", "aaaa", "bbbb"])
+            assert result.exit_code == 0
+            assert "Unlinked" in result.output
+
+            a = read_ticket(tickets_dir / "aaaa.md")
+            b = read_ticket(tickets_dir / "bbbb.md")
+            assert "bbbb" not in a.links
+            assert "aaaa" not in b.links
+
+    def test_link_needs_at_least_two(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            result = runner.invoke(cli.app, ["tk", "link", "aaaa"])
+            assert result.exit_code == 1
+            assert "at least two" in result.output
+
+
+class TestTicketDepTree:
+    """Tests for kd tk dep-tree."""
+
+    def test_tree_shows_deps(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="Root", body="", deps=["bbbb"], created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Dep", body="", created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "dep-tree", "aaaa"])
+            assert result.exit_code == 0
+            assert "Root" in result.output
+            assert "bbbb" in result.output
+            assert "Dep" in result.output
+
+    def test_tree_deduplicates_by_default(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(
+                    id="aaaa", status="open", title="Root", body="", deps=["bbbb", "cccc"], created=datetime.now(UTC)
+                ),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="B", body="", deps=["cccc"], created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            write_ticket(
+                Ticket(id="cccc", status="open", title="C", body="", created=datetime.now(UTC)),
+                tickets_dir / "cccc.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "dep-tree", "aaaa"])
+            assert result.exit_code == 0
+            assert "see above" in result.output
+
+
+class TestTicketDepCycle:
+    """Tests for kd tk dep-cycle."""
+
+    def test_no_cycles(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="A", body="", deps=["bbbb"], created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="B", body="", created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "dep-cycle"])
+            assert result.exit_code == 0
+            assert "No dependency cycles" in result.output
+
+    def test_detects_cycle(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="A", body="", deps=["bbbb"], created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "dep-cycle"])
+            assert result.exit_code == 1
+            assert "cycle" in result.output.lower()
+
+
+class TestTicketBlocked:
+    """Tests for kd tk blocked."""
+
+    def test_lists_blocked_tickets(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="Blocker", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Blocked", body="", deps=["aaaa"], created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "blocked"])
+            assert result.exit_code == 0
+            assert "bbbb" in result.output
+            assert "blocked by" in result.output
+
+    def test_no_blocked_when_deps_closed(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="closed", title="Done", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Ready", body="", deps=["aaaa"], created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "blocked"])
+            assert result.exit_code == 0
+            assert "No blocked tickets" in result.output
+
+
+class TestTicketClosed:
+    """Tests for kd tk closed."""
+
+    def test_lists_closed_tickets(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="closed", title="Done ticket", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "closed"])
+            assert result.exit_code == 0
+            assert "aaaa" in result.output
+
+    def test_respects_limit(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            for tid in ["aaaa", "bbbb", "cccc"]:
+                write_ticket(
+                    Ticket(id=tid, status="closed", title=f"Done {tid}", body="", created=datetime.now(UTC)),
+                    tickets_dir / f"{tid}.md",
+                )
+            result = runner.invoke(cli.app, ["tk", "closed", "--limit", "1"])
+            assert result.exit_code == 0
+            assert "1 closed" in result.output
+
+
+class TestTicketAddNote:
+    """Tests for kd tk add-note."""
+
+    def test_adds_note_to_ticket(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="Test", body="Body.", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "add-note", "aaaa", "This is a note"])
+            assert result.exit_code == 0
+            assert "note added" in result.output
+
+            content = (tickets_dir / "aaaa.md").read_text()
+            assert "This is a note" in content
+            assert "**Note (" in content
+
+
+class TestTicketQuery:
+    """Tests for kd tk query."""
+
+    def test_outputs_json(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="Test", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "query"])
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 1
+            assert data[0]["id"] == "aaaa"
+
+    def test_excludes_closed(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="closed", title="Closed", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Open", body="", created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "query"])
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 1
+            assert data[0]["id"] == "bbbb"
+
+
+class TestTicketCreateOptions:
+    """Tests for new create options: --parent, --tags."""
+
+    def test_create_with_parent(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="Parent", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "create", "Child ticket", "--parent", "aaaa"])
+            assert result.exit_code == 0
+
+            # Find the created ticket
+            created_files = [f for f in tickets_dir.glob("*.md") if f.stem != "aaaa"]
+            assert len(created_files) == 1
+            child = read_ticket(created_files[0])
+            assert child.parent == "aaaa"
+
+    def test_create_with_tags(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            result = runner.invoke(cli.app, ["tk", "create", "Tagged ticket", "--tags", "frontend,polish"])
+            assert result.exit_code == 0
+
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            created_files = list(tickets_dir.glob("*.md"))
+            assert len(created_files) == 1
+            ticket = read_ticket(created_files[0])
+            assert "frontend" in ticket.tags
+            assert "polish" in ticket.tags
+
+
+class TestTicketListFilters:
+    """Tests for --assignee and --tag filters on list."""
+
+    def test_filter_by_assignee(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="Mine", body="", assignee="alice", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Theirs", body="", assignee="bob", created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "list", "--assignee", "alice"])
+            assert result.exit_code == 0
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
+
+    def test_filter_by_tag(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(
+                    id="aaaa",
+                    status="open",
+                    title="Frontend",
+                    body="",
+                    tags=["frontend"],
+                    created=datetime.now(UTC),
+                ),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Backend", body="", tags=["backend"], created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "list", "--tag", "frontend"])
+            assert result.exit_code == 0
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
+
+
+class TestTicketShowRelationships:
+    """Tests for show enriched view with Blockers/Blocking/Children/Linked."""
+
+    def test_show_displays_blocking(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="Blocker", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Blocked", body="", deps=["aaaa"], created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "show", "aaaa"])
+            assert result.exit_code == 0
+            assert "Blocking" in result.output
+            assert "bbbb" in result.output
+
+    def test_show_displays_children(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="Parent", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(
+                    id="bbbb",
+                    status="open",
+                    title="Child",
+                    body="",
+                    parent="aaaa",
+                    created=datetime.now(UTC),
+                ),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "show", "aaaa"])
+            assert result.exit_code == 0
+            assert "Children" in result.output
+            assert "bbbb" in result.output
