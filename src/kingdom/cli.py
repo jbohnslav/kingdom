@@ -171,6 +171,8 @@ def init(
         }
         config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
+    install_skill()
+
     typer.echo(f"Initialized {paths['state_root']}")
 
 
@@ -206,6 +208,38 @@ def setup_skill() -> None:
     typer.echo(f"Linked {target} -> {source}")
 
 
+def install_skill() -> None:
+    """Install the bundled kingdom skill to ~/.claude/skills/kingdom/.
+
+    Copies SKILL.md and reference files from the package into the Claude
+    skills directory.  Skips if the target is a symlink (dev setup).
+    Warns and continues on permission or filesystem errors.
+    """
+    from importlib.resources import as_file, files
+
+    try:
+        target = Path.home() / ".claude" / "skills" / "kingdom"
+
+        # Don't overwrite a dev symlink
+        if target.is_symlink():
+            return
+
+        skill_pkg = files("kingdom.skill")
+
+        target.mkdir(parents=True, exist_ok=True)
+        with as_file(skill_pkg / "SKILL.md") as src:
+            (target / "SKILL.md").write_bytes(src.read_bytes())
+
+        refs_target = target / "references"
+        refs_target.mkdir(exist_ok=True)
+        refs_pkg = skill_pkg / "references"
+        for name in ("council.md", "peasants.md", "tickets.md"):
+            with as_file(refs_pkg / name) as src:
+                (refs_target / name).write_bytes(src.read_bytes())
+    except (OSError, RuntimeError) as exc:
+        typer.echo(f"Warning: could not install skill ({exc})")
+
+
 def get_current_git_branch() -> str | None:
     """Get the current git branch name, or None if detached HEAD."""
     result = subprocess.run(
@@ -238,6 +272,7 @@ def start(
             raise typer.Exit(code=1)
         typer.echo("Auto-initializing .kd/ directory...")
         ensure_base_layout(base)
+        install_skill()
 
     # Check for existing current run
     current_path = state_root(base) / "current"
@@ -2124,7 +2159,7 @@ def peasant_sync(
 
     # Merge parent branch into worktree
     parent_branch = feature
-    typer.echo(f"Merging {parent_branch} into worktree for {full_ticket_id}...")
+    typer.echo(f"[1/2] Merging {parent_branch} into worktree for {full_ticket_id}...")
     merge_result = subprocess.run(
         ["git", "merge", parent_branch, "--no-edit"],
         capture_output=True,
@@ -2133,24 +2168,25 @@ def peasant_sync(
     )
 
     if merge_result.returncode != 0:
-        # Check for merge conflict
         typer.echo("Merge failed.")
         if merge_result.stdout.strip():
             typer.echo(merge_result.stdout.strip())
         if merge_result.stderr.strip():
             typer.echo(merge_result.stderr.strip())
-        # Abort the merge so we don't leave the worktree in a dirty state
         subprocess.run(["git", "merge", "--abort"], capture_output=True, cwd=worktree_path)
         typer.echo(f"\nMerge aborted. To resolve manually:\n  cd {worktree_path}\n  git merge {parent_branch}")
         raise typer.Exit(code=1)
 
-    if merge_result.stdout.strip():
-        typer.echo(merge_result.stdout.strip())
+    merge_out = merge_result.stdout.strip()
+    if "Already up to date" in merge_out:
+        typer.echo("Already up to date.")
+    elif merge_out:
+        typer.echo(merge_out)
 
     # Run init-worktree.sh to refresh dependencies
     init_script = state_root(base) / "init-worktree.sh"
     if init_script.exists() and os.access(init_script, os.X_OK):
-        typer.echo("Running init-worktree.sh...")
+        typer.echo("[2/2] Running init-worktree.sh...")
         init_result = subprocess.run(
             [str(init_script), str(worktree_path)],
             capture_output=True,
@@ -2162,6 +2198,10 @@ def peasant_sync(
             typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
             if init_result.stderr.strip():
                 typer.echo(init_result.stderr.strip())
+    elif init_script.exists():
+        typer.echo("[2/2] init-worktree.sh exists but is not executable, skipping.")
+    else:
+        typer.echo("[2/2] No init-worktree.sh found, skipping dependency refresh.")
 
     typer.echo(f"{full_ticket_id}: sync complete")
 
@@ -2449,7 +2489,7 @@ def peasant_review(
         has_diff = True
         console.print(Markdown(f"## diff: {diff_spec}\n\n```\n{diff_output}\n```"))
     else:
-        typer.echo("(no diff — branch may not have diverged yet)")
+        styled_echo("⚠ No code diff — the peasant may not have made any changes.", fg=typer.colors.YELLOW)
 
     # 4. Show worklog
     worklog = extract_worklog(ticket_path)
@@ -2721,10 +2761,10 @@ app.add_typer(config_app, name="config")
 
 @config_app.command("show", help="Print the effective configuration.")
 def config_show() -> None:
-    """Print the merged config (defaults + user overrides) as JSON."""
+    """Print the effective config with source annotations (config file vs defaults)."""
     import dataclasses
 
-    from kingdom.config import load_config
+    from kingdom.config import load_config, load_raw_config
 
     base = Path.cwd()
     try:
@@ -2733,21 +2773,57 @@ def config_show() -> None:
         styled_echo(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from None
 
-    config_path = state_root(base) / "config.json"
-    if config_path.exists():
-        typer.echo(f"Source: {config_path}")
-    else:
-        typer.echo("Source: defaults (no config file)")
+    raw = load_raw_config(base)
 
-    def strip_empty(obj: object) -> object:
+    def flatten(obj, prefix=""):
+        items = []
         if isinstance(obj, dict):
-            return {k: v for k, v in ((k, strip_empty(v)) for k, v in obj.items()) if v not in ("", [], {}, None)}
-        if isinstance(obj, list):
-            return [strip_empty(item) for item in obj]
-        return obj
+            for k, v in obj.items():
+                items.extend(flatten(v, f"{prefix}{k}."))
+        elif isinstance(obj, list):
+            items.append((prefix.rstrip("."), ", ".join(str(x) for x in obj)))
+        else:
+            items.append((prefix.rstrip("."), obj))
+        return items
 
-    console = Console()
-    console.print_json(json.dumps(strip_empty(dataclasses.asdict(cfg)), indent=2))
+    def is_in_raw(dotted_key: str) -> bool:
+        """Check if a dotted key was explicitly set in the config file.
+
+        Tries all possible split points to handle keys containing dots
+        (e.g. agent names like 'gpt.4o').
+        """
+
+        def walk(key: str, node: dict) -> bool:
+            if not isinstance(node, dict):
+                return False
+            # Try each possible split: first segment as dict key, rest recursed
+            for i in range(1, len(key) + 1):
+                prefix = key[:i]
+                rest = key[i + 1 :]  # skip the dot
+                if prefix in node:
+                    if not rest:
+                        return True
+                    if walk(rest, node[prefix]):
+                        return True
+            return False
+
+        return walk(dotted_key, raw)
+
+    effective = dataclasses.asdict(cfg)
+    entries = flatten(effective)
+
+    # Filter out empty values (empty strings, empty lists, empty dicts)
+    entries = [(k, v) for k, v in entries if v not in ("", [], {}, None)]
+
+    if not entries:
+        typer.echo("(all defaults, no config file)")
+        return
+
+    key_width = max(len(k) for k, _ in entries)
+    for key, value in entries:
+        source = "config" if is_in_raw(key) else "default"
+        color = typer.colors.CYAN if source == "config" else None
+        styled_echo(f"  {key:<{key_width}}  {value!s}  ({source})", fg=color)
 
 
 # ---------------------------------------------------------------------------
@@ -3707,6 +3783,22 @@ def ticket_delete(
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
+
+    # Guard: refuse to delete if a peasant is actively working on this ticket
+    branch_dir = ticket_path.parent.parent  # .kd/branches/<branch> or .kd/backlog
+    if branch_dir.parent.name == "branches":
+        from kingdom.session import get_agent_state
+
+        branch_name = branch_dir.name
+        session_name = f"peasant-{ticket.id}"
+        state = get_agent_state(base, branch_name, session_name)
+        if state.status in ("working", "needs_king_review"):
+            print_error(
+                f"Ticket {ticket.id} has an active peasant (status: {state.status}). "
+                f"Stop it first with `kd peasant stop {ticket.id}`."
+            )
+            raise typer.Exit(code=1)
+
     if not force:
         confirm = typer.confirm(f"Delete {ticket.id} — {ticket.title}?")
         if not confirm:

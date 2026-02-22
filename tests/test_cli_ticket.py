@@ -674,6 +674,28 @@ class TestTicketDelete:
             assert "Deleted" in result.output
             assert not path.exists()
 
+    def test_delete_blocked_by_active_peasant(self) -> None:
+        from kingdom.session import AgentState, set_agent_state
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            path = create_ticket_in(branch_dir, "kin-del4")
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-del4",
+                AgentState(name="peasant-kin-del4", status="working", pid=99999),
+            )
+
+            result = runner.invoke(cli.app, ["tk", "delete", "kin-del4", "--force"])
+
+            assert result.exit_code == 1
+            assert "active peasant" in result.output.lower() or "peasant" in result.output.lower()
+            assert path.exists()  # file should NOT have been deleted
+
 
 class TestTicketMove:
     def test_move_defaults_to_current_branch(self) -> None:
@@ -2119,6 +2141,25 @@ class TestTicketUndep:
             assert found is not None
             ticket, _ = found
             assert ticket.deps == []
+
+    def test_undep_preserves_other_deps(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            for tid in ["aaaa", "bbbb", "cccc"]:
+                t = Ticket(id=tid, status="open", title=f"Ticket {tid}", body="", created=datetime.now(UTC))
+                write_ticket(t, tickets_dir / f"{tid}.md")
+
+            runner.invoke(cli.app, ["tk", "dep", "aaaa", "bbbb"])
+            runner.invoke(cli.app, ["tk", "dep", "aaaa", "cccc"])
+            runner.invoke(cli.app, ["tk", "undep", "aaaa", "bbbb"])
+
+            found = find_ticket(base, "aaaa")
+            assert found is not None
+            ticket, _ = found
+            assert ticket.deps == ["cccc"]
 
 
 class TestNoResultsMessages:

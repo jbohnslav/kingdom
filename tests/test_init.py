@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
 from kingdom import cli
+from kingdom.cli import install_skill
 from kingdom.state import branch_root, ensure_base_layout, ensure_run_layout
 
 
@@ -193,6 +195,22 @@ def test_cli_start_auto_init_requires_git_repo() -> None:
         assert "Not a git repository" in result.output
 
 
+def test_cli_start_auto_init_installs_skill(tmp_path: Path) -> None:
+    """kd start auto-init should also install the skill."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    runner = CliRunner()
+
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        with patch("kingdom.cli.Path.home", return_value=fake_home):
+            result = runner.invoke(cli.app, ["start", "test-feature"])
+
+    assert result.exit_code == 0
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    assert (skill_dir / "SKILL.md").exists()
+
+
 def test_cli_start_initializes_design_and_prints_path() -> None:
     """kd start should create design.md from template and print its location."""
     runner = CliRunner()
@@ -230,3 +248,113 @@ def test_cli_design_is_idempotent_after_start() -> None:
         assert design_result.exit_code == 0
         assert "Design already exists at" in design_result.output
         assert design_path.read_text(encoding="utf-8") == before
+
+
+def test_install_skill_copies_files(tmp_path: Path) -> None:
+    """install_skill copies SKILL.md and references to ~/.claude/skills/kingdom/."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    with patch("kingdom.cli.Path.home", return_value=fake_home):
+        install_skill()
+
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "references" / "council.md").exists()
+    assert (skill_dir / "references" / "peasants.md").exists()
+    assert (skill_dir / "references" / "tickets.md").exists()
+
+    # Verify content is non-empty
+    assert len((skill_dir / "SKILL.md").read_text()) > 100
+
+
+def test_install_skill_skips_symlink(tmp_path: Path) -> None:
+    """install_skill should not overwrite a dev symlink."""
+    fake_home = tmp_path / "home"
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    skill_dir.mkdir(parents=True)
+
+    # Create a symlink to simulate dev setup
+    real_target = tmp_path / "real_skill"
+    real_target.mkdir()
+    skill_dir.rmdir()
+    skill_dir.symlink_to(real_target)
+
+    with patch("kingdom.cli.Path.home", return_value=fake_home):
+        install_skill()
+
+    # Should still be a symlink, not overwritten
+    assert skill_dir.is_symlink()
+    assert not (skill_dir / "SKILL.md").exists()
+
+
+def test_install_skill_idempotent(tmp_path: Path) -> None:
+    """install_skill can be called multiple times without error."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    with patch("kingdom.cli.Path.home", return_value=fake_home):
+        install_skill()
+        install_skill()
+
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    assert (skill_dir / "SKILL.md").exists()
+
+
+def test_install_skill_permission_error_warns(tmp_path: Path) -> None:
+    """install_skill should warn and continue when target dir is unwritable."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    # Make .claude read-only so mkdir inside it fails
+    claude_dir = fake_home / ".claude"
+    claude_dir.mkdir()
+    claude_dir.chmod(0o444)
+
+    with patch("kingdom.cli.Path.home", return_value=fake_home):
+        # Should not raise — just warn
+        cli.install_skill()
+
+    # Restore permissions for cleanup
+    claude_dir.chmod(0o755)
+
+
+def test_install_skill_runtime_error_warns() -> None:
+    """install_skill should warn and continue when Path.home() raises RuntimeError."""
+    with patch("kingdom.cli.Path.home", side_effect=RuntimeError("no home")):
+        cli.install_skill()  # should not raise
+
+
+def test_cli_init_succeeds_when_skill_dir_unwritable(tmp_path: Path) -> None:
+    """kd init should succeed even when skill target dir is unwritable."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    claude_dir = fake_home / ".claude"
+    claude_dir.mkdir()
+    claude_dir.chmod(0o444)
+    runner = CliRunner()
+
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        with patch("kingdom.cli.Path.home", return_value=fake_home):
+            result = runner.invoke(cli.app, ["init"])
+
+    claude_dir.chmod(0o755)
+    assert result.exit_code == 0
+    assert "Initialized" in result.output
+    assert "Warning" in result.output
+
+
+def test_cli_init_installs_skill(tmp_path: Path) -> None:
+    """kd init should install the skill as part of initialization."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    runner = CliRunner()
+
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        with patch("kingdom.cli.Path.home", return_value=fake_home):
+            result = runner.invoke(cli.app, ["init"])
+
+    assert result.exit_code == 0
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    assert (skill_dir / "SKILL.md").exists()
