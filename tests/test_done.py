@@ -15,6 +15,7 @@ from kingdom.state import (
     read_json,
     set_current_run,
     state_root,
+    write_json,
 )
 from kingdom.ticket import Ticket, write_ticket
 
@@ -327,3 +328,59 @@ def test_done_renders_rich_panel() -> None:
         # Panel body
         assert "2 tickets closed" in result.output
         assert "Session cleared" in result.output
+
+
+def test_done_cleans_up_worktrees_from_state() -> None:
+    """kd done should remove worktrees recorded in state.json, not look for directory structure."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+
+        # Simulate worktrees created by create_worktree():
+        # They're stored flat at .kd/worktrees/<ticket-id> and recorded in state.json
+        wt_root = state_root(base) / "worktrees"
+        wt_root.mkdir(parents=True, exist_ok=True)
+        wt1 = wt_root / "tf-abc1"
+        wt2 = wt_root / "tf-xyz2"
+        wt1.mkdir()
+        wt2.mkdir()
+
+        # Record in state.json (as create_worktree does)
+        state_path = branch_dir / "state.json"
+        state = read_json(state_path) if state_path.exists() else {}
+        state["worktrees"] = {
+            "tf-abc1": str(wt1),
+            "tf-xyz2": str(wt2),
+        }
+        write_json(state_path, state)
+
+        # Patch git worktree remove so it just removes the directory
+        original_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "worktree", "remove"]:
+                # Simulate successful removal
+                import shutil
+
+                target = Path(cmd[-1])
+                if target.exists():
+                    shutil.rmtree(target)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return original_run(cmd, **kwargs)
+
+        import unittest.mock
+
+        with unittest.mock.patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            result = runner.invoke(cli.app, ["done", "--force"])
+
+        assert result.exit_code == 0
+        # Worktree directories should be removed
+        assert not wt1.exists()
+        assert not wt2.exists()
+        # Worktrees map should be cleared in state.json
+        state = read_json(state_path)
+        assert state.get("worktrees", {}) == {}

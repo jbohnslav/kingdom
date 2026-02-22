@@ -353,26 +353,24 @@ def done(
     state["done_at"] = datetime.now(UTC).isoformat()
     write_json(state_path, state)
 
-    # Clean up associated worktrees
-    worktree_dir = state_root(base) / "worktrees" / normalized
-    if worktree_dir.exists():
-        worktree_dirs = [w for w in worktree_dir.iterdir() if w.is_dir()]
-        if worktree_dirs:
-            if not force:
-                names = ", ".join(w.name for w in worktree_dirs)
-                typer.confirm(f"Remove {len(worktree_dirs)} worktree(s) ({names})?", abort=True)
-            for worktree in worktree_dirs:
+    # Clean up associated worktrees (read from state.json worktrees map)
+    worktrees = state.get("worktrees", {})
+    if worktrees:
+        if not force:
+            names = ", ".join(worktrees.keys())
+            typer.confirm(f"Remove {len(worktrees)} worktree(s) ({names})?", abort=True)
+        for ticket_id, wt_path in worktrees.items():
+            wt = Path(wt_path)
+            if wt.exists():
                 result = subprocess.run(
-                    ["git", "worktree", "remove", "--force", str(worktree)],
+                    ["git", "worktree", "remove", "--force", str(wt)],
                     capture_output=True,
                     text=True,
                 )
                 if result.returncode != 0:
-                    typer.echo(f"Warning: Failed to remove worktree {worktree.name}: {result.stderr.strip()}")
-        try:
-            worktree_dir.rmdir()
-        except OSError as e:
-            typer.echo(f"Warning: Could not remove worktree directory: {e}")
+                    typer.echo(f"Warning: Failed to remove worktree {ticket_id}: {result.stderr.strip()}")
+        state["worktrees"] = {}
+        write_json(state_path, state)
 
     # Clear current session pointer (only if this was the current session)
     current_path = state_root(base) / "current"
