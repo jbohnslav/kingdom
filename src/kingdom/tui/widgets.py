@@ -451,6 +451,7 @@ class ThinkingPanel(Static):
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show this help"),
     ("/h", "show this help (shortcut)"),
+    ("/copy [member]", "copy last agent response to clipboard"),
     ("/mute <member>", "exclude member from broadcast"),
     ("/mute", "show currently muted members"),
     ("/unmute <member>", "re-include member in broadcast"),
