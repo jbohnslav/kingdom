@@ -2198,6 +2198,8 @@ def peasant_sync(
             typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
             if init_result.stderr.strip():
                 typer.echo(init_result.stderr.strip())
+    elif init_script.exists():
+        typer.echo("[2/2] init-worktree.sh exists but is not executable, skipping.")
     else:
         typer.echo("[2/2] No init-worktree.sh found, skipping dependency refresh.")
 

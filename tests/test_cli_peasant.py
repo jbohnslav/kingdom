@@ -620,6 +620,33 @@ class TestPeasantSync:
             assert "init-worktree.sh" in result.output
             assert "sync complete" in result.output
 
+    def test_sync_non_executable_init_script(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            from kingdom.state import state_root
+
+            worktree_path = state_root(base) / "worktrees" / "kin-test"
+            worktree_path.mkdir(parents=True, exist_ok=True)
+
+            # Create init script but do NOT make it executable
+            init_script = state_root(base) / "init-worktree.sh"
+            init_script.write_text("#!/bin/bash\necho 'init ran'", encoding="utf-8")
+            init_script.chmod(0o644)
+
+            merge_result = MagicMock()
+            merge_result.returncode = 0
+            merge_result.stdout = "Already up to date."
+            merge_result.stderr = ""
+
+            with patch("subprocess.run", return_value=merge_result):
+                result = runner.invoke(cli.app, ["peasant", "sync", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "not executable" in result.output
+
     def test_sync_ticket_not_found(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
