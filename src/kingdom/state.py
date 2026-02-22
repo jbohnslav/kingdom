@@ -16,6 +16,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -348,28 +349,57 @@ def clear_current_run(base: Path) -> None:
         current_path.unlink()
 
 
+def get_current_git_branch() -> str | None:
+    """Get the current git branch name, or None if not in a repo or detached HEAD."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    if branch == "HEAD":
+        return None
+    return branch
+
+
 def resolve_current_run(base: Path) -> str:
     """Resolve the current active run/branch.
 
-    First checks for branch-based structure (.kd/branches/), then falls back
-    to legacy run structure (.kd/runs/) for backwards compatibility.
+    Resolution order:
+    1. Explicit .kd/current file (set by ``kd start``)
+    2. Current git branch name matched against .kd/branches/
+    3. Error with helpful message
     """
     current_path = state_root(base) / "current"
-    if not current_path.exists():
-        raise RuntimeError("No active session. Use `kd start <feature>` first.")
 
-    feature = current_path.read_text(encoding="utf-8").strip()
-    if not feature:
-        raise RuntimeError("Current session is empty. Use `kd start <feature>` again.")
+    # 1. Explicit current file takes priority
+    if current_path.exists():
+        feature = current_path.read_text(encoding="utf-8").strip()
+        if feature:
+            # Check new branch-based structure first
+            branch_dir = branch_root(base, feature)
+            if branch_dir.exists():
+                return feature
 
-    # Check new branch-based structure first
-    branch_dir = branch_root(base, feature)
-    if branch_dir.exists():
-        return feature
+            # Fall back to legacy runs structure
+            legacy_run_dir = run_root(base, feature)
+            if legacy_run_dir.exists():
+                return feature
 
-    # Fall back to legacy runs structure
-    legacy_run_dir = run_root(base, feature)
-    if legacy_run_dir.exists():
-        return feature
+            raise RuntimeError(f"Current session '{feature}' not found at {branch_dir} or {legacy_run_dir}.")
 
-    raise RuntimeError(f"Current session '{feature}' not found at {branch_dir} or {legacy_run_dir}.")
+    # 2. Auto-detect from git branch
+    git_branch = get_current_git_branch()
+    if git_branch:
+        try:
+            normalized = normalize_branch_name(git_branch)
+        except ValueError:
+            pass
+        else:
+            branch_dir = branches_root(base) / normalized
+            if branch_dir.exists():
+                return git_branch
+
+    raise RuntimeError("No active session. Use `kd start <feature>` or switch to a tracked branch.")

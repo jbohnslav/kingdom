@@ -44,6 +44,7 @@ from kingdom.state import (
     council_logs_root,
     ensure_base_layout,
     ensure_branch_layout,
+    get_current_git_branch,
     logs_root,
     normalize_branch_name,
     read_json,
@@ -238,22 +239,6 @@ def install_skill() -> None:
                 (refs_target / name).write_bytes(src.read_bytes())
     except (OSError, RuntimeError) as exc:
         typer.echo(f"Warning: could not install skill ({exc})")
-
-
-def get_current_git_branch() -> str | None:
-    """Get the current git branch name, or None if detached HEAD."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    branch = result.stdout.strip()
-    # "HEAD" means detached HEAD state
-    if branch == "HEAD":
-        return None
-    return branch
 
 
 @app.command(help="Initialize a branch-based session and state.")
