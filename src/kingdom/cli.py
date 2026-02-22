@@ -2808,7 +2808,7 @@ def config_show() -> None:
     for key, value in entries:
         source = "config" if is_in_raw(key) else "default"
         color = typer.colors.CYAN if source == "config" else None
-        typer.secho(f"  {key:<{key_width}}  {value!s:<20}  ({source})", fg=color)
+        styled_echo(f"  {key:<{key_width}}  {value!s}  ({source})", fg=color)
 
 
 # ---------------------------------------------------------------------------
