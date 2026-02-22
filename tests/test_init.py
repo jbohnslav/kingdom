@@ -285,6 +285,43 @@ def test_install_skill_idempotent(tmp_path: Path) -> None:
     assert (skill_dir / "SKILL.md").exists()
 
 
+def test_install_skill_permission_error_warns(tmp_path: Path) -> None:
+    """install_skill should warn and continue when target dir is unwritable."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    # Make .claude read-only so mkdir inside it fails
+    claude_dir = fake_home / ".claude"
+    claude_dir.mkdir()
+    claude_dir.chmod(0o444)
+
+    with patch("kingdom.cli.Path.home", return_value=fake_home):
+        # Should not raise — just warn
+        cli.install_skill()
+
+    # Restore permissions for cleanup
+    claude_dir.chmod(0o755)
+
+
+def test_cli_init_succeeds_when_skill_dir_unwritable(tmp_path: Path) -> None:
+    """kd init should succeed even when skill target dir is unwritable."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    claude_dir = fake_home / ".claude"
+    claude_dir.mkdir()
+    claude_dir.chmod(0o444)
+    runner = CliRunner()
+
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        with patch("kingdom.cli.Path.home", return_value=fake_home):
+            result = runner.invoke(cli.app, ["init"])
+
+    claude_dir.chmod(0o755)
+    assert result.exit_code == 0
+    assert "Initialized" in result.output
+    assert "Warning" in result.output
+
+
 def test_cli_init_installs_skill(tmp_path: Path) -> None:
     """kd init should install the skill as part of initialization."""
     fake_home = tmp_path / "home"

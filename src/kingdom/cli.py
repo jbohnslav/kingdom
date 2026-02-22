@@ -213,27 +213,31 @@ def install_skill() -> None:
 
     Copies SKILL.md and reference files from the package into the Claude
     skills directory.  Skips if the target is a symlink (dev setup).
+    Warns and continues on permission or filesystem errors.
     """
     from importlib.resources import as_file, files
 
-    target = Path.home() / ".claude" / "skills" / "kingdom"
+    try:
+        target = Path.home() / ".claude" / "skills" / "kingdom"
 
-    # Don't overwrite a dev symlink
-    if target.is_symlink():
-        return
+        # Don't overwrite a dev symlink
+        if target.is_symlink():
+            return
 
-    skill_pkg = files("kingdom.skill")
+        skill_pkg = files("kingdom.skill")
 
-    target.mkdir(parents=True, exist_ok=True)
-    with as_file(skill_pkg / "SKILL.md") as src:
-        (target / "SKILL.md").write_bytes(src.read_bytes())
+        target.mkdir(parents=True, exist_ok=True)
+        with as_file(skill_pkg / "SKILL.md") as src:
+            (target / "SKILL.md").write_bytes(src.read_bytes())
 
-    refs_target = target / "references"
-    refs_target.mkdir(exist_ok=True)
-    refs_pkg = skill_pkg / "references"
-    for name in ("council.md", "peasants.md", "tickets.md"):
-        with as_file(refs_pkg / name) as src:
-            (refs_target / name).write_bytes(src.read_bytes())
+        refs_target = target / "references"
+        refs_target.mkdir(exist_ok=True)
+        refs_pkg = skill_pkg / "references"
+        for name in ("council.md", "peasants.md", "tickets.md"):
+            with as_file(refs_pkg / name) as src:
+                (refs_target / name).write_bytes(src.read_bytes())
+    except OSError as exc:
+        typer.echo(f"Warning: could not install skill ({exc})")
 
 
 def get_current_git_branch() -> str | None:
