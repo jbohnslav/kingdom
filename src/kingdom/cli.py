@@ -732,22 +732,22 @@ def council_review(
         bool, typer.Option("--writable", "-w", help="Grant council members full write permissions.")
     ] = False,
 ) -> None:
-    """Generate a diff against the base branch and ask the council to review it."""
+    """Generate a changed-files summary and ask the council to review it."""
     base = Path.cwd()
     resolve_current_run(base)  # Validate active session
 
-    # Get the diff
-    diff_result = subprocess.run(
-        ["git", "diff", f"{base_branch}...HEAD"],
+    # Get changed file stats
+    stat_result = subprocess.run(
+        ["git", "diff", "--stat", f"{base_branch}...HEAD"],
         capture_output=True,
         text=True,
     )
-    if diff_result.returncode != 0:
-        print_error(f"Failed to generate diff against {base_branch}: {diff_result.stderr.strip()}")
+    if stat_result.returncode != 0:
+        print_error(f"Failed to generate diff against {base_branch}: {stat_result.stderr.strip()}")
         raise typer.Exit(code=1)
 
-    diff = diff_result.stdout.strip()
-    if not diff:
+    stat_output = stat_result.stdout.strip()
+    if not stat_output:
         typer.echo(f"No changes between {base_branch} and HEAD.")
         raise typer.Exit(code=0)
 
@@ -759,15 +759,15 @@ def council_review(
     )
     commits = log_result.stdout.strip()
 
-    # Build the review prompt
+    # Build the review prompt — agents read files themselves
     prompt_parts = [
-        "Review the following code changes.",
-        "Focus on: correctness, edge cases, readability, and potential bugs.",
-        "Be specific — reference file names and line numbers when possible.",
+        f"Review the code changes on this branch vs {base_branch}.",
+        "Read the changed files listed below. Focus on: correctness, edge cases, readability, and potential bugs.",
+        "Be specific — reference file names and line numbers.",
     ]
     if commits:
         prompt_parts.append(f"\n## Commits\n\n```\n{commits}\n```")
-    prompt_parts.append(f"\n## Diff\n\n```diff\n{diff}\n```")
+    prompt_parts.append(f"\n## Changed files\n\n```\n{stat_output}\n```")
     review_prompt = "\n".join(prompt_parts)
 
     # Delegate to council_ask with --new-thread
@@ -3542,7 +3542,9 @@ def resolve_dep_status(base: Path, dep_id: str) -> str:
 STATUS_COLORS = {"open": "yellow", "in_progress": "cyan", "in_review": "magenta", "closed": "green"}
 
 
-def render_ticket_panel(ticket: Ticket, ticket_path: Path, base: Path) -> Panel:
+def render_ticket_panel(
+    ticket: Ticket, ticket_path: Path, base: Path, all_tickets: list[Ticket] | None = None
+) -> Panel:
     """Build a Rich Panel displaying a ticket's metadata and body.
 
     Args:
@@ -3591,7 +3593,8 @@ def render_ticket_panel(ticket: Ticket, ticket_path: Path, base: Path) -> Panel:
         parts.append(Markdown(ticket.body))
 
     # Relationship sections: blockers, blocking, children, linked
-    all_tickets = collect_all_tickets(base)
+    if all_tickets is None:
+        all_tickets = collect_all_tickets(base)
     relations: list[str] = []
 
     # Blockers: unclosed deps
@@ -3724,10 +3727,11 @@ def ticket_show(
         typer.echo(json.dumps(results_json if len(results_json) > 1 else results_json[0], indent=2))
     else:
         console = Console()
+        cached_tickets = collect_all_tickets(base) if len(pairs) > 1 else None
         for i, (ticket, ticket_path) in enumerate(pairs):
             if i > 0:
                 console.print()  # separator between tickets
-            console.print(render_ticket_panel(ticket, ticket_path, base))
+            console.print(render_ticket_panel(ticket, ticket_path, base, all_tickets=cached_tickets))
 
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:
@@ -4139,7 +4143,7 @@ def ticket_blocked(
 
     blocked = []
     for ticket in all_tickets:
-        if ticket.status in ("closed",):
+        if ticket.status == "closed":
             continue
         if not ticket.deps:
             continue
@@ -4210,14 +4214,18 @@ def ticket_unlink(
 
     try:
         result = find_ticket(base, ticket_id)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+    if result is None:
+        typer.echo(f"Ticket not found: {ticket_id}")
+        raise typer.Exit(code=1)
+
+    try:
         target_result = find_ticket(base, target_id)
     except AmbiguousTicketMatch as e:
         print_error(f"{e}")
         raise typer.Exit(code=1) from None
-
-    if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
     if target_result is None:
         typer.echo(f"Ticket not found: {target_id}")
         raise typer.Exit(code=1)

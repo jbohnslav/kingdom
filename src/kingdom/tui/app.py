@@ -856,7 +856,7 @@ class ChatApp(App):
         last = candidates[-1]
         try:
             copy_to_clipboard(last.body)
-            label = f" from {last.from_}" if member_filter else f" from {last.from_}"
+            label = f" from {last.from_}" if member_filter else " last response"
             self.show_system_message(f"Copied{label} to clipboard.")
         except ClipboardUnavailableError:
             self.show_system_message("Clipboard unavailable. Install xclip or xsel.")

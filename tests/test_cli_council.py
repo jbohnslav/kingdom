@@ -1153,12 +1153,19 @@ class TestCouncilReset:
             assert "Unknown member" in result.output
 
 
+def init_git_repo():
+    """Initialize a git repo with user identity configured (needed for CI)."""
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "config", "user.name", "test"], check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], check=True)
+
+
 class TestCouncilReview:
     def test_review_generates_diff_and_asks(self) -> None:
         """council review should generate a diff and dispatch to council ask."""
         with runner.isolated_filesystem():
             base = Path.cwd()
-            subprocess.run(["git", "init", "-q"], check=True)
+            init_git_repo()
             subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
             (base / "file.py").write_text("original\n")
             subprocess.run(["git", "add", "."], check=True)
@@ -1181,7 +1188,7 @@ class TestCouncilReview:
         """council review should exit cleanly when there's no diff."""
         with runner.isolated_filesystem():
             base = Path.cwd()
-            subprocess.run(["git", "init", "-q"], check=True)
+            init_git_repo()
             subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
             (base / "file.py").write_text("original\n")
             subprocess.run(["git", "add", "."], check=True)
@@ -1194,11 +1201,11 @@ class TestCouncilReview:
             assert result.exit_code == 0
             assert "No changes" in result.output
 
-    def test_review_includes_diff_in_prompt(self) -> None:
-        """The review prompt should contain the diff content."""
+    def test_review_includes_file_stats_in_prompt(self) -> None:
+        """The review prompt should contain changed file stats, not raw diff."""
         with runner.isolated_filesystem():
             base = Path.cwd()
-            subprocess.run(["git", "init", "-q"], check=True)
+            init_git_repo()
             subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
             (base / "file.py").write_text("original\n")
             subprocess.run(["git", "add", "."], check=True)
@@ -1221,9 +1228,10 @@ class TestCouncilReview:
 
             assert result.exit_code == 0, result.output
             assert len(captured_prompt) == 1
-            assert "-original" in captured_prompt[0]
-            assert "+modified" in captured_prompt[0]
-            assert "```diff" in captured_prompt[0]
+            assert "file.py" in captured_prompt[0]
+            assert "Changed files" in captured_prompt[0]
+            # Should not contain raw diff hunks
+            assert "```diff" not in captured_prompt[0]
 
 
 class TestCouncilRetry:
