@@ -1233,6 +1233,30 @@ class TestCouncilReview:
             # Should not contain raw diff hunks
             assert "```diff" not in captured_prompt[0]
 
+    def test_review_auto_detects_main_branch(self) -> None:
+        """council review should auto-detect 'main' when no --base is passed."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "main"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            (base / "file.py").write_text("modified\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "change", "--no-gpg-sign"], check=True, capture_output=True)
+
+            setup_project(base)
+
+            responses = make_responses("claude", "codex")
+            with mock_council_query_to_thread(responses):
+                # No --base flag — should auto-detect 'main'
+                result = runner.invoke(cli.app, ["council", "review"])
+
+            assert result.exit_code == 0, result.output
+            assert "Thread:" in result.output
+
 
 class TestCouncilRetry:
     def test_retry_no_thread(self) -> None:

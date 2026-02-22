@@ -718,9 +718,22 @@ def council_ask(
     c.save_sessions(base, feature)
 
 
+def detect_base_branch() -> str:
+    """Detect the default base branch (main or master)."""
+    for candidate in ("origin/main", "origin/master", "main", "master"):
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", candidate],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return candidate
+    return "master"
+
+
 @council_app.command("review", help="Ask the council to review code changes.")
 def council_review(
-    base_branch: Annotated[str, typer.Option("--base", "-b", help="Base branch to diff against.")] = "master",
+    base_branch: Annotated[str | None, typer.Option("--base", "-b", help="Base branch to diff against.")] = None,
     to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
     async_mode: Annotated[
         bool, typer.Option("--async", help="Dispatch in background, then watch for responses.")
@@ -733,6 +746,9 @@ def council_review(
     """Generate a changed-files summary and ask the council to review it."""
     base = Path.cwd()
     resolve_current_run(base)  # Validate active session
+
+    if base_branch is None:
+        base_branch = detect_base_branch()
 
     # Get changed file stats
     stat_result = subprocess.run(
