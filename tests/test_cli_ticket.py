@@ -2139,6 +2139,7 @@ class TestTicketUndep:
             ticket, _ = found
             assert ticket.deps == ["cccc"]
 
+
 class TestNoResultsMessages:
     """Tests for helpful empty-state messages with next-step guidance."""
 
