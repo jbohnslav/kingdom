@@ -102,6 +102,7 @@ Check status anytime with `kd status`.
 | `kd tk pull <id>...` | Pull backlog tickets into current branch |
 | `kd tk dep <id> <dep-id>` | Add dependency |
 | `kd tk undep <id> <dep-id>` | Remove dependency |
+| `kd tk delete <id>` | Delete a ticket (--force to skip confirm) |
 | `kd tk assign <id> <agent>` | Assign to agent |
 | `kd tk unassign <id>` | Clear assignment |
 
@@ -119,6 +120,12 @@ Check status anytime with `kd status`.
 | `kd peasant msg <id> "text"` | Send directive to peasant |
 | `kd peasant read <id>` | Read messages from peasant |
 | `kd peasant review <id>` | Review peasant's completed work |
+
+### Config
+
+| Command | Description |
+|---------|-------------|
+| `kd config show` | Print effective config with source annotations |
 
 ### Other
 
