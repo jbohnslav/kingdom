@@ -2647,6 +2647,34 @@ class TestTicketBlocked:
             assert "bbbb" in result.output
             assert "blocked by" in result.output
 
+    def test_blocked_by_line_aligns_with_ticket_line(self) -> None:
+        """The 'blocked by:' line should be indented to align under the ticket info."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aa", status="open", title="Blocker", body="", created=datetime.now(UTC)),
+                tickets_dir / "aa.md",
+            )
+            write_ticket(
+                Ticket(id="bb", status="open", title="Blocked", body="", deps=["aa"], created=datetime.now(UTC)),
+                tickets_dir / "bb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "blocked"])
+            assert result.exit_code == 0
+            lines = result.output.split("\n")
+            # Find the ticket line and blocked-by line
+            ticket_line = next(line for line in lines if "bb" in line and "Blocked" in line)
+            blocked_line = next(line for line in lines if "blocked by:" in line)
+            # The "blocked by:" should start at the same column as "[P..." on the ticket line
+            bracket_col = ticket_line.index("[P")
+            blocked_indent = len(blocked_line) - len(blocked_line.lstrip())
+            assert blocked_indent == bracket_col, (
+                f"'blocked by:' starts at col {blocked_indent}, but '[P...' starts at col {bracket_col}\n"
+                f"  ticket:  {ticket_line!r}\n  blocked: {blocked_line!r}"
+            )
+
     def test_no_blocked_when_deps_closed(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

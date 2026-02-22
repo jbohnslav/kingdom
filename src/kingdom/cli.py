@@ -4196,8 +4196,9 @@ def ticket_blocked(
 
     for ticket, open_deps in blocked:
         dep_str = ", ".join(open_deps)
-        typer.echo(f"  {ticket.id} [P{ticket.priority}][{ticket.status}] {ticket.title}")
-        typer.echo(f"         blocked by: {dep_str}")
+        prefix = f"  {ticket.id} "
+        typer.echo(f"{prefix}[P{ticket.priority}][{ticket.status}] {ticket.title}")
+        typer.echo(f"{' ' * len(prefix)}blocked by: {dep_str}")
 
 
 @ticket_app.command("link", help="Add symmetric links between tickets.")

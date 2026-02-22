@@ -389,7 +389,7 @@ def resolve_current_run(base: Path) -> str:
             if legacy_run_dir.exists():
                 return feature
 
-            raise RuntimeError(f"Current session '{feature}' not found at {branch_dir} or {legacy_run_dir}.")
+            # Stale pointer — fall through to git auto-detect instead of raising
 
     # 2. Auto-detect from git branch
     git_branch = get_current_git_branch()
@@ -401,6 +401,6 @@ def resolve_current_run(base: Path) -> str:
         else:
             branch_dir = branches_root(base) / normalized
             if branch_dir.exists():
-                return git_branch
+                return normalized
 
     raise RuntimeError("No active session. Use `kd start <feature>` or switch to a tracked branch.")
