@@ -79,7 +79,9 @@ Check status anytime with `kd status`.
 | `kd council ask "prompt"` | Query all council members |
 | `kd council ask --to <member> "prompt"` | Query one member |
 | `kd council ask --new-thread "prompt"` | Start a fresh thread |
-| `kd council ask --async "prompt"` | Dispatch in background, then watch |
+| `kd council ask --async --no-watch "prompt"` | Dispatch in background (non-blocking) |
+| `kd council review` | Review current branch diff (always new thread) |
+| `kd council review --async --no-watch` | Dispatch review in background |
 | `kd council show <thread-id>` | Display a thread |
 | `kd council list` | List all threads |
 | `kd council status [thread-id]` | Show per-member response status |
@@ -102,6 +104,14 @@ Check status anytime with `kd status`.
 | `kd tk pull <id>...` | Pull backlog tickets into current branch |
 | `kd tk dep <id> <dep-id>` | Add dependency |
 | `kd tk undep <id> <dep-id>` | Remove dependency |
+| `kd tk dep-tree <id>` | Show dependency tree (--full to show dupes) |
+| `kd tk dep-cycle` | Detect dependency cycles |
+| `kd tk blocked` | List tickets with unresolved deps |
+| `kd tk link <id> <id> [id...]` | Add symmetric links between tickets |
+| `kd tk unlink <id> <id>` | Remove a link |
+| `kd tk closed` | List recently closed tickets (--limit N) |
+| `kd tk add-note <id> "text"` | Append timestamped note |
+| `kd tk query [jq-filter]` | Output tickets as JSON (optional jq) |
 | `kd tk delete <id>` | Delete a ticket (--force to skip confirm) |
 | `kd tk assign <id> <agent>` | Assign to agent |
 | `kd tk unassign <id>` | Clear assignment |
@@ -150,6 +160,7 @@ When the King asks you to work a ticket, the workflow is:
 
 - **When to consult**: major architectural decisions, technology choices with trade-offs, design patterns that could go multiple ways, when uncertain about an approach.
 - **When not to**: straightforward implementation, bug fixes with obvious solutions, tasks the King has already decided on.
+- **Always use `--no-watch`** with `--async` to avoid blocking the agent's shell. Use `kd council watch <thread-id>` separately to check responses.
 - **Do not synthesize**: council responses are saved to `.kd/branches/<branch>/threads/`. Point the King to the thread and let them read directly. The King decides — you execute.
 - **Commit `.kd/` changes** as you go (ticket moves, closures, threads).
 
