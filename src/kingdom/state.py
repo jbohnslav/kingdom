@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -139,7 +140,7 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     # Build a unique temp name using pid + thread id to avoid collisions
     # without relying on tempfile.mkstemp (which uses os.open internally
     # and can break under test mocks that patch os.open).
-    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(f"{serialized}\n", encoding="utf-8")
     os.rename(tmp, path)
 
