@@ -2676,6 +2676,70 @@ class TestTicketClosed:
             assert result.exit_code == 0
             assert "1 closed" in result.output
 
+    def test_close_sets_closed_at(self) -> None:
+        """kd tk close should set the closed_at timestamp."""
+        with runner.isolated_filesystem():
+            from datetime import timedelta
+
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="To close", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+
+            before = datetime.now(UTC)
+            runner.invoke(cli.app, ["tk", "close", "aaaa"])
+            after = datetime.now(UTC)
+
+            ticket = read_ticket(tickets_dir / "aaaa.md")
+            assert ticket.closed_at is not None
+            # Serialization truncates to seconds, so allow 1s tolerance
+            assert before - timedelta(seconds=1) <= ticket.closed_at <= after + timedelta(seconds=1)
+
+    def test_sorts_by_closed_at(self) -> None:
+        """kd tk closed should sort by closed_at (newest first), not created date."""
+        with runner.isolated_filesystem():
+            from datetime import timedelta
+
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            now = datetime.now(UTC)
+            # Ticket "old" was created first but closed last
+            write_ticket(
+                Ticket(
+                    id="old1",
+                    status="closed",
+                    title="Old created, closed last",
+                    body="",
+                    created=now - timedelta(days=10),
+                    closed_at=now,
+                ),
+                tickets_dir / "old1.md",
+            )
+            # Ticket "new" was created last but closed first
+            write_ticket(
+                Ticket(
+                    id="new1",
+                    status="closed",
+                    title="New created, closed first",
+                    body="",
+                    created=now,
+                    closed_at=now - timedelta(days=5),
+                ),
+                tickets_dir / "new1.md",
+            )
+
+            result = runner.invoke(cli.app, ["tk", "closed"])
+            assert result.exit_code == 0
+            # old1 (closed_at=now) should appear before new1 (closed_at=5 days ago)
+            old_pos = result.output.index("old1")
+            new_pos = result.output.index("new1")
+            assert old_pos < new_pos, "Expected old1 (closed later) to appear first"
+
 
 class TestTicketAddNote:
     """Tests for kd tk add-note."""

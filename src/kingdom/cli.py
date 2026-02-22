@@ -3897,6 +3897,7 @@ def ticket_close(
 
     old_status = ticket.status
     ticket.status = "closed"
+    ticket.closed_at = datetime.now(UTC)
     write_ticket(ticket, ticket_path)
 
     if reason:
@@ -4507,7 +4508,7 @@ def ticket_closed(
     assignee: Annotated[str | None, typer.Option("--assignee", "-a", help="Filter by assignee.")] = None,
     tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
 ) -> None:
-    """List recently closed tickets across all locations, sorted by creation date (newest first)."""
+    """List recently closed tickets across all locations, sorted by close date (newest first)."""
     base = Path.cwd()
     all_tickets = collect_all_tickets(base)
 
@@ -4516,7 +4517,7 @@ def ticket_closed(
         closed = [t for t in closed if t.assignee == assignee]
     if tag:
         closed = [t for t in closed if tag in t.tags]
-    closed.sort(key=lambda t: t.created, reverse=True)
+    closed.sort(key=lambda t: t.closed_at or t.created, reverse=True)
     closed = closed[:limit]
 
     if not closed:
