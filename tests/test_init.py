@@ -318,6 +318,12 @@ def test_install_skill_permission_error_warns(tmp_path: Path) -> None:
     claude_dir.chmod(0o755)
 
 
+def test_install_skill_runtime_error_warns() -> None:
+    """install_skill should warn and continue when Path.home() raises RuntimeError."""
+    with patch("kingdom.cli.Path.home", side_effect=RuntimeError("no home")):
+        cli.install_skill()  # should not raise
+
+
 def test_cli_init_succeeds_when_skill_dir_unwritable(tmp_path: Path) -> None:
     """kd init should succeed even when skill target dir is unwritable."""
     fake_home = tmp_path / "home"

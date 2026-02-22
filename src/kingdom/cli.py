@@ -236,7 +236,7 @@ def install_skill() -> None:
         for name in ("council.md", "peasants.md", "tickets.md"):
             with as_file(refs_pkg / name) as src:
                 (refs_target / name).write_bytes(src.read_bytes())
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         typer.echo(f"Warning: could not install skill ({exc})")
 
 
