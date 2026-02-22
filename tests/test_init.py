@@ -195,6 +195,22 @@ def test_cli_start_auto_init_requires_git_repo() -> None:
         assert "Not a git repository" in result.output
 
 
+def test_cli_start_auto_init_installs_skill(tmp_path: Path) -> None:
+    """kd start auto-init should also install the skill."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    runner = CliRunner()
+
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        with patch("kingdom.cli.Path.home", return_value=fake_home):
+            result = runner.invoke(cli.app, ["start", "test-feature"])
+
+    assert result.exit_code == 0
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    assert (skill_dir / "SKILL.md").exists()
+
+
 def test_cli_start_initializes_design_and_prints_path() -> None:
     """kd start should create design.md from template and print its location."""
     runner = CliRunner()

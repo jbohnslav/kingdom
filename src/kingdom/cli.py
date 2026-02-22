@@ -272,6 +272,7 @@ def start(
             raise typer.Exit(code=1)
         typer.echo("Auto-initializing .kd/ directory...")
         ensure_base_layout(base)
+        install_skill()
 
     # Check for existing current run
     current_path = state_root(base) / "current"
