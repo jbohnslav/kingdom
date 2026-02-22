@@ -3770,6 +3770,22 @@ def ticket_delete(
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
+
+    # Guard: refuse to delete if a peasant is actively working on this ticket
+    branch_dir = ticket_path.parent.parent  # .kd/branches/<branch> or .kd/backlog
+    if branch_dir.parent.name == "branches":
+        from kingdom.session import get_agent_state
+
+        branch_name = branch_dir.name
+        session_name = f"peasant-{ticket.id}"
+        state = get_agent_state(base, branch_name, session_name)
+        if state.status in ("working", "needs_king_review"):
+            print_error(
+                f"Ticket {ticket.id} has an active peasant (status: {state.status}). "
+                f"Stop it first with `kd peasant stop {ticket.id}`."
+            )
+            raise typer.Exit(code=1)
+
     if not force:
         confirm = typer.confirm(f"Delete {ticket.id} — {ticket.title}?")
         if not confirm:
