@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from kingdom.state import (
     archive_root,
@@ -12,6 +15,8 @@ from kingdom.state import (
     ensure_base_layout,
     ensure_branch_layout,
     normalize_branch_name,
+    resolve_current_run,
+    set_current_run,
     state_root,
 )
 
@@ -286,3 +291,97 @@ class TestEnsureBranchLayout:
         assert (tmp_path / ".kd" / "branches").is_dir()
         assert (tmp_path / ".kd" / "backlog").is_dir()
         assert (tmp_path / ".kd" / "archive").is_dir()
+
+
+class TestResolveCurrentRun:
+    """Tests for resolve_current_run with git branch auto-detection."""
+
+    def test_explicit_current_file_takes_priority(self, tmp_path: Path) -> None:
+        """When .kd/current exists and points to a valid branch, use it."""
+        ensure_branch_layout(tmp_path, "my-feature")
+        set_current_run(tmp_path, "my-feature")
+        assert resolve_current_run(tmp_path) == "my-feature"
+
+    def test_explicit_current_file_over_git_branch(self, tmp_path: Path) -> None:
+        """Explicit current file wins even if git branch differs."""
+        ensure_branch_layout(tmp_path, "my-feature")
+        ensure_branch_layout(tmp_path, "other-branch")
+        set_current_run(tmp_path, "my-feature")
+        with patch("kingdom.state.get_current_git_branch", return_value="other-branch"):
+            assert resolve_current_run(tmp_path) == "my-feature"
+
+    def test_git_branch_fallback_when_no_current_file(self, tmp_path: Path) -> None:
+        """When no .kd/current exists, detect from git branch."""
+        ensure_branch_layout(tmp_path, "workflow-friction")
+        with patch("kingdom.state.get_current_git_branch", return_value="workflow-friction"):
+            assert resolve_current_run(tmp_path) == "workflow-friction"
+
+    def test_git_branch_normalized_match(self, tmp_path: Path) -> None:
+        """Git branch name is normalized to match .kd/branches/ directory."""
+        ensure_branch_layout(tmp_path, "Feature/OAuth")
+        with patch("kingdom.state.get_current_git_branch", return_value="Feature/OAuth"):
+            assert resolve_current_run(tmp_path) == "feature-oauth"
+
+    def test_no_match_raises_error(self, tmp_path: Path) -> None:
+        """When neither current file nor git branch matches, raise RuntimeError."""
+        ensure_base_layout(tmp_path)
+        with (
+            patch("kingdom.state.get_current_git_branch", return_value="untracked-branch"),
+            pytest.raises(RuntimeError, match="No active session"),
+        ):
+            resolve_current_run(tmp_path)
+
+    def test_detached_head_raises_error(self, tmp_path: Path) -> None:
+        """Detached HEAD (None from git) falls through to error."""
+        ensure_base_layout(tmp_path)
+        with (
+            patch("kingdom.state.get_current_git_branch", return_value=None),
+            pytest.raises(RuntimeError, match="No active session"),
+        ):
+            resolve_current_run(tmp_path)
+
+    def test_no_git_repo_raises_error(self, tmp_path: Path) -> None:
+        """Not in a git repo (None from git) falls through to error."""
+        ensure_base_layout(tmp_path)
+        with (
+            patch("kingdom.state.get_current_git_branch", return_value=None),
+            pytest.raises(RuntimeError, match="No active session"),
+        ):
+            resolve_current_run(tmp_path)
+
+    def test_empty_current_file_falls_through_to_git(self, tmp_path: Path) -> None:
+        """Empty .kd/current file falls through to git detection."""
+        ensure_branch_layout(tmp_path, "my-feature")
+        current_path = tmp_path / ".kd" / "current"
+        current_path.write_text("", encoding="utf-8")
+        with patch("kingdom.state.get_current_git_branch", return_value="my-feature"):
+            assert resolve_current_run(tmp_path) == "my-feature"
+
+    def test_invalid_current_session_raises_error(self, tmp_path: Path) -> None:
+        """Current file points to nonexistent branch raises error when git also fails."""
+        ensure_base_layout(tmp_path)
+        set_current_run(tmp_path, "ghost-branch")
+        with (
+            patch("kingdom.state.get_current_git_branch", return_value=None),
+            pytest.raises(RuntimeError, match="No active session"),
+        ):
+            resolve_current_run(tmp_path)
+
+    def test_git_branch_auto_detect_returns_normalized_name(self, tmp_path: Path) -> None:
+        """Git auto-detect should return normalized name, not raw git branch name."""
+        ensure_branch_layout(tmp_path, "feature/my-thing")
+        with patch("kingdom.state.get_current_git_branch", return_value="feature/my-thing"):
+            result = resolve_current_run(tmp_path)
+            # Should be normalized (feature-my-thing), not raw (feature/my-thing)
+            assert result == "feature-my-thing"
+
+    def test_stale_current_file_falls_through_to_git(self, tmp_path: Path) -> None:
+        """Stale current file (points to deleted branch) should fall through to git auto-detect."""
+        # Set up a current pointer to a branch that doesn't exist
+        ensure_base_layout(tmp_path)
+        set_current_run(tmp_path, "deleted-branch")
+        # But the git branch does match a tracked branch
+        ensure_branch_layout(tmp_path, "real-branch")
+        with patch("kingdom.state.get_current_git_branch", return_value="real-branch"):
+            result = resolve_current_run(tmp_path)
+            assert result == "real-branch"

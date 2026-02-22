@@ -48,6 +48,7 @@ class Ticket:
     assignee: str | None = None
     title: str = ""
     body: str = ""
+    closed_at: datetime | None = None
     # Optional fields that may be present in some tickets
     tags: list[str] = field(default_factory=list)
     parent: str | None = None
@@ -113,6 +114,13 @@ def parse_ticket(content: str) -> Ticket:
     else:
         created = datetime.now(UTC)
 
+    closed_at_str = frontmatter_dict.get("closed_at")
+    closed_at: datetime | None = None
+    if closed_at_str and isinstance(closed_at_str, str):
+        if closed_at_str.endswith("Z"):
+            closed_at_str = closed_at_str[:-1] + "+00:00"
+        closed_at = datetime.fromisoformat(closed_at_str)
+
     deps = coerce_to_str_list(frontmatter_dict.get("deps", []))
     links = coerce_to_str_list(frontmatter_dict.get("links", []))
     tags = coerce_to_str_list(frontmatter_dict.get("tags", []))
@@ -128,6 +136,7 @@ def parse_ticket(content: str) -> Ticket:
         assignee=str(frontmatter_dict.get("assignee")) if frontmatter_dict.get("assignee") else None,
         title=title,
         body=body,
+        closed_at=closed_at,
         tags=tags,
         parent=str(frontmatter_dict.get("parent")) if frontmatter_dict.get("parent") else None,
         external_ref=(str(frontmatter_dict.get("external-ref")) if frontmatter_dict.get("external-ref") else None),
@@ -149,6 +158,8 @@ def serialize_ticket(ticket: Ticket) -> str:
     lines.append(f"type: {ticket.type}")
     lines.append(f"priority: {ticket.priority}")
 
+    if ticket.closed_at:
+        lines.append(f"closed_at: {ticket.closed_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")
     if ticket.assignee:
         lines.append(f"assignee: {ticket.assignee}")
     if ticket.external_ref:
@@ -201,12 +212,13 @@ def list_tickets(directory: Path) -> list[Ticket]:
     return tickets
 
 
-def collect_all_tickets(base: Path) -> list[Ticket]:
-    """Collect all tickets across branches and backlog.
+def collect_all_tickets(base: Path, *, include_archive: bool = False) -> list[Ticket]:
+    """Collect all tickets across branches, backlog, and optionally archive.
 
     Searches branches/*/tickets/ (skipping done branches) and backlog/tickets/.
+    With include_archive=True, also searches archive/*/tickets/.
     """
-    from kingdom.state import backlog_root, branches_root
+    from kingdom.state import archive_root, backlog_root, branches_root
 
     all_tickets: list[Ticket] = []
 
@@ -232,6 +244,15 @@ def collect_all_tickets(base: Path) -> list[Ticket]:
     backlog_tickets = backlog_root(base) / "tickets"
     if backlog_tickets.exists():
         all_tickets.extend(list_tickets(backlog_tickets))
+
+    if include_archive:
+        archive_dir = archive_root(base)
+        if archive_dir.exists():
+            for archive_item in archive_dir.iterdir():
+                if archive_item.is_dir():
+                    tickets_dir = archive_item / "tickets"
+                    if tickets_dir.exists():
+                        all_tickets.extend(list_tickets(tickets_dir))
 
     return all_tickets
 

@@ -18,7 +18,8 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.segment import Segment
 from rich.style import Style
 from textual.message import Message
-from textual.widgets import Static
+from textual.widget import Widget
+from textual.widgets import LoadingIndicator, Static
 
 from kingdom.tui.clipboard import ClipboardUnavailableError, copy_to_clipboard
 
@@ -196,11 +197,19 @@ class MessagePanel(Static):
     }
     """
 
-    def __init__(self, sender: str, body: str, member_names: list[str] | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        sender: str,
+        body: str,
+        member_names: list[str] | None = None,
+        timestamp: str | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.sender = sender
         self.body = body
         self.member_names: list[str] = member_names or []
+        self.timestamp_str = timestamp
 
     def compose_text(self) -> str:
         """Format the display text (sender shown in border title, not body)."""
@@ -212,7 +221,10 @@ class MessagePanel(Static):
         else:
             color = color_for_member(self.sender)
             self.styles.border = ("round", color)
-            self.border_title = self.sender
+            title = self.sender
+            if self.timestamp_str:
+                title = f"{self.sender} · {self.timestamp_str}"
+            self.border_title = title
             self.border_subtitle = "click: reply \u00b7 shift: copy"
         if self.member_names:
             self.update(ColoredMentionMarkdown(self.compose_text(), self.member_names))
@@ -279,21 +291,24 @@ class StreamingPanel(Static):
         self.update(text + "\u258d")  # cursor
 
 
-class WaitingPanel(Static):
-    """A collapsed placeholder shown before streaming starts."""
+class WaitingPanel(Widget):
+    """Animated placeholder shown before streaming starts."""
 
     DEFAULT_CSS = """
     WaitingPanel {
         margin: 0 1;
         padding: 0;
         border: dashed $secondary;
-        height: 1;
+        height: 3;
     }
     """
 
     def __init__(self, sender: str, **kwargs) -> None:
         super().__init__(**kwargs)
         self.sender = sender
+
+    def compose(self):
+        yield LoadingIndicator()
 
     def on_mount(self) -> None:
         color = color_for_member(self.sender)
@@ -451,6 +466,7 @@ class ThinkingPanel(Static):
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show this help"),
     ("/h", "show this help (shortcut)"),
+    ("/copy [member]", "copy last agent response to clipboard"),
     ("/mute <member>", "exclude member from broadcast"),
     ("/mute", "show currently muted members"),
     ("/unmute <member>", "re-include member in broadcast"),

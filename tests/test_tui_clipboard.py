@@ -207,6 +207,72 @@ class TestMessagePanelReply:
         assert reply.body == "Here is my analysis."
 
 
+class TestCmdCopy:
+    """Tests for the /copy slash command in ChatApp."""
+
+    def setup_method(self) -> None:
+        from kingdom.thread import Message
+
+        self.messages = [
+            Message(sequence=1, from_="king", to="all", body="What do you think?", timestamp="2026-01-01T00:00:00Z"),
+            Message(
+                sequence=2, from_="claude", to="king", body="Here is my analysis.", timestamp="2026-01-01T00:01:00Z"
+            ),
+            Message(
+                sequence=3, from_="codex", to="king", body="I agree with claude.", timestamp="2026-01-01T00:02:00Z"
+            ),
+        ]
+
+    def make_app_mock(self):
+        app = MagicMock()
+        app.base = "/tmp/test"
+        app.branch = "test"
+        app.thread_id = "council-test"
+        app.show_system_message = MagicMock()
+        return app
+
+    def test_copy_last_member_message(self) -> None:
+        from kingdom.tui import app as app_module
+
+        mock_app = self.make_app_mock()
+        with (
+            patch.object(app_module, "list_messages", return_value=self.messages),
+            patch("kingdom.tui.clipboard.copy_to_clipboard") as mock_copy,
+        ):
+            app_module.ChatApp.cmd_copy(mock_app, "")
+            mock_copy.assert_called_once_with("I agree with claude.")
+            mock_app.show_system_message.assert_called_once()
+            assert "Copied" in mock_app.show_system_message.call_args[0][0]
+
+    def test_copy_specific_member(self) -> None:
+        from kingdom.tui import app as app_module
+
+        mock_app = self.make_app_mock()
+        with (
+            patch.object(app_module, "list_messages", return_value=self.messages),
+            patch("kingdom.tui.clipboard.copy_to_clipboard") as mock_copy,
+        ):
+            app_module.ChatApp.cmd_copy(mock_app, "claude")
+            mock_copy.assert_called_once_with("Here is my analysis.")
+
+    def test_copy_no_messages(self) -> None:
+        from kingdom.tui import app as app_module
+
+        mock_app = self.make_app_mock()
+        king_only = [self.messages[0]]
+        with patch.object(app_module, "list_messages", return_value=king_only):
+            app_module.ChatApp.cmd_copy(mock_app, "")
+            mock_app.show_system_message.assert_called_once_with("No messages to copy.")
+
+    def test_copy_unknown_member(self) -> None:
+        from kingdom.tui import app as app_module
+
+        mock_app = self.make_app_mock()
+        with patch.object(app_module, "list_messages", return_value=self.messages):
+            app_module.ChatApp.cmd_copy(mock_app, "gemini")
+            mock_app.show_system_message.assert_called_once_with("No messages from gemini.")
+
+
 class TestFormatReplyText:
     """Tests for the format_reply_text helper function."""
 

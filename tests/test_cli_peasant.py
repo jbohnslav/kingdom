@@ -449,11 +449,36 @@ class TestPeasantClean:
             create_test_ticket(base)
 
             with patch("kingdom.cli.remove_worktree") as mock_remove:
-                result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"])
+                result = runner.invoke(cli.app, ["peasant", "clean", "--force", "kin-test"])
 
             assert result.exit_code == 0
             assert "worktree removed" in result.output
             mock_remove.assert_called_once_with(base, "kin-test")
+
+    def test_clean_confirms_before_removing(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            with patch("kingdom.cli.remove_worktree") as mock_remove:
+                result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "Remove worktree for kin-test?" in result.output
+            mock_remove.assert_called_once()
+
+    def test_clean_aborts_on_no(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            with patch("kingdom.cli.remove_worktree") as mock_remove:
+                result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"], input="n\n")
+
+            assert result.exit_code != 0
+            mock_remove.assert_not_called()
 
     def test_clean_no_worktree(self) -> None:
         with runner.isolated_filesystem():
@@ -462,7 +487,7 @@ class TestPeasantClean:
             create_test_ticket(base)
 
             with patch("kingdom.cli.remove_worktree", side_effect=FileNotFoundError("No worktree")):
-                result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"])
+                result = runner.invoke(cli.app, ["peasant", "clean", "--force", "kin-test"])
 
             assert result.exit_code == 1
             assert "No worktree" in result.output
@@ -1552,6 +1577,100 @@ class TestPeasantStatusNewStatuses:
             result = runner.invoke(cli.app, ["peasant", "status"])
             assert result.exit_code == 0
             assert "needs_king_review" in result.output
+
+
+class TestPeasantStatusFiltering:
+    """Tests for hiding terminal sessions by default."""
+
+    def test_terminal_sessions_hidden_by_default(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create a working peasant and a done peasant
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-active",
+                AgentState(
+                    name="peasant-kin-active",
+                    status="working",
+                    ticket="kin-active",
+                    agent_backend="claude_code",
+                ),
+            )
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-done",
+                AgentState(
+                    name="peasant-kin-done",
+                    status="done",
+                    ticket="kin-done",
+                    agent_backend="claude_code",
+                ),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "status"])
+            assert result.exit_code == 0
+            assert "kin-active" in result.output
+            assert "kin-done" not in result.output
+            assert "1 completed" in result.output
+
+    def test_all_flag_shows_terminal_sessions(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-active",
+                AgentState(
+                    name="peasant-kin-active",
+                    status="working",
+                    ticket="kin-active",
+                    agent_backend="claude_code",
+                ),
+            )
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-done",
+                AgentState(
+                    name="peasant-kin-done",
+                    status="done",
+                    ticket="kin-done",
+                    agent_backend="claude_code",
+                ),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "status", "--all"])
+            assert result.exit_code == 0
+            assert "kin-active" in result.output
+            assert "kin-done" in result.output
+
+    def test_only_terminal_sessions_shows_count(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-done",
+                AgentState(
+                    name="peasant-kin-done",
+                    status="done",
+                    ticket="kin-done",
+                    agent_backend="claude_code",
+                ),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "status"])
+            assert result.exit_code == 0
+            assert "No active peasants" in result.output
+            assert "1 completed" in result.output
 
 
 class TestPeasantNoResultsMessages:

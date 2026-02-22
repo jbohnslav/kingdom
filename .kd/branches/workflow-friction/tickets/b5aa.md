@@ -1,6 +1,6 @@
 ---
-id: b5aa
-status: open
+id: "b5aa"
+status: closed
 deps: []
 links: []
 created: 2026-02-13T15:17:02Z
@@ -13,9 +13,9 @@ Currently anyone (including agents with `--dangerously-skip-permissions`) can pu
 
 ## Acceptance Criteria
 
-- [ ] Direct pushes to master blocked
-- [ ] All changes require a PR
-- [ ] PR requires at least one approval before merge
+- [x] Direct pushes to master blocked
+- [x] All changes require a PR
+- [x] PR requires at least one approval before merge (admin can bypass)
 
 ## Implementation Notes (council)
 
@@ -34,3 +34,6 @@ Currently anyone (including agents with `--dangerously-skip-permissions`) can pu
 
 - Blocked: private repo on free GitHub plan, branch protection requires Pro or public repo
 - Revisit after making the repo public
+- Enabled via `gh api repos/jbohnslav/kingdom/branches/master/protection`
+- Settings: PRs required, CI "tests" check required, enforce_admins=false (admin can bypass approval), 0 approvals for merge
+- [16:47] — Closed: Branch protection enabled on master

@@ -1096,21 +1096,51 @@ class TestCouncilReset:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(cli.app, ["council", "reset"])
+            result = runner.invoke(cli.app, ["council", "reset", "--force"])
 
             assert result.exit_code == 0
             assert "sessions cleared" in result.output.lower()
+
+    def test_reset_confirms_before_clearing(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "Clear all council sessions" in result.output
+            assert "sessions cleared" in result.output.lower()
+
+    def test_reset_aborts_on_no(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset"], input="n\n")
+
+            assert result.exit_code != 0
 
     def test_reset_single_member(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(cli.app, ["council", "reset", "--member", "claude"])
+            result = runner.invoke(cli.app, ["council", "reset", "--force", "--member", "claude"])
 
             assert result.exit_code == 0
             assert "claude" in result.output.lower()
             assert "cleared" in result.output.lower()
+
+    def test_reset_single_member_confirms(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset", "--member", "claude"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "Clear session for claude?" in result.output
 
     def test_reset_unknown_member(self) -> None:
         with runner.isolated_filesystem():
@@ -1121,6 +1151,111 @@ class TestCouncilReset:
 
             assert result.exit_code == 1
             assert "Unknown member" in result.output
+
+
+def init_git_repo():
+    """Initialize a git repo with user identity configured (needed for CI)."""
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "config", "user.name", "test"], check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], check=True)
+
+
+class TestCouncilReview:
+    def test_review_generates_diff_and_asks(self) -> None:
+        """council review should generate a diff and dispatch to council ask."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            (base / "file.py").write_text("modified\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "change", "--no-gpg-sign"], check=True, capture_output=True)
+
+            setup_project(base)
+
+            responses = make_responses("claude", "codex")
+            with mock_council_query_to_thread(responses):
+                result = runner.invoke(cli.app, ["council", "review", "--base", "master"])
+
+            assert result.exit_code == 0, result.output
+            assert "Thread:" in result.output
+
+    def test_review_no_diff_exits_cleanly(self) -> None:
+        """council review should exit cleanly when there's no diff."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "review", "--base", "master"])
+
+            assert result.exit_code == 0
+            assert "No changes" in result.output
+
+    def test_review_includes_file_stats_in_prompt(self) -> None:
+        """The review prompt should contain changed file stats, not raw diff."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            (base / "file.py").write_text("modified\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "change", "--no-gpg-sign"], check=True, capture_output=True)
+
+            setup_project(base)
+
+            captured_prompt = []
+
+            def capture_query(prompt, base_path, branch, thread_id, callback=None):
+                captured_prompt.append(prompt)
+                return {}
+
+            with patch.object(cli.Council, "query_to_thread", side_effect=capture_query):
+                result = runner.invoke(cli.app, ["council", "review", "--base", "master"])
+
+            assert result.exit_code == 0, result.output
+            assert len(captured_prompt) == 1
+            assert "file.py" in captured_prompt[0]
+            assert "Changed files" in captured_prompt[0]
+            # Should not contain raw diff hunks
+            assert "```diff" not in captured_prompt[0]
+
+    def test_review_auto_detects_main_branch(self) -> None:
+        """council review should auto-detect 'main' when no --base is passed."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "main"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            (base / "file.py").write_text("modified\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "change", "--no-gpg-sign"], check=True, capture_output=True)
+
+            setup_project(base)
+
+            responses = make_responses("claude", "codex")
+            with mock_council_query_to_thread(responses):
+                # No --base flag — should auto-detect 'main'
+                result = runner.invoke(cli.app, ["council", "review"])
+
+            assert result.exit_code == 0, result.output
+            assert "Thread:" in result.output
 
 
 class TestCouncilRetry:

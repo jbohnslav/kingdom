@@ -57,6 +57,19 @@ WRITABLE_CHAT_PREAMBLE = (
 )
 
 
+def format_timestamp(ts: datetime) -> str:
+    """Format a datetime as a short timestamp for display in message panels.
+
+    Returns 'HH:MM' for today, 'Mon HH:MM' for other days.
+    """
+    now = datetime.now(UTC)
+    local_ts = ts.astimezone()
+    local_now = now.astimezone()
+    if local_ts.date() == local_now.date():
+        return local_ts.strftime("%H:%M")
+    return local_ts.strftime("%a %H:%M")
+
+
 def build_branch_context(base: Path, branch: str) -> str:
     """Build a context block with the current branch name and ticket summary.
 
@@ -504,6 +517,7 @@ class ChatApp(App):
                     sender=msg.from_,
                     body=msg.body,
                     member_names=self.member_names,
+                    timestamp=format_timestamp(msg.timestamp),
                     id=f"msg-{msg.sequence}",
                 )
             log.mount(panel)
@@ -774,6 +788,8 @@ class ChatApp(App):
             self.cmd_mute(arg)
         elif cmd == "/unmute":
             self.cmd_unmute(arg)
+        elif cmd == "/copy":
+            self.cmd_copy(arg)
         elif cmd in ("/writable", "/writeable"):
             self.cmd_writable()
         elif cmd in ("/help", "/h"):
@@ -819,6 +835,34 @@ class ChatApp(App):
         self.muted.discard(name)
         self.show_system_message(f"Unmuted {name} — included in broadcast queries.")
 
+    def cmd_copy(self, arg: str) -> None:
+        """Copy the last agent response to the system clipboard."""
+        from .clipboard import ClipboardUnavailableError, copy_to_clipboard
+
+        messages = list_messages(self.base, self.branch, self.thread_id)
+        # Filter to non-king messages
+        member_filter = arg.lower() if arg else None
+        candidates = [m for m in messages if m.from_ != "king"]
+        if member_filter:
+            candidates = [m for m in candidates if m.from_ == member_filter]
+            if not candidates:
+                self.show_system_message(f"No messages from {member_filter}.")
+                return
+
+        if not candidates:
+            self.show_system_message("No messages to copy.")
+            return
+
+        last = candidates[-1]
+        try:
+            copy_to_clipboard(last.body)
+            label = f" from {last.from_}" if member_filter else " last response"
+            self.show_system_message(f"Copied{label} to clipboard.")
+        except ClipboardUnavailableError:
+            self.show_system_message("Clipboard unavailable. Install xclip or xsel.")
+        except Exception as exc:
+            self.show_system_message(f"Copy failed: {exc}")
+
     def cmd_writable(self) -> None:
         """Toggle writable mode for all council members."""
         self.writable = not self.writable
@@ -836,6 +880,7 @@ class ChatApp(App):
         help_text = (
             "/mute <member>  — exclude member from broadcast queries\n"
             "/unmute <member> — re-include member in queries\n"
+            "/copy [member]   — copy last agent response to clipboard\n"
             "/writable        — toggle writable mode (file edits, commands)\n"
             "/mute            — show currently muted members\n"
             "/help            — show this help\n"
@@ -932,6 +977,7 @@ class ChatApp(App):
                 sender=event.sender,
                 body=event.body,
                 member_names=self.member_names,
+                timestamp=format_timestamp(datetime.now(UTC)),
                 id=f"msg-{event.sequence}",
             )
 
