@@ -1096,21 +1096,51 @@ class TestCouncilReset:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(cli.app, ["council", "reset"])
+            result = runner.invoke(cli.app, ["council", "reset", "--force"])
 
             assert result.exit_code == 0
             assert "sessions cleared" in result.output.lower()
+
+    def test_reset_confirms_before_clearing(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "Clear all council sessions" in result.output
+            assert "sessions cleared" in result.output.lower()
+
+    def test_reset_aborts_on_no(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset"], input="n\n")
+
+            assert result.exit_code != 0
 
     def test_reset_single_member(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(cli.app, ["council", "reset", "--member", "claude"])
+            result = runner.invoke(cli.app, ["council", "reset", "--force", "--member", "claude"])
 
             assert result.exit_code == 0
             assert "claude" in result.output.lower()
             assert "cleared" in result.output.lower()
+
+    def test_reset_single_member_confirms(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "reset", "--member", "claude"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "Clear session for claude?" in result.output
 
     def test_reset_unknown_member(self) -> None:
         with runner.isolated_filesystem():

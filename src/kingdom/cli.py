@@ -355,8 +355,12 @@ def done(
     # Clean up associated worktrees
     worktree_dir = state_root(base) / "worktrees" / normalized
     if worktree_dir.exists():
-        for worktree in worktree_dir.iterdir():
-            if worktree.is_dir():
+        worktree_dirs = [w for w in worktree_dir.iterdir() if w.is_dir()]
+        if worktree_dirs:
+            if not force:
+                names = ", ".join(w.name for w in worktree_dirs)
+                typer.confirm(f"Remove {len(worktree_dirs)} worktree(s) ({names})?", abort=True)
+            for worktree in worktree_dirs:
                 result = subprocess.run(
                     ["git", "worktree", "remove", "--force", str(worktree)],
                     capture_output=True,
@@ -717,6 +721,7 @@ def council_ask(
 @council_app.command("reset", help="Clear council sessions.")
 def council_reset(
     member_name: Annotated[str | None, typer.Option("--member", help="Reset only this member's session.")] = None,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Clear council member sessions. Use --member to reset a single member."""
     base = Path.cwd()
@@ -737,10 +742,15 @@ def council_reset(
             typer.echo(f"Unknown member: {member_name}")
             typer.echo(f"Available: {available}")
             raise typer.Exit(code=1)
+        if not force:
+            typer.confirm(f"Clear session for {member_name}?", abort=True)
         m.reset_session()
         c.save_sessions(base, feature)
         typer.echo(f"Session cleared for {member_name}")
     else:
+        if not force:
+            member_names = ", ".join(sorted(mem.name for mem in c.members))
+            typer.confirm(f"Clear all council sessions ({member_names})?", abort=True)
         c.reset_sessions()
         c.save_sessions(base, feature)
         typer.echo("All sessions cleared")
@@ -2098,9 +2108,13 @@ def peasant_stop(
 @peasant_app.command("clean", help="Remove a peasant's worktree.")
 def peasant_clean(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Remove the git worktree for a ticket."""
     ctx = resolve_peasant_context(ticket_id)
+
+    if not force:
+        typer.confirm(f"Remove worktree for {ctx.full_ticket_id}?", abort=True)
 
     try:
         remove_worktree(ctx.base, ctx.full_ticket_id)

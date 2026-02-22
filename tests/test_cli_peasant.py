@@ -449,11 +449,36 @@ class TestPeasantClean:
             create_test_ticket(base)
 
             with patch("kingdom.cli.remove_worktree") as mock_remove:
-                result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"])
+                result = runner.invoke(cli.app, ["peasant", "clean", "--force", "kin-test"])
 
             assert result.exit_code == 0
             assert "worktree removed" in result.output
             mock_remove.assert_called_once_with(base, "kin-test")
+
+    def test_clean_confirms_before_removing(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            with patch("kingdom.cli.remove_worktree") as mock_remove:
+                result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "Remove worktree for kin-test?" in result.output
+            mock_remove.assert_called_once()
+
+    def test_clean_aborts_on_no(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            with patch("kingdom.cli.remove_worktree") as mock_remove:
+                result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"], input="n\n")
+
+            assert result.exit_code != 0
+            mock_remove.assert_not_called()
 
     def test_clean_no_worktree(self) -> None:
         with runner.isolated_filesystem():
@@ -462,7 +487,7 @@ class TestPeasantClean:
             create_test_ticket(base)
 
             with patch("kingdom.cli.remove_worktree", side_effect=FileNotFoundError("No worktree")):
-                result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"])
+                result = runner.invoke(cli.app, ["peasant", "clean", "--force", "kin-test"])
 
             assert result.exit_code == 1
             assert "No worktree" in result.output
