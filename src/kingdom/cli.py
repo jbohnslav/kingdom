@@ -718,6 +718,68 @@ def council_ask(
     c.save_sessions(base, feature)
 
 
+@council_app.command("review", help="Ask the council to review code changes.")
+def council_review(
+    base_branch: Annotated[str, typer.Option("--base", "-b", help="Base branch to diff against.")] = "master",
+    to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
+    async_mode: Annotated[
+        bool, typer.Option("--async", help="Dispatch in background, then watch for responses.")
+    ] = False,
+    no_watch: Annotated[bool, typer.Option("--no-watch", help="With --async, dispatch only without watching.")] = False,
+    writable: Annotated[
+        bool, typer.Option("--writable", "-w", help="Grant council members full write permissions.")
+    ] = False,
+) -> None:
+    """Generate a diff against the base branch and ask the council to review it."""
+    base = Path.cwd()
+    resolve_current_run(base)  # Validate active session
+
+    # Get the diff
+    diff_result = subprocess.run(
+        ["git", "diff", f"{base_branch}...HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if diff_result.returncode != 0:
+        print_error(f"Failed to generate diff against {base_branch}: {diff_result.stderr.strip()}")
+        raise typer.Exit(code=1)
+
+    diff = diff_result.stdout.strip()
+    if not diff:
+        typer.echo(f"No changes between {base_branch} and HEAD.")
+        raise typer.Exit(code=0)
+
+    # Get commit log for context
+    log_result = subprocess.run(
+        ["git", "log", "--oneline", f"{base_branch}..HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    commits = log_result.stdout.strip()
+
+    # Build the review prompt
+    prompt_parts = [
+        "Review the following code changes.",
+        "Focus on: correctness, edge cases, readability, and potential bugs.",
+        "Be specific — reference file names and line numbers when possible.",
+    ]
+    if commits:
+        prompt_parts.append(f"\n## Commits\n\n```\n{commits}\n```")
+    prompt_parts.append(f"\n## Diff\n\n```diff\n{diff}\n```")
+    review_prompt = "\n".join(prompt_parts)
+
+    # Delegate to council_ask with --new-thread
+    council_ask(
+        prompt=review_prompt,
+        to=to,
+        new_thread=True,
+        json_output=False,
+        async_mode=async_mode,
+        no_watch=no_watch,
+        writable=writable,
+    )
+
+
 @council_app.command("reset", help="Clear council sessions.")
 def council_reset(
     member_name: Annotated[str | None, typer.Option("--member", help="Reset only this member's session.")] = None,

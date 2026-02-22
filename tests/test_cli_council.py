@@ -1153,6 +1153,79 @@ class TestCouncilReset:
             assert "Unknown member" in result.output
 
 
+class TestCouncilReview:
+    def test_review_generates_diff_and_asks(self) -> None:
+        """council review should generate a diff and dispatch to council ask."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            subprocess.run(["git", "init", "-q"], check=True)
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            (base / "file.py").write_text("modified\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "change", "--no-gpg-sign"], check=True, capture_output=True)
+
+            setup_project(base)
+
+            responses = make_responses("claude", "codex")
+            with mock_council_query_to_thread(responses):
+                result = runner.invoke(cli.app, ["council", "review", "--base", "master"])
+
+            assert result.exit_code == 0, result.output
+            assert "Thread:" in result.output
+
+    def test_review_no_diff_exits_cleanly(self) -> None:
+        """council review should exit cleanly when there's no diff."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            subprocess.run(["git", "init", "-q"], check=True)
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["council", "review", "--base", "master"])
+
+            assert result.exit_code == 0
+            assert "No changes" in result.output
+
+    def test_review_includes_diff_in_prompt(self) -> None:
+        """The review prompt should contain the diff content."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            subprocess.run(["git", "init", "-q"], check=True)
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            (base / "file.py").write_text("modified\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "change", "--no-gpg-sign"], check=True, capture_output=True)
+
+            setup_project(base)
+
+            captured_prompt = []
+
+            def capture_query(prompt, base_path, branch, thread_id, callback=None):
+                captured_prompt.append(prompt)
+                return {}
+
+            with patch.object(cli.Council, "query_to_thread", side_effect=capture_query):
+                result = runner.invoke(cli.app, ["council", "review", "--base", "master"])
+
+            assert result.exit_code == 0, result.output
+            assert len(captured_prompt) == 1
+            assert "-original" in captured_prompt[0]
+            assert "+modified" in captured_prompt[0]
+            assert "```diff" in captured_prompt[0]
+
+
 class TestCouncilRetry:
     def test_retry_no_thread(self) -> None:
         """Retry with no current thread should error."""
