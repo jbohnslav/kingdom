@@ -57,6 +57,19 @@ WRITABLE_CHAT_PREAMBLE = (
 )
 
 
+def format_timestamp(ts: datetime) -> str:
+    """Format a datetime as a short timestamp for display in message panels.
+
+    Returns 'HH:MM' for today, 'Mon HH:MM' for other days.
+    """
+    now = datetime.now(UTC)
+    local_ts = ts.astimezone()
+    local_now = now.astimezone()
+    if local_ts.date() == local_now.date():
+        return local_ts.strftime("%H:%M")
+    return local_ts.strftime("%a %H:%M")
+
+
 def build_branch_context(base: Path, branch: str) -> str:
     """Build a context block with the current branch name and ticket summary.
 
@@ -504,6 +517,7 @@ class ChatApp(App):
                     sender=msg.from_,
                     body=msg.body,
                     member_names=self.member_names,
+                    timestamp=format_timestamp(msg.timestamp),
                     id=f"msg-{msg.sequence}",
                 )
             log.mount(panel)
@@ -963,6 +977,7 @@ class ChatApp(App):
                 sender=event.sender,
                 body=event.body,
                 member_names=self.member_names,
+                timestamp=format_timestamp(datetime.now(UTC)),
                 id=f"msg-{event.sequence}",
             )
 

@@ -196,11 +196,19 @@ class MessagePanel(Static):
     }
     """
 
-    def __init__(self, sender: str, body: str, member_names: list[str] | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        sender: str,
+        body: str,
+        member_names: list[str] | None = None,
+        timestamp: str | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.sender = sender
         self.body = body
         self.member_names: list[str] = member_names or []
+        self.timestamp_str = timestamp
 
     def compose_text(self) -> str:
         """Format the display text (sender shown in border title, not body)."""
@@ -212,7 +220,10 @@ class MessagePanel(Static):
         else:
             color = color_for_member(self.sender)
             self.styles.border = ("round", color)
-            self.border_title = self.sender
+            title = self.sender
+            if self.timestamp_str:
+                title = f"{self.sender} · {self.timestamp_str}"
+            self.border_title = title
             self.border_subtitle = "click: reply \u00b7 shift: copy"
         if self.member_names:
             self.update(ColoredMentionMarkdown(self.compose_text(), self.member_names))
