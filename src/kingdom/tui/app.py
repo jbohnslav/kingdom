@@ -948,13 +948,20 @@ class ChatApp(App):
             + list(log.query(f"#{interrupted_id}"))
         )
 
-        # Handle thinking panel persistence
+        # Handle thinking panel persistence — replace with sequence-specific id
+        # (Textual forbids reassigning .id after mount, so we remove + remount)
         thinking_panels = list(log.query(f"#{thinking_id}"))
         if thinking_panels:
-            thinking_panel = thinking_panels[0]
+            old_panel = thinking_panels[0]
+            new_panel = ThinkingPanel(sender=event.sender, id=f"thinking-{event.sender}-{event.sequence}")
+            new_panel.thinking_text = old_panel.thinking_text
+            new_panel.start_time = old_panel.start_time
+            new_panel.user_pinned = old_panel.user_pinned
+            new_panel.expanded = old_panel.expanded
+            log.mount(new_panel, before=old_panel)
+            old_panel.remove()
             if self.thinking_visibility == "auto":
-                thinking_panel.collapse()
-            thinking_panel.id = f"thinking-{event.sender}-{event.sequence}"
+                new_panel.collapse()
 
         # Detect error/interrupted responses from thread message body
         if event.sender != "king" and is_error_response(event.body):
