@@ -2019,15 +2019,20 @@ def peasant_status(
     peasants = [a for a in active if a.name.startswith("peasant-")]
 
     # By default, hide terminal sessions
-    hidden_count = 0
+    hidden: list = []
     if not show_all:
         all_peasants = peasants
         peasants = [p for p in peasants if p.status not in TERMINAL_STATUSES]
-        hidden_count = len(all_peasants) - len(peasants)
+        hidden = [p for p in all_peasants if p.status in TERMINAL_STATUSES]
 
     if not peasants:
-        if hidden_count:
-            typer.echo(f"No active peasants ({hidden_count} completed — use --all to show).")
+        if hidden:
+            from collections import Counter
+
+            counts = Counter(p.status for p in hidden)
+            parts = [f"{n} {s}" for s, n in sorted(counts.items())]
+            summary = ", ".join(parts)
+            typer.echo(f"No active peasants ({summary} — use --all to show).")
         else:
             typer.echo("No active peasants. Start one with `kd peasant start <ticket-id>`.")
         return
@@ -2095,8 +2100,13 @@ def peasant_status(
         )
 
     console.print(table)
-    if hidden_count:
-        console.print(f"[dim]{hidden_count} completed peasant(s) hidden — use --all to show[/dim]")
+    if hidden:
+        from collections import Counter
+
+        counts = Counter(p.status for p in hidden)
+        parts = [f"{n} {s}" for s, n in sorted(counts.items())]
+        summary = ", ".join(parts)
+        console.print(f"[dim]{summary} — use --all to show[/dim]")
 
 
 @peasant_app.command("logs", help="Show peasant logs.")
@@ -4130,11 +4140,13 @@ def ticket_dep_cycle() -> None:
     """Find and report any dependency cycles among open tickets."""
     base = Path.cwd()
     all_tickets = collect_all_tickets(base)
-    ticket_map = {t.id: t for t in all_tickets}
+    # Filter to non-closed tickets (open, in_progress, in_review)
+    open_tickets = [t for t in all_tickets if t.status != "closed"]
+    ticket_map = {t.id: t for t in open_tickets}
 
     # DFS cycle detection
     WHITE, GRAY, BLACK = 0, 1, 2
-    color = {t.id: WHITE for t in all_tickets}
+    color = {t.id: WHITE for t in open_tickets}
     cycles: list[list[str]] = []
 
     def dfs(tid: str, path: list[str]) -> None:
@@ -4212,8 +4224,8 @@ def ticket_link(
 
     base = Path.cwd()
 
-    # Resolve all tickets first
-    resolved: list[tuple[Ticket, Path]] = []
+    # Resolve all tickets first, deduplicating by resolved ID
+    seen_ids: dict[str, tuple[Ticket, Path]] = {}
     for tid in ticket_ids:
         try:
             result = find_ticket(base, tid)
@@ -4223,7 +4235,13 @@ def ticket_link(
         if result is None:
             typer.echo(f"Ticket not found: {tid}")
             raise typer.Exit(code=1)
-        resolved.append(result)
+        seen_ids[result[0].id] = result
+
+    resolved = list(seen_ids.values())
+
+    if len(resolved) < 2:
+        print_error("Cannot create self-link. Provide at least two distinct ticket IDs.")
+        raise typer.Exit(code=1)
 
     # Add symmetric links
     for i, (ticket, ticket_path) in enumerate(resolved):
@@ -4534,7 +4552,7 @@ def ticket_closed(
 ) -> None:
     """List recently closed tickets across all locations, sorted by close date (newest first)."""
     base = Path.cwd()
-    all_tickets = collect_all_tickets(base, include_archive=True)
+    all_tickets = collect_all_tickets(base, include_archive=True, include_done=True)
 
     closed = [t for t in all_tickets if t.status == "closed"]
     if assignee:

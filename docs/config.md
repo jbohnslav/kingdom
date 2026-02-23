@@ -110,7 +110,7 @@ Default prompts applied to all agents when no per-agent override exists.
 | `timeout` | integer | `600` | Query timeout in seconds (must be > 0) |
 | `auto_messages` | integer | `-1` | Auto-turn follow-up messages: `-1` = auto, `0` = disabled, `N` = exactly N |
 | `mode` | string | `"broadcast"` | Query mode: `broadcast` (parallel) or `sequential` |
-| `preamble` | string | `""` | Text prepended to every council query |
+| `preamble` | string | *(none)* | Text prepended to every council query (must be non-empty if specified) |
 | `thinking_visibility` | string | `"auto"` | Show reasoning tokens: `auto`, `show`, or `hide` |
 | `writable` | boolean | `false` | Allow council members to write files |
 
