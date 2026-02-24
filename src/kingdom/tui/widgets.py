@@ -188,22 +188,6 @@ class MessagePanel(Widget):
             self.sender = sender
             self.body = body
 
-    DEFAULT_CSS = """
-    MessagePanel {
-        margin: 0 1;
-        padding: 0;
-        border: round $secondary;
-        height: auto;
-    }
-    MessagePanel.king {
-        border: none;
-        color: $text-muted;
-    }
-    MessagePanel > Markdown {
-        padding: 0 1;
-    }
-    """
-
     def __init__(
         self,
         sender: str,
@@ -275,18 +259,6 @@ class StreamingPanel(Widget):
 
     THROTTLE_SECONDS = 0.10  # max render frequency
 
-    DEFAULT_CSS = """
-    StreamingPanel {
-        margin: 0 1;
-        padding: 0;
-        border: round $secondary;
-        height: auto;
-    }
-    StreamingPanel > Markdown {
-        padding: 0 1;
-    }
-    """
-
     def __init__(self, sender: str, **kwargs) -> None:
         super().__init__(**kwargs)
         self.sender = sender
@@ -331,15 +303,6 @@ class StreamingPanel(Widget):
 
 class WaitingPanel(Widget):
     """Animated placeholder shown before streaming starts."""
-
-    DEFAULT_CSS = """
-    WaitingPanel {
-        margin: 0 1;
-        padding: 0;
-        border: dashed $secondary;
-        height: 3;
-    }
-    """
 
     def __init__(self, sender: str, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -394,14 +357,6 @@ class ErrorPanel(Static):
     retry actions so the user knows how to recover.
     """
 
-    DEFAULT_CSS = """
-    ErrorPanel {
-        margin: 0 1;
-        padding: 0 1;
-        border: round red;
-    }
-    """
-
     def __init__(self, sender: str, error: str, timed_out: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
         self.sender = sender
@@ -432,19 +387,6 @@ class ThinkingPanel(Static):
     Starts expanded while thinking streams in.  Auto-collapses on first answer
     token into a one-line summary.  Click or Enter toggles expanded/collapsed.
     Once the user manually toggles, auto-collapse is disabled (user_pinned).
-    """
-
-    DEFAULT_CSS = """
-    ThinkingPanel {
-        margin: 0 1;
-        padding: 0 1;
-        border: dashed $secondary;
-        color: $text-muted;
-    }
-    ThinkingPanel.collapsed {
-        height: 1;
-        padding: 0 1;
-    }
     """
 
     def __init__(self, sender: str, **kwargs) -> None:
@@ -567,21 +509,6 @@ class CommandHintBar(Static):
 
     Hidden by default. Call show_hints() with a prefix to display
     matching commands, or hide_hints() to remove it.
-    """
-
-    DEFAULT_CSS = """
-    CommandHintBar {
-        dock: bottom;
-        height: auto;
-        max-height: 6;
-        background: $surface;
-        color: $text-muted;
-        padding: 0 1;
-        display: none;
-    }
-    CommandHintBar.visible {
-        display: block;
-    }
     """
 
     def show_hints(self, prefix: str) -> None:

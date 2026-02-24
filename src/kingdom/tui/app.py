@@ -119,16 +119,6 @@ class MessageLog(VerticalScroll):
 
     SCROLL_THRESHOLD: int = 5
 
-    DEFAULT_CSS = """
-    MessageLog {
-        height: 1fr;
-        min-height: 0;
-        scrollbar-background: $background;
-        scrollbar-background-hover: $surface;
-        scrollbar-background-active: $surface;
-    }
-    """
-
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._scroll_pending: bool = False
@@ -166,16 +156,6 @@ class MessageLog(VerticalScroll):
 class StatusBar(Static):
     """Keybinding hints at the bottom."""
 
-    DEFAULT_CSS = """
-    StatusBar {
-        dock: bottom;
-        height: 1;
-        background: $surface;
-        color: $text-muted;
-        padding: 0 1;
-    }
-    """
-
 
 class InputArea(TextArea):
     """User input area at the bottom of the screen.
@@ -183,16 +163,6 @@ class InputArea(TextArea):
     Enter sends the message (posts Submit to the app).
     Shift+Enter inserts a newline.
     Tab after @partial completes member names.
-    """
-
-    DEFAULT_CSS = """
-    InputArea {
-        dock: bottom;
-        height: auto;
-        min-height: 3;
-        max-height: 10;
-        scrollbar-size-vertical: 0;
-    }
     """
 
     class Submit(Message):
@@ -308,12 +278,6 @@ class ChatScreen(Screen):
     keyboard/mouse scroll actions even if CSS somehow slips.
     """
 
-    DEFAULT_CSS = """
-    ChatScreen {
-        overflow-y: hidden;
-    }
-    """
-
     @property
     def allow_vertical_scroll(self) -> bool:
         return False
@@ -327,14 +291,7 @@ class ChatApp(App):
     """Council chat TUI."""
 
     TITLE = "kd chat"
-
-    CSS = """
-    .system-message {
-        margin: 0 1;
-        padding: 0 1;
-        color: $text-muted;
-    }
-    """
+    CSS_PATH = "chat.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         ("escape", "interrupt", "Interrupt/Quit"),

@@ -1,0 +1,117 @@
+/* Chat TUI styles — extracted from widget DEFAULT_CSS / ChatApp.CSS */
+
+/* ---- Layout: screen, message log, input ---- */
+
+ChatScreen {
+    overflow-y: hidden;
+}
+
+MessageLog {
+    height: 1fr;
+    min-height: 0;
+    scrollbar-background: $background;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+}
+
+InputArea {
+    dock: bottom;
+    height: auto;
+    min-height: 3;
+    max-height: 10;
+    scrollbar-size-vertical: 0;
+}
+
+StatusBar {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* ---- Message panels ---- */
+
+MessagePanel {
+    margin: 0 1;
+    padding: 0;
+    border: round $secondary;
+    height: auto;
+}
+
+MessagePanel.king {
+    border: none;
+    color: $text-muted;
+}
+
+MessagePanel > Markdown {
+    padding: 0 1;
+}
+
+/* ---- Streaming panel ---- */
+
+StreamingPanel {
+    margin: 0 1;
+    padding: 0;
+    border: round $secondary;
+    height: auto;
+}
+
+StreamingPanel > Markdown {
+    padding: 0 1;
+}
+
+/* ---- Waiting panel ---- */
+
+WaitingPanel {
+    margin: 0 1;
+    padding: 0;
+    border: dashed $secondary;
+    height: 3;
+}
+
+/* ---- Error panel ---- */
+
+ErrorPanel {
+    margin: 0 1;
+    padding: 0 1;
+    border: round red;
+}
+
+/* ---- Thinking panel ---- */
+
+ThinkingPanel {
+    margin: 0 1;
+    padding: 0 1;
+    border: dashed $secondary;
+    color: $text-muted;
+}
+
+ThinkingPanel.collapsed {
+    height: 1;
+    padding: 0 1;
+}
+
+/* ---- Command hint bar ---- */
+
+CommandHintBar {
+    dock: bottom;
+    height: auto;
+    max-height: 6;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+    display: none;
+}
+
+CommandHintBar.visible {
+    display: block;
+}
+
+/* ---- Misc ---- */
+
+.system-message {
+    margin: 0 1;
+    padding: 0 1;
+    color: $text-muted;
+}
