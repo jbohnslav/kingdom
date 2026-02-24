@@ -416,3 +416,48 @@ class TestNoColor:
 
         # Restore normal state
         importlib.reload(cli)
+
+
+class TestVerboseFlag:
+    """Test --verbose / -v global flag."""
+
+    def test_verbose_flag_accessible(self) -> None:
+        """VERBOSE module-level flag exists and defaults to False."""
+        assert hasattr(cli, "VERBOSE")
+        assert cli.VERBOSE is False
+
+    def test_verbose_flag_parsed(self) -> None:
+        """--verbose sets the module flag and shows debug output on config show."""
+        result = runner.invoke(cli.app, ["-v", "config", "show"])
+        assert result.exit_code == 0
+        assert "base:" in result.output
+        assert "config path:" in result.output
+
+    def test_no_verbose_is_silent(self) -> None:
+        """Without --verbose, no debug output appears."""
+        result = runner.invoke(cli.app, ["config", "show"])
+        assert result.exit_code == 0
+        assert "base:" not in result.output
+        assert "config path:" not in result.output
+
+    def test_verbose_echo_helper(self) -> None:
+        """verbose_echo only prints when VERBOSE is True."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        cli.VERBOSE = False
+        # verbose_echo writes to error_console; patch it
+        original = cli.error_console
+        cli.error_console = Console(file=buf, no_color=True)
+        try:
+            cli.verbose_echo("should not appear")
+            assert buf.getvalue() == ""
+
+            cli.VERBOSE = True
+            cli.verbose_echo("should appear")
+            assert "should appear" in buf.getvalue()
+        finally:
+            cli.VERBOSE = False
+            cli.error_console = original

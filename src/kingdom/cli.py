@@ -97,6 +97,22 @@ app = typer.Typer(
     add_completion=False,
 )
 
+VERBOSE: bool = False
+
+
+@app.callback()
+def app_callback(
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Print debug output.")] = False,
+) -> None:
+    global VERBOSE
+    VERBOSE = verbose
+
+
+def verbose_echo(message: str) -> None:
+    """Print a debug message to stderr when --verbose is set."""
+    if VERBOSE:
+        error_console.print(f"[dim]{message}[/dim]")
+
 
 def not_implemented(command: str) -> None:
     typer.echo(f"{command}: not implemented yet.")
@@ -566,6 +582,12 @@ def council_ask(
     timeout = c.timeout
     c.load_sessions(base, feature)
 
+    verbose_echo(f"base: {base}")
+    verbose_echo(f"branch: {feature}")
+    verbose_echo(f"members: {', '.join(m.name for m in c.members)}")
+    verbose_echo(f"timeout: {timeout}s")
+    verbose_echo(f"logs: {logs_dir}")
+
     # Parse @mentions from prompt (kin-09c9), ignoring content inside code blocks
     available_names = {m.name for m in c.members}
     if not to:
@@ -616,6 +638,10 @@ def council_ask(
         set_current_thread(base, feature, thread_id)
     else:
         thread_id = current
+
+    tdir = thread_dir(base, feature, thread_id)
+    verbose_echo(f"thread: {thread_id} ({'new' if start_new else 'continuing'})")
+    verbose_echo(f"thread dir: {tdir}")
 
     # Write king's message to thread
     target = to or "all"
@@ -1992,6 +2018,9 @@ def peasant_start(
     typer.echo(f"  Worktree: {worktree_path}")
     typer.echo(f"  Thread: {thread_id}")
     typer.echo(f"  Logs: {peasant_logs_dir}")
+    verbose_echo(f"ticket path: {ctx.ticket_path}")
+    verbose_echo(f"thread dir: {tdir}")
+    verbose_echo(f"hand mode: {hand}")
 
 
 TERMINAL_STATUSES = {"done", "failed", "stopped"}
@@ -2878,6 +2907,10 @@ def config_show() -> None:
         raise typer.Exit(code=1) from None
 
     raw = load_raw_config(base)
+
+    verbose_echo(f"base: {base}")
+    config_path = base / ".kd" / "config.json"
+    verbose_echo(f"config path: {config_path} ({'exists' if config_path.exists() else 'not found'})")
 
     def flatten(obj, prefix=""):
         items = []
