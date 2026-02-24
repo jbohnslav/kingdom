@@ -1,11 +1,12 @@
 ---
 id: "e5dd"
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-17T03:04:22Z
 type: task
 priority: 2
+closed_at: 2026-02-24T15:14:56Z
 ---
 # Config validation on startup
 

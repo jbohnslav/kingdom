@@ -389,3 +389,21 @@ class TestLoadConfig:
         (kd / "config.json").write_text(json.dumps(data))
         with pytest.raises(ValueError, match="missing required field 'backend'"):
             load_config(tmp_path)
+
+    def test_unknown_keys_caught_on_load(self, tmp_path: Path) -> None:
+        """load_config validates so unknown keys surface immediately."""
+        kd = tmp_path / ".kd"
+        kd.mkdir()
+        data = {"council": {"bogus_key": True}}
+        (kd / "config.json").write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="Unknown keys in council: bogus_key"):
+            load_config(tmp_path)
+
+    def test_bad_types_caught_on_load(self, tmp_path: Path) -> None:
+        """load_config validates types, not just keys."""
+        kd = tmp_path / ".kd"
+        kd.mkdir()
+        data = {"council": {"timeout": "slow"}}
+        (kd / "config.json").write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="council.timeout must be an integer"):
+            load_config(tmp_path)
