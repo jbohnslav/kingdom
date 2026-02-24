@@ -31,7 +31,7 @@ from kingdom.thread import (
     thread_dir,
 )
 
-from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller
+from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller, ToolUseEvent
 from .widgets import (
     CommandHintBar,
     ErrorPanel,
@@ -948,6 +948,8 @@ class ChatApp(App):
                 self.handle_thinking_delta(log, event)
             elif isinstance(event, StreamDelta):
                 self.handle_stream_delta(log, event)
+            elif isinstance(event, ToolUseEvent):
+                self.handle_tool_use(log, event)
             elif isinstance(event, StreamFinished):
                 self.handle_stream_finished(event)
 
@@ -1065,6 +1067,13 @@ class ChatApp(App):
         if panels:
             panel = panels[0]
             panel.update_content(event.full_text)
+
+    def handle_tool_use(self, log: MessageLog, event: ToolUseEvent) -> None:
+        """Show tool-use activity on the streaming panel's border subtitle."""
+        panel_id = f"stream-{event.member}"
+        panels = list(log.query(f"#{panel_id}"))
+        if panels:
+            panels[0].border_subtitle = f"using {event.tool_name}"
 
     def handle_stream_finished(self, event: StreamFinished) -> None:
         """Remove the streaming panel (finalized message replaces it)."""

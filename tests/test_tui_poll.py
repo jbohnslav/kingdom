@@ -14,6 +14,7 @@ from kingdom.tui.poll import (
     StreamStarted,
     ThinkingDelta,
     ThreadPoller,
+    ToolUseEvent,
     read_message_body,
     tail_stream_file,
 )
@@ -97,7 +98,7 @@ class TestReadMessageBody:
 class TestTailStreamFile:
     def test_reads_new_bytes(self, tdir: Path) -> None:
         path = write_stream_line(tdir, "claude", claude_stream_event("Hello"))
-        text, thinking = tail_stream_file(path, 0, "claude_code")
+        text, thinking, _tools = tail_stream_file(path, 0, "claude_code")
         assert text == "Hello"
         assert thinking == ""
 
@@ -105,27 +106,27 @@ class TestTailStreamFile:
         path = write_stream_line(tdir, "claude", claude_stream_event("Hello"))
         first_size = path.stat().st_size
         write_stream_line(tdir, "claude", claude_stream_event(" world"))
-        text, thinking = tail_stream_file(path, first_size, "claude_code")
+        text, thinking, _tools = tail_stream_file(path, first_size, "claude_code")
         assert text == " world"
         assert thinking == ""
 
     def test_returns_empty_for_no_data(self, tdir: Path) -> None:
         path = tdir / ".stream-claude.jsonl"
         path.write_text("", encoding="utf-8")
-        text, thinking = tail_stream_file(path, 0, "claude_code")
+        text, thinking, _tools = tail_stream_file(path, 0, "claude_code")
         assert text == ""
         assert thinking == ""
 
     def test_returns_empty_for_missing_file(self, tdir: Path) -> None:
         path = tdir / ".stream-missing.jsonl"
-        text, thinking = tail_stream_file(path, 0, "claude_code")
+        text, thinking, _tools = tail_stream_file(path, 0, "claude_code")
         assert text == ""
         assert thinking == ""
 
     def test_skips_non_text_events(self, tdir: Path) -> None:
         path = tdir / ".stream-claude.jsonl"
         path.write_text('{"type": "message_start"}\n', encoding="utf-8")
-        text, thinking = tail_stream_file(path, 0, "claude_code")
+        text, thinking, _tools = tail_stream_file(path, 0, "claude_code")
         assert text == ""
         assert thinking == ""
 
@@ -326,7 +327,7 @@ class TestThreadPollerExternalStreams:
 class TestTailStreamFileThinking:
     def test_extracts_cursor_thinking(self, tdir: Path) -> None:
         path = write_stream_line(tdir, "cursor", cursor_thinking_event("Reasoning..."))
-        text, thinking = tail_stream_file(path, 0, "cursor")
+        text, thinking, _tools = tail_stream_file(path, 0, "cursor")
         assert text == ""
         assert thinking == "Reasoning..."
 
@@ -334,19 +335,19 @@ class TestTailStreamFileThinking:
         """When thinking and text events are in same chunk, both are extracted."""
         path = write_stream_line(tdir, "cursor", cursor_thinking_event("Think first"))
         write_stream_line(tdir, "cursor", cursor_assistant_event("Then answer"))
-        text, thinking = tail_stream_file(path, 0, "cursor")
+        text, thinking, _tools = tail_stream_file(path, 0, "cursor")
         assert thinking == "Think first"
         assert text == "Then answer"
 
     def test_no_thinking_for_claude(self, tdir: Path) -> None:
         path = write_stream_line(tdir, "claude", claude_stream_event("Hello"))
-        text, thinking = tail_stream_file(path, 0, "claude_code")
+        text, thinking, _tools = tail_stream_file(path, 0, "claude_code")
         assert text == "Hello"
         assert thinking == ""
 
     def test_extracts_codex_reasoning(self, tdir: Path) -> None:
         path = write_stream_line(tdir, "codex", codex_reasoning_event("Plan first"))
-        text, thinking = tail_stream_file(path, 0, "codex")
+        text, thinking, _tools = tail_stream_file(path, 0, "codex")
         assert text == ""
         assert thinking == "Plan first"
 
@@ -439,14 +440,14 @@ class TestCodexThinkingNewlines:
         """Multiple Codex reasoning blocks in one batch should be joined with newlines."""
         path = write_stream_line(tdir, "codex", codex_reasoning_event("Step 1"))
         write_stream_line(tdir, "codex", codex_reasoning_event("Step 2"))
-        text, thinking = tail_stream_file(path, 0, "codex")
+        text, thinking, _tools = tail_stream_file(path, 0, "codex")
         assert text == ""
         assert thinking == "Step 1\nStep 2"
 
     def test_codex_reasoning_single_block_no_trailing_newline(self, tdir: Path) -> None:
         """Single reasoning block should not have trailing newline."""
         path = write_stream_line(tdir, "codex", codex_reasoning_event("Only step"))
-        _text, thinking = tail_stream_file(path, 0, "codex")
+        _text, thinking, _tools = tail_stream_file(path, 0, "codex")
         assert thinking == "Only step"
 
     def test_codex_reasoning_across_polls_joined_with_newlines(self, tdir: Path) -> None:
@@ -799,6 +800,76 @@ class TestPollerEventOrdering:
         # ThinkingDelta may or may not appear (no new thinking), but StreamDelta must be present
 
 
+class TestPollerToolUseEvents:
+    """Tests for tool-use event extraction through the poller."""
+
+    def test_claude_tool_use_emits_event(self, tdir: Path) -> None:
+        """Claude content_block_start with tool_use produces ToolUseEvent."""
+        line = json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "content_block": {"type": "tool_use", "name": "Read", "id": "toolu_1"},
+                },
+            }
+        )
+        write_stream_line(tdir, "claude", line)
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"claude": "claude_code"})
+        events = poller.poll()
+        tool_events = [e for e in events if isinstance(e, ToolUseEvent)]
+        assert len(tool_events) == 1
+        assert tool_events[0].member == "claude"
+        assert tool_events[0].tool_name == "Read"
+
+    def test_cursor_tool_call_emits_event(self, tdir: Path) -> None:
+        """Cursor tool_call started produces ToolUseEvent."""
+        line = json.dumps({"type": "tool_call", "subtype": "started", "call_id": "t1"})
+        write_stream_line(tdir, "cursor", line)
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"cursor": "cursor"})
+        events = poller.poll()
+        tool_events = [e for e in events if isinstance(e, ToolUseEvent)]
+        assert len(tool_events) == 1
+        assert tool_events[0].tool_name == "tool"
+
+    def test_multiple_tool_uses_in_one_poll(self, tdir: Path) -> None:
+        """Multiple tool-use events in one batch all produce ToolUseEvents."""
+        for name in ["Read", "Bash", "Write"]:
+            line = json.dumps(
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_start",
+                        "content_block": {"type": "tool_use", "name": name, "id": f"t_{name}"},
+                    },
+                }
+            )
+            write_stream_line(tdir, "claude", line)
+        poller = ThreadPoller(thread_dir=tdir, member_backends={"claude": "claude_code"})
+        events = poller.poll()
+        tool_events = [e for e in events if isinstance(e, ToolUseEvent)]
+        assert len(tool_events) == 3
+        assert [e.tool_name for e in tool_events] == ["Read", "Bash", "Write"]
+
+    def test_tail_stream_file_returns_tool_names(self, tdir: Path) -> None:
+        """tail_stream_file returns tool names in third element of tuple."""
+        path = tdir / ".stream-claude.jsonl"
+        line = json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "content_block": {"type": "tool_use", "name": "Bash", "id": "t1"},
+                },
+            }
+        )
+        path.write_text(line + "\n", encoding="utf-8")
+        text, thinking, tools = tail_stream_file(path, 0, "claude_code")
+        assert text == ""
+        assert thinking == ""
+        assert tools == ["Bash"]
+
+
 # ---------------------------------------------------------------------------
 # Tests based on real Cursor debug stream captures
 # Source: .kd/branches/kd-chat/threads/council-72f2/.debug-stream-cursor-*.jsonl
@@ -932,7 +1003,7 @@ class TestRealCursorShortResponse:
             with path.open("a") as f:
                 f.write(line + "\n")
 
-        text, thinking = tail_stream_file(path, 0, "cursor")
+        text, thinking, _tools = tail_stream_file(path, 0, "cursor")
 
         assert thinking == (
             "**Assessing Initial Conditions**\n\nIdentifying role.\n\n"
@@ -1056,7 +1127,7 @@ class TestRealCursorLongResponseWithToolCalls:
             with path.open("a") as f:
                 f.write(line + "\n")
 
-        text, thinking = tail_stream_file(path, 0, "cursor")
+        text, thinking, _tools = tail_stream_file(path, 0, "cursor")
         assert text == ""  # No assistant events yet
         assert "**Analyzing the Pythonic Way**" in thinking
         assert "**Recalling User's Request**" in thinking
@@ -1128,7 +1199,7 @@ class TestRealCursorLongResponseWithToolCalls:
             with path.open("a") as f:
                 f.write(line + "\n")
 
-        text, _ = tail_stream_file(path, 0, "cursor")
+        text, _, _tools = tail_stream_file(path, 0, "cursor")
         assert text == "Hello King. Cursor here, ready to assist. What are we working on today?"
 
     def test_cursor_cross_batch_fragments(self, tdir: Path) -> None:
