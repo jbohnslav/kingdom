@@ -197,12 +197,8 @@ class TestAppBoot:
                 assert panels[2].sender == "codex"
 
     async def test_markdown_is_rendered(self, project, thread_id, fake_council) -> None:
-        """Message bodies with markdown should render formatted, not show raw syntax."""
-        from io import StringIO
-
-        from rich.console import Console
-
-        from kingdom.tui.widgets import ColoredMentionMarkdown
+        """Message bodies with markdown should use Textual's native Markdown widget."""
+        from textual.widgets import Markdown as TextualMarkdown
 
         add_message(project, BRANCH, thread_id, from_="claude", to="king", body="This is **bold** and `code`")
 
@@ -213,18 +209,9 @@ class TestAppBoot:
                 panels = log.query(MessagePanel)
                 assert len(panels) == 1
 
-                # The widget's internal content should be a ColoredMentionMarkdown renderable
-                internal = panels[0]._Static__content
-                assert isinstance(
-                    internal, ColoredMentionMarkdown
-                ), f"Expected ColoredMentionMarkdown, got {type(internal)}"
-
-                # Verify the rendered plain text has no raw delimiters
-                buf = StringIO()
-                Console(file=buf, width=120, no_color=True).print(internal)
-                rendered = buf.getvalue()
-                assert "**" not in rendered, f"Raw markdown ** found in rendered text: {rendered!r}"
-                assert "bold" in rendered
+                # MessagePanel should contain a Textual Markdown child widget
+                md_children = panels[0].query(TextualMarkdown)
+                assert len(md_children) == 1
 
     async def test_no_history_starts_clean(self, project, thread_id, fake_council) -> None:
         app = make_app(project, thread_id)

@@ -20,6 +20,7 @@ from rich.style import Style
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import LoadingIndicator, Static
+from textual.widgets import Markdown as TextualMarkdown
 
 from kingdom.tui.clipboard import ClipboardUnavailableError, copy_to_clipboard
 
@@ -170,11 +171,13 @@ class ColoredMentionMarkdown:
                     yield Segment(part, style)
 
 
-class MessagePanel(Static):
-    """A finalized message rendered as Markdown inside a bordered panel.
+class MessagePanel(Widget):
+    """A finalized message rendered with Textual's native Markdown widget.
 
-    Click on a council member's message to reply (prefills input with quote
-    and @mention).  Shift+click copies the message to the clipboard.
+    Uses the built-in Markdown widget for proper code-fence scrolling,
+    clickable links, and table rendering.  Click on a council member's
+    message to reply (prefills input with @mention).  Shift+click copies
+    the message body to the clipboard.
     """
 
     class Reply(Message):
@@ -188,12 +191,16 @@ class MessagePanel(Static):
     DEFAULT_CSS = """
     MessagePanel {
         margin: 0 1;
-        padding: 0 1;
+        padding: 0;
         border: round $secondary;
+        height: auto;
     }
     MessagePanel.king {
         border: none;
         color: $text-muted;
+    }
+    MessagePanel > Markdown {
+        padding: 0 1;
     }
     """
 
@@ -211,6 +218,9 @@ class MessagePanel(Static):
         self.member_names: list[str] = member_names or []
         self.timestamp_str = timestamp
 
+    def compose(self):
+        yield TextualMarkdown(self.body)
+
     def compose_text(self) -> str:
         """Format the display text (sender shown in border title, not body)."""
         return self.body
@@ -226,10 +236,6 @@ class MessagePanel(Static):
                 title = f"{self.sender} · {self.timestamp_str}"
             self.border_title = title
             self.border_subtitle = "click: reply \u00b7 shift: copy"
-        if self.member_names:
-            self.update(ColoredMentionMarkdown(self.compose_text(), self.member_names))
-        else:
-            self.update(RichMarkdown(self.compose_text()))
 
     def on_click(self, event) -> None:
         """Handle click: reply (default) or copy (shift)."""
