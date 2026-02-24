@@ -46,13 +46,19 @@ logger = logging.getLogger(__name__)
 
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
-    "Engage directly with the conversation — respond to questions, share your perspective, "
-    "and build on or challenge points raised by others. "
+    "This is a live conversation — read the full thread before responding. "
+    "Reference specific points others have made (agree, disagree, extend, or synthesize). "
+    "Don't just answer the King's question in isolation — engage with what's already been said. "
+    "If you disagree with another agent, say so directly and explain why. "
     "Do NOT create, edit, or write files. Do NOT run git commands that modify state.\n\n"
 )
 
 WRITABLE_CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
+    "This is a live conversation — read the full thread before responding. "
+    "Reference specific points others have made (agree, disagree, extend, or synthesize). "
+    "Don't just answer the King's question in isolation — engage with what's already been said. "
+    "If you disagree with another agent, say so directly and explain why. "
     "You have full permissions — you may edit files, create tickets, run git commands, "
     "and execute any action the King requests. Act on instructions directly.\n\n"
 )
