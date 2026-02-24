@@ -265,14 +265,25 @@ class MessagePanel(Widget):
         self.border_subtitle = "click: reply \u00b7 shift: copy"
 
 
-class StreamingPanel(Static):
-    """An in-progress response that updates as tokens stream in."""
+class StreamingPanel(Widget):
+    """An in-progress response that renders streaming Markdown.
+
+    Uses Textual's Markdown widget so formatting (bold, code fences, etc.)
+    is visible *during* streaming, not only after finalization.  Markdown
+    re-renders are throttled to avoid excessive work on rapid token deltas.
+    """
+
+    THROTTLE_SECONDS = 0.10  # max render frequency
 
     DEFAULT_CSS = """
     StreamingPanel {
         margin: 0 1;
-        padding: 0 1;
+        padding: 0;
         border: round $secondary;
+        height: auto;
+    }
+    StreamingPanel > Markdown {
+        padding: 0 1;
     }
     """
 
@@ -280,6 +291,13 @@ class StreamingPanel(Static):
         super().__init__(**kwargs)
         self.sender = sender
         self.content_text = ""
+        self.md: TextualMarkdown | None = None
+        self.last_render_time: float = 0.0
+        self.render_pending: bool = False
+
+    def compose(self):
+        self.md = TextualMarkdown("")
+        yield self.md
 
     def on_mount(self) -> None:
         color = color_for_member(self.sender)
@@ -294,7 +312,21 @@ class StreamingPanel(Static):
         """Replace the streamed text and refresh the display."""
         self.content_text = text
         self.update_title()
-        self.update(text + "\u258d")  # cursor
+        if self.md is None:
+            return
+        now = time.monotonic()
+        if now - self.last_render_time >= self.THROTTLE_SECONDS:
+            self.flush_markdown()
+        elif not self.render_pending:
+            self.render_pending = True
+            self.set_timer(self.THROTTLE_SECONDS, self.flush_markdown)
+
+    def flush_markdown(self) -> None:
+        """Push current content to the Markdown widget."""
+        if self.md is not None:
+            self.md.update(self.content_text + " \u258d")
+            self.last_render_time = time.monotonic()
+            self.render_pending = False
 
 
 class WaitingPanel(Widget):

@@ -822,8 +822,14 @@ class TestStreamingPanelLifecycle:
 
                 # Second delta (accumulated)
                 app.handle_stream_delta(log, StreamDelta(member="claude", full_text="Hello world"))
-                await pilot.pause(delay=0.1)
+                await pilot.pause(delay=0.2)
                 assert panel.content_text == "Hello world"
+
+                # Verify content is rendered through a Textual Markdown widget
+                from textual.widgets import Markdown as TextualMarkdown
+
+                md = panel.query_one(TextualMarkdown)
+                assert md is not None
 
     async def test_streaming_panel_replaced_by_message(self, project, thread_id, fake_council) -> None:
         """StreamingPanel is removed when stream finishes and MessagePanel takes its place."""
