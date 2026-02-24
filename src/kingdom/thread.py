@@ -65,6 +65,7 @@ class Message:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     refs: list[str] = field(default_factory=list)
     sequence: int = 0  # set on read
+    status: str | None = None  # complete, error, timeout, interrupted
 
 
 @dataclass
@@ -290,6 +291,7 @@ def add_message(
     to: str,
     body: str,
     refs: list[str] | None = None,
+    status: str | None = None,
 ) -> Message:
     """Write the next sequential message file to a thread.
 
@@ -326,6 +328,7 @@ def add_message(
         timestamp=now,
         refs=refs,
         sequence=seq,
+        status=status,
     )
 
     # Build frontmatter
@@ -335,6 +338,8 @@ def add_message(
     lines.append(f"timestamp: {now.strftime('%Y-%m-%dT%H:%M:%SZ')}")
     if refs:
         lines.append(f"refs: {serialize_yaml_value(refs)}")
+    if status:
+        lines.append(f"status: {status}")
     lines.append("---")
     lines.append("")
     lines.append(body)
@@ -383,6 +388,9 @@ def parse_message(path: Path) -> Message:
         seq = 0
 
     refs = fm.get("refs", [])
+    status = fm.get("status")
+    if status is not None:
+        status = str(status)
 
     return Message(
         from_=str(fm.get("from", "")),
@@ -391,6 +399,7 @@ def parse_message(path: Path) -> Message:
         timestamp=timestamp,
         refs=refs if isinstance(refs, list) else [],
         sequence=seq,
+        status=status,
     )
 
 
@@ -468,20 +477,28 @@ def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadSta
     member_states: dict[str, MemberState] = {}
 
     # First pass: check responses after the last ask
-    response_bodies: dict[str, str] = {}
+    response_msgs: dict[str, Message] = {}
     for msg in messages:
         if msg.sequence > last_ask_seq and msg.from_ in expected:
             responded.add(msg.from_)
-            response_bodies[msg.from_] = msg.body
+            response_msgs[msg.from_] = msg
 
-    # Classify each expected member
+    # Classify each expected member.
+    # Prefer msg.status metadata; fall back to body-prefix sniffing for legacy messages.
     for name in expected:
         if name in responded:
-            body = response_bodies[name]
-            if is_timeout_response(body):
-                member_states[name] = MemberState(state=MEMBER_TIMED_OUT, error=body)
-            elif is_error_response(body):
-                member_states[name] = MemberState(state=MEMBER_ERRORED, error=body)
+            msg = response_msgs[name]
+            if msg.status:
+                if msg.status == "timeout":
+                    member_states[name] = MemberState(state=MEMBER_TIMED_OUT, error=msg.body)
+                elif msg.status in ("error", "interrupted"):
+                    member_states[name] = MemberState(state=MEMBER_ERRORED, error=msg.body)
+                else:
+                    member_states[name] = MemberState(state=MEMBER_RESPONDED)
+            elif is_timeout_response(msg.body):
+                member_states[name] = MemberState(state=MEMBER_TIMED_OUT, error=msg.body)
+            elif is_error_response(msg.body):
+                member_states[name] = MemberState(state=MEMBER_ERRORED, error=msg.body)
             else:
                 member_states[name] = MemberState(state=MEMBER_RESPONDED)
         elif (tdir / f".stream-{name}.jsonl").exists():

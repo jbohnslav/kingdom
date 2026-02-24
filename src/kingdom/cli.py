@@ -653,11 +653,27 @@ def council_ask(
         if to and member:
             response = member.query(prompt, timeout)
             responses = {to: response}
-            add_message(base, feature, thread_id, from_=to, to="king", body=response.thread_body())
+            add_message(
+                base,
+                feature,
+                thread_id,
+                from_=to,
+                to="king",
+                body=response.thread_body(),
+                status=response.thread_status(),
+            )
         else:
             responses = query_with_progress(c, prompt, json_output, console)
             for name, resp in responses.items():
-                add_message(base, feature, thread_id, from_=name, to="king", body=resp.thread_body())
+                add_message(
+                    base,
+                    feature,
+                    thread_id,
+                    from_=name,
+                    to="king",
+                    body=resp.thread_body(),
+                    status=resp.thread_status(),
+                )
 
         c.save_sessions(base, feature)
 
@@ -733,7 +749,9 @@ def council_ask(
             task = progress.add_task(f"Querying {to}...", total=None)
             response = member.query(prompt, timeout)
             progress.update(task, description="Done")
-        add_message(base, feature, thread_id, from_=to, to="king", body=response.thread_body())
+        add_message(
+            base, feature, thread_id, from_=to, to="king", body=response.thread_body(), status=response.thread_status()
+        )
         render_response(response, console)
     else:
 
@@ -895,6 +913,8 @@ def print_turn(console: Console, turn_msgs: list, turn_number: int, total_turns:
     for msg in turn_msgs:
         msg_ts = msg.timestamp.strftime("%H:%M:%S")
         subtitle = f"{msg_ts} · to {msg.to}"
+        if msg.status and msg.status != "complete":
+            subtitle += f" · {msg.status}"
         header = f"## [{subtitle}] {msg.from_}"
         console.print(Markdown(f"{header}\n\n{msg.body}"))
         console.print()
@@ -1412,11 +1432,16 @@ def council_retry(
         # Single or comma-separated targets
         expected = {t.strip() for t in last_king_msg.to.split(",") if t.strip() != "king"} & all_members
 
-    # Find members that responded successfully after the last ask
+    # Find members that responded successfully after the last ask.
+    # Check msg.status first (new metadata), fall back to body prefix for legacy messages.
     ok_members: set[str] = set()
     for msg in messages:
-        if msg.sequence > last_king_msg.sequence and msg.from_ in expected and not is_error_response(msg.body):
-            ok_members.add(msg.from_)
+        if msg.sequence > last_king_msg.sequence and msg.from_ in expected:
+            if msg.status:
+                if msg.status == "complete":
+                    ok_members.add(msg.from_)
+            elif not is_error_response(msg.body):
+                ok_members.add(msg.from_)
 
     failed = expected - ok_members
     if not failed:
