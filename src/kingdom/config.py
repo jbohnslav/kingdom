@@ -50,6 +50,8 @@ class CouncilConfig:
     preamble: str = ""
     thinking_visibility: str = "auto"
     writable: bool = False
+    chat_mode: str = "broadcast"
+    chat_auto_rounds: int = 1
 
 
 @dataclass
@@ -99,7 +101,17 @@ def default_config() -> KingdomConfig:
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
 VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
-VALID_COUNCIL_KEYS = {"members", "timeout", "auto_messages", "mode", "preamble", "thinking_visibility", "writable"}
+VALID_COUNCIL_KEYS = {
+    "members",
+    "timeout",
+    "auto_messages",
+    "mode",
+    "preamble",
+    "thinking_visibility",
+    "writable",
+    "chat_mode",
+    "chat_auto_rounds",
+}
 VALID_PEASANT_KEYS = {"agent", "timeout", "max_iterations"}
 VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant"}
 VALID_AGENT_PROMPT_PHASES = {"council", "design", "review", "peasant"}
@@ -226,6 +238,19 @@ def validate_council(data: dict) -> CouncilConfig:
     if not isinstance(writable, bool):
         raise ValueError(f"council.writable must be a boolean, got {type(writable).__name__}")
 
+    valid_chat_modes = {"broadcast", "sequential"}
+    chat_mode = data.get("chat_mode", "broadcast")
+    if not isinstance(chat_mode, str):
+        raise ValueError(f"council.chat_mode must be a string, got {type(chat_mode).__name__}")
+    if chat_mode not in valid_chat_modes:
+        raise ValueError(f"council.chat_mode must be one of {', '.join(sorted(valid_chat_modes))}, got '{chat_mode}'")
+
+    chat_auto_rounds = data.get("chat_auto_rounds", 1)
+    if not isinstance(chat_auto_rounds, int):
+        raise ValueError(f"council.chat_auto_rounds must be an integer, got {type(chat_auto_rounds).__name__}")
+    if chat_auto_rounds < 0:
+        raise ValueError(f"council.chat_auto_rounds must be non-negative, got {chat_auto_rounds}")
+
     return CouncilConfig(
         members=members,
         timeout=timeout,
@@ -234,6 +259,8 @@ def validate_council(data: dict) -> CouncilConfig:
         preamble=preamble,
         thinking_visibility=thinking_visibility,
         writable=writable,
+        chat_mode=chat_mode,
+        chat_auto_rounds=chat_auto_rounds,
     )
 
 
@@ -312,6 +339,8 @@ def validate_config(data: dict) -> KingdomConfig:
             preamble=council.preamble,
             thinking_visibility=council.thinking_visibility,
             writable=council.writable,
+            chat_mode=council.chat_mode,
+            chat_auto_rounds=council.chat_auto_rounds,
         )
 
     # Peasant

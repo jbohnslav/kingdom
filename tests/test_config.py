@@ -29,6 +29,8 @@ class TestDefaultConfig:
         assert cfg.council.auto_messages == -1
         assert cfg.council.mode == "broadcast"
         assert cfg.council.preamble == ""
+        assert cfg.council.chat_mode == "broadcast"
+        assert cfg.council.chat_auto_rounds == 1
 
     def test_peasant_defaults(self) -> None:
         cfg = default_config()
@@ -298,6 +300,38 @@ class TestValidateConfigErrors:
     def test_council_writable_rejects_int(self) -> None:
         with pytest.raises(ValueError, match="must be a boolean"):
             validate_config({"council": {"writable": 1}})
+
+    def test_council_chat_mode_sequential(self) -> None:
+        cfg = validate_config({"council": {"chat_mode": "sequential"}})
+        assert cfg.council.chat_mode == "sequential"
+
+    def test_council_chat_mode_broadcast(self) -> None:
+        cfg = validate_config({"council": {"chat_mode": "broadcast"}})
+        assert cfg.council.chat_mode == "broadcast"
+
+    def test_bad_council_chat_mode_type(self) -> None:
+        with pytest.raises(ValueError, match="chat_mode must be a string"):
+            validate_config({"council": {"chat_mode": 123}})
+
+    def test_bad_council_chat_mode_value(self) -> None:
+        with pytest.raises(ValueError, match="chat_mode must be one of"):
+            validate_config({"council": {"chat_mode": "invalid"}})
+
+    def test_council_chat_auto_rounds(self) -> None:
+        cfg = validate_config({"council": {"chat_auto_rounds": 3}})
+        assert cfg.council.chat_auto_rounds == 3
+
+    def test_council_chat_auto_rounds_zero(self) -> None:
+        cfg = validate_config({"council": {"chat_auto_rounds": 0}})
+        assert cfg.council.chat_auto_rounds == 0
+
+    def test_bad_council_chat_auto_rounds_type(self) -> None:
+        with pytest.raises(ValueError, match="chat_auto_rounds must be an integer"):
+            validate_config({"council": {"chat_auto_rounds": "many"}})
+
+    def test_bad_council_chat_auto_rounds_negative(self) -> None:
+        with pytest.raises(ValueError, match="chat_auto_rounds must be non-negative"):
+            validate_config({"council": {"chat_auto_rounds": -1}})
 
     def test_peasant_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
