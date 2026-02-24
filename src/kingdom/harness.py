@@ -527,6 +527,8 @@ def run_agent_loop(
             last_activity=now,
         )
 
+        append_worklog(ticket_path, f"Iteration {iteration}/{max_iterations} — calling agent")
+
         worklog = extract_worklog(ticket_path)
 
         # Check for new directives from the lead

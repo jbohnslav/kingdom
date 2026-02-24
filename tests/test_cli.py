@@ -461,3 +461,64 @@ class TestVerboseFlag:
         finally:
             cli.VERBOSE = False
             cli.error_console = original
+
+
+class TestPeasantWatch:
+    """Tests for the kd peasant watch command."""
+
+    def test_watch_exits_on_terminal_status(self, tmp_path) -> None:
+        """Watch exits when peasant reaches a terminal status."""
+        from kingdom.session import AgentState
+
+        # Create a ticket with a worklog
+        ticket_path = tmp_path / "ticket.md"
+        ticket_path.write_text(
+            "---\nid: t1\nstatus: in_progress\n---\n# Test\n\n## Worklog\n\n- [12:00] — Started\n",
+            encoding="utf-8",
+        )
+
+        mock_ctx = MagicMock()
+        mock_ctx.base = tmp_path
+        mock_ctx.feature = "test"
+        mock_ctx.full_ticket_id = "t1"
+        mock_ctx.ticket_path = ticket_path
+
+        mock_state = AgentState(name="peasant-t1", status="done")
+
+        with (
+            patch.object(cli, "resolve_peasant_context", return_value=mock_ctx),
+            patch("kingdom.session.get_agent_state", return_value=mock_state),
+            patch("kingdom.harness.extract_worklog", return_value="- [12:00] — Started"),
+        ):
+            result = runner.invoke(cli.app, ["peasant", "watch", "t1"])
+
+        assert result.exit_code == 0
+        assert "Started" in result.output
+        assert "finished: done" in result.output
+
+
+class TestPeasantTmux:
+    """Tests for the kd peasant start --tmux flag."""
+
+    def test_tmux_errors_when_not_running(self, tmp_path) -> None:
+        """--tmux should error if tmux is not running."""
+        import pytest
+        from click.exceptions import Exit as ClickExit
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "no server running"
+
+        with (
+            patch("kingdom.cli.subprocess.run", return_value=mock_result),
+            pytest.raises(ClickExit),
+        ):
+            cli.launch_work_tmux(
+                base=tmp_path,
+                feature="test",
+                ticket_id="t1",
+                agent="claude",
+                worktree_path=tmp_path,
+                thread_id="t1-work",
+                session_name="peasant-t1",
+            )

@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import secrets
+import shlex
 import signal
 import subprocess
 import sys
@@ -1900,11 +1901,94 @@ def launch_work_background(
     return proc.pid
 
 
+def launch_work_tmux(
+    base: Path,
+    feature: str,
+    ticket_id: str,
+    agent: str,
+    worktree_path: Path,
+    thread_id: str,
+    session_name: str,
+) -> int:
+    """Launch ``kd work`` in a new tmux window.
+
+    Errors if tmux is not running. Returns the PID of the tmux
+    new-window shell (the agent process runs inside it).
+    """
+    # Check tmux is running
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            typer.echo("Error: tmux is not running. Start tmux first or omit --tmux.")
+            raise typer.Exit(code=1)
+    except FileNotFoundError:
+        typer.echo("Error: tmux is not installed.")
+        raise typer.Exit(code=1) from None
+
+    work_cmd = " ".join(
+        [
+            shlex.quote(sys.executable),
+            "-m",
+            "kingdom.cli",
+            "work",
+            shlex.quote(ticket_id),
+            "--agent",
+            shlex.quote(agent),
+            "--worktree",
+            shlex.quote(str(worktree_path)),
+            "--thread",
+            shlex.quote(thread_id),
+            "--session",
+            shlex.quote(session_name),
+            "--base",
+            shlex.quote(str(base)),
+        ]
+    )
+
+    window_name = f"peasant-{ticket_id}"
+    tmux_cmd = [
+        "tmux",
+        "new-window",
+        "-n",
+        window_name,
+        "-P",  # print window info
+        work_cmd,
+    ]
+
+    proc = subprocess.run(tmux_cmd, capture_output=True, text=True, timeout=10)
+    if proc.returncode != 0:
+        typer.echo(f"Error: failed to create tmux window: {proc.stderr.strip()}")
+        raise typer.Exit(code=1)
+
+    # Get the PID of the shell running in the new window
+    # tmux new-window -P prints something like "main:2.0"
+    # We'll use tmux list-panes to find the PID
+    pane_target = proc.stdout.strip()
+    try:
+        pid_result = subprocess.run(
+            ["tmux", "list-panes", "-t", pane_target, "-F", "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pid = int(pid_result.stdout.strip().splitlines()[0])
+    except (ValueError, IndexError, subprocess.TimeoutExpired):
+        pid = 0  # Can't determine PID — still functional
+
+    return pid
+
+
 @peasant_app.command("start", help="Launch a peasant agent on a ticket.")
 def peasant_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
     agent: Annotated[str | None, typer.Option("--agent", help="Agent to use (default: from config).")] = None,
     hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
+    tmux: Annotated[bool, typer.Option("--tmux", help="Open agent in a new tmux window.")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
     from kingdom.config import load_config
@@ -1992,8 +2076,11 @@ def peasant_start(
         seed_body += ticket.body
         add_message(base, feature, thread_id, from_="king", to=session_name, body=seed_body)
 
-    # 4. Launch harness as background process
-    pid = launch_work_background(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
+    # 4. Launch harness
+    if tmux:
+        pid = launch_work_tmux(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
+    else:
+        pid = launch_work_background(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
 
     # 5. Update session with pid and status
     now = datetime.now(UTC).isoformat()
@@ -2012,7 +2099,8 @@ def peasant_start(
     )
 
     peasant_logs_dir = logs_root(base, feature) / session_name
-    typer.echo(f"Started {session_name} (pid {pid})")
+    mode = "tmux" if tmux else "background"
+    typer.echo(f"Started {session_name} (pid {pid}, {mode})")
     typer.echo(f"  Agent: {agent}")
     typer.echo(f"  Ticket: {full_ticket_id}")
     typer.echo(f"  Worktree: {worktree_path}")
@@ -2178,6 +2266,56 @@ def peasant_logs(
 
     if not (stdout_log.exists() or stderr_log.exists()):
         typer.echo("Log files are empty. The peasant may still be starting up.")
+
+
+@peasant_app.command("watch", help="Watch peasant progress in real time.")
+def peasant_watch(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+) -> None:
+    """Tail the ticket worklog and show progress as the peasant works.
+
+    Exits on Ctrl+C or when the peasant finishes (terminal status).
+    """
+    import time as time_mod
+
+    from kingdom.session import get_agent_state
+
+    ctx = resolve_peasant_context(ticket_id)
+    session_name = f"peasant-{ctx.full_ticket_id}"
+
+    console = Console()
+    console.print(f"[bold]Watching {session_name}[/bold]  (Ctrl+C to stop)\n")
+
+    # Track what we've already shown
+    shown_lines: int = 0
+
+    def get_worklog_lines() -> list[str]:
+        """Read current worklog lines from the ticket file."""
+        from kingdom.harness import extract_worklog
+
+        worklog = extract_worklog(ctx.ticket_path)
+        if not worklog.strip():
+            return []
+        return worklog.strip().splitlines()
+
+    try:
+        while True:
+            # Print new worklog lines
+            lines = get_worklog_lines()
+            if len(lines) > shown_lines:
+                for line in lines[shown_lines:]:
+                    console.print(line)
+                shown_lines = len(lines)
+
+            # Check if peasant is still running
+            state = get_agent_state(ctx.base, ctx.feature, session_name)
+            if state.status in TERMINAL_STATUSES:
+                console.print(f"\n[bold]Peasant finished: {state.status}[/bold]")
+                break
+
+            time_mod.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped watching.[/dim]")
 
 
 @peasant_app.command("stop", help="Stop a running peasant.")
