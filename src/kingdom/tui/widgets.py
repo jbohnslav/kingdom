@@ -212,6 +212,7 @@ class MessagePanel(Widget):
     def on_mount(self) -> None:
         if self.sender == "king":
             self.add_class("king")
+            self.border_title = "you"
         else:
             color = color_for_member(self.sender)
             self.styles.border = ("round", color)

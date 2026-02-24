@@ -40,8 +40,7 @@ MessagePanel {
 }
 
 MessagePanel.king {
-    border: none;
-    color: $text-muted;
+    border: round $primary;
 }
 
 MessagePanel > Markdown {
