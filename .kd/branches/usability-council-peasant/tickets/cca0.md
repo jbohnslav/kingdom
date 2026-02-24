@@ -1,11 +1,12 @@
 ---
 id: "cca0"
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-16T23:58:07Z
 type: task
 priority: 2
+closed_at: 2026-02-23T21:08:57Z
 ---
 # Integration test: intermediate streaming state (StreamingPanel visible during query)
 

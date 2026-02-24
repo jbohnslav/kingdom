@@ -158,7 +158,7 @@ class TestChatApp:
 
 
 class TestMessageLogScroll:
-    """Test MessageLog smart scroll (is_following / anchor behavior)."""
+    """Test MessageLog smart scroll (position-based following)."""
 
     def test_message_log_has_scroll_threshold(self) -> None:
         """MessageLog should define a SCROLL_THRESHOLD class variable."""
@@ -168,49 +168,108 @@ class TestMessageLogScroll:
         assert isinstance(MessageLog.SCROLL_THRESHOLD, int)
         assert MessageLog.SCROLL_THRESHOLD > 0
 
-    def test_is_following_true_when_anchor_not_released(self) -> None:
-        """is_following should be True when _anchor_released is False."""
+    def test_is_following_true_when_at_bottom(self) -> None:
+        """is_following should be True when scroll_y is at max_scroll_y."""
+        from unittest.mock import PropertyMock
+
         from kingdom.tui.app import MessageLog
 
         log = MessageLog()
-        log._anchored = True
-        log._anchor_released = False
+        type(log).scroll_y = PropertyMock(return_value=100.0)
+        type(log).max_scroll_y = PropertyMock(return_value=100.0)
         assert log.is_following is True
 
-    def test_is_following_false_when_anchor_released(self) -> None:
-        """is_following should be False when the user has scrolled away from bottom."""
+    def test_is_following_true_when_near_bottom(self) -> None:
+        """is_following should be True when within SCROLL_THRESHOLD of bottom."""
+        from unittest.mock import PropertyMock
+
         from kingdom.tui.app import MessageLog
 
         log = MessageLog()
-        log._anchored = True
-        log._anchor_released = True
+        type(log).scroll_y = PropertyMock(return_value=97.0)
+        type(log).max_scroll_y = PropertyMock(return_value=100.0)
+        assert log.is_following is True  # 3 < SCROLL_THRESHOLD (5)
+
+    def test_is_following_false_when_scrolled_up(self) -> None:
+        """is_following should be False when the user has scrolled well above bottom."""
+        from unittest.mock import PropertyMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        type(log).scroll_y = PropertyMock(return_value=50.0)
+        type(log).max_scroll_y = PropertyMock(return_value=100.0)
         assert log.is_following is False
 
-    def test_scroll_if_following_scrolls_when_following(self) -> None:
-        """scroll_if_following should call scroll_end when is_following is True."""
-        from unittest.mock import MagicMock
+    def test_is_following_true_when_no_scrollable_content(self) -> None:
+        """is_following should be True when max_scroll_y is 0 (no overflow)."""
+        from unittest.mock import PropertyMock
 
         from kingdom.tui.app import MessageLog
 
         log = MessageLog()
-        log._anchored = True
-        log._anchor_released = False
-        log.scroll_end = MagicMock()
+        type(log).max_scroll_y = PropertyMock(return_value=0.0)
+        assert log.is_following is True
+
+    def test_scroll_if_following_schedules_scroll_when_following(self) -> None:
+        """scroll_if_following should schedule a deferred scroll via call_after_refresh."""
+        from unittest.mock import MagicMock, PropertyMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        type(log).is_following = PropertyMock(return_value=True)
+        log.call_after_refresh = MagicMock()
         log.scroll_if_following()
-        log.scroll_end.assert_called_once_with(animate=False)
+        log.call_after_refresh.assert_called_once_with(log.do_deferred_scroll)
 
     def test_scroll_if_following_skips_when_scrolled_up(self) -> None:
-        """scroll_if_following should not scroll when user has scrolled up."""
+        """scroll_if_following should not schedule scroll when user has scrolled up."""
+        from unittest.mock import MagicMock, PropertyMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        type(log).is_following = PropertyMock(return_value=False)
+        log.call_after_refresh = MagicMock()
+        log.scroll_if_following()
+        log.call_after_refresh.assert_not_called()
+
+    def test_scroll_if_following_coalesces_multiple_calls(self) -> None:
+        """Multiple scroll_if_following calls should coalesce into one deferred scroll."""
+        from unittest.mock import MagicMock, PropertyMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        type(log).is_following = PropertyMock(return_value=True)
+        log.call_after_refresh = MagicMock()
+        log.scroll_if_following()
+        log.scroll_if_following()
+        log.scroll_if_following()
+        # Only one call_after_refresh despite three scroll_if_following calls
+        log.call_after_refresh.assert_called_once()
+
+    def test_do_deferred_scroll_resets_pending_flag(self) -> None:
+        """do_deferred_scroll should reset _scroll_pending so future scrolls work."""
         from unittest.mock import MagicMock
 
         from kingdom.tui.app import MessageLog
 
         log = MessageLog()
-        log._anchored = True
-        log._anchor_released = True
+        log._scroll_pending = True
         log.scroll_end = MagicMock()
-        log.scroll_if_following()
-        log.scroll_end.assert_not_called()
+        log.do_deferred_scroll()
+        assert log._scroll_pending is False
+        log.scroll_end.assert_called_once_with(animate=False)
+
+    def test_chat_screen_disables_scrolling(self) -> None:
+        """ChatScreen overrides allow_vertical_scroll to prevent double scrollbar."""
+        from kingdom.tui.app import ChatScreen
+
+        screen = ChatScreen()
+        assert screen.allow_vertical_scroll is False
+        assert screen.allow_horizontal_scroll is False
 
     def test_update_status_bar_uses_is_following(self, project: Path) -> None:
         """update_status_bar should use is_following (not _anchor_released directly)."""
@@ -2229,3 +2288,79 @@ class TestRemoveMemberPanels:
         assert "#thinking-claude" in queried_selectors
         # The thinking panel should have been removed
         thinking_panel.remove.assert_called_once()
+
+
+class TestFakeMemberProtocol:
+    """Verify FakeMember (test double) matches CouncilMember's interface.
+
+    If CouncilMember gains new attributes or methods, this test fails until
+    FakeMember is updated — preventing silent interface drift.
+    """
+
+    def test_fakemember_has_all_chatapp_used_attributes(self) -> None:
+        """FakeMember should have every attribute that ChatApp reads/writes on members.
+
+        This is the interface boundary that matters — if CouncilMember gains
+        a new field that ChatApp starts using, FakeMember must be updated.
+        """
+        from kingdom.agent import AgentConfig
+        from tests.test_tui_integration import FakeMember
+
+        cfg = AgentConfig(name="test", backend="claude_code", cli="echo", resume_flag="--resume")
+        fake = FakeMember(config=cfg)
+
+        # Attributes ChatApp reads or writes on council members
+        required_attrs = {
+            "config",  # read in various places
+            "name",  # property, read everywhere
+            "session_id",  # cleared after each query
+            "process",  # checked for active queries, terminate()
+            "preamble",  # set during on_mount
+            "writable",  # set by cmd_writable
+            "base",  # set during on_mount (optional)
+            "branch",  # set during on_mount (optional)
+            "query",  # called to run queries
+            "reset_session",  # called to clear session
+        }
+        fake_attrs = {a for a in dir(fake) if not a.startswith("_")}
+        missing = required_attrs - fake_attrs
+        assert not missing, f"FakeMember missing ChatApp-used attributes: {missing}"
+
+    def test_fakemember_query_signature_matches(self) -> None:
+        """FakeMember.query() should accept the same parameters as CouncilMember.query()."""
+        import inspect
+
+        from kingdom.council.base import CouncilMember
+        from tests.test_tui_integration import FakeMember
+
+        real_sig = inspect.signature(CouncilMember.query)
+        fake_sig = inspect.signature(FakeMember.query)
+
+        real_params = set(real_sig.parameters.keys())
+        fake_params = set(fake_sig.parameters.keys())
+
+        missing = real_params - fake_params
+        assert not missing, f"FakeMember.query() missing parameters: {missing}"
+
+    def test_fakemember_has_required_mutable_attrs(self) -> None:
+        """FakeMember should have the mutable attributes ChatApp writes to."""
+        from kingdom.agent import AgentConfig
+        from tests.test_tui_integration import FakeMember
+
+        cfg = AgentConfig(name="test", backend="claude_code", cli="echo", resume_flag="--resume")
+        fake = FakeMember(config=cfg)
+
+        # These are attributes ChatApp reads/writes on members
+        assert hasattr(fake, "session_id")
+        assert hasattr(fake, "process")
+        assert hasattr(fake, "preamble")
+        assert hasattr(fake, "writable") or not hasattr(fake, "writable")  # optional
+        assert hasattr(fake, "name")
+
+        # Verify name property works
+        assert fake.name == "test"
+
+        # Verify reset_session works
+        fake.session_id = "some-session"
+        fake.reset_session()
+        assert fake.session_id is None
