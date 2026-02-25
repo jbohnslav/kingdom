@@ -1206,10 +1206,11 @@ def watch_thread(
     from rich.live import Live
     from rich.text import Text
 
-    from kingdom.agent import extract_stream_text, resolve_all_agents
+    from kingdom.agent import resolve_all_agents
     from kingdom.config import load_config
     from kingdom.council.base import AgentResponse
     from kingdom.thread import get_thread, list_messages, thread_dir
+    from kingdom.tui.poll import tail_stream_file
 
     base = Path.cwd()
     feature = resolve_current_run(base)
@@ -1294,23 +1295,20 @@ def watch_thread(
         return Text("\n".join([header, *lines]))
 
     def read_stream_files() -> None:
-        """Read new lines from .stream-{member}.jsonl files."""
+        """Read new lines from .stream-{member}.jsonl files via tail_stream_file."""
         for name in expected_members - responded_members:
             stream_file = tdir / f".stream-{name}.jsonl"
             if not stream_file.exists():
                 if name in streaming_members:
-                    # Stream file was deleted (member finished or retry) — reset tracking
                     streaming_members.discard(name)
                     stream_positions.pop(name, None)
                 continue
 
             streaming_members.add(name)
-            backend = member_backends.get(name, "")
+            backend = member_backends.get(name, "claude_code")
             pos = stream_positions.get(name, 0)
 
-            # Detect file recreation: during retry, the old stream file is deleted
-            # and a new one created. If the new file is smaller than our saved offset,
-            # reset to read from the beginning.
+            # Detect file recreation (retry): file smaller than our offset
             try:
                 file_size = stream_file.stat().st_size
                 if file_size < pos:
@@ -1319,26 +1317,14 @@ def watch_thread(
             except OSError:
                 continue
 
-            try:
-                with open(stream_file, encoding="utf-8") as f:
-                    f.seek(pos)
-                    new_data = f.read()
-                    new_pos = f.tell()
-            except OSError:
+            if file_size <= pos:
                 continue
 
-            if not new_data or new_pos == pos:
-                continue
-
-            stream_positions[name] = new_pos
-            # Process complete lines only
-            for line in new_data.splitlines():
-                if not line.strip():
-                    continue
-                text = extract_stream_text(line, backend)
-                if text:
-                    accumulated_text.setdefault(name, "")
-                    accumulated_text[name] += text
+            text, _thinking, _tools = tail_stream_file(stream_file, pos, backend)
+            stream_positions[name] = file_size
+            if text:
+                accumulated_text.setdefault(name, "")
+                accumulated_text[name] += text
 
     # Poll for new messages with live streaming display
     start_time = time.monotonic()

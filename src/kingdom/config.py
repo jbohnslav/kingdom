@@ -8,7 +8,7 @@ are provided for zero-config operation.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from kingdom.state import state_root
@@ -331,17 +331,7 @@ def validate_config(data: dict) -> KingdomConfig:
 
     # Default council members to all agents if not specified
     if not council.members:
-        council = CouncilConfig(
-            members=list(agents),
-            timeout=council.timeout,
-            auto_messages=council.auto_messages,
-            mode=council.mode,
-            preamble=council.preamble,
-            thinking_visibility=council.thinking_visibility,
-            writable=council.writable,
-            chat_mode=council.chat_mode,
-            chat_auto_rounds=council.chat_auto_rounds,
-        )
+        council = replace(council, members=list(agents))
 
     # Peasant
     peasant_data = data.get("peasant", {})

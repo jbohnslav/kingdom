@@ -508,19 +508,18 @@ class ChatApp(App):
         log = self.query_one("#message-log", MessageLog)
 
         for msg in messages:
-            if msg.from_ != "king" and is_error_response(msg.body):
-                timed_out = is_timeout_response(msg.body)
+            # Prefer msg.status metadata; fall back to body-prefix sniffing for legacy messages
+            has_error = (
+                msg.status in ("error", "timeout", "interrupted")
+                if msg.status
+                else (is_error_response(msg.body) or is_interrupted_response(msg.body))
+            )
+            if msg.from_ != "king" and has_error:
+                timed_out = msg.status == "timeout" if msg.status else is_timeout_response(msg.body)
                 panel = ErrorPanel(
                     sender=msg.from_,
                     error=msg.body,
                     timed_out=timed_out,
-                    id=f"msg-{msg.sequence}",
-                )
-            elif msg.from_ != "king" and is_interrupted_response(msg.body):
-                panel = ErrorPanel(
-                    sender=msg.from_,
-                    error=msg.body,
-                    timed_out=False,
                     id=f"msg-{msg.sequence}",
                 )
             else:

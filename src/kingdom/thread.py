@@ -303,6 +303,7 @@ def add_message(
         to: Recipient name (or "all").
         body: Markdown message body.
         refs: Optional list of file path references.
+        status: Optional status (complete, error, timeout, interrupted).
 
     Returns:
         Message instance with sequence number set.
