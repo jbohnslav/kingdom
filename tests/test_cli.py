@@ -1,10 +1,13 @@
 import json
+import os
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
 from kingdom import cli
+from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
 
 runner = CliRunner()
 
@@ -522,3 +525,61 @@ class TestPeasantTmux:
                 thread_id="t1-work",
                 session_name="peasant-t1",
             )
+
+
+class TestProjectRootDiscovery:
+    """CLI commands use find_project_root to locate .kd/."""
+
+    def test_tk_list_from_subdirectory(self, tmp_path: Path) -> None:
+        """kd tk list from a subdirectory finds .kd/ at repo root."""
+        ensure_base_layout(tmp_path)
+        ensure_branch_layout(tmp_path, "test-branch")
+        set_current_run(tmp_path, "test-branch")
+        subdir = tmp_path / "src" / "deep"
+        subdir.mkdir(parents=True)
+        with patch("kingdom.state.Path.cwd", return_value=subdir):
+            result = runner.invoke(cli.app, ["tk", "list"])
+        assert result.exit_code == 0
+
+    def test_kd_base_env_overrides_discovery(self, tmp_path: Path) -> None:
+        """KD_BASE env var overrides all other discovery."""
+        override = tmp_path / "override"
+        override.mkdir()
+        ensure_base_layout(override)
+        ensure_branch_layout(override, "env-branch")
+        set_current_run(override, "env-branch")
+        with patch.dict(os.environ, {"KD_BASE": str(override)}):
+            result = runner.invoke(cli.app, ["tk", "list"])
+        assert result.exit_code == 0
+
+    def test_kd_base_invalid_path_shows_error(self, tmp_path: Path) -> None:
+        """KD_BASE set to invalid path produces explicit error with the bad path."""
+        bad = tmp_path / "bad-path"
+        bad.mkdir()
+        with patch.dict(os.environ, {"KD_BASE": str(bad)}):
+            result = runner.invoke(cli.app, ["tk", "list"])
+        assert result.exit_code == 1
+        assert "KD_BASE=" in result.output
+        assert "bad-path" in result.output
+        assert ".kd/" in result.output
+
+    def test_init_ignores_discovery_uses_cwd(self, tmp_path: Path) -> None:
+        """kd init uses cwd, not project root discovery."""
+        # Parent has .kd/, but init should create in cwd
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        (parent / ".kd").mkdir()
+        child = parent / "child"
+        child.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=child, check=True)
+        with patch("kingdom.state.Path.cwd", return_value=child):
+            result = runner.invoke(cli.app, ["init"])
+        assert result.exit_code == 0
+        assert (child / ".kd").is_dir()
+
+    def test_no_kd_anywhere_shows_clear_error(self) -> None:
+        """Missing .kd/ everywhere produces clear error message."""
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli.app, ["tk", "list"])
+        assert result.exit_code == 1
+        assert "kd init" in result.output

@@ -45,6 +45,7 @@ from kingdom.state import (
     council_logs_root,
     ensure_base_layout,
     ensure_branch_layout,
+    find_project_root,
     get_current_git_branch,
     logs_root,
     normalize_branch_name,
@@ -120,6 +121,15 @@ def not_implemented(command: str) -> None:
     raise typer.Exit(code=1)
 
 
+def require_project_root() -> Path:
+    """Find the project root or exit with a clear error."""
+    try:
+        return find_project_root()
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
+
+
 def is_git_repo(base: Path) -> bool:
     """Check if base is inside a git repository."""
     result = subprocess.run(
@@ -163,7 +173,7 @@ def init(
 
     Idempotent: creates missing pieces, skips existing.
     """
-    base = Path.cwd()
+    base = Path.cwd()  # init anchors to cwd — user chooses where to create .kd/
 
     if not no_git and not is_git_repo(base):
         print_error("Not a git repository. Use --no-git to initialize anyway.")
@@ -266,7 +276,11 @@ def start(
         bool, typer.Option("--force", "-f", help="Force start even if a session is already active.")
     ] = False,
 ) -> None:
-    base = Path.cwd()
+    # start may auto-init, so fall back to cwd if no project root found
+    try:
+        base = find_project_root()
+    except ValueError:
+        base = Path.cwd()
 
     # Auto-init if .kd/ doesn't exist (with git check)
     if not state_root(base).exists():
@@ -325,7 +339,7 @@ def done(
     """Mark a session as done (status transition only, no file moves)."""
     from datetime import datetime
 
-    base = Path.cwd()
+    base = require_project_root()
 
     # Resolve feature: use argument or fall back to current session
     if feature is None:
@@ -566,7 +580,7 @@ def council_ask(
 
     from kingdom.thread import add_message, create_thread, thread_dir
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
@@ -789,7 +803,7 @@ def council_review(
     ] = False,
 ) -> None:
     """Generate a changed-files summary and ask the council to review it."""
-    base = Path.cwd()
+    base = require_project_root()
     resolve_current_run(base)  # Validate active session
 
     if base_branch is None:
@@ -847,7 +861,7 @@ def council_reset(
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Clear council member sessions. Use --member to reset a single member."""
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
@@ -964,7 +978,7 @@ def council_show(
     """Display a council thread's message history."""
     from kingdom.thread import list_messages
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     console = Console()
 
@@ -1034,7 +1048,7 @@ def council_list() -> None:
         thread_response_status,
     )
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     current = get_current_thread(base, feature)
     console = Console()
@@ -1103,7 +1117,7 @@ def council_status(
     """Show which councillors have responded and which are still pending."""
     from kingdom.thread import list_threads, thread_response_status
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
 
     if all_threads:
@@ -1212,7 +1226,7 @@ def watch_thread(
     from kingdom.thread import get_thread, list_messages, thread_dir
     from kingdom.tui.poll import tail_stream_file
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     console = Console()
 
@@ -1389,7 +1403,7 @@ def council_retry(
     """
     from kingdom.thread import get_thread, is_error_response, list_messages
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     console = Console()
 
@@ -1530,7 +1544,7 @@ def chat(
     from kingdom.config import load_config
     from kingdom.thread import create_thread, list_threads
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     cfg = load_config(base)
 
@@ -1611,7 +1625,7 @@ def design_default(ctx: typer.Context) -> None:
     """Draft the design doc (creates template if empty)."""
     if ctx.invoked_subcommand is not None:
         return
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     design_path, _ = get_design_paths(base, feature)
 
@@ -1627,7 +1641,7 @@ def design_default(ctx: typer.Context) -> None:
 @design_app.command("show", help="Print the design document.")
 def design_show() -> None:
     """Print the design.md contents."""
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     design_path, _ = get_design_paths(base, feature)
 
@@ -1642,7 +1656,7 @@ def design_show() -> None:
 @design_app.command("approve", help="Mark the design as approved.")
 def design_approve() -> None:
     """Set design_approved=true in state.json."""
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     design_path, state_path = get_design_paths(base, feature)
 
@@ -1658,7 +1672,7 @@ def design_approve() -> None:
 
 @app.command(help="Draft or iterate the current breakdown.")
 def breakdown() -> None:
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     _, design_path, breakdown_path, _ = get_branch_paths(base, feature)
 
@@ -2129,7 +2143,7 @@ def peasant_status(
 
     from kingdom.session import list_active_agents
 
-    base = Path.cwd()
+    base = require_project_root()
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
@@ -2906,7 +2920,7 @@ def get_doc_status(path: Path) -> str:
 def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
 ) -> None:
-    base = Path.cwd()
+    base = require_project_root()
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
@@ -3044,7 +3058,7 @@ def config_show() -> None:
 
     from kingdom.config import load_config, load_raw_config
 
-    base = Path.cwd()
+    base = require_project_root()
     try:
         cfg = load_config(base)
     except ValueError as e:
@@ -3163,7 +3177,7 @@ def doctor(
     """Validate config and verify agent CLIs are installed."""
     from kingdom.state import state_root
 
-    base = Path.cwd()
+    base = require_project_root()
     has_issues = False
 
     # 1. Config validation
@@ -3250,7 +3264,7 @@ def migrate(
     """
     import re
 
-    base = Path.cwd()
+    base = require_project_root()
     dry_run = not apply
 
     # Collect all ticket files across backlog, branches, and archive
@@ -3370,7 +3384,7 @@ def ticket_create(
     """Create a new ticket in the current branch or backlog."""
     from datetime import datetime
 
-    base = Path.cwd()
+    base = require_project_root()
 
     # Validate priority range (1-3)
     if priority < 1 or priority > 3:
@@ -3621,7 +3635,7 @@ def ticket_list(
             return tickets
         return [t for t in tickets if t.priority == priority]
 
-    base = Path.cwd()
+    base = require_project_root()
 
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
@@ -3859,7 +3873,7 @@ def ticket_show(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Display one or more tickets by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
-    base = Path.cwd()
+    base = require_project_root()
 
     # Resolve tickets to show as (Ticket, Path) pairs
     pairs: list[tuple[Ticket, Path]] = []
@@ -3938,7 +3952,7 @@ def ticket_show(
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:
     """Helper to update a ticket's status."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -3990,7 +4004,7 @@ def ticket_current(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Find and display the ticket currently marked as in_progress on this branch."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         feature = resolve_current_run(base)
@@ -4069,7 +4083,7 @@ def ticket_close(
     ] = None,
 ) -> None:
     """Set ticket status to closed."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4139,7 +4153,7 @@ def ticket_delete(
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Remove a ticket file from disk."""
-    base = Path.cwd()
+    base = require_project_root()
     try:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
@@ -4183,7 +4197,7 @@ def ticket_dep(
     depends_on: Annotated[str, typer.Argument(help="ID of ticket this depends on.")],
 ) -> None:
     """Add a dependency: ticket_id depends on depends_on."""
-    base = Path.cwd()
+    base = require_project_root()
 
     # Find both tickets
     try:
@@ -4218,7 +4232,7 @@ def ticket_undep(
     depends_on: Annotated[str, typer.Argument(help="ID of dependency to remove.")],
 ) -> None:
     """Remove a dependency from a ticket."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4263,7 +4277,7 @@ def ticket_dep_tree(
     full: Annotated[bool, typer.Option("--full", help="Show duplicate subtrees instead of deduplicating.")] = False,
 ) -> None:
     """Display the dependency tree rooted at a ticket."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4316,7 +4330,7 @@ def ticket_dep_tree(
 @ticket_app.command("dep-cycle", help="Detect dependency cycles.")
 def ticket_dep_cycle() -> None:
     """Find and report any dependency cycles among open tickets."""
-    base = Path.cwd()
+    base = require_project_root()
     all_tickets = collect_all_tickets(base)
     # Filter to non-closed tickets (open, in_progress, in_review)
     open_tickets = [t for t in all_tickets if t.status != "closed"]
@@ -4361,7 +4375,7 @@ def ticket_blocked(
     tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
 ) -> None:
     """List open tickets that have at least one unresolved dependency."""
-    base = Path.cwd()
+    base = require_project_root()
     all_tickets = collect_all_tickets(base)
     status_by_id = {t.id: t.status for t in all_tickets}
 
@@ -4400,7 +4414,7 @@ def ticket_link(
         print_error("Need at least two ticket IDs to link.")
         raise typer.Exit(code=1)
 
-    base = Path.cwd()
+    base = require_project_root()
 
     # Resolve all tickets first, deduplicating by resolved ID
     seen_ids: dict[str, tuple[Ticket, Path]] = {}
@@ -4441,7 +4455,7 @@ def ticket_unlink(
     target_id: Annotated[str, typer.Argument(help="ID of ticket to unlink from.")],
 ) -> None:
     """Remove a symmetric link between two tickets."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4486,7 +4500,7 @@ def ticket_assign(
     agent: Annotated[str, typer.Argument(help="Agent name or 'hand' for current agent.")],
 ) -> None:
     """Set the assignee field on a ticket."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4509,7 +4523,7 @@ def ticket_unassign(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Clear the assignee field on a ticket."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4537,7 +4551,7 @@ def ticket_move(
     Single ticket: `kd tk move <id> --to <branch>` or `kd tk move <id>` (to current branch).
     Multiple tickets: `kd tk move <id1> <id2> --to <branch>`.
     """
-    base = Path.cwd()
+    base = require_project_root()
 
     target = to_target
     # Backwards compat: if exactly 2 positional args and no --to, treat second as target
@@ -4601,7 +4615,7 @@ def ticket_pull(
     ticket_ids: Annotated[list[str], typer.Argument(help="Ticket IDs to pull from backlog.")],
 ) -> None:
     """Move one or more tickets from backlog to the current branch."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         resolve_current_run(base)
@@ -4648,7 +4662,7 @@ def ticket_ready(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List open tickets with no open dependencies."""
-    base = Path.cwd()
+    base = require_project_root()
 
     # Collect all tickets to build status lookup
     all_tickets: list[tuple[Ticket, str]] = []  # (ticket, location)
@@ -4729,7 +4743,7 @@ def ticket_closed(
     tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
 ) -> None:
     """List recently closed tickets across all locations, sorted by close date (newest first)."""
-    base = Path.cwd()
+    base = require_project_root()
     all_tickets = collect_all_tickets(base, include_archive=True, include_done=True)
 
     closed = [t for t in all_tickets if t.status == "closed"]
@@ -4754,7 +4768,7 @@ def ticket_add_note(
     text: Annotated[str | None, typer.Argument(help="Note text. Reads from stdin if omitted.")] = None,
 ) -> None:
     """Append a timestamped note to the ticket body."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4792,7 +4806,7 @@ def ticket_query(
     jq_filter: Annotated[str | None, typer.Argument(help="Optional jq filter expression.")] = None,
 ) -> None:
     """Output all non-closed tickets as JSON. Pipe through jq if a filter is given."""
-    base = Path.cwd()
+    base = require_project_root()
     all_tickets = collect_all_tickets(base)
 
     data = [
@@ -4841,7 +4855,7 @@ def ticket_log(
     """Append a timestamped journal entry to the ticket's Worklog section."""
     from kingdom.ticket import append_worklog_entry
 
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4863,7 +4877,7 @@ def ticket_edit(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Open a ticket file in the default editor."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)

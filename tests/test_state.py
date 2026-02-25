@@ -14,6 +14,7 @@ from kingdom.state import (
     branches_root,
     ensure_base_layout,
     ensure_branch_layout,
+    find_project_root,
     normalize_branch_name,
     resolve_current_run,
     set_current_run,
@@ -385,3 +386,77 @@ class TestResolveCurrentRun:
         with patch("kingdom.state.get_current_git_branch", return_value="real-branch"):
             result = resolve_current_run(tmp_path)
             assert result == "real-branch"
+
+
+class TestFindProjectRoot:
+    """Tests for find_project_root discovery logic."""
+
+    def test_cwd_with_kd_dir(self, tmp_path: Path) -> None:
+        """Finds .kd/ in cwd (fast path)."""
+        (tmp_path / ".kd").mkdir()
+        with patch("kingdom.state.Path.cwd", return_value=tmp_path):
+            assert find_project_root() == tmp_path
+
+    def test_walks_parent_directories(self, tmp_path: Path) -> None:
+        """Finds .kd/ by walking parent directories."""
+        (tmp_path / ".kd").mkdir()
+        subdir = tmp_path / "src" / "kingdom"
+        subdir.mkdir(parents=True)
+        with patch("kingdom.state.Path.cwd", return_value=subdir):
+            assert find_project_root() == tmp_path
+
+    def test_kd_base_env_overrides(self, tmp_path: Path) -> None:
+        """KD_BASE env var takes priority over cwd."""
+        kd_base_dir = tmp_path / "override"
+        kd_base_dir.mkdir()
+        (kd_base_dir / ".kd").mkdir()
+        # cwd also has .kd/ but KD_BASE should win
+        cwd_dir = tmp_path / "cwd"
+        cwd_dir.mkdir()
+        (cwd_dir / ".kd").mkdir()
+        with (
+            patch.dict("os.environ", {"KD_BASE": str(kd_base_dir)}),
+            patch("kingdom.state.Path.cwd", return_value=cwd_dir),
+        ):
+            assert find_project_root() == kd_base_dir
+
+    def test_kd_base_invalid_path_raises(self, tmp_path: Path) -> None:
+        """KD_BASE pointing to a dir without .kd/ raises with the bad path."""
+        bad_path = tmp_path / "no-kd-here"
+        bad_path.mkdir()
+        with (
+            patch.dict("os.environ", {"KD_BASE": str(bad_path)}),
+            pytest.raises(ValueError, match=str(bad_path)),
+        ):
+            find_project_root()
+
+    def test_no_kd_anywhere_raises(self, tmp_path: Path) -> None:
+        """Missing .kd/ everywhere raises with clear message."""
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("kingdom.state.Path.cwd", return_value=empty),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            with pytest.raises(ValueError, match="kd init"):
+                find_project_root()
+
+    def test_git_fallback(self, tmp_path: Path) -> None:
+        """Falls back to git rev-parse when parent walk fails."""
+        git_root = tmp_path / "repo"
+        git_root.mkdir()
+        (git_root / ".kd").mkdir()
+        # cwd is outside the repo tree (no parents have .kd/)
+        orphan = tmp_path / "orphan"
+        orphan.mkdir()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("kingdom.state.Path.cwd", return_value=orphan),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = str(git_root) + "\n"
+            assert find_project_root() == git_root

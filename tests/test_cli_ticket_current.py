@@ -78,12 +78,12 @@ class TestTicketCurrent:
             assert result.exit_code == 1
             assert "No in-progress ticket" in result.output
 
-    def test_current_no_active_session_exits_1(self) -> None:
+    def test_current_no_project_root_exits_1(self) -> None:
         with runner.isolated_filesystem():
             result = runner.invoke(cli.app, ["tk", "current"])
 
             assert result.exit_code == 1
-            assert "No active session" in result.output
+            assert "No .kd/ directory found" in result.output
 
     def test_current_json_output(self) -> None:
         with runner.isolated_filesystem():
