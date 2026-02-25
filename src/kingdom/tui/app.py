@@ -365,6 +365,7 @@ class ChatApp(App):
         self.thinking_visibility: str = "auto"
         self.chat_mode: str = "natural"
         self.auto_rounds: int = 1
+        self.reply_target: str | None = None
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -605,17 +606,67 @@ class ChatApp(App):
             hint_bar.hide_hints()
 
     def on_message_panel_reply(self, event: MessagePanel.Reply) -> None:
-        """Handle reply: prefill input with @sender mention."""
-        reply_text = format_reply_text(event.sender)
+        """Toggle reply target: click sets, same click clears, different click switches."""
         input_area = self.query_one("#input-area", InputArea)
-        existing = input_area.text
-        if existing.strip():
-            input_area.load_text(reply_text + existing)
+
+        if self.reply_target == event.sender:
+            # Toggle off: clear reply target
+            self.clear_reply_target(input_area)
         else:
-            input_area.load_text(reply_text)
-        input_area.focus()
-        # Cursor ends up at (0,0) after load_text — move to end of the @mention prefix
-        input_area.move_cursor_relative(columns=len(reply_text))
+            # Set or switch reply target
+            old_target = self.reply_target
+            self.reply_target = event.sender
+
+            # Remove old @mention if switching targets
+            if old_target:
+                old_prefix = format_reply_text(old_target)
+                text = input_area.text
+                if text.startswith(old_prefix):
+                    text = text[len(old_prefix) :]
+                    input_area.load_text(text)
+
+            # Prefill with new @mention
+            reply_text = format_reply_text(event.sender)
+            existing = input_area.text
+            if not existing.startswith(reply_text):
+                if existing.strip():
+                    input_area.load_text(reply_text + existing)
+                else:
+                    input_area.load_text(reply_text)
+
+            input_area.focus()
+            input_area.move_cursor_relative(columns=len(reply_text))
+
+            # Update panel visuals
+            self.update_reply_panel_visuals()
+
+    def clear_reply_target(self, input_area: TextArea | None = None) -> None:
+        """Clear the active reply target and clean up input."""
+        if not self.reply_target:
+            return
+        old_prefix = format_reply_text(self.reply_target)
+        self.reply_target = None
+        if input_area is None:
+            input_area = self.query_one("#input-area", InputArea)
+        text = input_area.text
+        if text.startswith(old_prefix):
+            remaining = text[len(old_prefix) :]
+            input_area.load_text(remaining)
+        self.update_reply_panel_visuals()
+
+    def update_reply_panel_visuals(self) -> None:
+        """Update border subtitles on message panels to reflect reply state."""
+        try:
+            log = self.query_one("#message-log", MessageLog)
+        except QueryError:
+            return
+        for panel in log.query(MessagePanel):
+            if panel.sender == "king":
+                continue
+            if self.reply_target and panel.sender == self.reply_target:
+                panel.border_subtitle = "replying \u2022 click to cancel"
+            else:
+                panel.border_subtitle = "click: reply \u00b7 shift: copy"
 
     def send_message(self) -> None:
         """Send the current input as a king message or handle slash command."""
@@ -625,6 +676,10 @@ class ChatApp(App):
             return
 
         input_area.clear()
+
+        # Clear reply target after sending
+        self.reply_target = None
+        self.update_reply_panel_visuals()
 
         # Handle slash commands
         if text.startswith("/"):

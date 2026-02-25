@@ -63,7 +63,6 @@ class TestMessagePanelReply:
         """Regular click on a member panel should post a Reply message."""
         panel = MessagePanel(sender="claude", body="I think we should refactor.")
         panel.on_mount()
-        panel.set_timer = MagicMock()
 
         posted: list = []
         panel.post_message = lambda msg: posted.append(msg)
@@ -75,7 +74,6 @@ class TestMessagePanelReply:
         assert isinstance(reply, MessagePanel.Reply)
         assert reply.sender == "claude"
         assert reply.body == "I think we should refactor."
-        assert panel.border_subtitle == "replying..."
 
     def test_click_on_king_does_not_post_reply(self) -> None:
         """Clicking a king message should not post a Reply."""
@@ -127,42 +125,86 @@ class TestMessagePanelReply:
 class TestReplyHandler:
     """Test the on_message_panel_reply handler in ChatApp."""
 
-    def test_reply_prefills_input(self, project: Path) -> None:
+    def setup_app(self, project, tid, members=("claude",)):
         from kingdom.tui.app import ChatApp
 
-        tid = "council-reply1"
-        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        create_thread(project, BRANCH, tid, ["king", *members], "council")
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         list(app_instance.compose())
 
         mock_input = MagicMock()
         mock_input.text = ""
-        app_instance.query_one = MagicMock(return_value=mock_input)
+        mock_log = MagicMock()
+        mock_log.query.return_value = []
+
+        def fake_query_one(selector, *args, **kwargs):
+            if selector == "#input-area":
+                return mock_input
+            if selector == "#message-log":
+                return mock_log
+            return MagicMock()
+
+        app_instance.query_one = fake_query_one
+        return app_instance, mock_input, mock_log
+
+    def test_reply_prefills_input(self, project: Path) -> None:
+        tid = "council-reply1"
+        app, mock_input, _ = self.setup_app(project, tid)
+        mock_input.text = ""
 
         event = MessagePanel.Reply(sender="claude", body="I think we should refactor.")
-        app_instance.on_message_panel_reply(event)
+        app.on_message_panel_reply(event)
 
         loaded_text = mock_input.load_text.call_args[0][0]
         assert loaded_text == "@claude "
+        assert app.reply_target == "claude"
         mock_input.focus.assert_called_once()
 
     def test_reply_preserves_draft(self, project: Path) -> None:
-        from kingdom.tui.app import ChatApp
-
         tid = "council-reply2"
-        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
-        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
-        list(app_instance.compose())
-
-        mock_input = MagicMock()
+        app, mock_input, _ = self.setup_app(project, tid)
         mock_input.text = "my draft text"
-        app_instance.query_one = MagicMock(return_value=mock_input)
 
         event = MessagePanel.Reply(sender="codex", body="Analysis here.")
-        app_instance.on_message_panel_reply(event)
+        app.on_message_panel_reply(event)
 
         loaded_text = mock_input.load_text.call_args[0][0]
         assert loaded_text == "@codex my draft text"
+
+    def test_toggle_off_clears_reply(self, project: Path) -> None:
+        """Clicking same sender again clears reply target."""
+        tid = "council-reply-toggle"
+        app, mock_input, _ = self.setup_app(project, tid)
+        mock_input.text = ""
+
+        # First click: set target
+        event = MessagePanel.Reply(sender="claude", body="Hello")
+        app.on_message_panel_reply(event)
+        assert app.reply_target == "claude"
+
+        # Simulate input now has @claude
+        mock_input.text = "@claude "
+
+        # Second click on same sender: toggle off
+        app.on_message_panel_reply(event)
+        assert app.reply_target is None
+
+    def test_switch_target(self, project: Path) -> None:
+        """Clicking different sender switches reply target."""
+        tid = "council-reply-switch"
+        app, mock_input, _ = self.setup_app(project, tid, members=("claude", "codex"))
+        mock_input.text = ""
+
+        # Click claude
+        app.on_message_panel_reply(MessagePanel.Reply(sender="claude", body="A"))
+        assert app.reply_target == "claude"
+
+        # Simulate input has @claude
+        mock_input.text = "@claude "
+
+        # Click codex — should switch
+        app.on_message_panel_reply(MessagePanel.Reply(sender="codex", body="B"))
+        assert app.reply_target == "codex"
 
     def test_help_mentions_reply(self, project: Path) -> None:
         from kingdom.tui.app import ChatApp

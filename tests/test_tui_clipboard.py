@@ -187,7 +187,6 @@ class TestMessagePanelReply:
         assert isinstance(reply, MessagePanel.Reply)
         assert reply.sender == "claude"
         assert reply.body == "I think we should refactor."
-        assert panel.border_subtitle == "replying..."
 
     def test_click_on_king_does_not_post_reply(self) -> None:
         """Clicking a king message should not post a Reply."""
