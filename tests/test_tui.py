@@ -375,7 +375,7 @@ class TestInputArea:
 
         assert posted == ["Submit"]
 
-    def test_shift_enter_does_not_post_submit_message(self) -> None:
+    def test_shift_enter_inserts_newline(self) -> None:
         import asyncio
 
         from textual.events import Key
@@ -383,12 +383,15 @@ class TestInputArea:
         from kingdom.tui.app import InputArea
 
         input_area = InputArea()
+        input_area.load_text("hello")
+        input_area.move_cursor((0, 5))
         posted: list[str] = []
         input_area.post_message = lambda message: posted.append(type(message).__name__)
 
         asyncio.run(input_area._on_key(Key("shift+enter", None)))
 
-        assert posted == []
+        assert "Submit" not in posted
+        assert input_area.text == "hello\n"
 
     def test_submit_event_triggers_send_message(self) -> None:
         from kingdom.tui.app import ChatApp, InputArea

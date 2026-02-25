@@ -184,10 +184,17 @@ class InputArea(TextArea):
         self.tab_prefix: str = ""  # the partial text after "@" that triggered completion
 
     async def handle_key(self, event) -> None:
-        if event.key == "enter" and "shift" not in event.key:
+        if event.key == "enter":
             event.stop()
             event.prevent_default()
             self.post_message(self.Submit())
+            return
+        if event.key == "shift+enter":
+            # Insert a literal newline instead of submitting.
+            event.stop()
+            event.prevent_default()
+            start, end = self.selection
+            self._replace_via_keyboard("\n", start, end)
             return
         if event.key == "tab":
             event.stop()
