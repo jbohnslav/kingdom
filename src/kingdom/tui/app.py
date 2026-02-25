@@ -14,6 +14,7 @@ from textual.binding import BindingType
 from textual.containers import VerticalScroll
 from textual.css.query import QueryError
 from textual.message import Message
+from textual.screen import Screen
 from textual.widgets import Static, TextArea
 
 from kingdom.agent import resolve_all_agents
@@ -30,7 +31,7 @@ from kingdom.thread import (
     thread_dir,
 )
 
-from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller
+from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller, ToolUseEvent
 from .widgets import (
     CommandHintBar,
     ErrorPanel,
@@ -45,13 +46,19 @@ logger = logging.getLogger(__name__)
 
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
-    "Engage directly with the conversation — respond to questions, share your perspective, "
-    "and build on or challenge points raised by others. "
+    "This is a live conversation — read the full thread before responding. "
+    "Reference specific points others have made (agree, disagree, extend, or synthesize). "
+    "Don't just answer the King's question in isolation — engage with what's already been said. "
+    "If you disagree with another agent, say so directly and explain why. "
     "Do NOT create, edit, or write files. Do NOT run git commands that modify state.\n\n"
 )
 
 WRITABLE_CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
+    "This is a live conversation — read the full thread before responding. "
+    "Reference specific points others have made (agree, disagree, extend, or synthesize). "
+    "Don't just answer the King's question in isolation — engage with what's already been said. "
+    "If you disagree with another agent, say so directly and explain why. "
     "You have full permissions — you may edit files, create tickets, run git commands, "
     "and execute any action the King requests. Act on instructions directly.\n\n"
 )
@@ -108,49 +115,52 @@ class MessageLog(VerticalScroll):
 
     ``is_following`` — True when auto-scroll is active (user is near bottom).
     ``SCROLL_THRESHOLD`` — pixel distance from bottom that counts as "near".
+
+    Call ``scroll_if_following()`` **before** mounting or updating content so
+    that ``is_following`` reflects the user's position *before* the layout
+    shifts.  The actual ``scroll_end`` runs after the next refresh (when the
+    new layout has been computed).  Multiple calls coalesce into one scroll
+    per frame via a ``_scroll_pending`` flag.
     """
 
     SCROLL_THRESHOLD: int = 5
 
-    DEFAULT_CSS = """
-    MessageLog {
-        height: 1fr;
-    }
-    """
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._scroll_pending: bool = False
 
     @property
     def is_following(self) -> bool:
         """True when the viewport is at or near the bottom.
 
-        Uses the internal ``_anchor_released`` flag from Textual's anchor
-        mechanism.  When the user scrolls up, Textual releases the anchor;
-        when they scroll back to the bottom, it re-engages.
+        Uses a position-based check rather than Textual's internal anchor
+        state.  Returns True when ``scroll_y`` is within ``SCROLL_THRESHOLD``
+        pixels of ``max_scroll_y``, or when there is nothing to scroll.
         """
-        return not self._anchor_released
+        if self.max_scroll_y == 0:
+            return True
+        return self.scroll_y >= self.max_scroll_y - self.SCROLL_THRESHOLD
 
     def scroll_if_following(self) -> None:
-        """Scroll to bottom if the user hasn't scrolled up.
+        """Capture follow intent and schedule a single deferred scroll.
 
-        Textual's anchor() alone doesn't reliably scroll when new widgets
-        are mounted.  Call this after mounting content to keep the view
-        pinned to the bottom while respecting manual scroll-up.
+        Call **before** mounting or updating content so that ``is_following``
+        reflects the user's position before the layout shifts.  The actual
+        ``scroll_end`` runs after the next refresh (new layout computed).
+        Multiple calls coalesce into one scroll per frame.
         """
-        if self.is_following:
-            self.scroll_end(animate=False)
+        if self.is_following and not self._scroll_pending:
+            self._scroll_pending = True
+            self.call_after_refresh(self.do_deferred_scroll)
+
+    def do_deferred_scroll(self) -> None:
+        """Execute the deferred scroll-to-bottom."""
+        self._scroll_pending = False
+        self.scroll_end(animate=False)
 
 
 class StatusBar(Static):
     """Keybinding hints at the bottom."""
-
-    DEFAULT_CSS = """
-    StatusBar {
-        dock: bottom;
-        height: 1;
-        background: $surface;
-        color: $text-muted;
-        padding: 0 1;
-    }
-    """
 
 
 class InputArea(TextArea):
@@ -159,16 +169,6 @@ class InputArea(TextArea):
     Enter sends the message (posts Submit to the app).
     Shift+Enter inserts a newline.
     Tab after @partial completes member names.
-    """
-
-    DEFAULT_CSS = """
-    InputArea {
-        dock: bottom;
-        height: auto;
-        min-height: 3;
-        max-height: 10;
-        scrollbar-size-vertical: 0;
-    }
     """
 
     class Submit(Message):
@@ -270,21 +270,34 @@ class InputArea(TextArea):
         self.replace(f"@{candidate} ", start, end, maintain_selection_offset=False)
 
 
+class ChatScreen(Screen):
+    """Non-scrollable screen so only MessageLog scrolls.
+
+    Textual's default Screen has ``overflow-y: auto`` in its ``DEFAULT_CSS``,
+    making it a scroll container.  Previous attempts to override via
+    ``ChatApp.CSS`` or inline styles lost the CSS specificity battle against
+    ``Screen.DEFAULT_CSS``.
+
+    Setting ``DEFAULT_CSS`` on the *subclass* with the ``ChatScreen`` selector
+    wins specificity over the base ``Screen`` rule.  The
+    ``allow_vertical_scroll`` overrides are belt-and-suspenders — they block
+    keyboard/mouse scroll actions even if CSS somehow slips.
+    """
+
+    @property
+    def allow_vertical_scroll(self) -> bool:
+        return False
+
+    @property
+    def allow_horizontal_scroll(self) -> bool:
+        return False
+
+
 class ChatApp(App):
     """Council chat TUI."""
 
     TITLE = "kd chat"
-
-    CSS = """
-    Screen {
-        layout: vertical;
-    }
-    .system-message {
-        margin: 0 1;
-        padding: 0 1;
-        color: $text-muted;
-    }
-    """
+    CSS_PATH = "chat.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         ("escape", "interrupt", "Interrupt/Quit"),
@@ -293,6 +306,9 @@ class ChatApp(App):
     ]
 
     THINKING_CYCLE: ClassVar[list[str]] = ["auto", "show", "hide"]
+
+    def get_default_screen(self) -> ChatScreen:
+        return ChatScreen(id="_default")
 
     def __init__(
         self, base: Path, branch: str, thread_id: str, debug_streams: bool = False, writable: bool = False
@@ -331,6 +347,7 @@ class ChatApp(App):
 
     def on_mount(self) -> None:
         """Initialize poller, council, and start polling."""
+
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
         # Clean up stale stream files from previous sessions so the poller
@@ -367,11 +384,6 @@ class ChatApp(App):
         # Load existing messages from thread history
         self.load_history()
 
-        # Enable smart auto-scroll: follows new content when at/near the
-        # bottom, pauses when user scrolls up, re-engages when they return.
-        log = self.query_one("#message-log", MessageLog)
-        log.anchor()
-
         self.set_interval(0.1, self.poll_updates)
 
         # Focus the input area
@@ -379,10 +391,9 @@ class ChatApp(App):
         input_area.focus()
 
     def action_scroll_bottom(self) -> None:
-        """Jump to bottom and re-engage auto-follow."""
+        """Jump to bottom (auto-follow re-engages via position check)."""
         log = self.query_one("#message-log", MessageLog)
         log.scroll_end(animate=False)
-        log.anchor()
         self.update_status_bar(log)
 
     def action_toggle_thinking(self) -> None:
@@ -497,19 +508,18 @@ class ChatApp(App):
         log = self.query_one("#message-log", MessageLog)
 
         for msg in messages:
-            if msg.from_ != "king" and is_error_response(msg.body):
-                timed_out = is_timeout_response(msg.body)
+            # Prefer msg.status metadata; fall back to body-prefix sniffing for legacy messages
+            has_error = (
+                msg.status in ("error", "timeout", "interrupted")
+                if msg.status
+                else (is_error_response(msg.body) or is_interrupted_response(msg.body))
+            )
+            if msg.from_ != "king" and has_error:
+                timed_out = msg.status == "timeout" if msg.status else is_timeout_response(msg.body)
                 panel = ErrorPanel(
                     sender=msg.from_,
                     error=msg.body,
                     timed_out=timed_out,
-                    id=f"msg-{msg.sequence}",
-                )
-            elif msg.from_ != "king" and is_interrupted_response(msg.body):
-                panel = ErrorPanel(
-                    sender=msg.from_,
-                    error=msg.body,
-                    timed_out=False,
                     id=f"msg-{msg.sequence}",
                 )
             else:
@@ -593,6 +603,7 @@ class ChatApp(App):
 
         # Render king message immediately (don't wait for poll cycle)
         log = self.query_one("#message-log", MessageLog)
+        log.scroll_if_following()  # capture intent BEFORE mounts
         king_panel = MessagePanel(sender="king", body=text, member_names=self.member_names, id=f"king-{id(text)}")
         log.mount(king_panel)
 
@@ -622,8 +633,6 @@ class ChatApp(App):
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
                 self.run_worker(self.run_query(member, stream_path, generation=gen), exclusive=False)
-
-        log.scroll_if_following()
 
     async def run_query(self, member, stream_path: Path, generation: int | None = None) -> None:
         """Run a member query with full thread context, then persist and clean up.
@@ -742,9 +751,9 @@ class ChatApp(App):
                     continue
                 # Mount WaitingPanel for this member's turn
                 log = self.query_one("#message-log", MessageLog)
-                self.remove_member_panels(log, name)
+                log.scroll_if_following()  # capture intent BEFORE mount
+                await self.await_remove_member_panels(log, name)
                 log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
-                log.scroll_if_following()
                 stream_path = tdir / f".stream-{name}.jsonl"
                 await self.run_query(member, stream_path, generation=generation)
                 messages_sent += 1
@@ -754,6 +763,15 @@ class ChatApp(App):
         for prefix in ("wait", "stream", "thinking", "interrupted"):
             for panel in list(log.query(f"#{prefix}-{name}")):
                 panel.remove()
+
+    async def await_remove_member_panels(self, log: MessageLog, name: str) -> None:
+        """Remove member panels and wait for DOM to update (for async callers)."""
+        removals = []
+        for prefix in ("wait", "stream", "thinking", "interrupted"):
+            for panel in list(log.query(f"#{prefix}-{name}")):
+                removals.append(panel.remove())
+        for awaitable in removals:
+            await awaitable
 
     def parse_targets(self, text: str) -> list[str]:
         """Parse @mentions from text to determine query targets.
@@ -902,9 +920,9 @@ class ChatApp(App):
     def show_system_message(self, text: str) -> None:
         """Show a system message in the message log."""
         log = self.query_one("#message-log", MessageLog)
+        log.scroll_if_following()  # capture intent BEFORE mount
         panel = Static(text, classes="system-message")
         log.mount(panel)
-        log.scroll_if_following()
 
     # -- Polling ----------------------------------------------------------
 
@@ -918,6 +936,7 @@ class ChatApp(App):
             return
 
         log = self.query_one("#message-log", MessageLog)
+        log.scroll_if_following()  # capture intent BEFORE processing events
 
         for event in events:
             if isinstance(event, NewMessage):
@@ -928,10 +947,10 @@ class ChatApp(App):
                 self.handle_thinking_delta(log, event)
             elif isinstance(event, StreamDelta):
                 self.handle_stream_delta(log, event)
+            elif isinstance(event, ToolUseEvent):
+                self.handle_tool_use(log, event)
             elif isinstance(event, StreamFinished):
                 self.handle_stream_finished(event)
-
-        log.scroll_if_following()
 
         # Update status bar to reflect scroll state
         self.update_status_bar(log)
@@ -948,13 +967,20 @@ class ChatApp(App):
             + list(log.query(f"#{interrupted_id}"))
         )
 
-        # Handle thinking panel persistence
+        # Handle thinking panel persistence — replace with sequence-specific id
+        # (Textual forbids reassigning .id after mount, so we remove + remount)
         thinking_panels = list(log.query(f"#{thinking_id}"))
         if thinking_panels:
-            thinking_panel = thinking_panels[0]
+            old_panel = thinking_panels[0]
+            new_panel = ThinkingPanel(sender=event.sender, id=f"thinking-{event.sender}-{event.sequence}")
+            new_panel.thinking_text = old_panel.thinking_text
+            new_panel.start_time = old_panel.start_time
+            new_panel.user_pinned = old_panel.user_pinned
+            new_panel.expanded = old_panel.expanded
+            log.mount(new_panel, before=old_panel)
+            old_panel.remove()
             if self.thinking_visibility == "auto":
-                thinking_panel.collapse()
-            thinking_panel.id = f"thinking-{event.sender}-{event.sequence}"
+                new_panel.collapse()
 
         # Detect error/interrupted responses from thread message body
         if event.sender != "king" and is_error_response(event.body):
@@ -1040,6 +1066,13 @@ class ChatApp(App):
         if panels:
             panel = panels[0]
             panel.update_content(event.full_text)
+
+    def handle_tool_use(self, log: MessageLog, event: ToolUseEvent) -> None:
+        """Show tool-use activity on the streaming panel's border subtitle."""
+        panel_id = f"stream-{event.member}"
+        panels = list(log.query(f"#{panel_id}"))
+        if panels:
+            panels[0].border_subtitle = f"using {event.tool_name}"
 
     def handle_stream_finished(self, event: StreamFinished) -> None:
         """Remove the streaming panel (finalized message replaces it)."""

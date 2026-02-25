@@ -24,13 +24,7 @@ class AgentResponse:
     raw: str = ""
 
     def thread_body(self) -> str:
-        """Format response for writing to a thread message file.
-
-        Note: partial timeout responses (text + error) return just the text.
-        This means retry won't detect them as failures. Acceptable because
-        timeouts are non-retriable and users see the timeout in watch output.
-        See backlog ticket 9124 for frontmatter metadata approach.
-        """
+        """Format response for writing to a thread message file."""
         if self.text:
             text = self.text
             # Strip echoed speaker prefix (agents sometimes echo "name: " from history format)
@@ -41,6 +35,19 @@ class AgentResponse:
         if self.error:
             return f"*Error: {self.error}*"
         return "*Empty response — no text or error returned.*"
+
+    def thread_status(self) -> str:
+        """Derive a status string for thread message frontmatter.
+
+        Returns one of: complete, error, timeout, interrupted.
+        """
+        if self.error:
+            if "timeout" in self.error.lower() or "timed out" in self.error.lower():
+                return "timeout"
+            return "error"
+        if self.text and ("*[Interrupted" in self.text or "*Interrupted" in self.text):
+            return "interrupted"
+        return "complete"
 
 
 @dataclass

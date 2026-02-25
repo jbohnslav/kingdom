@@ -24,7 +24,8 @@ from kingdom.council.base import AgentResponse
 from kingdom.state import ensure_branch_layout
 from kingdom.thread import add_message, create_thread, thread_dir
 from kingdom.tui.app import ChatApp, InputArea, MessageLog
-from kingdom.tui.widgets import ErrorPanel, MessagePanel, WaitingPanel
+from kingdom.tui.poll import StreamDelta, StreamFinished, StreamStarted, ThinkingDelta
+from kingdom.tui.widgets import ErrorPanel, MessagePanel, StreamingPanel, ThinkingPanel, WaitingPanel
 
 pytestmark = pytest.mark.textual_integration
 
@@ -73,6 +74,7 @@ class FakeMember:
     preamble: str = ""
     base: Path | None = None
     branch: str | None = None
+    writable: bool = False
     agent_prompt: str = ""
     phase_prompt: str = ""
 
@@ -195,11 +197,8 @@ class TestAppBoot:
                 assert panels[2].sender == "codex"
 
     async def test_markdown_is_rendered(self, project, thread_id, fake_council) -> None:
-        """Message bodies with markdown should render formatted, not show raw syntax."""
-        from io import StringIO
-
-        from rich.console import Console
-        from rich.markdown import Markdown as RichMarkdown
+        """Message bodies with markdown should use Textual's native Markdown widget."""
+        from textual.widgets import Markdown as TextualMarkdown
 
         add_message(project, BRANCH, thread_id, from_="claude", to="king", body="This is **bold** and `code`")
 
@@ -210,16 +209,9 @@ class TestAppBoot:
                 panels = log.query(MessagePanel)
                 assert len(panels) == 1
 
-                # The widget's internal content should be a Rich Markdown renderable
-                internal = panels[0]._Static__content
-                assert isinstance(internal, RichMarkdown), f"Expected RichMarkdown, got {type(internal)}"
-
-                # Verify the rendered plain text has no raw delimiters
-                buf = StringIO()
-                Console(file=buf, width=120, no_color=True).print(internal)
-                rendered = buf.getvalue()
-                assert "**" not in rendered, f"Raw markdown ** found in rendered text: {rendered!r}"
-                assert "bold" in rendered
+                # MessagePanel should contain a Textual Markdown child widget
+                md_children = panels[0].query(TextualMarkdown)
+                assert len(md_children) == 1
 
     async def test_no_history_starts_clean(self, project, thread_id, fake_council) -> None:
         app = make_app(project, thread_id)
@@ -642,22 +634,23 @@ class TestAutoTurn:
                 input_area.insert("Follow up question")
                 await pilot.press("enter")
 
-                # Wait for auto-turn messages to be written (king + 2 auto-turn responses)
+                # Wait for all messages: king + 2 broadcast + 2 auto-turn = 5 new files
                 await wait_until(
                     pilot,
-                    lambda: len(list(tdir.glob("[0-9]*-*.md"))) >= len(msgs_before) + 3,
+                    lambda: len(list(tdir.glob("[0-9]*-*.md"))) >= len(msgs_before) + 5,
                     timeout=5.0,
                 )
 
                 app.poll_updates()
                 await pilot.pause(delay=0.2)
 
-                # Verify exactly 2 follow-up messages were written (respecting budget)
+                # New non-king messages: 2 broadcast + 2 auto-turn = 4
                 new_msgs = sorted(set(tdir.glob("[0-9]*-*.md")) - msgs_before)
-                auto_turn_msgs = [p for p in new_msgs if "king" not in p.name]
-                assert len(auto_turn_msgs) == 2
+                member_msgs = [p for p in new_msgs if "king" not in p.name]
+                assert len(member_msgs) == 4
 
-                # Verify round-robin order: claude first, then codex
+                # First 2 are broadcast (parallel, order may vary), last 2 are auto-turn (round-robin)
+                auto_turn_msgs = member_msgs[2:]
                 assert "claude" in auto_turn_msgs[0].name
                 assert "codex" in auto_turn_msgs[1].name
 
@@ -780,3 +773,227 @@ class TestSpeakerLabelSanitization:
                     # Should not contain "name: name:" pattern
                     for name in ["claude", "codex"]:
                         assert f"{name}: {name}:" not in content
+
+
+# ---------------------------------------------------------------------------
+# Scenario 13: StreamingPanel lifecycle (cca0)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingPanelLifecycle:
+    """Verify intermediate streaming state: StreamingPanel appears, updates, and
+    gets replaced by MessagePanel when the response finalizes."""
+
+    async def test_streaming_panel_appears_on_stream_started(self, project, thread_id, fake_council) -> None:
+        """StreamingPanel is mounted when a StreamStarted event fires."""
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                log = app.query_one("#message-log", MessageLog)
+                # Mount a WaitingPanel first (simulating post-send state)
+                log.mount(WaitingPanel(sender="claude", id="wait-claude"))
+                await pilot.pause(delay=0.1)
+
+                # Fire StreamStarted via handler
+                app.handle_stream_started(log, StreamStarted(member="claude"))
+                await pilot.pause(delay=0.1)
+
+                # StreamingPanel should exist, WaitingPanel should be gone
+                assert len(log.query(StreamingPanel)) == 1
+                assert log.query_one(StreamingPanel).sender == "claude"
+                assert len(log.query(WaitingPanel)) == 0
+
+    async def test_streaming_panel_content_updates(self, project, thread_id, fake_council) -> None:
+        """StreamingPanel content updates as StreamDelta events arrive."""
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                log = app.query_one("#message-log", MessageLog)
+
+                # Start streaming
+                app.handle_stream_started(log, StreamStarted(member="claude"))
+                await pilot.pause(delay=0.1)
+
+                # First delta
+                app.handle_stream_delta(log, StreamDelta(member="claude", full_text="Hello"))
+                await pilot.pause(delay=0.1)
+                panel = log.query_one(StreamingPanel)
+                assert panel.content_text == "Hello"
+
+                # Second delta (accumulated)
+                app.handle_stream_delta(log, StreamDelta(member="claude", full_text="Hello world"))
+                await pilot.pause(delay=0.2)
+                assert panel.content_text == "Hello world"
+
+                # Verify content is rendered through a Textual Markdown widget
+                from textual.widgets import Markdown as TextualMarkdown
+
+                md = panel.query_one(TextualMarkdown)
+                assert md is not None
+
+    async def test_streaming_panel_replaced_by_message(self, project, thread_id, fake_council) -> None:
+        """StreamingPanel is removed when stream finishes and MessagePanel takes its place."""
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                log = app.query_one("#message-log", MessageLog)
+
+                # Simulate streaming lifecycle
+                app.handle_stream_started(log, StreamStarted(member="claude"))
+                app.handle_stream_delta(log, StreamDelta(member="claude", full_text="Final answer"))
+                await pilot.pause(delay=0.1)
+                assert len(log.query(StreamingPanel)) == 1
+
+                # Stream finishes
+                app.handle_stream_finished(StreamFinished(member="claude"))
+                await pilot.pause(delay=0.1)
+
+                # StreamingPanel should be gone
+                assert len(log.query(StreamingPanel)) == 0
+
+    async def test_multiple_members_stream_concurrently(self, project, thread_id, fake_council) -> None:
+        """Each member gets its own StreamingPanel during concurrent streaming."""
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                log = app.query_one("#message-log", MessageLog)
+
+                # Both members start streaming
+                app.handle_stream_started(log, StreamStarted(member="claude"))
+                app.handle_stream_started(log, StreamStarted(member="codex"))
+                await pilot.pause(delay=0.1)
+
+                panels = log.query(StreamingPanel)
+                assert len(panels) == 2
+                senders = {p.sender for p in panels}
+                assert senders == {"claude", "codex"}
+
+                # Update each independently
+                app.handle_stream_delta(log, StreamDelta(member="claude", full_text="Claude says"))
+                app.handle_stream_delta(log, StreamDelta(member="codex", full_text="Codex says"))
+                await pilot.pause(delay=0.1)
+
+                for panel in log.query(StreamingPanel):
+                    if panel.sender == "claude":
+                        assert panel.content_text == "Claude says"
+                    else:
+                        assert panel.content_text == "Codex says"
+
+
+# ---------------------------------------------------------------------------
+# Scenario 14: ThinkingPanel lifecycle (5e30)
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingPanelLifecycle:
+    """Verify ThinkingPanel auto-collapse, hide mode, show mode, and state persistence."""
+
+    async def test_thinking_panel_auto_collapses_on_answer(self, project, thread_id, fake_council) -> None:
+        """In auto mode, ThinkingPanel collapses when first StreamDelta arrives."""
+        app = make_app(project, thread_id)
+        app.thinking_visibility = "auto"
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                log = app.query_one("#message-log", MessageLog)
+
+                # Thinking starts
+                app.handle_thinking_delta(log, ThinkingDelta(member="claude", full_text="Let me think..."))
+                await pilot.pause(delay=0.1)
+
+                panel = log.query_one(ThinkingPanel)
+                assert panel.expanded is True
+                assert panel.thinking_text == "Let me think..."
+
+                # First answer token triggers auto-collapse
+                app.handle_stream_started(log, StreamStarted(member="claude"))
+                app.handle_stream_delta(log, StreamDelta(member="claude", full_text="Answer"))
+                await pilot.pause(delay=0.1)
+
+                assert panel.expanded is False
+                assert panel.has_class("collapsed")
+
+    async def test_thinking_panel_never_mounted_in_hide_mode(self, project, thread_id, fake_council) -> None:
+        """In hide mode, ThinkingDelta events are ignored — no ThinkingPanel mounted."""
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                # Set after mount (on_mount loads from config, which defaults to "auto")
+                app.thinking_visibility = "hide"
+                log = app.query_one("#message-log", MessageLog)
+
+                app.handle_thinking_delta(log, ThinkingDelta(member="claude", full_text="Thinking..."))
+                await pilot.pause(delay=0.1)
+
+                assert len(log.query(ThinkingPanel)) == 0
+
+    async def test_thinking_panel_stays_expanded_in_show_mode(self, project, thread_id, fake_council) -> None:
+        """In show mode, ThinkingPanel stays expanded even after answer tokens arrive."""
+        app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                app.thinking_visibility = "show"
+                log = app.query_one("#message-log", MessageLog)
+
+                # Thinking starts
+                app.handle_thinking_delta(log, ThinkingDelta(member="claude", full_text="Deep thoughts"))
+                await pilot.pause(delay=0.1)
+
+                panel = log.query_one(ThinkingPanel)
+                assert panel.expanded is True
+
+                # Answer arrives — in show mode, auto-collapse is skipped
+                app.handle_stream_started(log, StreamStarted(member="claude"))
+                app.handle_stream_delta(log, StreamDelta(member="claude", full_text="Response"))
+                await pilot.pause(delay=0.1)
+
+                # Panel should still be expanded (show mode doesn't auto-collapse)
+                assert panel.expanded is True
+                assert not panel.has_class("collapsed")
+
+    async def test_ctrl_t_cycles_thinking_modes(self, project, thread_id, fake_council) -> None:
+        """Ctrl+T cycles through auto -> show -> hide -> auto."""
+        app = make_app(project, thread_id)
+        app.thinking_visibility = "auto"
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                assert app.thinking_visibility == "auto"
+
+                await pilot.press("ctrl+t")
+                await pilot.pause(delay=0.1)
+                assert app.thinking_visibility == "show"
+
+                await pilot.press("ctrl+t")
+                await pilot.pause(delay=0.1)
+                assert app.thinking_visibility == "hide"
+
+                await pilot.press("ctrl+t")
+                await pilot.pause(delay=0.1)
+                assert app.thinking_visibility == "auto"
+
+    async def test_thinking_panel_persists_when_new_message_arrives(self, project, thread_id, fake_council) -> None:
+        """ThinkingPanel gets a sequence-specific ID when its member's response finalizes,
+        so it persists in the log rather than being removed."""
+        app = make_app(project, thread_id)
+        app.thinking_visibility = "auto"
+        with patch.object(Council, "create", return_value=fake_council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                log = app.query_one("#message-log", MessageLog)
+
+                # Mount thinking panel
+                app.handle_thinking_delta(log, ThinkingDelta(member="claude", full_text="Reasoning..."))
+                await pilot.pause(delay=0.1)
+                assert len(log.query(ThinkingPanel)) == 1
+
+                # Simulate finalized message arriving via poller
+                from kingdom.tui.poll import NewMessage
+
+                app.handle_new_message(log, NewMessage(sequence=1, sender="claude", body="Final answer"))
+                await pilot.pause(delay=0.1)
+
+                # ThinkingPanel should still exist (with a new sequence-specific ID)
+                thinking_panels = log.query(ThinkingPanel)
+                assert len(thinking_panels) == 1
+                assert "thinking-claude-1" in thinking_panels[0].id
+
+                # And it should be auto-collapsed
+                assert thinking_panels[0].expanded is False

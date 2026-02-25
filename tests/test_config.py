@@ -29,6 +29,8 @@ class TestDefaultConfig:
         assert cfg.council.auto_messages == -1
         assert cfg.council.mode == "broadcast"
         assert cfg.council.preamble == ""
+        assert cfg.council.chat_mode == "broadcast"
+        assert cfg.council.chat_auto_rounds == 1
 
     def test_peasant_defaults(self) -> None:
         cfg = default_config()
@@ -299,6 +301,38 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be a boolean"):
             validate_config({"council": {"writable": 1}})
 
+    def test_council_chat_mode_sequential(self) -> None:
+        cfg = validate_config({"council": {"chat_mode": "sequential"}})
+        assert cfg.council.chat_mode == "sequential"
+
+    def test_council_chat_mode_broadcast(self) -> None:
+        cfg = validate_config({"council": {"chat_mode": "broadcast"}})
+        assert cfg.council.chat_mode == "broadcast"
+
+    def test_bad_council_chat_mode_type(self) -> None:
+        with pytest.raises(ValueError, match="chat_mode must be a string"):
+            validate_config({"council": {"chat_mode": 123}})
+
+    def test_bad_council_chat_mode_value(self) -> None:
+        with pytest.raises(ValueError, match="chat_mode must be one of"):
+            validate_config({"council": {"chat_mode": "invalid"}})
+
+    def test_council_chat_auto_rounds(self) -> None:
+        cfg = validate_config({"council": {"chat_auto_rounds": 3}})
+        assert cfg.council.chat_auto_rounds == 3
+
+    def test_council_chat_auto_rounds_zero(self) -> None:
+        cfg = validate_config({"council": {"chat_auto_rounds": 0}})
+        assert cfg.council.chat_auto_rounds == 0
+
+    def test_bad_council_chat_auto_rounds_type(self) -> None:
+        with pytest.raises(ValueError, match="chat_auto_rounds must be an integer"):
+            validate_config({"council": {"chat_auto_rounds": "many"}})
+
+    def test_bad_council_chat_auto_rounds_negative(self) -> None:
+        with pytest.raises(ValueError, match="chat_auto_rounds must be non-negative"):
+            validate_config({"council": {"chat_auto_rounds": -1}})
+
     def test_peasant_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
             validate_config({"peasant": {"timeout": -1}})
@@ -354,4 +388,22 @@ class TestLoadConfig:
         data = {"agents": {"bad": {"model": "x"}}}  # missing backend
         (kd / "config.json").write_text(json.dumps(data))
         with pytest.raises(ValueError, match="missing required field 'backend'"):
+            load_config(tmp_path)
+
+    def test_unknown_keys_caught_on_load(self, tmp_path: Path) -> None:
+        """load_config validates so unknown keys surface immediately."""
+        kd = tmp_path / ".kd"
+        kd.mkdir()
+        data = {"council": {"bogus_key": True}}
+        (kd / "config.json").write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="Unknown keys in council: bogus_key"):
+            load_config(tmp_path)
+
+    def test_bad_types_caught_on_load(self, tmp_path: Path) -> None:
+        """load_config validates types, not just keys."""
+        kd = tmp_path / ".kd"
+        kd.mkdir()
+        data = {"council": {"timeout": "slow"}}
+        (kd / "config.json").write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="council.timeout must be an integer"):
             load_config(tmp_path)

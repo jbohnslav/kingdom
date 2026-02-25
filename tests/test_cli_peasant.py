@@ -1615,7 +1615,7 @@ class TestPeasantStatusFiltering:
             assert result.exit_code == 0
             assert "kin-active" in result.output
             assert "kin-done" not in result.output
-            assert "1 completed" in result.output
+            assert "1 done" in result.output
 
     def test_all_flag_shows_terminal_sessions(self) -> None:
         with runner.isolated_filesystem():
@@ -1670,7 +1670,69 @@ class TestPeasantStatusFiltering:
             result = runner.invoke(cli.app, ["peasant", "status"])
             assert result.exit_code == 0
             assert "No active peasants" in result.output
-            assert "1 completed" in result.output
+            assert "1 done" in result.output
+
+
+class TestPeasantStatusBreakdown:
+    """Tests for showing done/failed/stopped breakdown instead of just 'completed'."""
+
+    def test_shows_breakdown_with_failed(self) -> None:
+        """When hidden peasants include failures, show the breakdown not just 'completed'."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-done",
+                AgentState(name="peasant-kin-done", status="done", ticket="kin-done", agent_backend="claude_code"),
+            )
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-fail",
+                AgentState(name="peasant-kin-fail", status="failed", ticket="kin-fail", agent_backend="claude_code"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "status"])
+            assert result.exit_code == 0
+            assert "failed" in result.output.lower()
+
+    def test_shows_breakdown_with_stopped(self) -> None:
+        """When hidden peasants include stopped, show the breakdown."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-stop",
+                AgentState(name="peasant-kin-stop", status="stopped", ticket="kin-stop", agent_backend="claude_code"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "status"])
+            assert result.exit_code == 0
+            assert "stopped" in result.output.lower()
+
+    def test_all_done_shows_done_count(self) -> None:
+        """When all hidden peasants are done (no failures), just show 'N done'."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-done",
+                AgentState(name="peasant-kin-done", status="done", ticket="kin-done", agent_backend="claude_code"),
+            )
+
+            result = runner.invoke(cli.app, ["peasant", "status"])
+            assert result.exit_code == 0
+            # Should not say "completed" — should say "done"
+            assert "1 done" in result.output
 
 
 class TestPeasantNoResultsMessages:

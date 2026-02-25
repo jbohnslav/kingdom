@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import secrets
+import shlex
 import signal
 import subprocess
 import sys
@@ -96,6 +97,22 @@ app = typer.Typer(
     help="Kingdom CLI.",
     add_completion=False,
 )
+
+VERBOSE: bool = False
+
+
+@app.callback()
+def app_callback(
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Print debug output.")] = False,
+) -> None:
+    global VERBOSE
+    VERBOSE = verbose
+
+
+def verbose_echo(message: str) -> None:
+    """Print a debug message to stderr when --verbose is set."""
+    if VERBOSE:
+        error_console.print(f"[dim]{message}[/dim]")
 
 
 def not_implemented(command: str) -> None:
@@ -566,6 +583,12 @@ def council_ask(
     timeout = c.timeout
     c.load_sessions(base, feature)
 
+    verbose_echo(f"base: {base}")
+    verbose_echo(f"branch: {feature}")
+    verbose_echo(f"members: {', '.join(m.name for m in c.members)}")
+    verbose_echo(f"timeout: {timeout}s")
+    verbose_echo(f"logs: {logs_dir}")
+
     # Parse @mentions from prompt (kin-09c9), ignoring content inside code blocks
     available_names = {m.name for m in c.members}
     if not to:
@@ -617,6 +640,10 @@ def council_ask(
     else:
         thread_id = current
 
+    tdir = thread_dir(base, feature, thread_id)
+    verbose_echo(f"thread: {thread_id} ({'new' if start_new else 'continuing'})")
+    verbose_echo(f"thread dir: {tdir}")
+
     # Write king's message to thread
     target = to or "all"
     add_message(base, feature, thread_id, from_="king", to=target, body=prompt)
@@ -626,11 +653,27 @@ def council_ask(
         if to and member:
             response = member.query(prompt, timeout)
             responses = {to: response}
-            add_message(base, feature, thread_id, from_=to, to="king", body=response.thread_body())
+            add_message(
+                base,
+                feature,
+                thread_id,
+                from_=to,
+                to="king",
+                body=response.thread_body(),
+                status=response.thread_status(),
+            )
         else:
             responses = query_with_progress(c, prompt, json_output, console)
             for name, resp in responses.items():
-                add_message(base, feature, thread_id, from_=name, to="king", body=resp.thread_body())
+                add_message(
+                    base,
+                    feature,
+                    thread_id,
+                    from_=name,
+                    to="king",
+                    body=resp.thread_body(),
+                    status=resp.thread_status(),
+                )
 
         c.save_sessions(base, feature)
 
@@ -706,7 +749,9 @@ def council_ask(
             task = progress.add_task(f"Querying {to}...", total=None)
             response = member.query(prompt, timeout)
             progress.update(task, description="Done")
-        add_message(base, feature, thread_id, from_=to, to="king", body=response.thread_body())
+        add_message(
+            base, feature, thread_id, from_=to, to="king", body=response.thread_body(), status=response.thread_status()
+        )
         render_response(response, console)
     else:
 
@@ -868,6 +913,8 @@ def print_turn(console: Console, turn_msgs: list, turn_number: int, total_turns:
     for msg in turn_msgs:
         msg_ts = msg.timestamp.strftime("%H:%M:%S")
         subtitle = f"{msg_ts} · to {msg.to}"
+        if msg.status and msg.status != "complete":
+            subtitle += f" · {msg.status}"
         header = f"## [{subtitle}] {msg.from_}"
         console.print(Markdown(f"{header}\n\n{msg.body}"))
         console.print()
@@ -1159,10 +1206,11 @@ def watch_thread(
     from rich.live import Live
     from rich.text import Text
 
-    from kingdom.agent import extract_stream_text, resolve_all_agents
+    from kingdom.agent import resolve_all_agents
     from kingdom.config import load_config
     from kingdom.council.base import AgentResponse
     from kingdom.thread import get_thread, list_messages, thread_dir
+    from kingdom.tui.poll import tail_stream_file
 
     base = Path.cwd()
     feature = resolve_current_run(base)
@@ -1247,23 +1295,20 @@ def watch_thread(
         return Text("\n".join([header, *lines]))
 
     def read_stream_files() -> None:
-        """Read new lines from .stream-{member}.jsonl files."""
+        """Read new lines from .stream-{member}.jsonl files via tail_stream_file."""
         for name in expected_members - responded_members:
             stream_file = tdir / f".stream-{name}.jsonl"
             if not stream_file.exists():
                 if name in streaming_members:
-                    # Stream file was deleted (member finished or retry) — reset tracking
                     streaming_members.discard(name)
                     stream_positions.pop(name, None)
                 continue
 
             streaming_members.add(name)
-            backend = member_backends.get(name, "")
+            backend = member_backends.get(name, "claude_code")
             pos = stream_positions.get(name, 0)
 
-            # Detect file recreation: during retry, the old stream file is deleted
-            # and a new one created. If the new file is smaller than our saved offset,
-            # reset to read from the beginning.
+            # Detect file recreation (retry): file smaller than our offset
             try:
                 file_size = stream_file.stat().st_size
                 if file_size < pos:
@@ -1272,26 +1317,14 @@ def watch_thread(
             except OSError:
                 continue
 
-            try:
-                with open(stream_file, encoding="utf-8") as f:
-                    f.seek(pos)
-                    new_data = f.read()
-                    new_pos = f.tell()
-            except OSError:
+            if file_size <= pos:
                 continue
 
-            if not new_data or new_pos == pos:
-                continue
-
-            stream_positions[name] = new_pos
-            # Process complete lines only
-            for line in new_data.splitlines():
-                if not line.strip():
-                    continue
-                text = extract_stream_text(line, backend)
-                if text:
-                    accumulated_text.setdefault(name, "")
-                    accumulated_text[name] += text
+            text, _thinking, _tools = tail_stream_file(stream_file, pos, backend)
+            stream_positions[name] = file_size
+            if text:
+                accumulated_text.setdefault(name, "")
+                accumulated_text[name] += text
 
     # Poll for new messages with live streaming display
     start_time = time.monotonic()
@@ -1385,11 +1418,16 @@ def council_retry(
         # Single or comma-separated targets
         expected = {t.strip() for t in last_king_msg.to.split(",") if t.strip() != "king"} & all_members
 
-    # Find members that responded successfully after the last ask
+    # Find members that responded successfully after the last ask.
+    # Check msg.status first (new metadata), fall back to body prefix for legacy messages.
     ok_members: set[str] = set()
     for msg in messages:
-        if msg.sequence > last_king_msg.sequence and msg.from_ in expected and not is_error_response(msg.body):
-            ok_members.add(msg.from_)
+        if msg.sequence > last_king_msg.sequence and msg.from_ in expected:
+            if msg.status:
+                if msg.status == "complete":
+                    ok_members.add(msg.from_)
+            elif not is_error_response(msg.body):
+                ok_members.add(msg.from_)
 
     failed = expected - ok_members
     if not failed:
@@ -1874,11 +1912,94 @@ def launch_work_background(
     return proc.pid
 
 
+def launch_work_tmux(
+    base: Path,
+    feature: str,
+    ticket_id: str,
+    agent: str,
+    worktree_path: Path,
+    thread_id: str,
+    session_name: str,
+) -> int:
+    """Launch ``kd work`` in a new tmux window.
+
+    Errors if tmux is not running. Returns the PID of the tmux
+    new-window shell (the agent process runs inside it).
+    """
+    # Check tmux is running
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            typer.echo("Error: tmux is not running. Start tmux first or omit --tmux.")
+            raise typer.Exit(code=1)
+    except FileNotFoundError:
+        typer.echo("Error: tmux is not installed.")
+        raise typer.Exit(code=1) from None
+
+    work_cmd = " ".join(
+        [
+            shlex.quote(sys.executable),
+            "-m",
+            "kingdom.cli",
+            "work",
+            shlex.quote(ticket_id),
+            "--agent",
+            shlex.quote(agent),
+            "--worktree",
+            shlex.quote(str(worktree_path)),
+            "--thread",
+            shlex.quote(thread_id),
+            "--session",
+            shlex.quote(session_name),
+            "--base",
+            shlex.quote(str(base)),
+        ]
+    )
+
+    window_name = f"peasant-{ticket_id}"
+    tmux_cmd = [
+        "tmux",
+        "new-window",
+        "-n",
+        window_name,
+        "-P",  # print window info
+        work_cmd,
+    ]
+
+    proc = subprocess.run(tmux_cmd, capture_output=True, text=True, timeout=10)
+    if proc.returncode != 0:
+        typer.echo(f"Error: failed to create tmux window: {proc.stderr.strip()}")
+        raise typer.Exit(code=1)
+
+    # Get the PID of the shell running in the new window
+    # tmux new-window -P prints something like "main:2.0"
+    # We'll use tmux list-panes to find the PID
+    pane_target = proc.stdout.strip()
+    try:
+        pid_result = subprocess.run(
+            ["tmux", "list-panes", "-t", pane_target, "-F", "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pid = int(pid_result.stdout.strip().splitlines()[0])
+    except (ValueError, IndexError, subprocess.TimeoutExpired):
+        pid = 0  # Can't determine PID — still functional
+
+    return pid
+
+
 @peasant_app.command("start", help="Launch a peasant agent on a ticket.")
 def peasant_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID to work on.")],
     agent: Annotated[str | None, typer.Option("--agent", help="Agent to use (default: from config).")] = None,
     hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
+    tmux: Annotated[bool, typer.Option("--tmux", help="Open agent in a new tmux window.")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
     from kingdom.config import load_config
@@ -1966,8 +2087,11 @@ def peasant_start(
         seed_body += ticket.body
         add_message(base, feature, thread_id, from_="king", to=session_name, body=seed_body)
 
-    # 4. Launch harness as background process
-    pid = launch_work_background(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
+    # 4. Launch harness
+    if tmux:
+        pid = launch_work_tmux(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
+    else:
+        pid = launch_work_background(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
 
     # 5. Update session with pid and status
     now = datetime.now(UTC).isoformat()
@@ -1986,12 +2110,16 @@ def peasant_start(
     )
 
     peasant_logs_dir = logs_root(base, feature) / session_name
-    typer.echo(f"Started {session_name} (pid {pid})")
+    mode = "tmux" if tmux else "background"
+    typer.echo(f"Started {session_name} (pid {pid}, {mode})")
     typer.echo(f"  Agent: {agent}")
     typer.echo(f"  Ticket: {full_ticket_id}")
     typer.echo(f"  Worktree: {worktree_path}")
     typer.echo(f"  Thread: {thread_id}")
     typer.echo(f"  Logs: {peasant_logs_dir}")
+    verbose_echo(f"ticket path: {ctx.ticket_path}")
+    verbose_echo(f"thread dir: {tdir}")
+    verbose_echo(f"hand mode: {hand}")
 
 
 TERMINAL_STATUSES = {"done", "failed", "stopped"}
@@ -2019,15 +2147,20 @@ def peasant_status(
     peasants = [a for a in active if a.name.startswith("peasant-")]
 
     # By default, hide terminal sessions
-    hidden_count = 0
+    hidden: list = []
     if not show_all:
         all_peasants = peasants
         peasants = [p for p in peasants if p.status not in TERMINAL_STATUSES]
-        hidden_count = len(all_peasants) - len(peasants)
+        hidden = [p for p in all_peasants if p.status in TERMINAL_STATUSES]
 
     if not peasants:
-        if hidden_count:
-            typer.echo(f"No active peasants ({hidden_count} completed — use --all to show).")
+        if hidden:
+            from collections import Counter
+
+            counts = Counter(p.status for p in hidden)
+            parts = [f"{n} {s}" for s, n in sorted(counts.items())]
+            summary = ", ".join(parts)
+            typer.echo(f"No active peasants ({summary} — use --all to show).")
         else:
             typer.echo("No active peasants. Start one with `kd peasant start <ticket-id>`.")
         return
@@ -2095,8 +2228,13 @@ def peasant_status(
         )
 
     console.print(table)
-    if hidden_count:
-        console.print(f"[dim]{hidden_count} completed peasant(s) hidden — use --all to show[/dim]")
+    if hidden:
+        from collections import Counter
+
+        counts = Counter(p.status for p in hidden)
+        parts = [f"{n} {s}" for s, n in sorted(counts.items())]
+        summary = ", ".join(parts)
+        console.print(f"[dim]{summary} — use --all to show[/dim]")
 
 
 @peasant_app.command("logs", help="Show peasant logs.")
@@ -2139,6 +2277,56 @@ def peasant_logs(
 
     if not (stdout_log.exists() or stderr_log.exists()):
         typer.echo("Log files are empty. The peasant may still be starting up.")
+
+
+@peasant_app.command("watch", help="Watch peasant progress in real time.")
+def peasant_watch(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+) -> None:
+    """Tail the ticket worklog and show progress as the peasant works.
+
+    Exits on Ctrl+C or when the peasant finishes (terminal status).
+    """
+    import time as time_mod
+
+    from kingdom.session import get_agent_state
+
+    ctx = resolve_peasant_context(ticket_id)
+    session_name = f"peasant-{ctx.full_ticket_id}"
+
+    console = Console()
+    console.print(f"[bold]Watching {session_name}[/bold]  (Ctrl+C to stop)\n")
+
+    # Track what we've already shown
+    shown_lines: int = 0
+
+    def get_worklog_lines() -> list[str]:
+        """Read current worklog lines from the ticket file."""
+        from kingdom.harness import extract_worklog
+
+        worklog = extract_worklog(ctx.ticket_path)
+        if not worklog.strip():
+            return []
+        return worklog.strip().splitlines()
+
+    try:
+        while True:
+            # Print new worklog lines
+            lines = get_worklog_lines()
+            if len(lines) > shown_lines:
+                for line in lines[shown_lines:]:
+                    console.print(line)
+                shown_lines = len(lines)
+
+            # Check if peasant is still running
+            state = get_agent_state(ctx.base, ctx.feature, session_name)
+            if state.status in TERMINAL_STATUSES:
+                console.print(f"\n[bold]Peasant finished: {state.status}[/bold]")
+                break
+
+            time_mod.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped watching.[/dim]")
 
 
 @peasant_app.command("stop", help="Stop a running peasant.")
@@ -2868,6 +3056,10 @@ def config_show() -> None:
         raise typer.Exit(code=1) from None
 
     raw = load_raw_config(base)
+
+    verbose_echo(f"base: {base}")
+    config_path = base / ".kd" / "config.json"
+    verbose_echo(f"config path: {config_path} ({'exists' if config_path.exists() else 'not found'})")
 
     def flatten(obj, prefix=""):
         items = []
@@ -4130,11 +4322,13 @@ def ticket_dep_cycle() -> None:
     """Find and report any dependency cycles among open tickets."""
     base = Path.cwd()
     all_tickets = collect_all_tickets(base)
-    ticket_map = {t.id: t for t in all_tickets}
+    # Filter to non-closed tickets (open, in_progress, in_review)
+    open_tickets = [t for t in all_tickets if t.status != "closed"]
+    ticket_map = {t.id: t for t in open_tickets}
 
     # DFS cycle detection
     WHITE, GRAY, BLACK = 0, 1, 2
-    color = {t.id: WHITE for t in all_tickets}
+    color = {t.id: WHITE for t in open_tickets}
     cycles: list[list[str]] = []
 
     def dfs(tid: str, path: list[str]) -> None:
@@ -4212,8 +4406,8 @@ def ticket_link(
 
     base = Path.cwd()
 
-    # Resolve all tickets first
-    resolved: list[tuple[Ticket, Path]] = []
+    # Resolve all tickets first, deduplicating by resolved ID
+    seen_ids: dict[str, tuple[Ticket, Path]] = {}
     for tid in ticket_ids:
         try:
             result = find_ticket(base, tid)
@@ -4223,7 +4417,13 @@ def ticket_link(
         if result is None:
             typer.echo(f"Ticket not found: {tid}")
             raise typer.Exit(code=1)
-        resolved.append(result)
+        seen_ids[result[0].id] = result
+
+    resolved = list(seen_ids.values())
+
+    if len(resolved) < 2:
+        print_error("Cannot create self-link. Provide at least two distinct ticket IDs.")
+        raise typer.Exit(code=1)
 
     # Add symmetric links
     for i, (ticket, ticket_path) in enumerate(resolved):
@@ -4534,7 +4734,7 @@ def ticket_closed(
 ) -> None:
     """List recently closed tickets across all locations, sorted by close date (newest first)."""
     base = Path.cwd()
-    all_tickets = collect_all_tickets(base, include_archive=True)
+    all_tickets = collect_all_tickets(base, include_archive=True, include_done=True)
 
     closed = [t for t in all_tickets if t.status == "closed"]
     if assignee:

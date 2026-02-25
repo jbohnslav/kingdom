@@ -19,6 +19,7 @@ kd peasant start <ticket-id> --agent codex
 
 ```bash
 kd peasant status            # show all active peasants
+kd peasant watch <id>        # live-follow a peasant's progress
 kd peasant logs <id>         # view peasant output
 kd peasant stop <id>         # stop a running peasant
 ```

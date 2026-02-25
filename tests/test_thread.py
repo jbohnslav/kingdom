@@ -16,6 +16,7 @@ from kingdom.thread import (
     get_thread,
     list_messages,
     list_threads,
+    parse_message,
     thread_dir,
     threads_root,
 )
@@ -462,3 +463,151 @@ class TestThreadResponseStatus:
         status = thread_response_status(project, BRANCH, "council-empty")
 
         assert status.member_states["claude"].state == MEMBER_ERRORED
+
+
+class TestMessageStatus:
+    """Tests for optional status field in message frontmatter."""
+
+    def test_add_message_with_status_roundtrips(self, project: Path) -> None:
+        create_thread(project, BRANCH, "status-rt", ["king", "claude"], "council")
+        msg = add_message(
+            project, BRANCH, "status-rt", from_="claude", to="king", body="Partial answer", status="timeout"
+        )
+        assert msg.status == "timeout"
+
+        # Parse back from disk
+        tdir = thread_dir(project, BRANCH, "status-rt")
+        parsed = parse_message(tdir / "0001-claude.md")
+        assert parsed.status == "timeout"
+        assert parsed.body == "Partial answer"
+
+    def test_add_message_without_status_backward_compatible(self, project: Path) -> None:
+        create_thread(project, BRANCH, "status-none", ["king", "claude"], "council")
+        msg = add_message(project, BRANCH, "status-none", from_="king", to="all", body="Hello")
+        assert msg.status is None
+
+        tdir = thread_dir(project, BRANCH, "status-none")
+        content = (tdir / "0001-king.md").read_text()
+        assert "status:" not in content
+
+        parsed = parse_message(tdir / "0001-king.md")
+        assert parsed.status is None
+
+    def test_add_message_complete_status(self, project: Path) -> None:
+        create_thread(project, BRANCH, "status-ok", ["king", "claude"], "council")
+        add_message(project, BRANCH, "status-ok", from_="claude", to="king", body="Full answer", status="complete")
+
+        tdir = thread_dir(project, BRANCH, "status-ok")
+        parsed = parse_message(tdir / "0001-claude.md")
+        assert parsed.status == "complete"
+
+    def test_list_messages_preserves_status(self, project: Path) -> None:
+        create_thread(project, BRANCH, "status-list", ["king", "claude", "codex"], "council")
+        add_message(project, BRANCH, "status-list", from_="king", to="all", body="Q?")
+        add_message(project, BRANCH, "status-list", from_="claude", to="king", body="Good answer", status="complete")
+        add_message(project, BRANCH, "status-list", from_="codex", to="king", body="Partial", status="timeout")
+
+        msgs = list_messages(project, BRANCH, "status-list")
+        assert msgs[0].status is None  # king message, no status
+        assert msgs[1].status == "complete"
+        assert msgs[2].status == "timeout"
+
+
+class TestThreadResponseStatusWithMetadata:
+    """Tests for thread_response_status() preferring msg.status over body sniffing."""
+
+    def test_timeout_status_metadata(self, project: Path) -> None:
+        """Status=timeout is classified as timed_out even without error body prefix."""
+        from kingdom.thread import MEMBER_TIMED_OUT, thread_response_status
+
+        create_thread(project, BRANCH, "meta-to", ["king", "claude"], "council")
+        add_message(project, BRANCH, "meta-to", from_="king", to="all", body="Q?")
+        add_message(
+            project, BRANCH, "meta-to", from_="claude", to="king", body="Partial answer here...", status="timeout"
+        )
+
+        status = thread_response_status(project, BRANCH, "meta-to")
+        assert status.member_states["claude"].state == MEMBER_TIMED_OUT
+
+    def test_error_status_metadata(self, project: Path) -> None:
+        from kingdom.thread import MEMBER_ERRORED, thread_response_status
+
+        create_thread(project, BRANCH, "meta-err", ["king", "claude"], "council")
+        add_message(project, BRANCH, "meta-err", from_="king", to="all", body="Q?")
+        add_message(project, BRANCH, "meta-err", from_="claude", to="king", body="Some text", status="error")
+
+        status = thread_response_status(project, BRANCH, "meta-err")
+        assert status.member_states["claude"].state == MEMBER_ERRORED
+
+    def test_complete_status_metadata(self, project: Path) -> None:
+        from kingdom.thread import MEMBER_RESPONDED, thread_response_status
+
+        create_thread(project, BRANCH, "meta-ok", ["king", "claude"], "council")
+        add_message(project, BRANCH, "meta-ok", from_="king", to="all", body="Q?")
+        add_message(project, BRANCH, "meta-ok", from_="claude", to="king", body="Full answer", status="complete")
+
+        status = thread_response_status(project, BRANCH, "meta-ok")
+        assert status.member_states["claude"].state == MEMBER_RESPONDED
+
+    def test_legacy_error_body_still_detected(self, project: Path) -> None:
+        """Legacy messages without status field still work via body sniffing."""
+        from kingdom.thread import MEMBER_ERRORED, thread_response_status
+
+        create_thread(project, BRANCH, "legacy-err", ["king", "claude"], "council")
+        add_message(project, BRANCH, "legacy-err", from_="king", to="all", body="Q?")
+        add_message(project, BRANCH, "legacy-err", from_="claude", to="king", body="*Error: Exit code 1*")
+
+        status = thread_response_status(project, BRANCH, "legacy-err")
+        assert status.member_states["claude"].state == MEMBER_ERRORED
+
+    def test_mixed_status_and_legacy(self, project: Path) -> None:
+        """Thread with some messages having status metadata and some without."""
+        from kingdom.thread import MEMBER_RESPONDED, MEMBER_TIMED_OUT, thread_response_status
+
+        create_thread(project, BRANCH, "mixed", ["king", "claude", "codex", "gemini"], "council")
+        add_message(project, BRANCH, "mixed", from_="king", to="all", body="Q?")
+        # claude: new-style complete
+        add_message(project, BRANCH, "mixed", from_="claude", to="king", body="Answer", status="complete")
+        # codex: legacy error body, no status
+        add_message(project, BRANCH, "mixed", from_="codex", to="king", body="*Error: Timeout after 600s*")
+        # gemini: new-style timeout
+        add_message(project, BRANCH, "mixed", from_="gemini", to="king", body="Partial...", status="timeout")
+
+        status = thread_response_status(project, BRANCH, "mixed")
+        assert status.member_states["claude"].state == MEMBER_RESPONDED
+        assert status.member_states["codex"].state == MEMBER_TIMED_OUT  # legacy body sniffing
+        assert status.member_states["gemini"].state == MEMBER_TIMED_OUT  # metadata
+
+
+class TestAgentResponseThreadStatus:
+    """Tests for AgentResponse.thread_status() method."""
+
+    def test_complete_response(self) -> None:
+        from kingdom.council.base import AgentResponse
+
+        r = AgentResponse(name="claude", text="Full answer", error=None)
+        assert r.thread_status() == "complete"
+
+    def test_timeout_error(self) -> None:
+        from kingdom.council.base import AgentResponse
+
+        r = AgentResponse(name="claude", text="Partial", error="Timeout after 600s")
+        assert r.thread_status() == "timeout"
+
+    def test_timed_out_error(self) -> None:
+        from kingdom.council.base import AgentResponse
+
+        r = AgentResponse(name="claude", text="", error="Process timed out")
+        assert r.thread_status() == "timeout"
+
+    def test_generic_error(self) -> None:
+        from kingdom.council.base import AgentResponse
+
+        r = AgentResponse(name="claude", text="", error="Exit code 1")
+        assert r.thread_status() == "error"
+
+    def test_interrupted_response(self) -> None:
+        from kingdom.council.base import AgentResponse
+
+        r = AgentResponse(name="claude", text="Some text *[Interrupted by user]* more", error=None)
+        assert r.thread_status() == "interrupted"
