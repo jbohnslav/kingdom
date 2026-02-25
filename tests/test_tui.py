@@ -1633,15 +1633,15 @@ class TestAutoTurns:
         assert to == "claude"
         assert to != "all"  # This means send_message won't use run_chat_round
 
-    def test_sequential_mode_first_exchange(self, project: Path) -> None:
-        """mode='sequential' first exchange should query members one at a time."""
+    def test_round_robin_mode_no_initial_broadcast(self, project: Path) -> None:
+        """mode='round_robin' should query members sequentially, no parallel broadcast."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at7"
         app_instance, members = self.make_app_with_council(
-            project, tid, ["claude", "codex"], mode="sequential", first_exchange=True
+            project, tid, ["claude", "codex"], mode="round_robin", first_exchange=True
         )
 
         call_order = []
@@ -1663,17 +1663,19 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
 
-        # Sequential first exchange: claude then codex, no auto-turns
-        assert call_order == ["claude", "codex"]
+        # Round-robin: sequential fixed-order + 1 auto-round
+        assert call_order == ["claude", "codex", "claude", "codex"]
 
-    def test_follow_up_queries_in_round_robin_order(self, project: Path) -> None:
-        """Follow-up auto-turns should proceed in member order after broadcast."""
+    def test_round_robin_fixed_order_across_rounds(self, project: Path) -> None:
+        """round_robin mode: fixed-order sequential across multiple rounds."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at7b"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=2)
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=2, mode="round_robin"
+        )
 
         call_order = []
         for m in members:
@@ -1694,10 +1696,9 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Broadcast (parallel, order may vary) + 2 rounds of sequential auto-turns
-        # Skip broadcast entries, verify auto-turn order
-        auto_turn_order = call_order[2:]  # first 2 are broadcast (parallel)
-        assert auto_turn_order == ["claude", "codex", "claude", "codex"]
+        # First turn (sequential through targets) + 2 auto-rounds
+        # = 3 total passes: targets + 2 rounds
+        assert call_order == ["claude", "codex", "claude", "codex", "claude", "codex"]
 
     def test_error_in_broadcast_does_not_stop_others(self, project: Path) -> None:
         """An error from one member in broadcast should not stop other members."""
@@ -1818,6 +1819,121 @@ class TestAutoTurns:
         assert (
             len(member_msgs) == 0
         ), f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
+
+    def test_natural_mode_parallel_then_shuffled(self, project: Path) -> None:
+        """natural mode: parallel broadcast first, then shuffled auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-natural"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=1, mode="natural"
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
+
+        # Parallel broadcast (1 each) + 1 shuffled round (1 each) = 2 per member
+        for m in members:
+            assert m.call_count == 2, f"{m.name} expected 2 (broadcast + 1 auto-turn), got {m.call_count}"
+
+    def test_natural_mode_first_exchange_broadcast_only(self, project: Path) -> None:
+        """natural mode first exchange: broadcast only, no auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-natural-first"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=2, mode="natural", first_exchange=True
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
+
+        for m in members:
+            assert m.call_count == 1, f"{m.name} expected 1 (broadcast only), got {m.call_count}"
+
+    def test_manual_mode_no_auto_turns(self, project: Path) -> None:
+        """manual mode: only queries targets, no auto-turns regardless of auto_rounds."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-manual"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=5, mode="manual"
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        # Manual mode: only mentioned targets, no auto-turns
+        asyncio.run(app_instance.run_chat_round(["claude"], 1, tdir, is_first_exchange=False))
+
+        assert members[0].call_count == 1  # claude: targeted
+        assert members[1].call_count == 0  # codex: not targeted
+
+    def test_broadcast_mode_parallel_auto_rounds(self, project: Path) -> None:
+        """broadcast mode: auto_rounds controls additional parallel rounds."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-bcast-auto"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=2, mode="broadcast"
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
+
+        # Initial parallel + 2 parallel auto-rounds = 3 total per member
+        for m in members:
+            assert m.call_count == 3, f"{m.name} expected 3 (initial + 2 auto-rounds), got {m.call_count}"
+
+    def test_broadcast_mode_first_exchange_no_auto(self, project: Path) -> None:
+        """broadcast mode first exchange: single parallel round, no auto-rounds."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-bcast-first"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=3, mode="broadcast", first_exchange=True
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
+
+        for m in members:
+            assert m.call_count == 1, f"{m.name} expected 1 (first exchange only), got {m.call_count}"
+
+    def test_round_robin_mode_muted_excluded(self, project: Path) -> None:
+        """round_robin mode: muted members excluded from auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-rr-muted"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex", "extra"], auto_rounds=1, mode="round_robin"
+        )
+        app_instance.muted.add("codex")
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        # Targets exclude muted (as parse_targets would)
+        asyncio.run(app_instance.run_chat_round(["claude", "extra"], 1, tdir, is_first_exchange=False))
+
+        # First turn: claude, extra (sequential) + 1 auto-round: claude, extra
+        assert members[0].call_count == 2  # claude
+        assert members[1].call_count == 0  # codex: muted
+        assert members[2].call_count == 2  # extra
 
 
 class TestChatSessionIsolation:

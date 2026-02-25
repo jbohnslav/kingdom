@@ -333,7 +333,7 @@ class ChatApp(App):
         self.muted: set[str] = set()
         self.generation: int = 0
         self.thinking_visibility: str = "auto"
-        self.chat_mode: str = "broadcast"
+        self.chat_mode: str = "natural"
         self.auto_rounds: int = 1
 
     def compose(self) -> ComposeResult:
@@ -601,6 +601,14 @@ class ChatApp(App):
             self.handle_slash_command(text)
             return
 
+        # Manual mode: require explicit @mention
+        mentions = re.findall(r"(?<!\w)@(\w+)", text)
+        if self.chat_mode == "manual" and not mentions:
+            self.notify("Use @member to direct your message (e.g. @claude). Try @all for everyone.", severity="warning")
+            # Put the text back so user can add @mention
+            input_area.load_text(text)
+            return
+
         self.interrupted = False
         self.generation += 1
         gen = self.generation
@@ -630,8 +638,6 @@ class ChatApp(App):
             self.remove_member_panels(log, name)
 
         if to == "all":
-            # Broadcast: always query all targets in parallel, then optionally
-            # run auto-turn follow-ups (sequential round-robin).
             for name in targets:
                 if not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
@@ -639,7 +645,7 @@ class ChatApp(App):
             is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
             self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
         else:
-            # Directed: single query, no auto-turns
+            # Directed @mention: single query, no auto-turns
             if not log.query(f"#wait-{targets[0]}"):
                 log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
             member = self.council.get_member(targets[0]) if self.council else None
@@ -705,57 +711,128 @@ class ChatApp(App):
     async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
         """Coordinate a chat round after the king sends a message.
 
-        Starts with a parallel broadcast for the initial response, then runs
-        sequential round-robin auto-turns.  A *round* is one full pass through
-        all eligible (non-muted) members.  ``self.auto_rounds`` controls how
-        many rounds of auto-turns run after the broadcast.
+        Dispatches to mode-specific logic:
+        - natural: parallel broadcast first, then shuffled round-robin auto-turns
+        - round_robin: fixed-order sequential turns for auto_rounds rounds
+        - manual: only @mentioned targets, no auto-turns
+        - broadcast: parallel to all, auto_rounds additional parallel rounds
         """
         if not self.council:
             return
 
-        # Parallel broadcast (or sequential if configured).  WaitingPanels
-        # are already mounted by send_message().
         mode = self.chat_mode
-        if mode == "broadcast" and len(targets) > 1:
-            coros = []
-            for name in targets:
-                member = self.council.get_member(name)
-                if member:
-                    stream_path = tdir / f".stream-{name}.jsonl"
-                    coros.append(self.run_query(member, stream_path, generation=generation))
-            await asyncio.gather(*coros)
-            if self.generation != generation:
-                return
-        else:
-            for name in targets:
-                if self.interrupted or self.generation != generation:
-                    return
-                member = self.council.get_member(name)
-                if not member:
-                    continue
-                stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path, generation=generation)
 
-        # First exchange: broadcast only, no auto-turns.
+        if mode == "manual":
+            await self.run_mode_manual(targets, generation, tdir)
+        elif mode == "broadcast":
+            await self.run_mode_broadcast(targets, generation, tdir, is_first_exchange)
+        elif mode == "round_robin":
+            await self.run_mode_round_robin(targets, generation, tdir)
+        else:
+            # natural (default)
+            await self.run_mode_natural(targets, generation, tdir, is_first_exchange)
+
+    async def run_mode_natural(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
+        """Natural mode: parallel broadcast first turn, then shuffled round-robin."""
+        # First turn: parallel broadcast (WaitingPanels mounted by send_message)
+        await self.parallel_query(targets, generation, tdir)
+        if self.generation != generation:
+            return
+
+        # First exchange in thread: broadcast only, no auto-turns
         if is_first_exchange:
             return
 
-        # Follow-up: sequential round-robin auto-turns.
-        # A round = one full pass through all eligible members.
-        if self.auto_rounds <= 0:
+        # Follow-up: shuffled round-robin auto-turns
+        await self.sequential_auto_turns(generation, tdir, shuffle=True)
+
+    async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Round-robin mode: no initial broadcast, fixed-order sequential turns."""
+        # First turn: sequential through targets (WaitingPanels mounted by send_message)
+        for name in targets:
+            if self.interrupted or self.generation != generation:
+                return
+            member = self.council.get_member(name)
+            if not member:
+                continue
+            stream_path = tdir / f".stream-{name}.jsonl"
+            await self.run_query(member, stream_path, generation=generation)
+
+        # Auto-turns: fixed-order sequential
+        await self.sequential_auto_turns(generation, tdir, shuffle=False)
+
+    async def run_mode_manual(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Manual mode: only query @mentioned targets, no auto-turns."""
+        # Sequential through mentioned targets (WaitingPanels mounted by send_message)
+        for name in targets:
+            if self.interrupted or self.generation != generation:
+                return
+            member = self.council.get_member(name)
+            if not member:
+                continue
+            stream_path = tdir / f".stream-{name}.jsonl"
+            await self.run_query(member, stream_path, generation=generation)
+
+    async def run_mode_broadcast(
+        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool
+    ) -> None:
+        """Broadcast mode: parallel to all each turn, auto_rounds additional rounds."""
+        # First turn: parallel (WaitingPanels mounted by send_message)
+        await self.parallel_query(targets, generation, tdir)
+        if self.generation != generation:
             return
 
+        # First exchange: no auto-rounds
+        if is_first_exchange:
+            return
+
+        # Additional broadcast rounds
+        if self.auto_rounds <= 0:
+            return
+        for _round in range(self.auto_rounds):
+            if self.interrupted or self.generation != generation:
+                return
+            active = [n for n in self.member_names if n not in self.muted]
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
+            for name in active:
+                await self.await_remove_member_panels(log, name)
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            await self.parallel_query(active, generation, tdir)
+            if self.generation != generation:
+                return
+
+    async def parallel_query(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Run queries for all targets in parallel."""
+        coros = []
+        for name in targets:
+            member = self.council.get_member(name)
+            if member:
+                stream_path = tdir / f".stream-{name}.jsonl"
+                coros.append(self.run_query(member, stream_path, generation=generation))
+        if coros:
+            await asyncio.gather(*coros)
+
+    async def sequential_auto_turns(self, generation: int, tdir: Path, shuffle: bool) -> None:
+        """Run sequential auto-turn rounds through eligible members."""
+        if self.auto_rounds <= 0:
+            return
         for _round in range(self.auto_rounds):
             active = [n for n in self.member_names if n not in self.muted]
+            if shuffle:
+                import random
+
+                active = active.copy()
+                random.shuffle(active)
             for name in active:
                 if self.interrupted or self.generation != generation:
                     return
                 member = self.council.get_member(name)
                 if not member:
                     continue
-                # Mount WaitingPanel for this member's turn
                 log = self.query_one("#message-log", MessageLog)
-                log.scroll_if_following()  # capture intent BEFORE mount
+                log.scroll_if_following()
                 await self.await_remove_member_panels(log, name)
                 if not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))

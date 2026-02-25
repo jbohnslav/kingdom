@@ -49,9 +49,12 @@ class AskConfig:
 
 @dataclass
 class ChatConfig:
-    """Settings for ``kd chat`` (interactive group chat)."""
+    """Settings for ``kd chat`` (interactive group chat).
 
-    mode: str = "broadcast"
+    Modes: natural (default), round_robin, manual, broadcast.
+    """
+
+    mode: str = "natural"
     auto_rounds: int = 1
 
 
@@ -228,8 +231,8 @@ def validate_chat(data: dict) -> ChatConfig:
     """Validate and construct a ChatConfig from a raw dict."""
     check_unknown_keys(data, VALID_CHAT_KEYS, "council.chat")
 
-    valid_modes = {"broadcast", "sequential"}
-    mode = data.get("mode", "broadcast")
+    valid_modes = {"natural", "round_robin", "manual", "broadcast"}
+    mode = data.get("mode", "natural")
     if not isinstance(mode, str):
         raise ValueError(f"council.chat.mode must be a string, got {type(mode).__name__}")
     if mode not in valid_modes:

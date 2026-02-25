@@ -29,7 +29,7 @@ class TestDefaultConfig:
         assert cfg.council.ask.auto_messages == -1
         assert cfg.council.ask.mode == "broadcast"
         assert cfg.council.preamble == ""
-        assert cfg.council.chat.mode == "broadcast"
+        assert cfg.council.chat.mode == "natural"
         assert cfg.council.chat.auto_rounds == 1
 
     def test_peasant_defaults(self) -> None:
@@ -306,13 +306,21 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be a boolean"):
             validate_config({"council": {"writable": 1}})
 
-    def test_chat_mode_sequential(self) -> None:
-        cfg = validate_config({"council": {"chat": {"mode": "sequential"}}})
-        assert cfg.council.chat.mode == "sequential"
+    def test_chat_mode_round_robin(self) -> None:
+        cfg = validate_config({"council": {"chat": {"mode": "round_robin"}}})
+        assert cfg.council.chat.mode == "round_robin"
 
     def test_chat_mode_broadcast(self) -> None:
         cfg = validate_config({"council": {"chat": {"mode": "broadcast"}}})
         assert cfg.council.chat.mode == "broadcast"
+
+    def test_chat_mode_manual(self) -> None:
+        cfg = validate_config({"council": {"chat": {"mode": "manual"}}})
+        assert cfg.council.chat.mode == "manual"
+
+    def test_chat_mode_natural(self) -> None:
+        cfg = validate_config({"council": {"chat": {"mode": "natural"}}})
+        assert cfg.council.chat.mode == "natural"
 
     def test_bad_chat_mode_type(self) -> None:
         with pytest.raises(ValueError, match="council.chat.mode must be a string"):
