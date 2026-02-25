@@ -1936,6 +1936,147 @@ class TestAutoTurns:
         assert members[2].call_count == 2  # extra
 
 
+class TestMentionBump:
+    """Tests for mention_bump() — reordering auto-turn queue based on @mentions."""
+
+    def test_single_mention_bumps_to_front(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("I agree with @extra", ["codex", "extra"], ["claude", "codex", "extra"])
+        assert result == ["extra", "codex"]
+
+    def test_multiple_mentions_bump_in_order(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump(
+            "@extra and @codex should weigh in", ["codex", "extra", "gemini"], ["codex", "extra", "gemini"]
+        )
+        assert result == ["extra", "codex", "gemini"]
+
+    def test_duplicate_mentions_deduplicated(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("@extra @extra @extra", ["codex", "extra"], ["codex", "extra"])
+        assert result == ["extra", "codex"]
+
+    def test_unknown_mentions_ignored(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("@nobody should look at this", ["codex", "extra"], ["codex", "extra"])
+        assert result == ["codex", "extra"]
+
+    def test_king_mention_ignored(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("@king what do you think?", ["codex", "extra"], ["codex", "extra"])
+        assert result == ["codex", "extra"]
+
+    def test_no_mentions_preserves_order(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("Just a regular response", ["codex", "extra"], ["codex", "extra"])
+        assert result == ["codex", "extra"]
+
+    def test_mention_not_in_remaining_ignored(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        # claude is a valid member but not in remaining queue (already spoke)
+        result = mention_bump("@claude had a good point", ["codex", "extra"], ["claude", "codex", "extra"])
+        assert result == ["codex", "extra"]
+
+
+class TestMentionBumpAutoTurns:
+    """Integration tests for mention bump during sequential auto-turns."""
+
+    @pytest.fixture()
+    def project(self, tmp_path: Path) -> Path:
+        from kingdom.state import ensure_base_layout, set_current_run
+
+        ensure_base_layout(tmp_path)
+        ensure_branch_layout(tmp_path, BRANCH)
+        set_current_run(tmp_path, BRANCH)
+        return tmp_path
+
+    def make_fake_member(self, name, response_text="Response"):
+        from unittest.mock import MagicMock
+
+        from kingdom.council.base import AgentResponse
+
+        member = MagicMock()
+        member.name = name
+        member.call_count = 0
+
+        def fake_query(prompt, timeout, stream_path=None, max_retries=0):
+            member.call_count += 1
+            return AgentResponse(name=name, text=response_text, error=None, elapsed=0.1, raw="")
+
+        member.query = fake_query
+        return member
+
+    def test_mention_bump_reorders_auto_turn_queue(self, project: Path) -> None:
+        """When a member mentions another, that member is bumped next in the round."""
+        import asyncio
+
+        from kingdom.council.council import Council
+        from kingdom.thread import add_message, thread_dir
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-bump"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex", "extra"], "council")
+        add_message(project, BRANCH, tid, from_="king", to="all", body="First question")
+        for n in ["claude", "codex", "extra"]:
+            add_message(project, BRANCH, tid, from_=n, to="king", body=f"Response from {n}")
+        add_message(project, BRANCH, tid, from_="king", to="all", body="Follow-up")
+
+        # claude's response mentions @extra, so extra should be bumped ahead of codex
+        claude_member = self.make_fake_member("claude", "I think @extra should respond")
+        codex_member = self.make_fake_member("codex", "Regular response")
+        extra_member = self.make_fake_member("extra", "Thanks for the mention")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        council = Council(members=[claude_member, codex_member, extra_member])
+        app_instance.council = council
+        app_instance.chat_mode = "natural"
+        app_instance.auto_rounds = 1
+
+        from unittest.mock import MagicMock
+
+        mock_log = MagicMock()
+        app_instance.query_one = MagicMock(return_value=mock_log)
+
+        # Track call order during auto-turns
+        call_order = []
+        for m in [claude_member, codex_member, extra_member]:
+            real_query = m.query
+            name = m.name
+
+            def make_tracked(real_fn, member_name):
+                def tracked(prompt, timeout, stream_path=None, max_retries=0):
+                    result = real_fn(prompt, timeout, stream_path, max_retries)
+                    call_order.append(member_name)
+                    return result
+
+                return tracked
+
+            m.query = make_tracked(real_query, name)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+
+        # Patch shuffle to give deterministic order: claude, codex, extra
+        with patch("random.shuffle"):
+            asyncio.run(app_instance.run_chat_round(["claude", "codex", "extra"], 1, tdir, is_first_exchange=False))
+
+        # Broadcast: all 3 (parallel, order varies)
+        # Auto-turn round (deterministic due to shuffle patch): claude, then...
+        # claude mentions @extra, so queue becomes [extra, codex]
+        # Final auto-turn order: claude, extra, codex
+        auto_order = call_order[3:]  # skip broadcast (first 3)
+        assert auto_order == ["claude", "extra", "codex"]
+
+
 class TestChatSessionIsolation:
     """Test that chat queries don't write to shared session state files.
 

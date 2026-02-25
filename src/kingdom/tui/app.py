@@ -44,6 +44,36 @@ from .widgets import (
 
 logger = logging.getLogger(__name__)
 
+MENTION_RE = re.compile(r"(?<!\w)@(\w+)")
+
+
+def mention_bump(response_text: str, remaining: list[str], valid_members: list[str]) -> list[str]:
+    """Reorder remaining queue by bumping @mentioned members to the front.
+
+    Mentioned valid members (that are in *remaining*) move to the front in
+    mention order.  Non-mentioned members keep their relative order.
+    @king and unknown names are ignored.  Duplicates are deduplicated.
+    """
+    mentions = MENTION_RE.findall(response_text)
+    valid_set = set(valid_members)
+    remaining_set = set(remaining)
+
+    # Collect mentioned names that are valid members in the remaining queue
+    bumped: list[str] = []
+    seen: set[str] = set()
+    for name in mentions:
+        if name in valid_set and name in remaining_set and name not in seen and name != "king":
+            bumped.append(name)
+            seen.add(name)
+
+    if not bumped:
+        return remaining
+
+    # Rest keeps relative order
+    rest = [n for n in remaining if n not in seen]
+    return bumped + rest
+
+
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
     "This is a live conversation — read the full thread before responding. "
@@ -653,12 +683,15 @@ class ChatApp(App):
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
                 self.run_worker(self.run_query(member, stream_path, generation=gen), exclusive=False)
 
-    async def run_query(self, member, stream_path: Path, generation: int | None = None) -> None:
+    async def run_query(self, member, stream_path: Path, generation: int | None = None) -> str | None:
         """Run a member query with full thread context, then persist and clean up.
 
         When *generation* is passed, the response is discarded if ``self.generation``
         has moved on (meaning the user sent a new message while this query was in flight).
+
+        Returns the response body text, or None if discarded/errored.
         """
+        body = None
         try:
             timeout = self.council.timeout if self.council else 600
             tdir = thread_dir(self.base, self.branch, self.thread_id)
@@ -670,7 +703,7 @@ class ChatApp(App):
                 logger.debug(
                     "Discarding stale response from %s (gen %d != %d)", member.name, generation, self.generation
                 )
-                return
+                return None
 
             # Use cleaner message for interrupted queries with no useful text
             if self.interrupted and not response.text:
@@ -702,6 +735,7 @@ class ChatApp(App):
             # Stream file is NOT deleted here — the poller needs to drain final
             # events (thinking tokens, last text deltas) before cleanup.  Stale
             # files are cleaned up on next session launch (on_mount).
+        return body
 
     def build_debug_stream_path(self, stream_path: Path, member_name: str) -> Path:
         """Build a unique path for preserved stream debug artifacts."""
@@ -815,7 +849,11 @@ class ChatApp(App):
             await asyncio.gather(*coros)
 
     async def sequential_auto_turns(self, generation: int, tdir: Path, shuffle: bool) -> None:
-        """Run sequential auto-turn rounds through eligible members."""
+        """Run sequential auto-turn rounds through eligible members.
+
+        After each response, parses @mentions and bumps mentioned members
+        to the front of the remaining queue for the current round.
+        """
         if self.auto_rounds <= 0:
             return
         for _round in range(self.auto_rounds):
@@ -825,9 +863,11 @@ class ChatApp(App):
 
                 active = active.copy()
                 random.shuffle(active)
-            for name in active:
+            queue = list(active)
+            while queue:
                 if self.interrupted or self.generation != generation:
                     return
+                name = queue.pop(0)
                 member = self.council.get_member(name)
                 if not member:
                     continue
@@ -837,7 +877,9 @@ class ChatApp(App):
                 if not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
                 stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path, generation=generation)
+                body = await self.run_query(member, stream_path, generation=generation)
+                if body and queue:
+                    queue = mention_bump(body, queue, self.member_names)
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove any existing wait/stream/thinking/interrupted panels for a member."""
