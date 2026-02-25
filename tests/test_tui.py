@@ -1431,9 +1431,7 @@ class TestAutoTurns:
 
         return FakeMember(name)
 
-    def make_app_with_council(
-        self, project, tid, member_names, auto_messages=-1, mode="broadcast", first_exchange=False
-    ):
+    def make_app_with_council(self, project, tid, member_names, auto_rounds=1, mode="broadcast", first_exchange=False):
         """Create a ChatApp with a fake council for testing run_chat_round.
 
         By default sets up a follow-up conversation (prior member responses exist)
@@ -1463,8 +1461,10 @@ class TestAutoTurns:
 
         # Build fake council with fake members
         fake_members = [self.make_fake_member(n) for n in member_names]
-        council = Council(members=fake_members, auto_messages=auto_messages, mode=mode)
+        council = Council(members=fake_members)
         app_instance.council = council
+        app_instance.chat_mode = mode
+        app_instance.auto_rounds = auto_rounds
 
         # Mock query_one for DOM operations in auto-turn WaitingPanel mounts
         mock_log = MagicMock()
@@ -1507,31 +1507,31 @@ class TestAutoTurns:
         for m in members:
             assert m.call_count == 2, f"{m.name} expected 2 queries (broadcast + auto-turn), got {m.call_count}"
 
-    def test_auto_messages_budget_limits_total(self, project: Path) -> None:
-        """auto_messages=3 with 2 members: broadcast(1 each) + sequential claude(1) codex(1) claude(1)."""
+    def test_auto_rounds_limits_total(self, project: Path) -> None:
+        """auto_rounds=2 with 2 members: broadcast(1 each) + 2 rounds of sequential."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at1b"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=3)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=2)
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Broadcast(1 each) + sequential budget=3: claude(1) codex(1) claude(1)
+        # Broadcast(1 each) + 2 rounds x 2 members = 4 auto-turns
         assert members[0].call_count == 3  # claude: 1 broadcast + 2 auto-turns
-        assert members[1].call_count == 2  # codex: 1 broadcast + 1 auto-turn
+        assert members[1].call_count == 3  # codex: 1 broadcast + 2 auto-turns
 
-    def test_auto_messages_zero_disables_auto_turns(self, project: Path) -> None:
-        """auto_messages=0 should still broadcast but skip auto-turns on follow-up."""
+    def test_auto_rounds_zero_disables_auto_turns(self, project: Path) -> None:
+        """auto_rounds=0 should still broadcast but skip auto-turns on follow-up."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at2"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=0)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=0)
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
@@ -1548,7 +1548,7 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at3"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=2)
 
         # Make claude set interrupted=True during broadcast
         real_query = members[0].query
@@ -1575,7 +1575,7 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at4"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=2)
 
         # Increment generation after claude's broadcast query
         real_query = members[0].query
@@ -1602,8 +1602,8 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at5"
-        # Budget=4, 3 members, codex muted → broadcast targets exclude muted
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex", "extra"], auto_messages=4)
+        # 2 rounds, 3 members, codex muted → broadcast targets exclude muted
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex", "extra"], auto_rounds=2)
         app_instance.muted.add("codex")
 
         tdir = thread_dir(project, BRANCH, tid)
@@ -1611,8 +1611,7 @@ class TestAutoTurns:
         # In real usage, parse_targets excludes muted members from targets
         asyncio.run(app_instance.run_chat_round(["claude", "extra"], 1, tdir, is_first_exchange=False))
 
-        # Broadcast(1 each) + sequential budget=4, active=[claude, extra]:
-        # claude(auto), extra(auto), claude(auto), extra(auto) = 4 auto-turns
+        # Broadcast(1 each) + 2 rounds x 2 active members (codex muted):
         assert members[0].call_count == 3  # claude: 1 broadcast + 2 auto-turns
         assert members[1].call_count == 0  # codex: muted, not in targets
         assert members[2].call_count == 3  # extra: 1 broadcast + 2 auto-turns
@@ -1674,7 +1673,7 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at7b"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=2)
 
         call_order = []
         for m in members:
@@ -1695,7 +1694,7 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Broadcast (parallel, order may vary) + sequential auto-turns
+        # Broadcast (parallel, order may vary) + 2 rounds of sequential auto-turns
         # Skip broadcast entries, verify auto-turn order
         auto_turn_order = call_order[2:]  # first 2 are broadcast (parallel)
         assert auto_turn_order == ["claude", "codex", "claude", "codex"]
@@ -1707,7 +1706,7 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at8"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=2)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=1)
 
         # Make claude raise an exception
         def error_query(prompt, timeout, stream_path=None, max_retries=0):
@@ -1797,7 +1796,7 @@ class TestAutoTurns:
 
         tid = "council-gen-gather"
         app_instance, members = self.make_app_with_council(
-            project, tid, ["claude", "codex"], auto_messages=0, first_exchange=True
+            project, tid, ["claude", "codex"], auto_rounds=0, first_exchange=True
         )
 
         # Make claude bump generation during its query (simulates user re-sending)
@@ -1944,7 +1943,7 @@ class TestChatSessionIsolation:
 
 
 class TestCouncilCreateNewFields:
-    """Test that Council.create() passes auto_messages and mode from config."""
+    """Test that Council.create() passes ask config from nested council.ask."""
 
     def test_create_default_auto_messages(self, project: Path) -> None:
         """Default auto_messages should be -1 (auto: len(members))."""
@@ -1965,7 +1964,7 @@ class TestCouncilCreateNewFields:
         import json
 
         kd = project / ".kd"
-        (kd / "config.json").write_text(json.dumps({"council": {"auto_messages": 5}}))
+        (kd / "config.json").write_text(json.dumps({"council": {"ask": {"auto_messages": 5}}}))
 
         from kingdom.council.council import Council
 
@@ -1977,7 +1976,7 @@ class TestCouncilCreateNewFields:
         import json
 
         kd = project / ".kd"
-        (kd / "config.json").write_text(json.dumps({"council": {"auto_messages": 0}}))
+        (kd / "config.json").write_text(json.dumps({"council": {"ask": {"auto_messages": 0}}}))
 
         from kingdom.council.council import Council
 
@@ -1989,7 +1988,7 @@ class TestCouncilCreateNewFields:
         import json
 
         kd = project / ".kd"
-        (kd / "config.json").write_text(json.dumps({"council": {"mode": "sequential"}}))
+        (kd / "config.json").write_text(json.dumps({"council": {"ask": {"mode": "sequential"}}}))
 
         from kingdom.council.council import Council
 

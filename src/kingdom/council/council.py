@@ -61,8 +61,8 @@ class Council:
         return cls(
             members=members,
             timeout=cfg.council.timeout,
-            auto_messages=cfg.council.auto_messages,
-            mode=cfg.council.mode,
+            auto_messages=cfg.council.ask.auto_messages,
+            mode=cfg.council.ask.mode,
         )
 
     def query(self, prompt: str) -> dict[str, AgentResponse]:

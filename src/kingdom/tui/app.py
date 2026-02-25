@@ -333,6 +333,8 @@ class ChatApp(App):
         self.muted: set[str] = set()
         self.generation: int = 0
         self.thinking_visibility: str = "auto"
+        self.chat_mode: str = "broadcast"
+        self.auto_rounds: int = 1
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -362,9 +364,11 @@ class ChatApp(App):
         for stale in tdir.glob(".stream-*.jsonl"):
             stale.unlink()
 
-        # Load config for backends and thinking visibility
+        # Load config for backends, thinking visibility, and chat settings
         cfg = load_config(self.base)
         self.thinking_visibility = cfg.council.thinking_visibility
+        self.chat_mode = cfg.council.chat.mode
+        self.auto_rounds = cfg.council.chat.auto_rounds
         agent_configs = resolve_all_agents(cfg.agents)
         member_backends = {}
         for name in self.member_names:
@@ -701,16 +705,17 @@ class ChatApp(App):
     async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
         """Coordinate a chat round after the king sends a message.
 
-        Always starts with a parallel broadcast for the initial response to the
-        king's message.  On follow-up exchanges (not the first), continues with
-        sequential round-robin auto-turns after the broadcast.
+        Starts with a parallel broadcast for the initial response, then runs
+        sequential round-robin auto-turns.  A *round* is one full pass through
+        all eligible (non-muted) members.  ``self.auto_rounds`` controls how
+        many rounds of auto-turns run after the broadcast.
         """
         if not self.council:
             return
 
         # Parallel broadcast (or sequential if configured).  WaitingPanels
         # are already mounted by send_message().
-        mode = self.council.mode
+        mode = self.chat_mode
         if mode == "broadcast" and len(targets) > 1:
             coros = []
             for name in targets:
@@ -735,26 +740,16 @@ class ChatApp(App):
         if is_first_exchange:
             return
 
-        # Follow-up: sequential round-robin auto-turns after the broadcast.
-        active = [n for n in self.member_names if n not in self.muted]
-        budget = self.council.auto_messages
-        if budget == 0:
+        # Follow-up: sequential round-robin auto-turns.
+        # A round = one full pass through all eligible members.
+        if self.auto_rounds <= 0:
             return
-        if budget < 0:
-            # -1 = auto: one message per active member
-            budget = len(active)
-        if budget <= 0:
-            return
-        messages_sent = 0
 
-        while messages_sent < budget:
+        for _round in range(self.auto_rounds):
+            active = [n for n in self.member_names if n not in self.muted]
             for name in active:
-                if messages_sent >= budget:
-                    break
                 if self.interrupted or self.generation != generation:
                     return
-                if name in self.muted:
-                    continue
                 member = self.council.get_member(name)
                 if not member:
                     continue
@@ -766,7 +761,6 @@ class ChatApp(App):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
                 stream_path = tdir / f".stream-{name}.jsonl"
                 await self.run_query(member, stream_path, generation=generation)
-                messages_sent += 1
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove any existing wait/stream/thinking/interrupted panels for a member."""

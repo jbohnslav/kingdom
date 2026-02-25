@@ -219,12 +219,12 @@ def test_config_show_indicates_sources(tmp_path) -> None:
             raise AssertionError("council.timeout not found in output")
         # Default value shows "default" source
         for line in result.output.splitlines():
-            if "council.mode" in line:
+            if "council.ask.mode" in line:
                 assert "broadcast" in line
                 assert "default" in line
                 break
         else:
-            raise AssertionError("council.mode not found in output")
+            raise AssertionError("council.ask.mode not found in output")
 
 
 def test_config_show_dotted_agent_name(tmp_path) -> None:
