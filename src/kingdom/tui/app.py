@@ -622,13 +622,15 @@ class ChatApp(App):
             # Broadcast: always query all targets in parallel, then optionally
             # run auto-turn follow-ups (sequential round-robin).
             for name in targets:
-                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             prior_messages = list_messages(self.base, self.branch, self.thread_id)
             is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
             self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
         else:
             # Directed: single query, no auto-turns
-            log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
+            if not log.query(f"#wait-{targets[0]}"):
+                log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
             member = self.council.get_member(targets[0]) if self.council else None
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
@@ -753,7 +755,8 @@ class ChatApp(App):
                 log = self.query_one("#message-log", MessageLog)
                 log.scroll_if_following()  # capture intent BEFORE mount
                 await self.await_remove_member_panels(log, name)
-                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
                 stream_path = tdir / f".stream-{name}.jsonl"
                 await self.run_query(member, stream_path, generation=generation)
                 messages_sent += 1

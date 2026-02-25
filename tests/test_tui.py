@@ -2316,6 +2316,49 @@ class TestSendMessageCleansUpPanels:
         # remove_member_panels should have been called for "claude"
         assert "claude" in removed
 
+    def test_no_duplicate_mount_when_panel_exists(self, project: Path) -> None:
+        """WaitingPanel should not be mounted if one already exists (DuplicateIds guard)."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp, MessageLog
+
+        tid = "council-dup2"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        mock_log = MagicMock(spec=MessageLog)
+        # remove_member_panels calls query for each prefix; the guard calls
+        # query for "#wait-<name>".  Make all removal queries return empty
+        # (nothing to remove) but the guard query find an existing panel.
+        existing_panel = MagicMock()
+        mock_log.query.side_effect = lambda sel: [existing_panel] if sel == "#wait-claude" else []
+        mock_log.scroll_if_following = MagicMock()
+
+        from kingdom.tui.app import InputArea
+
+        mock_input = MagicMock(spec=InputArea)
+        mock_input.text = "Hello"
+        mock_input.has_focus = True
+
+        def fake_query_one(sel_or_cls, cls=None):
+            if sel_or_cls == "#input-area" or cls is InputArea:
+                return mock_input
+            return mock_log
+
+        app_instance.query_one = fake_query_one
+        app_instance.run_worker = MagicMock()
+
+        app_instance.send_message()
+
+        # mount is called for the king MessagePanel but should NOT mount any WaitingPanel
+        from kingdom.tui.widgets import WaitingPanel
+
+        for call in mock_log.mount.call_args_list:
+            widget = call[0][0]
+            assert not isinstance(widget, WaitingPanel), "WaitingPanel should not be mounted when one already exists"
+
 
 class TestRemoveMemberPanels:
     def test_removes_thinking_panels(self, project: Path) -> None:
