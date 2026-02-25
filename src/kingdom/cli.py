@@ -1540,12 +1540,8 @@ def chat(
         create_thread(base, feature, tid, ["king", *member_names], "council")
         set_current_thread(base, feature, tid)
     elif thread_id:
-        tid = thread_id
-        from kingdom.thread import thread_dir
-
-        if not thread_dir(base, feature, tid).exists():
-            typer.echo(f"Thread not found: {tid}")
-            raise typer.Exit(code=1)
+        tid = resolve_council_thread_id(base, feature, thread_id, command="chat")
+        set_current_thread(base, feature, tid)
     else:
         current = get_current_thread(base, feature)
         if current:

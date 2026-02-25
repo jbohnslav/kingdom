@@ -133,6 +133,58 @@ class TestChatCommand:
         assert result.exit_code == 0
         assert "council-other" in result.output
 
+    def test_explicit_thread_sets_current(self, project: Path) -> None:
+        """Explicit thread-id should become the current_thread."""
+        create_thread(project, BRANCH, "council-xyz1", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run"),
+        ):
+            result = runner.invoke(app, ["chat", "council-xyz1"])
+        assert result.exit_code == 0
+        assert get_current_thread(project, BRANCH) == "council-xyz1"
+
+    def test_prefix_match(self, project: Path) -> None:
+        """Partial thread-id should resolve via prefix matching."""
+        create_thread(project, BRANCH, "council-abcd", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run") as mock_run,
+        ):
+            result = runner.invoke(app, ["chat", "council-ab"])
+        assert result.exit_code == 0
+        mock_run.assert_called_once()
+
+    def test_ambiguous_prefix(self, project: Path) -> None:
+        """Ambiguous prefix should error with suggestions."""
+        create_thread(project, BRANCH, "council-aa11", ["king", "claude"], "council")
+        create_thread(project, BRANCH, "council-aa22", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+        ):
+            result = runner.invoke(app, ["chat", "council-aa"])
+        assert result.exit_code == 1
+        assert "council-aa11" in result.output
+        assert "council-aa22" in result.output
+
+    def test_not_found_shows_available(self, project: Path) -> None:
+        """Thread not found should show available threads."""
+        create_thread(project, BRANCH, "council-exist", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+        ):
+            result = runner.invoke(app, ["chat", "council-nope"])
+        assert result.exit_code == 1
+        assert "council-exist" in result.output
+
 
 class TestChatApp:
     def test_app_stores_params(self) -> None:
