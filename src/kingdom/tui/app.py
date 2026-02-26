@@ -721,7 +721,12 @@ class ChatApp(App):
             self.remove_member_panels(log, name)
 
         if to == "all":
-            for name in targets:
+            # Sequential modes (round_robin, manual): only show WaitingPanel for
+            # the first target; each mode mounts panels as it queries.
+            # Parallel modes (natural, broadcast): show all panels upfront.
+            sequential = self.chat_mode in ("round_robin", "manual")
+            panel_targets = targets[:1] if sequential else targets
+            for name in panel_targets:
                 if not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             prior_messages = list_messages(self.base, self.branch, self.thread_id)
@@ -835,13 +840,18 @@ class ChatApp(App):
 
     async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
         """Round-robin mode: no initial broadcast, fixed-order sequential turns."""
-        # First turn: sequential through targets (WaitingPanels mounted by send_message)
+        # First turn: sequential through targets, mounting WaitingPanel per-agent
         for name in targets:
             if self.interrupted or self.generation != generation:
                 return
             member = self.council.get_member(name)
             if not member:
                 continue
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
+            await self.await_remove_member_panels(log, name)
+            if not log.query(f"#wait-{name}"):
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             stream_path = tdir / f".stream-{name}.jsonl"
             await self.run_query(member, stream_path, generation=generation)
 
@@ -850,13 +860,18 @@ class ChatApp(App):
 
     async def run_mode_manual(self, targets: list[str], generation: int, tdir: Path) -> None:
         """Manual mode: only query @mentioned targets, no auto-turns."""
-        # Sequential through mentioned targets (WaitingPanels mounted by send_message)
+        # Sequential through mentioned targets, mounting WaitingPanel per-agent
         for name in targets:
             if self.interrupted or self.generation != generation:
                 return
             member = self.council.get_member(name)
             if not member:
                 continue
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
+            await self.await_remove_member_panels(log, name)
+            if not log.query(f"#wait-{name}"):
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             stream_path = tdir / f".stream-{name}.jsonl"
             await self.run_query(member, stream_path, generation=generation)
 

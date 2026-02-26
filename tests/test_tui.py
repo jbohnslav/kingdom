@@ -1769,6 +1769,60 @@ class TestAutoTurns:
         # Round-robin: sequential fixed-order + 1 auto-round
         assert call_order == ["claude", "codex", "claude", "codex"]
 
+    def test_round_robin_mounts_waiting_panel_per_agent(self, project: Path) -> None:
+        """round_robin mode: WaitingPanel should only appear for the agent being queried."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+        from kingdom.tui.widgets import WaitingPanel
+
+        tid = "council-rr-panels"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=0, mode="round_robin", first_exchange=True
+        )
+
+        mock_log = app_instance.query_one.return_value
+        mock_log.query.return_value = []
+
+        # Track mount calls to see which WaitingPanels are mounted and when
+        mount_events: list[tuple[str, str]] = []  # (event_type, member_name)
+
+        original_mount = mock_log.mount
+
+        def tracking_mount(widget, *args, **kwargs):
+            if isinstance(widget, WaitingPanel):
+                mount_events.append(("mount", widget.sender))
+            return original_mount(widget, *args, **kwargs)
+
+        mock_log.mount = tracking_mount
+
+        for m in members:
+            real_query = m.query
+            name = m.name
+
+            def make_tracking_query(real_fn, member_name):
+                def tracking_query(prompt, timeout, stream_path=None, max_retries=0):
+                    result = real_fn(prompt, timeout, stream_path, max_retries)
+                    mount_events.append(("query", member_name))
+                    return result
+
+                return tracking_query
+
+            m.query = make_tracking_query(real_query, name)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
+
+        # Each agent's WaitingPanel should be mounted right before its query,
+        # not all upfront
+        assert mount_events == [
+            ("mount", "claude"),
+            ("query", "claude"),
+            ("mount", "codex"),
+            ("query", "codex"),
+        ]
+
     def test_round_robin_fixed_order_across_rounds(self, project: Path) -> None:
         """round_robin mode: fixed-order sequential across multiple rounds."""
         import asyncio
