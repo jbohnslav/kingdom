@@ -292,6 +292,16 @@ def start(
         if not is_git_repo(base):
             print_error("Not a git repository. Run `kd init --no-git` first.")
             raise typer.Exit(code=1)
+        # Always auto-init at the git root, not wherever cwd happens to be
+        git_root_result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            cwd=base,
+            timeout=5,
+        )
+        if git_root_result.returncode == 0 and git_root_result.stdout.strip():
+            base = Path(git_root_result.stdout.strip())
         typer.echo("Auto-initializing .kd/ directory...")
         ensure_base_layout(base)
         install_skill()
@@ -2873,7 +2883,7 @@ def work(
     worktree: Annotated[str | None, typer.Option("--worktree", help="Worktree path (internal).")] = None,
     thread: Annotated[str | None, typer.Option("--thread", help="Thread ID (internal).")] = None,
     session: Annotated[str | None, typer.Option("--session", help="Session name (internal).")] = None,
-    base_dir: Annotated[str, typer.Option("--base", help="Project root.")] = ".",
+    base_dir: Annotated[str | None, typer.Option("--base", help="Project root.")] = None,
 ) -> None:
     """Run the autonomous agent harness loop.
 
@@ -2891,7 +2901,7 @@ def work(
         stream=sys.stdout,
     )
 
-    base = Path(base_dir).resolve()
+    base = Path(base_dir).resolve() if base_dir else require_project_root()
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:

@@ -207,6 +207,39 @@ def test_cli_start_kd_base_unset_keeps_auto_init() -> None:
     assert "Auto-initializing" in result.output
 
 
+def test_cli_start_auto_init_from_subdirectory_uses_git_root() -> None:
+    """kd start from a subdirectory auto-initializes .kd/ at the git root, not cwd."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        git_root = Path.cwd()
+        subdir = git_root / "src" / "deep"
+        subdir.mkdir(parents=True)
+        with patch("kingdom.state.Path.cwd", return_value=subdir):
+            result = runner.invoke(cli.app, ["start", "test-feature"])
+        assert result.exit_code == 0
+        assert "Auto-initializing" in result.output
+        # .kd/ should be at git root, not in the subdirectory
+        assert (git_root / ".kd").is_dir()
+        assert not (subdir / ".kd").exists()
+
+
+def test_cli_start_from_subdirectory_with_existing_kd() -> None:
+    """kd start from a subdirectory finds .kd/ at repo root via parent walk."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        git_root = Path.cwd()
+        ensure_base_layout(git_root)
+        subdir = git_root / "src" / "deep"
+        subdir.mkdir(parents=True)
+        with patch("kingdom.state.Path.cwd", return_value=subdir):
+            result = runner.invoke(cli.app, ["start", "test-feature"])
+        assert result.exit_code == 0
+        # Should NOT have created a second .kd/ in the subdirectory
+        assert not (subdir / ".kd").exists()
+
+
 def test_cli_start_auto_init_requires_git_repo() -> None:
     """kd start fails when auto-initializing in a non-git directory."""
     runner = CliRunner()

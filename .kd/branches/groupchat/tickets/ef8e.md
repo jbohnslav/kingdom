@@ -6,7 +6,7 @@ links: []
 created: 2026-02-25T14:09:51Z
 type: task
 priority: 1
-closed_at: 2026-02-26T13:28:53Z
+closed_at: 2026-02-26T14:55:15Z
 ---
 # Fix remaining find_project_root() gaps from 5394
 
@@ -53,15 +53,21 @@ to cwd (the intentional exception). This test was not landed. Low effort to add.
 
 ## Acceptance Criteria
 
-- [ ] `kd start` with `KD_BASE` set to an invalid path hard-fails, includes the invalid path in the error, and does not auto-initialize
-- [ ] `kd start` with `KD_BASE` unset and no discoverable project keeps current auto-init behavior
-- [ ] `resolve_peasant_context()` uses `require_project_root()` as default base (not `Path.cwd()`)
-- [ ] Add a peasant regression test that runs the same peasant command from repo root and a nested subdirectory, asserting both resolve the same `.kd` state
-- [ ] Add a `kd work` regression test confirming worktree location still defaults to `Path.cwd()`
+- [x] `kd start` with `KD_BASE` set to an invalid path hard-fails, includes the invalid path in the error, and does not auto-initialize
+- [x] `kd start` with `KD_BASE` unset and no discoverable project keeps current auto-init behavior
+- [x] `resolve_peasant_context()` uses `require_project_root()` as default base (not `Path.cwd()`)
+- [x] Add a peasant regression test that runs the same peasant command from repo root and a nested subdirectory, asserting both resolve the same `.kd` state
+- [x] Add a `kd work` regression test confirming worktree location still defaults to `Path.cwd()`
+- [x] Full test suite passes
+
+### Council review follow-ups (agreed by both claude & codex)
+
+- [ ] `kd work --base` defaults to `"."` — from a subdirectory, `kd work <ticket>` fails because base resolves to cwd, not project root. Change default to use `require_project_root()` when `--base` is not explicitly passed.
+- [ ] `kd start` auto-init from subdirectory creates `.kd/` in wrong place — when no `.kd/` exists and user runs from `repo/src/deep/`, it creates `.kd/` there instead of at the git root. Guard against this by comparing cwd to git toplevel.
+- [ ] Add regression test for `kd start` from subdirectory when `.kd/` already exists at repo root (parent-walk codepath for the start command).
 - [ ] Full test suite passes
 
 ## Non-goals
 
 - No behavior change for `kd init`
-- No behavior change for `kd work` cwd default semantics
-- No behavior change for `setup-skill` discovery logic
+- No behavior change for `setup-skill` discovery logic (low priority, track separately if needed)

@@ -1814,3 +1814,27 @@ class TestProjectRootDiscovery:
         call_kwargs = mock_loop.call_args.kwargs
         # Worktree should be cwd (fake_cwd), NOT the project root (tmp_path)
         assert call_kwargs["worktree"] == fake_cwd
+
+    def test_work_from_subdirectory_without_base(self, tmp_path: Path) -> None:
+        """kd work from a subdirectory without --base resolves project root via parent walk."""
+        setup_project(tmp_path)
+        create_test_ticket(tmp_path)
+
+        subdir = tmp_path / "src" / "deep"
+        subdir.mkdir(parents=True)
+
+        with (
+            patch("kingdom.state.Path.cwd", return_value=subdir),
+            patch("kingdom.cli.Path.cwd", return_value=subdir),
+            patch("kingdom.harness.run_agent_loop", return_value="done") as mock_loop,
+            patch("kingdom.config.load_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.peasant.agent = "test-agent"
+            result = runner.invoke(cli.app, ["work", "kin-test"])
+
+        assert result.exit_code == 0
+        call_kwargs = mock_loop.call_args.kwargs
+        # Base should be the project root (tmp_path), found via parent walk
+        assert call_kwargs["base"] == tmp_path
+        # Worktree should be cwd (subdir) — intentional exception
+        assert call_kwargs["worktree"] == subdir
