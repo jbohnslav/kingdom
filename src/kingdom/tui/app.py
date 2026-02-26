@@ -586,14 +586,6 @@ class ChatApp(App):
 
         log.scroll_end(animate=False)
 
-    def on_key(self, event) -> None:
-        """Handle Enter to send, let Shift+Enter pass through for newline."""
-        if event.key == "enter":
-            input_area = self.query_one("#input-area", TextArea)
-            if input_area.has_focus:
-                event.prevent_default()
-                self.send_message()
-
     def on_input_area_submit(self, _: InputArea.Submit) -> None:
         """Handle submit events from the input widget."""
         self.send_message()
