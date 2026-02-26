@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Annotated, NamedTuple
 if TYPE_CHECKING:
     from kingdom.thread import ThreadStatus
 
+import click
 import typer
 from rich.console import Console, Group
 from rich.markdown import Markdown
@@ -45,6 +46,7 @@ from kingdom.state import (
     council_logs_root,
     ensure_base_layout,
     ensure_branch_layout,
+    find_project_root,
     get_current_git_branch,
     logs_root,
     normalize_branch_name,
@@ -116,8 +118,17 @@ def verbose_echo(message: str) -> None:
 
 
 def not_implemented(command: str) -> None:
-    typer.echo(f"{command}: not implemented yet.")
+    print_error(f"{command}: not implemented yet.")
     raise typer.Exit(code=1)
+
+
+def require_project_root() -> Path:
+    """Find the project root or exit with a clear error."""
+    try:
+        return find_project_root()
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
 
 
 def is_git_repo(base: Path) -> bool:
@@ -163,7 +174,7 @@ def init(
 
     Idempotent: creates missing pieces, skips existing.
     """
-    base = Path.cwd()
+    base = Path.cwd()  # init anchors to cwd — user chooses where to create .kd/
 
     if not no_git and not is_git_repo(base):
         print_error("Not a git repository. Use --no-git to initialize anyway.")
@@ -266,13 +277,34 @@ def start(
         bool, typer.Option("--force", "-f", help="Force start even if a session is already active.")
     ] = False,
 ) -> None:
-    base = Path.cwd()
+    # If KD_BASE is explicitly set, require it to be valid — no auto-init fallback.
+    # Otherwise, fall back to cwd so auto-init can create .kd/ in a fresh repo.
+    if os.environ.get("KD_BASE"):
+        base = require_project_root()
+    else:
+        try:
+            base = find_project_root()
+        except ValueError:
+            base = Path.cwd()
 
     # Auto-init if .kd/ doesn't exist (with git check)
     if not state_root(base).exists():
         if not is_git_repo(base):
             print_error("Not a git repository. Run `kd init --no-git` first.")
             raise typer.Exit(code=1)
+        # Always auto-init at the git root, not wherever cwd happens to be
+        try:
+            git_root_result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                cwd=base,
+                timeout=5,
+            )
+            if git_root_result.returncode == 0 and git_root_result.stdout.strip():
+                base = Path(git_root_result.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass  # Fall back to using base as-is
         typer.echo("Auto-initializing .kd/ directory...")
         ensure_base_layout(base)
         install_skill()
@@ -325,14 +357,14 @@ def done(
     """Mark a session as done (status transition only, no file moves)."""
     from datetime import datetime
 
-    base = Path.cwd()
+    base = require_project_root()
 
     # Resolve feature: use argument or fall back to current session
     if feature is None:
         try:
             feature = resolve_current_run(base)
         except RuntimeError:
-            typer.echo("No active session. Pass the branch name: `kd done <branch>`")
+            print_error("No active session. Pass the branch name: `kd done <branch>`")
             raise typer.Exit(code=1) from None
 
     # Get the branch directory (normalized name)
@@ -475,29 +507,29 @@ def resolve_council_thread_id(
             meta = resolve_thread(base, feature, thread_id, pattern="council")
             return meta.id
         except AmbiguousThreadMatch as exc:
-            typer.echo(f"'{thread_id}' matches multiple threads:")
+            print_error(f"'{thread_id}' matches multiple threads:")
             for m in exc.matches:
                 topic = topic_for_thread(base, feature, m.id)
                 label = f"  {m.id}  {m.created_at.strftime('%Y-%m-%d %H:%M')}"
                 if topic:
                     label += f"  {topic}"
-                typer.echo(label)
-            typer.echo(f"\nBe more specific, e.g.: kd council {command} {exc.matches[0].id}")
+                error_console.print(label)
+            error_console.print(f"\nBe more specific, e.g.: kd council {command} {exc.matches[0].id}")
             raise typer.Exit(code=1) from None
         except ThreadNotFoundError as exc:
-            typer.echo(f"Thread not found: {thread_id}")
+            print_error(f"Thread not found: {thread_id}")
             if exc.available:
-                typer.echo("\nAvailable council threads:")
+                error_console.print("\nAvailable council threads:")
                 for t in exc.available[-5:]:
                     topic = topic_for_thread(base, feature, t.id)
                     label = f"  {t.id}  {t.created_at.strftime('%Y-%m-%d %H:%M')}"
                     if topic:
                         label += f"  {topic}"
-                    typer.echo(label)
+                    error_console.print(label)
                 if len(exc.available) > 5:
-                    typer.echo(f"  ... and {len(exc.available) - 5} more (use `kd council list`)")
+                    error_console.print(f"  ... and {len(exc.available) - 5} more (use `kd council list`)")
             else:
-                typer.echo("No council threads exist. Use `kd council ask` to start one.")
+                print_error("No council threads exist. Use `kd council ask` to start one.")
             raise typer.Exit(code=1) from None
 
     # Case 2: no explicit thread_id -- try current_thread pointer
@@ -519,7 +551,7 @@ def resolve_council_thread_id(
         return picked.id
 
     # No threads at all
-    typer.echo("No council threads. Use `kd council ask` to start one.")
+    print_error("No council threads. Use `kd council ask` to start one.")
     raise typer.Exit(code=1)
 
 
@@ -566,7 +598,7 @@ def council_ask(
 
     from kingdom.thread import add_message, create_thread, thread_dir
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
@@ -601,8 +633,8 @@ def council_ask(
             else:
                 unknown = [m for m in mentions if m not in available_names]
                 if unknown:
-                    typer.echo(f"Unknown @mention(s): {', '.join(unknown)}")
-                    typer.echo(f"Available: {', '.join(sorted(available_names))}")
+                    print_error(f"Unknown @mention(s): {', '.join(unknown)}")
+                    print_error(f"Available: {', '.join(sorted(available_names))}")
                     raise typer.Exit(code=1)
                 # Use mentioned members as targets
                 to = mentions[0] if len(mentions) == 1 else None
@@ -616,8 +648,8 @@ def council_ask(
     if to:
         member = c.get_member(to)
         if member is None:
-            typer.echo(f"Unknown member: {to}")
-            typer.echo(f"Available: {', '.join(sorted(available_names))}")
+            print_error(f"Unknown member: {to}")
+            print_error(f"Available: {', '.join(sorted(available_names))}")
             raise typer.Exit(code=1)
 
     # Determine thread: continue current, or create new
@@ -789,7 +821,7 @@ def council_review(
     ] = False,
 ) -> None:
     """Generate a changed-files summary and ask the council to review it."""
-    base = Path.cwd()
+    base = require_project_root()
     resolve_current_run(base)  # Validate active session
 
     if base_branch is None:
@@ -847,7 +879,7 @@ def council_reset(
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Clear council member sessions. Use --member to reset a single member."""
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
 
     logs_dir = logs_root(base, feature)
@@ -862,8 +894,8 @@ def council_reset(
         m = c.get_member(member_name)
         if m is None:
             available = ", ".join(sorted(mem.name for mem in c.members))
-            typer.echo(f"Unknown member: {member_name}")
-            typer.echo(f"Available: {available}")
+            print_error(f"Unknown member: {member_name}")
+            error_console.print(f"Available: {available}")
             raise typer.Exit(code=1)
         if not force:
             typer.confirm(f"Clear session for {member_name}?", abort=True)
@@ -928,15 +960,15 @@ def show_legacy_run(base: Path, feature: str, thread_id: str, console: Console) 
         # Try 'last' alias
         if thread_id == "last":
             if not council_logs_dir.exists():
-                typer.echo('No council history found. Start a conversation with `kd council ask "prompt"`.')
+                print_error('No council history found. Start a conversation with `kd council ask "prompt"`.')
                 raise typer.Exit(code=1)
             runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
             if not runs:
-                typer.echo('No council history found. Start a conversation with `kd council ask "prompt"`.')
+                print_error('No council history found. Start a conversation with `kd council ask "prompt"`.')
                 raise typer.Exit(code=1)
             run_dir = max(runs, key=lambda d: d.stat().st_mtime)
         else:
-            typer.echo(f"Legacy run not found: {thread_id}")
+            print_error(f"Legacy run not found: {thread_id}")
             raise typer.Exit(code=1)
 
     metadata_path = run_dir / "metadata.json"
@@ -964,7 +996,7 @@ def council_show(
     """Display a council thread's message history."""
     from kingdom.thread import list_messages
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     console = Console()
 
@@ -978,7 +1010,7 @@ def council_show(
 
     messages = list_messages(base, feature, thread_id)
     if not messages:
-        typer.echo(f'Thread {thread_id}: no messages. Send one with `kd council ask "prompt"`.')
+        print_error(f'Thread {thread_id}: no messages. Send one with `kd council ask "prompt"`.')
         raise typer.Exit(code=1)
 
     turns = group_messages_into_turns(messages)
@@ -1034,7 +1066,7 @@ def council_list() -> None:
         thread_response_status,
     )
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     current = get_current_thread(base, feature)
     console = Console()
@@ -1103,7 +1135,7 @@ def council_status(
     """Show which councillors have responded and which are still pending."""
     from kingdom.thread import list_threads, thread_response_status
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
 
     if all_threads:
@@ -1212,7 +1244,7 @@ def watch_thread(
     from kingdom.thread import get_thread, list_messages, thread_dir
     from kingdom.tui.poll import tail_stream_file
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     console = Console()
 
@@ -1389,7 +1421,7 @@ def council_retry(
     """
     from kingdom.thread import get_thread, is_error_response, list_messages
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     console = Console()
 
@@ -1406,7 +1438,7 @@ def council_retry(
         if msg.from_ == "king":
             last_king_msg = msg
     if last_king_msg is None:
-        typer.echo('No king message found in thread. Send one first with `kd council ask "prompt"`.')
+        print_error('No king message found in thread. Send one first with `kd council ask "prompt"`.')
         raise typer.Exit(code=1)
 
     prompt = last_king_msg.body
@@ -1444,7 +1476,7 @@ def council_retry(
     c.members = [m for m in c.members if m.name in failed]
 
     if not c.members:
-        typer.echo(f"Failed members ({', '.join(sorted(failed))}) not found in council config.")
+        print_error(f"Failed members ({', '.join(sorted(failed))}) not found in council config.")
         raise typer.Exit(code=1)
 
     member_names_str = ", ".join(m.name for m in c.members)
@@ -1522,6 +1554,14 @@ def chat(
     writable: Annotated[
         bool, typer.Option("--writable", "-w", help="Grant council members full write permissions.")
     ] = False,
+    color: Annotated[
+        str,
+        typer.Option(
+            "--color",
+            help="Color mode: auto, truecolor, ansi, none.",
+            click_type=click.Choice(["auto", "truecolor", "ansi", "none"]),
+        ),
+    ] = "auto",
 ) -> None:
     """Open the council chat TUI.
 
@@ -1530,7 +1570,7 @@ def chat(
     from kingdom.config import load_config
     from kingdom.thread import create_thread, list_threads
 
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     cfg = load_config(base)
 
@@ -1540,12 +1580,8 @@ def chat(
         create_thread(base, feature, tid, ["king", *member_names], "council")
         set_current_thread(base, feature, tid)
     elif thread_id:
-        tid = thread_id
-        from kingdom.thread import thread_dir
-
-        if not thread_dir(base, feature, tid).exists():
-            typer.echo(f"Thread not found: {tid}")
-            raise typer.Exit(code=1)
+        tid = resolve_council_thread_id(base, feature, thread_id, command="chat")
+        set_current_thread(base, feature, tid)
     else:
         current = get_current_thread(base, feature)
         if current:
@@ -1561,7 +1597,7 @@ def chat(
             threads = list_threads(base, feature)
             if threads:
                 typer.echo("Recent threads:")
-                for t in threads[-5:]:
+                for t in reversed(threads[-5:]):
                     created = t.created_at.strftime("%Y-%m-%d %H:%M")
                     members = ", ".join(m for m in t.members if m != "king")
                     typer.echo(f"  {t.id}  {created}  [{members}]")
@@ -1572,9 +1608,39 @@ def chat(
             raise typer.Exit(code=0)
 
     from kingdom.tui.app import ChatApp
+    from kingdom.tui.terminal import in_tmux_control_mode
 
-    app_instance = ChatApp(base=base, branch=feature, thread_id=tid, debug_streams=debug, writable=writable)
-    app_instance.run()
+    # Resolve color mode
+    explicit_color = color != "auto"
+    if color == "auto":
+        use_ansi = in_tmux_control_mode()
+        if use_ansi:
+            typer.echo("Detected tmux control mode (-CC) — using ANSI colors for compatibility.")
+    elif color == "ansi":
+        use_ansi = True
+    elif color == "none":
+        os.environ["NO_COLOR"] = "1"
+        use_ansi = True
+    else:  # truecolor
+        use_ansi = False
+
+    app_instance = ChatApp(
+        base=base, branch=feature, thread_id=tid, debug_streams=debug, writable=writable, ansi_color=use_ansi
+    )
+
+    try:
+        app_instance.run()
+    except AttributeError as exc:
+        if "_color" not in str(exc) or explicit_color:
+            raise
+        # Crash fallback: retry once with ANSI color mode (only when --color was auto)
+        typer.echo()
+        typer.echo("TUI crashed with a color rendering error. Retrying with ANSI color mode...")
+        typer.echo("Hint: run with --color ansi to skip auto-detection, or --color none to disable colors.")
+        app_instance = ChatApp(
+            base=base, branch=feature, thread_id=tid, debug_streams=debug, writable=writable, ansi_color=True
+        )
+        app_instance.run()
 
 
 design_app = typer.Typer(name="design", help="Manage design documents.")
@@ -1615,7 +1681,7 @@ def design_default(ctx: typer.Context) -> None:
     """Draft the design doc (creates template if empty)."""
     if ctx.invoked_subcommand is not None:
         return
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     design_path, _ = get_design_paths(base, feature)
 
@@ -1631,12 +1697,12 @@ def design_default(ctx: typer.Context) -> None:
 @design_app.command("show", help="Print the design document.")
 def design_show() -> None:
     """Print the design.md contents."""
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     design_path, _ = get_design_paths(base, feature)
 
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
-        typer.echo("No design document found. Run `kd design` to create one.")
+        print_error("No design document found. Run `kd design` to create one.")
         raise typer.Exit(code=1)
 
     console = Console()
@@ -1646,12 +1712,12 @@ def design_show() -> None:
 @design_app.command("approve", help="Mark the design as approved.")
 def design_approve() -> None:
     """Set design_approved=true in state.json."""
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     design_path, state_path = get_design_paths(base, feature)
 
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
-        typer.echo("No design document found. Run `kd design` to create one.")
+        print_error("No design document found. Run `kd design` to create one.")
         raise typer.Exit(code=1)
 
     state = read_json(state_path) if state_path.exists() else {}
@@ -1662,7 +1728,7 @@ def design_approve() -> None:
 
 @app.command(help="Draft or iterate the current breakdown.")
 def breakdown() -> None:
-    base = Path.cwd()
+    base = require_project_root()
     feature = resolve_current_run(base)
     _, design_path, breakdown_path, _ = get_branch_paths(base, feature)
 
@@ -1825,12 +1891,12 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
         auto_pull: If True, move backlog tickets into the current branch.
             Only set for mutating commands (peasant start, kd work).
     """
-    base = base or Path.cwd()
+    base = base or require_project_root()
 
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
-        typer.echo(str(exc))
+        print_error(str(exc))
         raise typer.Exit(code=1) from None
 
     try:
@@ -1840,7 +1906,7 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -1935,10 +2001,10 @@ def launch_work_tmux(
             timeout=5,
         )
         if result.returncode != 0:
-            typer.echo("Error: tmux is not running. Start tmux first or omit --tmux.")
+            print_error("tmux is not running. Start tmux first or omit --tmux.")
             raise typer.Exit(code=1)
     except FileNotFoundError:
-        typer.echo("Error: tmux is not installed.")
+        print_error("tmux is not installed.")
         raise typer.Exit(code=1) from None
 
     work_cmd = " ".join(
@@ -1973,7 +2039,7 @@ def launch_work_tmux(
 
     proc = subprocess.run(tmux_cmd, capture_output=True, text=True, timeout=10)
     if proc.returncode != 0:
-        typer.echo(f"Error: failed to create tmux window: {proc.stderr.strip()}")
+        print_error(f"failed to create tmux window: {proc.stderr.strip()}")
         raise typer.Exit(code=1)
 
     # Get the PID of the shell running in the new window
@@ -2011,7 +2077,7 @@ def peasant_start(
 
     # Block starting work on tickets that are in_review or closed
     if ticket.status in ("in_review", "closed"):
-        typer.echo(f"Cannot start work on {full_ticket_id}: ticket is {ticket.status}")
+        print_error(f"Cannot start work on {full_ticket_id}: ticket is {ticket.status}")
         raise typer.Exit(code=1)
 
     # Transition open → in_progress
@@ -2035,7 +2101,7 @@ def peasant_start(
         # Check if process is actually alive
         try:
             os.kill(existing.pid, 0)
-            typer.echo(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
+            print_error(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
             raise typer.Exit(code=1)
         except OSError:
             pass  # Process is dead, continue
@@ -2051,8 +2117,8 @@ def peasant_start(
             if active.status == "working" and active.pid and active.name.startswith("peasant-"):
                 try:
                     os.kill(active.pid, 0)
-                    typer.echo(
-                        f"Error: peasant {active.name} (pid {active.pid}) is already working "
+                    print_error(
+                        f"peasant {active.name} (pid {active.pid}) is already working "
                         f"on this checkout. Stop it first or use worktree mode."
                     )
                     raise typer.Exit(code=1)
@@ -2064,7 +2130,7 @@ def peasant_start(
         try:
             worktree_path = create_worktree(base, full_ticket_id)
         except RuntimeError as exc:
-            typer.echo(str(exc))
+            print_error(str(exc))
             raise typer.Exit(code=1) from None
 
     # Auto-assign ticket to the peasant session
@@ -2133,11 +2199,11 @@ def peasant_status(
 
     from kingdom.session import list_active_agents
 
-    base = Path.cwd()
+    base = require_project_root()
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
-        typer.echo(str(exc))
+        print_error(str(exc))
         raise typer.Exit(code=1) from None
 
     console = Console()
@@ -2251,7 +2317,7 @@ def peasant_logs(
     stderr_log = peasant_logs_dir / "stderr.log"
 
     if not peasant_logs_dir.exists():
-        typer.echo(f"No logs found for {ctx.full_ticket_id}. Has the peasant been started?")
+        print_error(f"No logs found for {ctx.full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1)
 
     if follow:
@@ -2343,11 +2409,11 @@ def peasant_stop(
     state = get_agent_state(base, feature, session_name)
 
     if state.status != "working":
-        typer.echo(f"Peasant {full_ticket_id} is not running (status: {state.status})")
+        print_error(f"Peasant {full_ticket_id} is not running (status: {state.status})")
         raise typer.Exit(code=1)
 
     if not state.pid:
-        typer.echo(f"No PID found for peasant {full_ticket_id}")
+        print_error(f"No PID found for peasant {full_ticket_id}")
         raise typer.Exit(code=1)
 
     # Kill the entire process group (harness + backend + children).
@@ -2403,10 +2469,10 @@ def peasant_clean(
         remove_worktree(ctx.base, ctx.full_ticket_id)
         typer.echo(f"{ctx.full_ticket_id}: worktree removed")
     except FileNotFoundError:
-        typer.echo(f"No worktree found for {ctx.full_ticket_id}")
+        print_error(f"No worktree found for {ctx.full_ticket_id}")
         raise typer.Exit(code=1) from None
     except RuntimeError as exc:
-        typer.echo(str(exc))
+        print_error(str(exc))
         raise typer.Exit(code=1) from None
 
 
@@ -2426,7 +2492,7 @@ def peasant_sync(
     if state.status == "working" and state.pid:
         try:
             os.kill(state.pid, 0)
-            typer.echo(
+            print_error(
                 f"Peasant is running on {full_ticket_id} (pid {state.pid}). Stop it first with `kd peasant stop`."
             )
             raise typer.Exit(code=1)
@@ -2436,7 +2502,7 @@ def peasant_sync(
     # Find worktree
     worktree_path = worktree_path_for(base, full_ticket_id)
     if not worktree_path.exists():
-        typer.echo(f"No worktree found for {full_ticket_id}. Has the peasant been started?")
+        print_error(f"No worktree found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1)
 
     # Merge parent branch into worktree
@@ -2450,13 +2516,13 @@ def peasant_sync(
     )
 
     if merge_result.returncode != 0:
-        typer.echo("Merge failed.")
+        print_error("Merge failed.")
         if merge_result.stdout.strip():
-            typer.echo(merge_result.stdout.strip())
+            error_console.print(merge_result.stdout.strip())
         if merge_result.stderr.strip():
-            typer.echo(merge_result.stderr.strip())
+            error_console.print(merge_result.stderr.strip())
         subprocess.run(["git", "merge", "--abort"], capture_output=True, cwd=worktree_path)
-        typer.echo(f"\nMerge aborted. To resolve manually:\n  cd {worktree_path}\n  git merge {parent_branch}")
+        error_console.print(f"\nMerge aborted. To resolve manually:\n  cd {worktree_path}\n  git merge {parent_branch}")
         raise typer.Exit(code=1)
 
     merge_out = merge_result.stdout.strip()
@@ -2504,7 +2570,7 @@ def peasant_msg(
     try:
         add_message(base, feature, thread_id, from_="king", to=f"peasant-{full_ticket_id}", body=message)
     except FileNotFoundError:
-        typer.echo(f"No work thread found for {full_ticket_id}. Has the peasant been started?")
+        print_error(f"No work thread found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1) from None
 
     typer.echo(f"{full_ticket_id}: directive sent")
@@ -2544,7 +2610,7 @@ def peasant_read(
     try:
         messages = list_messages(base, feature, thread_id)
     except FileNotFoundError:
-        typer.echo(f"No work thread found for {full_ticket_id}. Has the peasant been started?")
+        print_error(f"No work thread found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1) from None
 
     # Filter to messages from the peasant
@@ -2633,11 +2699,11 @@ def peasant_review(
                 if merge_result.stderr.strip():
                     merge_err += "\n" + merge_result.stderr.strip()
                 print_error("Integration failed — ticket remains in_review.")
-                typer.echo(f"\n{merge_err}\n")
-                typer.echo("Recovery steps:")
-                typer.echo(f"  1. cd {worktree_path}")
-                typer.echo(f"  2. git merge {feature} (resolve conflicts)")
-                typer.echo(f"  3. kd peasant review {full_ticket_id} --accept (retry)")
+                error_console.print(f"\n{merge_err}\n")
+                error_console.print("Recovery steps:")
+                error_console.print(f"  1. cd {worktree_path}")
+                error_console.print(f"  2. git merge {feature} (resolve conflicts)")
+                error_console.print(f"  3. kd peasant review {full_ticket_id} --accept (retry)")
                 raise typer.Exit(code=1)
 
             typer.echo(f"Integrated {branch_name} into {feature}")
@@ -2678,7 +2744,7 @@ def peasant_review(
         try:
             add_message(base, feature, thread_id, from_="king", to=session_name, body=reject)
         except FileNotFoundError:
-            typer.echo(
+            print_error(
                 f"No work thread found for {full_ticket_id}. Start one with `kd peasant start {full_ticket_id}`."
             )
             raise typer.Exit(code=1) from None
@@ -2820,7 +2886,7 @@ def work(
     worktree: Annotated[str | None, typer.Option("--worktree", help="Worktree path (internal).")] = None,
     thread: Annotated[str | None, typer.Option("--thread", help="Thread ID (internal).")] = None,
     session: Annotated[str | None, typer.Option("--session", help="Session name (internal).")] = None,
-    base_dir: Annotated[str, typer.Option("--base", help="Project root.")] = ".",
+    base_dir: Annotated[str | None, typer.Option("--base", help="Project root.")] = None,
 ) -> None:
     """Run the autonomous agent harness loop.
 
@@ -2838,11 +2904,11 @@ def work(
         stream=sys.stdout,
     )
 
-    base = Path(base_dir).resolve()
+    base = Path(base_dir).resolve() if base_dir else require_project_root()
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
-        typer.echo(str(exc))
+        print_error(str(exc))
         raise typer.Exit(code=1) from None
 
     # Default agent from config if not specified on CLI
@@ -2891,7 +2957,7 @@ def work(
 @app.command(help="Reserved for broader develop phase (MVP stub).")
 def dev(ticket: str | None = typer.Argument(None, help="Optional ticket id.")) -> None:
     if ticket:
-        typer.echo("MVP uses `kd peasant start <ticket>` for single-ticket execution.")
+        print_error("MVP uses `kd peasant start <ticket>` for single-ticket execution.")
         raise typer.Exit(code=1)
     typer.echo("`kd dev` is reserved. Use `kd peasant start <ticket>` in the MVP.")
 
@@ -2910,11 +2976,11 @@ def get_doc_status(path: Path) -> str:
 def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
 ) -> None:
-    base = Path.cwd()
+    base = require_project_root()
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
-        typer.echo(str(exc))
+        print_error(str(exc))
         raise typer.Exit(code=1) from None
 
     # Try new branch-based structure first, fall back to legacy
@@ -3048,7 +3114,7 @@ def config_show() -> None:
 
     from kingdom.config import load_config, load_raw_config
 
-    base = Path.cwd()
+    base = require_project_root()
     try:
         cfg = load_config(base)
     except ValueError as e:
@@ -3167,7 +3233,7 @@ def doctor(
     """Validate config and verify agent CLIs are installed."""
     from kingdom.state import state_root
 
-    base = Path.cwd()
+    base = require_project_root()
     has_issues = False
 
     # 1. Config validation
@@ -3254,7 +3320,7 @@ def migrate(
     """
     import re
 
-    base = Path.cwd()
+    base = require_project_root()
     dry_run = not apply
 
     # Collect all ticket files across backlog, branches, and archive
@@ -3374,7 +3440,7 @@ def ticket_create(
     """Create a new ticket in the current branch or backlog."""
     from datetime import datetime
 
-    base = Path.cwd()
+    base = require_project_root()
 
     # Validate priority range (1-3)
     if priority < 1 or priority > 3:
@@ -3397,7 +3463,7 @@ def ticket_create(
                 print_error(f"{e}")
                 raise typer.Exit(code=1) from None
             if dep_result is None:
-                typer.echo(f"Dependency ticket not found: {dep_id}")
+                print_error(f"Dependency ticket not found: {dep_id}")
                 raise typer.Exit(code=1)
             resolved_deps.append(dep_result[0].id)
 
@@ -3410,7 +3476,7 @@ def ticket_create(
             print_error(f"{e}")
             raise typer.Exit(code=1) from None
         if parent_result is None:
-            typer.echo(f"Parent ticket not found: {parent}")
+            print_error(f"Parent ticket not found: {parent}")
             raise typer.Exit(code=1)
         resolved_parent = parent_result[0].id
 
@@ -3605,11 +3671,11 @@ def ticket_list(
     if status is not None:
         status = status.lower()
         if status not in STATUSES:
-            typer.echo(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
+            print_error(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
             raise typer.Exit(code=1)
 
     if priority is not None and priority not in (1, 2, 3):
-        typer.echo(f"Invalid priority {priority}. Must be 1, 2, or 3.")
+        print_error(f"Invalid priority {priority}. Must be 1, 2, or 3.")
         raise typer.Exit(code=1)
 
     def apply_filters(tickets: list[Ticket]) -> list[Ticket]:
@@ -3625,7 +3691,7 @@ def ticket_list(
             return tickets
         return [t for t in tickets if t.priority == priority]
 
-    base = Path.cwd()
+    base = require_project_root()
 
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
@@ -3863,7 +3929,7 @@ def ticket_show(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Display one or more tickets by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
-    base = Path.cwd()
+    base = require_project_root()
 
     # Resolve tickets to show as (Ticket, Path) pairs
     pairs: list[tuple[Ticket, Path]] = []
@@ -3872,7 +3938,7 @@ def ticket_show(
         try:
             feature = resolve_current_run(base)
         except RuntimeError:
-            typer.echo("No active session. Use `kd start` first.")
+            print_error("No active session. Use `kd start` first.")
             raise typer.Exit(code=1) from None
         tickets_dir = branch_root(base, feature) / "tickets"
         if tickets_dir.exists():
@@ -3890,7 +3956,7 @@ def ticket_show(
                 print_error(f"{e}")
                 raise typer.Exit(code=1) from None
             if result is None:
-                typer.echo(f"Ticket not found: {tid}")
+                print_error(f"Ticket not found: {tid}")
                 raise typer.Exit(code=1)
             pairs.append(result)
     else:
@@ -3898,7 +3964,7 @@ def ticket_show(
         try:
             feature = resolve_current_run(base)
         except RuntimeError:
-            typer.echo("No active session. Use `kd start` first.")
+            print_error("No active session. Use `kd start` first.")
             raise typer.Exit(code=1) from None
         tickets_dir = branch_root(base, feature) / "tickets"
         if tickets_dir.exists():
@@ -3909,7 +3975,7 @@ def ticket_show(
                         pairs.append(result)
                     break
         if not pairs:
-            typer.echo("No ticket assigned to 'hand'. Use `kd tk assign <id> hand`.")
+            print_error("No ticket assigned to 'hand'. Use `kd tk assign <id> hand`.")
             raise typer.Exit(code=1)
 
     # Render
@@ -3942,7 +4008,7 @@ def ticket_show(
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:
     """Helper to update a ticket's status."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -3951,7 +4017,7 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -3994,23 +4060,23 @@ def ticket_current(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Find and display the ticket currently marked as in_progress on this branch."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         feature = resolve_current_run(base)
     except RuntimeError:
-        typer.echo("No active session. Use `kd start` first.")
+        print_error("No active session. Use `kd start` first.")
         raise typer.Exit(code=1) from None
 
     tickets_dir = branch_root(base, feature) / "tickets"
     if not tickets_dir.exists():
-        typer.echo("No in-progress ticket on this branch.")
+        print_error("No in-progress ticket on this branch.")
         raise typer.Exit(code=1)
 
     in_progress = [t for t in list_tickets(tickets_dir) if t.status == "in_progress"]
 
     if not in_progress:
-        typer.echo("No in-progress ticket on this branch.")
+        print_error("No in-progress ticket on this branch.")
         raise typer.Exit(code=1)
 
     ticket = in_progress[0]
@@ -4073,7 +4139,7 @@ def ticket_close(
     ] = None,
 ) -> None:
     """Set ticket status to closed."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4143,7 +4209,7 @@ def ticket_delete(
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Remove a ticket file from disk."""
-    base = Path.cwd()
+    base = require_project_root()
     try:
         result = find_ticket(base, ticket_id)
     except AmbiguousTicketMatch as e:
@@ -4187,7 +4253,7 @@ def ticket_dep(
     depends_on: Annotated[str, typer.Argument(help="ID of ticket this depends on.")],
 ) -> None:
     """Add a dependency: ticket_id depends on depends_on."""
-    base = Path.cwd()
+    base = require_project_root()
 
     # Find both tickets
     try:
@@ -4198,10 +4264,10 @@ def ticket_dep(
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
     if dep_result is None:
-        typer.echo(f"Dependency ticket not found: {depends_on}")
+        print_error(f"Dependency ticket not found: {depends_on}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -4222,7 +4288,7 @@ def ticket_undep(
     depends_on: Annotated[str, typer.Argument(help="ID of dependency to remove.")],
 ) -> None:
     """Remove a dependency from a ticket."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4231,7 +4297,7 @@ def ticket_undep(
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -4249,11 +4315,11 @@ def ticket_undep(
         # Dep ticket no longer exists but is in deps list — allow exact removal
         dep_id = depends_on
     else:
-        typer.echo(f"{ticket.id} does not depend on {depends_on}")
+        print_error(f"{ticket.id} does not depend on {depends_on}")
         raise typer.Exit(code=1)
 
     if dep_id not in ticket.deps:
-        typer.echo(f"{ticket.id} does not depend on {dep_id}")
+        print_error(f"{ticket.id} does not depend on {dep_id}")
         raise typer.Exit(code=1)
 
     ticket.deps.remove(dep_id)
@@ -4267,7 +4333,7 @@ def ticket_dep_tree(
     full: Annotated[bool, typer.Option("--full", help="Show duplicate subtrees instead of deduplicating.")] = False,
 ) -> None:
     """Display the dependency tree rooted at a ticket."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4276,7 +4342,7 @@ def ticket_dep_tree(
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     all_tickets = collect_all_tickets(base)
@@ -4320,7 +4386,7 @@ def ticket_dep_tree(
 @ticket_app.command("dep-cycle", help="Detect dependency cycles.")
 def ticket_dep_cycle() -> None:
     """Find and report any dependency cycles among open tickets."""
-    base = Path.cwd()
+    base = require_project_root()
     all_tickets = collect_all_tickets(base)
     # Filter to non-closed tickets (open, in_progress, in_review)
     open_tickets = [t for t in all_tickets if t.status != "closed"]
@@ -4341,7 +4407,7 @@ def ticket_dep_cycle() -> None:
                 if color[dep_id] == GRAY:
                     # Found a cycle — extract it
                     cycle_start = path.index(dep_id)
-                    cycles.append(path[cycle_start:] + [dep_id])
+                    cycles.append([*path[cycle_start:], dep_id])
                 elif color[dep_id] == WHITE:
                     dfs(dep_id, [*path, dep_id])
         color[tid] = BLACK
@@ -4353,9 +4419,9 @@ def ticket_dep_cycle() -> None:
     if not cycles:
         typer.echo("No dependency cycles found.")
     else:
-        typer.echo(f"Found {len(cycles)} cycle(s):")
+        print_error(f"Found {len(cycles)} cycle(s):")
         for cycle in cycles:
-            typer.echo(f"  {' → '.join(cycle)}")
+            error_console.print(f"  {' → '.join(cycle)}")
         raise typer.Exit(code=1)
 
 
@@ -4365,7 +4431,7 @@ def ticket_blocked(
     tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
 ) -> None:
     """List open tickets that have at least one unresolved dependency."""
-    base = Path.cwd()
+    base = require_project_root()
     all_tickets = collect_all_tickets(base)
     status_by_id = {t.id: t.status for t in all_tickets}
 
@@ -4401,10 +4467,10 @@ def ticket_link(
 ) -> None:
     """Create symmetric links between all given tickets."""
     if len(ticket_ids) < 2:
-        typer.echo("Need at least two ticket IDs to link.")
+        print_error("Need at least two ticket IDs to link.")
         raise typer.Exit(code=1)
 
-    base = Path.cwd()
+    base = require_project_root()
 
     # Resolve all tickets first, deduplicating by resolved ID
     seen_ids: dict[str, tuple[Ticket, Path]] = {}
@@ -4415,7 +4481,7 @@ def ticket_link(
             print_error(f"{e}")
             raise typer.Exit(code=1) from None
         if result is None:
-            typer.echo(f"Ticket not found: {tid}")
+            print_error(f"Ticket not found: {tid}")
             raise typer.Exit(code=1)
         seen_ids[result[0].id] = result
 
@@ -4445,7 +4511,7 @@ def ticket_unlink(
     target_id: Annotated[str, typer.Argument(help="ID of ticket to unlink from.")],
 ) -> None:
     """Remove a symmetric link between two tickets."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4453,7 +4519,7 @@ def ticket_unlink(
         print_error(f"{e}")
         raise typer.Exit(code=1) from None
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     try:
@@ -4462,7 +4528,7 @@ def ticket_unlink(
         print_error(f"{e}")
         raise typer.Exit(code=1) from None
     if target_result is None:
-        typer.echo(f"Ticket not found: {target_id}")
+        print_error(f"Ticket not found: {target_id}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -4490,7 +4556,7 @@ def ticket_assign(
     agent: Annotated[str, typer.Argument(help="Agent name or 'hand' for current agent.")],
 ) -> None:
     """Set the assignee field on a ticket."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4499,7 +4565,7 @@ def ticket_assign(
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -4513,7 +4579,7 @@ def ticket_unassign(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Clear the assignee field on a ticket."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4522,7 +4588,7 @@ def ticket_unassign(
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -4541,7 +4607,7 @@ def ticket_move(
     Single ticket: `kd tk move <id> --to <branch>` or `kd tk move <id>` (to current branch).
     Multiple tickets: `kd tk move <id1> <id2> --to <branch>`.
     """
-    base = Path.cwd()
+    base = require_project_root()
 
     target = to_target
     # Backwards compat: if exactly 2 positional args and no --to, treat second as target
@@ -4585,7 +4651,7 @@ def ticket_move(
             raise typer.Exit(code=1) from None
 
         if result is None:
-            typer.echo(f"Ticket not found: {tid}")
+            print_error(f"Ticket not found: {tid}")
             raise typer.Exit(code=1)
 
         ticket, ticket_path = result
@@ -4605,12 +4671,12 @@ def ticket_pull(
     ticket_ids: Annotated[list[str], typer.Argument(help="Ticket IDs to pull from backlog.")],
 ) -> None:
     """Move one or more tickets from backlog to the current branch."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         resolve_current_run(base)
     except RuntimeError as exc:
-        typer.echo(str(exc))
+        print_error(str(exc))
         raise typer.Exit(code=1) from None
 
     if not ticket_ids:
@@ -4631,7 +4697,7 @@ def ticket_pull(
             # Fall back to legacy kin- format
             ticket_path = backlog_tickets / f"kin-{clean_id}.md"
         if not ticket_path.exists():
-            typer.echo(f"Ticket not found in backlog: {tid}")
+            print_error(f"Ticket not found in backlog: {tid}")
             raise typer.Exit(code=1)
 
         ticket = read_ticket(ticket_path)
@@ -4652,7 +4718,7 @@ def ticket_ready(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """List open tickets with no open dependencies."""
-    base = Path.cwd()
+    base = require_project_root()
 
     # Collect all tickets to build status lookup
     all_tickets: list[tuple[Ticket, str]] = []  # (ticket, location)
@@ -4733,7 +4799,7 @@ def ticket_closed(
     tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
 ) -> None:
     """List recently closed tickets across all locations, sorted by close date (newest first)."""
-    base = Path.cwd()
+    base = require_project_root()
     all_tickets = collect_all_tickets(base, include_archive=True, include_done=True)
 
     closed = [t for t in all_tickets if t.status == "closed"]
@@ -4758,7 +4824,7 @@ def ticket_add_note(
     text: Annotated[str | None, typer.Argument(help="Note text. Reads from stdin if omitted.")] = None,
 ) -> None:
     """Append a timestamped note to the ticket body."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4767,7 +4833,7 @@ def ticket_add_note(
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -4775,7 +4841,7 @@ def ticket_add_note(
     if text is None:
         text = sys.stdin.read().strip()
         if not text:
-            typer.echo("No note text provided.")
+            print_error("No note text provided.")
             raise typer.Exit(code=1)
 
     now = datetime.now(UTC)
@@ -4796,7 +4862,7 @@ def ticket_query(
     jq_filter: Annotated[str | None, typer.Argument(help="Optional jq filter expression.")] = None,
 ) -> None:
     """Output all non-closed tickets as JSON. Pipe through jq if a filter is given."""
-    base = Path.cwd()
+    base = require_project_root()
     all_tickets = collect_all_tickets(base)
 
     data = [
@@ -4821,7 +4887,7 @@ def ticket_query(
         import shutil as sh
 
         if not sh.which("jq"):
-            typer.echo("jq is not installed. Install it or omit the filter.")
+            print_error("jq is not installed. Install it or omit the filter.")
             raise typer.Exit(code=1)
         proc = subprocess.run(
             ["jq", jq_filter],
@@ -4845,7 +4911,7 @@ def ticket_log(
     """Append a timestamped journal entry to the ticket's Worklog section."""
     from kingdom.ticket import append_worklog_entry
 
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4854,7 +4920,7 @@ def ticket_log(
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     ticket, ticket_path = result
@@ -4867,7 +4933,7 @@ def ticket_edit(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Open a ticket file in the default editor."""
-    base = Path.cwd()
+    base = require_project_root()
 
     try:
         result = find_ticket(base, ticket_id)
@@ -4876,7 +4942,7 @@ def ticket_edit(
         raise typer.Exit(code=1) from None
 
     if result is None:
-        typer.echo(f"Ticket not found: {ticket_id}")
+        print_error(f"Ticket not found: {ticket_id}")
         raise typer.Exit(code=1)
 
     import shlex

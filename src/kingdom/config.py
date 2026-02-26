@@ -40,18 +40,35 @@ class PromptsConfig:
 
 
 @dataclass
+class AskConfig:
+    """Settings for ``kd council ask`` (fire-and-forget queries)."""
+
+    mode: str = "broadcast"
+    auto_messages: int = -1
+
+
+@dataclass
+class ChatConfig:
+    """Settings for ``kd chat`` (interactive group chat).
+
+    Modes: natural (default), round_robin, manual, broadcast.
+    """
+
+    mode: str = "natural"
+    auto_rounds: int = 1
+
+
+@dataclass
 class CouncilConfig:
     """Council composition and settings."""
 
     members: list[str] = field(default_factory=list)
     timeout: int = 600
-    auto_messages: int = -1
-    mode: str = "broadcast"
     preamble: str = ""
     thinking_visibility: str = "auto"
     writable: bool = False
-    chat_mode: str = "broadcast"
-    chat_auto_rounds: int = 1
+    ask: AskConfig = field(default_factory=AskConfig)
+    chat: ChatConfig = field(default_factory=ChatConfig)
 
 
 @dataclass
@@ -104,14 +121,15 @@ VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
 VALID_COUNCIL_KEYS = {
     "members",
     "timeout",
-    "auto_messages",
-    "mode",
     "preamble",
     "thinking_visibility",
     "writable",
-    "chat_mode",
-    "chat_auto_rounds",
+    "ask",
+    "chat",
 }
+VALID_ASK_KEYS = {"mode", "auto_messages"}
+VALID_CHAT_KEYS = {"mode", "auto_rounds"}
+DEPRECATED_COUNCIL_KEYS = {"auto_messages", "mode", "chat_mode", "chat_auto_rounds"}
 VALID_PEASANT_KEYS = {"agent", "timeout", "max_iterations"}
 VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant"}
 VALID_AGENT_PROMPT_PHASES = {"council", "design", "review", "peasant"}
@@ -187,8 +205,65 @@ def validate_prompts(data: dict) -> PromptsConfig:
     )
 
 
+def validate_ask(data: dict) -> AskConfig:
+    """Validate and construct an AskConfig from a raw dict."""
+    check_unknown_keys(data, VALID_ASK_KEYS, "council.ask")
+
+    valid_modes = {"broadcast", "sequential"}
+    mode = data.get("mode", "broadcast")
+    if not isinstance(mode, str):
+        raise ValueError(f"council.ask.mode must be a string, got {type(mode).__name__}")
+    if mode not in valid_modes:
+        raise ValueError(f"council.ask.mode must be one of {', '.join(sorted(valid_modes))}, got '{mode}'")
+
+    auto_messages = data.get("auto_messages", -1)
+    if not isinstance(auto_messages, int):
+        raise ValueError(f"council.ask.auto_messages must be an integer, got {type(auto_messages).__name__}")
+    if auto_messages < -1:
+        raise ValueError(
+            f"council.ask.auto_messages must be -1 (auto), 0 (disabled), or a positive integer, got {auto_messages}"
+        )
+
+    return AskConfig(mode=mode, auto_messages=auto_messages)
+
+
+def validate_chat(data: dict) -> ChatConfig:
+    """Validate and construct a ChatConfig from a raw dict."""
+    check_unknown_keys(data, VALID_CHAT_KEYS, "council.chat")
+
+    valid_modes = {"natural", "round_robin", "manual", "broadcast"}
+    mode = data.get("mode", "natural")
+    if not isinstance(mode, str):
+        raise ValueError(f"council.chat.mode must be a string, got {type(mode).__name__}")
+    if mode not in valid_modes:
+        raise ValueError(f"council.chat.mode must be one of {', '.join(sorted(valid_modes))}, got '{mode}'")
+
+    auto_rounds = data.get("auto_rounds", 1)
+    if not isinstance(auto_rounds, int):
+        raise ValueError(f"council.chat.auto_rounds must be an integer, got {type(auto_rounds).__name__}")
+    if auto_rounds < 0:
+        raise ValueError(f"council.chat.auto_rounds must be non-negative, got {auto_rounds}")
+
+    return ChatConfig(mode=mode, auto_rounds=auto_rounds)
+
+
 def validate_council(data: dict) -> CouncilConfig:
     """Validate and construct a CouncilConfig from a raw dict."""
+    # Fail fast on deprecated flat keys
+    deprecated = DEPRECATED_COUNCIL_KEYS & set(data)
+    if deprecated:
+        raise ValueError(
+            f"Deprecated council keys: {', '.join(sorted(deprecated))}. "
+            "Migrate to nested format:\n"
+            "  council:\n"
+            "    ask:\n"
+            "      mode: broadcast\n"
+            "      auto_messages: -1\n"
+            "    chat:\n"
+            "      mode: broadcast\n"
+            "      auto_rounds: 1"
+        )
+
     check_unknown_keys(data, VALID_COUNCIL_KEYS, "council")
 
     members = data.get("members", [])
@@ -203,21 +278,6 @@ def validate_council(data: dict) -> CouncilConfig:
         raise ValueError(f"council.timeout must be an integer, got {type(timeout).__name__}")
     if timeout <= 0:
         raise ValueError(f"council.timeout must be positive, got {timeout}")
-
-    auto_messages = data.get("auto_messages", -1)
-    if not isinstance(auto_messages, int):
-        raise ValueError(f"council.auto_messages must be an integer, got {type(auto_messages).__name__}")
-    if auto_messages < -1:
-        raise ValueError(
-            f"council.auto_messages must be -1 (auto), 0 (disabled), or a positive integer, got {auto_messages}"
-        )
-
-    valid_modes = {"broadcast", "sequential"}
-    mode = data.get("mode", "broadcast")
-    if not isinstance(mode, str):
-        raise ValueError(f"council.mode must be a string, got {type(mode).__name__}")
-    if mode not in valid_modes:
-        raise ValueError(f"council.mode must be one of {', '.join(sorted(valid_modes))}, got '{mode}'")
 
     preamble = data.get("preamble", "")
     if not isinstance(preamble, str):
@@ -238,29 +298,24 @@ def validate_council(data: dict) -> CouncilConfig:
     if not isinstance(writable, bool):
         raise ValueError(f"council.writable must be a boolean, got {type(writable).__name__}")
 
-    valid_chat_modes = {"broadcast", "sequential"}
-    chat_mode = data.get("chat_mode", "broadcast")
-    if not isinstance(chat_mode, str):
-        raise ValueError(f"council.chat_mode must be a string, got {type(chat_mode).__name__}")
-    if chat_mode not in valid_chat_modes:
-        raise ValueError(f"council.chat_mode must be one of {', '.join(sorted(valid_chat_modes))}, got '{chat_mode}'")
+    ask_data = data.get("ask", {})
+    if not isinstance(ask_data, dict):
+        raise ValueError(f"council.ask must be an object, got {type(ask_data).__name__}")
+    ask = validate_ask(ask_data)
 
-    chat_auto_rounds = data.get("chat_auto_rounds", 1)
-    if not isinstance(chat_auto_rounds, int):
-        raise ValueError(f"council.chat_auto_rounds must be an integer, got {type(chat_auto_rounds).__name__}")
-    if chat_auto_rounds < 0:
-        raise ValueError(f"council.chat_auto_rounds must be non-negative, got {chat_auto_rounds}")
+    chat_data = data.get("chat", {})
+    if not isinstance(chat_data, dict):
+        raise ValueError(f"council.chat must be an object, got {type(chat_data).__name__}")
+    chat = validate_chat(chat_data)
 
     return CouncilConfig(
         members=members,
         timeout=timeout,
-        auto_messages=auto_messages,
-        mode=mode,
         preamble=preamble,
         thinking_visibility=thinking_visibility,
         writable=writable,
-        chat_mode=chat_mode,
-        chat_auto_rounds=chat_auto_rounds,
+        ask=ask,
+        chat=chat,
     )
 
 

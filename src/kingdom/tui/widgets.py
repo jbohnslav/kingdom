@@ -223,7 +223,7 @@ class MessagePanel(Widget):
             self.border_subtitle = "click: reply \u00b7 shift: copy"
 
     def on_click(self, event) -> None:
-        """Handle click: reply (default) or copy (shift)."""
+        """Handle click: reply toggle (default) or copy (shift)."""
         event.stop()
         if self.sender == "king":
             return
@@ -231,8 +231,6 @@ class MessagePanel(Widget):
             self.do_copy()
         else:
             self.post_message(self.Reply(sender=self.sender, body=self.body))
-            self.border_subtitle = "replying..."
-            self.set_timer(1.5, self.reset_subtitle)
 
     def do_copy(self) -> None:
         """Copy message body to the system clipboard."""

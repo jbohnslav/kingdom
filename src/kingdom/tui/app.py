@@ -44,6 +44,36 @@ from .widgets import (
 
 logger = logging.getLogger(__name__)
 
+MENTION_RE = re.compile(r"(?<!\w)@(\w+)")
+
+
+def mention_bump(response_text: str, remaining: list[str], valid_members: list[str]) -> list[str]:
+    """Reorder remaining queue by bumping @mentioned members to the front.
+
+    Mentioned valid members (that are in *remaining*) move to the front in
+    mention order.  Non-mentioned members keep their relative order.
+    @king and unknown names are ignored.  Duplicates are deduplicated.
+    """
+    mentions = MENTION_RE.findall(response_text)
+    valid_set = set(valid_members)
+    remaining_set = set(remaining)
+
+    # Collect mentioned names that are valid members in the remaining queue
+    bumped: list[str] = []
+    seen: set[str] = set()
+    for name in mentions:
+        if name in valid_set and name in remaining_set and name not in seen and name != "king":
+            bumped.append(name)
+            seen.add(name)
+
+    if not bumped:
+        return remaining
+
+    # Rest keeps relative order
+    rest = [n for n in remaining if n not in seen]
+    return bumped + rest
+
+
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
     "This is a live conversation — read the full thread before responding. "
@@ -184,10 +214,17 @@ class InputArea(TextArea):
         self.tab_prefix: str = ""  # the partial text after "@" that triggered completion
 
     async def handle_key(self, event) -> None:
-        if event.key == "enter" and "shift" not in event.key:
+        if event.key == "enter":
             event.stop()
             event.prevent_default()
             self.post_message(self.Submit())
+            return
+        if event.key == "shift+enter":
+            # Insert a literal newline instead of submitting.
+            event.stop()
+            event.prevent_default()
+            start, end = self.selection
+            self._replace_via_keyboard("\n", start, end)
             return
         if event.key == "tab":
             event.stop()
@@ -311,9 +348,15 @@ class ChatApp(App):
         return ChatScreen(id="_default")
 
     def __init__(
-        self, base: Path, branch: str, thread_id: str, debug_streams: bool = False, writable: bool = False
+        self,
+        base: Path,
+        branch: str,
+        thread_id: str,
+        debug_streams: bool = False,
+        writable: bool = False,
+        ansi_color: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(ansi_color=ansi_color)
         self.base = base
         self.branch = branch
         self.thread_id = thread_id
@@ -326,6 +369,9 @@ class ChatApp(App):
         self.muted: set[str] = set()
         self.generation: int = 0
         self.thinking_visibility: str = "auto"
+        self.chat_mode: str = "natural"
+        self.auto_rounds: int = 1
+        self.reply_target: str | None = None
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -355,9 +401,11 @@ class ChatApp(App):
         for stale in tdir.glob(".stream-*.jsonl"):
             stale.unlink()
 
-        # Load config for backends and thinking visibility
+        # Load config for backends, thinking visibility, and chat settings
         cfg = load_config(self.base)
         self.thinking_visibility = cfg.council.thinking_visibility
+        self.chat_mode = cfg.council.chat.mode
+        self.auto_rounds = cfg.council.chat.auto_rounds
         agent_configs = resolve_all_agents(cfg.agents)
         member_backends = {}
         for name in self.member_names:
@@ -538,14 +586,6 @@ class ChatApp(App):
 
         log.scroll_end(animate=False)
 
-    def on_key(self, event) -> None:
-        """Handle Enter to send, let Shift+Enter pass through for newline."""
-        if event.key == "enter":
-            input_area = self.query_one("#input-area", TextArea)
-            if input_area.has_focus:
-                event.prevent_default()
-                self.send_message()
-
     def on_input_area_submit(self, _: InputArea.Submit) -> None:
         """Handle submit events from the input widget."""
         self.send_message()
@@ -564,17 +604,67 @@ class ChatApp(App):
             hint_bar.hide_hints()
 
     def on_message_panel_reply(self, event: MessagePanel.Reply) -> None:
-        """Handle reply: prefill input with @sender mention."""
-        reply_text = format_reply_text(event.sender)
+        """Toggle reply target: click sets, same click clears, different click switches."""
         input_area = self.query_one("#input-area", InputArea)
-        existing = input_area.text
-        if existing.strip():
-            input_area.load_text(reply_text + existing)
+
+        if self.reply_target == event.sender:
+            # Toggle off: clear reply target
+            self.clear_reply_target(input_area)
         else:
-            input_area.load_text(reply_text)
-        input_area.focus()
-        # Cursor ends up at (0,0) after load_text — move to end of the @mention prefix
-        input_area.move_cursor_relative(columns=len(reply_text))
+            # Set or switch reply target
+            old_target = self.reply_target
+            self.reply_target = event.sender
+
+            # Remove old @mention if switching targets
+            if old_target:
+                old_prefix = format_reply_text(old_target)
+                text = input_area.text
+                if text.startswith(old_prefix):
+                    text = text[len(old_prefix) :]
+                    input_area.load_text(text)
+
+            # Prefill with new @mention
+            reply_text = format_reply_text(event.sender)
+            existing = input_area.text
+            if not existing.startswith(reply_text):
+                if existing.strip():
+                    input_area.load_text(reply_text + existing)
+                else:
+                    input_area.load_text(reply_text)
+
+            input_area.focus()
+            input_area.move_cursor_relative(columns=len(reply_text))
+
+            # Update panel visuals
+            self.update_reply_panel_visuals()
+
+    def clear_reply_target(self, input_area: TextArea | None = None) -> None:
+        """Clear the active reply target and clean up input."""
+        if not self.reply_target:
+            return
+        old_prefix = format_reply_text(self.reply_target)
+        self.reply_target = None
+        if input_area is None:
+            input_area = self.query_one("#input-area", InputArea)
+        text = input_area.text
+        if text.startswith(old_prefix):
+            remaining = text[len(old_prefix) :]
+            input_area.load_text(remaining)
+        self.update_reply_panel_visuals()
+
+    def update_reply_panel_visuals(self) -> None:
+        """Update border subtitles on message panels to reflect reply state."""
+        try:
+            log = self.query_one("#message-log", MessageLog)
+        except QueryError:
+            return
+        for panel in log.query(MessagePanel):
+            if panel.sender == "king":
+                continue
+            if self.reply_target and panel.sender == self.reply_target:
+                panel.border_subtitle = "replying \u2022 click to cancel"
+            else:
+                panel.border_subtitle = "click: reply \u00b7 shift: copy"
 
     def send_message(self) -> None:
         """Send the current input as a king message or handle slash command."""
@@ -585,9 +675,21 @@ class ChatApp(App):
 
         input_area.clear()
 
+        # Clear reply target after sending
+        self.reply_target = None
+        self.update_reply_panel_visuals()
+
         # Handle slash commands
         if text.startswith("/"):
             self.handle_slash_command(text)
+            return
+
+        # Manual mode: require explicit @mention
+        mentions = re.findall(r"(?<!\w)@(\w+)", text)
+        if self.chat_mode == "manual" and not mentions:
+            self.notify("Use @member to direct your message (e.g. @claude). Try @all for everyone.", severity="warning")
+            # Put the text back so user can add @mention
+            input_area.load_text(text)
             return
 
         self.interrupted = False
@@ -619,27 +721,35 @@ class ChatApp(App):
             self.remove_member_panels(log, name)
 
         if to == "all":
-            # Broadcast: always query all targets in parallel, then optionally
-            # run auto-turn follow-ups (sequential round-robin).
-            for name in targets:
-                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            # Sequential modes (round_robin, manual): only show WaitingPanel for
+            # the first target; each mode mounts panels as it queries.
+            # Parallel modes (natural, broadcast): show all panels upfront.
+            sequential = self.chat_mode in ("round_robin", "manual")
+            panel_targets = targets[:1] if sequential else targets
+            for name in panel_targets:
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             prior_messages = list_messages(self.base, self.branch, self.thread_id)
             is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
             self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
         else:
-            # Directed: single query, no auto-turns
-            log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
+            # Directed @mention: single query, no auto-turns
+            if not log.query(f"#wait-{targets[0]}"):
+                log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
             member = self.council.get_member(targets[0]) if self.council else None
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
                 self.run_worker(self.run_query(member, stream_path, generation=gen), exclusive=False)
 
-    async def run_query(self, member, stream_path: Path, generation: int | None = None) -> None:
+    async def run_query(self, member, stream_path: Path, generation: int | None = None) -> str | None:
         """Run a member query with full thread context, then persist and clean up.
 
         When *generation* is passed, the response is discarded if ``self.generation``
         has moved on (meaning the user sent a new message while this query was in flight).
+
+        Returns the response body text, or None if discarded/errored.
         """
+        body = None
         try:
             timeout = self.council.timeout if self.council else 600
             tdir = thread_dir(self.base, self.branch, self.thread_id)
@@ -651,7 +761,7 @@ class ChatApp(App):
                 logger.debug(
                     "Discarding stale response from %s (gen %d != %d)", member.name, generation, self.generation
                 )
-                return
+                return None
 
             # Use cleaner message for interrupted queries with no useful text
             if self.interrupted and not response.text:
@@ -683,6 +793,7 @@ class ChatApp(App):
             # Stream file is NOT deleted here — the poller needs to drain final
             # events (thinking tokens, last text deltas) before cleanup.  Stale
             # files are cleaned up on next session launch (on_mount).
+        return body
 
     def build_debug_stream_path(self, stream_path: Path, member_name: str) -> Path:
         """Build a unique path for preserved stream debug artifacts."""
@@ -692,71 +803,151 @@ class ChatApp(App):
     async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
         """Coordinate a chat round after the king sends a message.
 
-        Always starts with a parallel broadcast for the initial response to the
-        king's message.  On follow-up exchanges (not the first), continues with
-        sequential round-robin auto-turns after the broadcast.
+        Dispatches to mode-specific logic:
+        - natural: parallel broadcast first, then shuffled round-robin auto-turns
+        - round_robin: fixed-order sequential turns for auto_rounds rounds
+        - manual: only @mentioned targets, no auto-turns
+        - broadcast: parallel to all, auto_rounds additional parallel rounds
         """
         if not self.council:
             return
 
-        # Parallel broadcast (or sequential if configured).  WaitingPanels
-        # are already mounted by send_message().
-        mode = self.council.mode
-        if mode == "broadcast" and len(targets) > 1:
-            coros = []
-            for name in targets:
-                member = self.council.get_member(name)
-                if member:
-                    stream_path = tdir / f".stream-{name}.jsonl"
-                    coros.append(self.run_query(member, stream_path, generation=generation))
-            await asyncio.gather(*coros)
-            if self.generation != generation:
-                return
-        else:
-            for name in targets:
-                if self.interrupted or self.generation != generation:
-                    return
-                member = self.council.get_member(name)
-                if not member:
-                    continue
-                stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path, generation=generation)
+        mode = self.chat_mode
 
-        # First exchange: broadcast only, no auto-turns.
+        if mode == "manual":
+            await self.run_mode_manual(targets, generation, tdir)
+        elif mode == "broadcast":
+            await self.run_mode_broadcast(targets, generation, tdir, is_first_exchange)
+        elif mode == "round_robin":
+            await self.run_mode_round_robin(targets, generation, tdir)
+        else:
+            # natural (default)
+            await self.run_mode_natural(targets, generation, tdir, is_first_exchange)
+
+    async def run_mode_natural(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
+        """Natural mode: parallel broadcast first turn, then shuffled round-robin."""
+        # First turn: parallel broadcast (WaitingPanels mounted by send_message)
+        await self.parallel_query(targets, generation, tdir)
+        if self.generation != generation:
+            return
+
+        # First exchange in thread: broadcast only, no auto-turns
         if is_first_exchange:
             return
 
-        # Follow-up: sequential round-robin auto-turns after the broadcast.
-        active = [n for n in self.member_names if n not in self.muted]
-        budget = self.council.auto_messages
-        if budget == 0:
-            return
-        if budget < 0:
-            # -1 = auto: one message per active member
-            budget = len(active)
-        if budget <= 0:
-            return
-        messages_sent = 0
+        # Follow-up: shuffled round-robin auto-turns
+        await self.sequential_auto_turns(generation, tdir, shuffle=True)
 
-        while messages_sent < budget:
+    async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Round-robin mode: no initial broadcast, fixed-order sequential turns."""
+        # First turn: sequential through targets, mounting WaitingPanel per-agent
+        for name in targets:
+            if self.interrupted or self.generation != generation:
+                return
+            member = self.council.get_member(name)
+            if not member:
+                continue
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
+            await self.await_remove_member_panels(log, name)
+            if not log.query(f"#wait-{name}"):
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            stream_path = tdir / f".stream-{name}.jsonl"
+            await self.run_query(member, stream_path, generation=generation)
+
+        # Auto-turns: fixed-order sequential
+        await self.sequential_auto_turns(generation, tdir, shuffle=False)
+
+    async def run_mode_manual(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Manual mode: only query @mentioned targets, no auto-turns."""
+        # Sequential through mentioned targets, mounting WaitingPanel per-agent
+        for name in targets:
+            if self.interrupted or self.generation != generation:
+                return
+            member = self.council.get_member(name)
+            if not member:
+                continue
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
+            await self.await_remove_member_panels(log, name)
+            if not log.query(f"#wait-{name}"):
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            stream_path = tdir / f".stream-{name}.jsonl"
+            await self.run_query(member, stream_path, generation=generation)
+
+    async def run_mode_broadcast(
+        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool
+    ) -> None:
+        """Broadcast mode: parallel to all each turn, auto_rounds additional rounds."""
+        # First turn: parallel (WaitingPanels mounted by send_message)
+        await self.parallel_query(targets, generation, tdir)
+        if self.generation != generation:
+            return
+
+        # First exchange: no auto-rounds
+        if is_first_exchange:
+            return
+
+        # Additional broadcast rounds
+        if self.auto_rounds <= 0:
+            return
+        for _round in range(self.auto_rounds):
+            if self.interrupted or self.generation != generation:
+                return
+            active = [n for n in self.member_names if n not in self.muted]
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
             for name in active:
-                if messages_sent >= budget:
-                    break
+                await self.await_remove_member_panels(log, name)
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            await self.parallel_query(active, generation, tdir)
+            if self.generation != generation:
+                return
+
+    async def parallel_query(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Run queries for all targets in parallel."""
+        coros = []
+        for name in targets:
+            member = self.council.get_member(name)
+            if member:
+                stream_path = tdir / f".stream-{name}.jsonl"
+                coros.append(self.run_query(member, stream_path, generation=generation))
+        if coros:
+            await asyncio.gather(*coros)
+
+    async def sequential_auto_turns(self, generation: int, tdir: Path, shuffle: bool) -> None:
+        """Run sequential auto-turn rounds through eligible members.
+
+        After each response, parses @mentions and bumps mentioned members
+        to the front of the remaining queue for the current round.
+        """
+        if self.auto_rounds <= 0:
+            return
+        for _round in range(self.auto_rounds):
+            active = [n for n in self.member_names if n not in self.muted]
+            if shuffle:
+                import random
+
+                active = active.copy()
+                random.shuffle(active)
+            queue = list(active)
+            while queue:
                 if self.interrupted or self.generation != generation:
                     return
-                if name in self.muted:
-                    continue
+                name = queue.pop(0)
                 member = self.council.get_member(name)
                 if not member:
                     continue
-                # Mount WaitingPanel for this member's turn
                 log = self.query_one("#message-log", MessageLog)
-                log.scroll_if_following()  # capture intent BEFORE mount
+                log.scroll_if_following()
                 await self.await_remove_member_panels(log, name)
-                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
                 stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path, generation=generation)
-                messages_sent += 1
+                body = await self.run_query(member, stream_path, generation=generation)
+                if body and queue:
+                    queue = mention_bump(body, queue, self.member_names)
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove any existing wait/stream/thinking/interrupted panels for a member."""

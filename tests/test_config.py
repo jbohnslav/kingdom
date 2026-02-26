@@ -26,11 +26,11 @@ class TestDefaultConfig:
         cfg = default_config()
         assert set(cfg.council.members) == {"claude", "codex"}
         assert cfg.council.timeout == 600
-        assert cfg.council.auto_messages == -1
-        assert cfg.council.mode == "broadcast"
+        assert cfg.council.ask.auto_messages == -1
+        assert cfg.council.ask.mode == "broadcast"
         assert cfg.council.preamble == ""
-        assert cfg.council.chat_mode == "broadcast"
-        assert cfg.council.chat_auto_rounds == 1
+        assert cfg.council.chat.mode == "natural"
+        assert cfg.council.chat.auto_rounds == 1
 
     def test_peasant_defaults(self) -> None:
         cfg = default_config()
@@ -97,20 +97,20 @@ class TestValidateConfig:
         assert cfg.council.members == ["claude", "codex"]
         assert cfg.council.timeout == 300
 
-    def test_council_auto_messages(self) -> None:
-        data = {"council": {"auto_messages": 5}}
+    def test_council_ask_auto_messages(self) -> None:
+        data = {"council": {"ask": {"auto_messages": 5}}}
         cfg = validate_config(data)
-        assert cfg.council.auto_messages == 5
+        assert cfg.council.ask.auto_messages == 5
 
-    def test_council_mode_sequential(self) -> None:
-        data = {"council": {"mode": "sequential"}}
+    def test_council_ask_mode_sequential(self) -> None:
+        data = {"council": {"ask": {"mode": "sequential"}}}
         cfg = validate_config(data)
-        assert cfg.council.mode == "sequential"
+        assert cfg.council.ask.mode == "sequential"
 
-    def test_council_mode_broadcast(self) -> None:
-        data = {"council": {"mode": "broadcast"}}
+    def test_council_ask_mode_broadcast(self) -> None:
+        data = {"council": {"ask": {"mode": "broadcast"}}}
         cfg = validate_config(data)
-        assert cfg.council.mode == "broadcast"
+        assert cfg.council.ask.mode == "broadcast"
 
     def test_council_preamble(self) -> None:
         data = {"council": {"preamble": "You are a helpful advisor."}}
@@ -118,11 +118,11 @@ class TestValidateConfig:
         assert cfg.council.preamble == "You are a helpful advisor."
 
     def test_council_new_fields_preserved_when_members_defaulted(self) -> None:
-        data = {"council": {"auto_messages": 7, "mode": "sequential", "preamble": "Custom."}}
+        data = {"council": {"ask": {"auto_messages": 7, "mode": "sequential"}, "preamble": "Custom."}}
         cfg = validate_config(data)
         assert set(cfg.council.members) == {"claude", "codex"}
-        assert cfg.council.auto_messages == 7
-        assert cfg.council.mode == "sequential"
+        assert cfg.council.ask.auto_messages == 7
+        assert cfg.council.ask.mode == "sequential"
         assert cfg.council.preamble == "Custom."
 
     def test_council_writable_true(self) -> None:
@@ -249,24 +249,29 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be positive"):
             validate_config({"council": {"timeout": 0}})
 
-    def test_bad_council_auto_messages_type(self) -> None:
+    def test_bad_ask_auto_messages_type(self) -> None:
         with pytest.raises(ValueError, match="must be an integer"):
-            validate_config({"council": {"auto_messages": "many"}})
+            validate_config({"council": {"ask": {"auto_messages": "many"}}})
 
-    def test_council_auto_messages_valid_values(self) -> None:
-        validate_config({"council": {"auto_messages": -1}})  # -1 = auto (len(members))
-        validate_config({"council": {"auto_messages": 0}})  # 0 = disabled
-        validate_config({"council": {"auto_messages": 5}})  # positive = explicit budget
+    def test_ask_auto_messages_valid_values(self) -> None:
+        validate_config({"council": {"ask": {"auto_messages": -1}}})
+        validate_config({"council": {"ask": {"auto_messages": 0}}})
+        validate_config({"council": {"ask": {"auto_messages": 5}}})
         with pytest.raises(ValueError, match="must be -1"):
-            validate_config({"council": {"auto_messages": -2}})
+            validate_config({"council": {"ask": {"auto_messages": -2}}})
 
-    def test_bad_council_mode_type(self) -> None:
+    def test_bad_ask_mode_type(self) -> None:
         with pytest.raises(ValueError, match="must be a string"):
-            validate_config({"council": {"mode": 123}})
+            validate_config({"council": {"ask": {"mode": 123}}})
 
-    def test_bad_council_mode_value(self) -> None:
+    def test_bad_ask_mode_value(self) -> None:
         with pytest.raises(ValueError, match="must be one of"):
-            validate_config({"council": {"mode": "turbo"}})
+            validate_config({"council": {"ask": {"mode": "turbo"}}})
+
+    def test_deprecated_flat_keys_fail_fast(self) -> None:
+        for key in ("auto_messages", "mode", "chat_mode", "chat_auto_rounds"):
+            with pytest.raises(ValueError, match="Deprecated council keys"):
+                validate_config({"council": {key: "whatever"}})
 
     def test_bad_council_preamble_type(self) -> None:
         with pytest.raises(ValueError, match="must be a string"):
@@ -301,37 +306,45 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be a boolean"):
             validate_config({"council": {"writable": 1}})
 
-    def test_council_chat_mode_sequential(self) -> None:
-        cfg = validate_config({"council": {"chat_mode": "sequential"}})
-        assert cfg.council.chat_mode == "sequential"
+    def test_chat_mode_round_robin(self) -> None:
+        cfg = validate_config({"council": {"chat": {"mode": "round_robin"}}})
+        assert cfg.council.chat.mode == "round_robin"
 
-    def test_council_chat_mode_broadcast(self) -> None:
-        cfg = validate_config({"council": {"chat_mode": "broadcast"}})
-        assert cfg.council.chat_mode == "broadcast"
+    def test_chat_mode_broadcast(self) -> None:
+        cfg = validate_config({"council": {"chat": {"mode": "broadcast"}}})
+        assert cfg.council.chat.mode == "broadcast"
 
-    def test_bad_council_chat_mode_type(self) -> None:
-        with pytest.raises(ValueError, match="chat_mode must be a string"):
-            validate_config({"council": {"chat_mode": 123}})
+    def test_chat_mode_manual(self) -> None:
+        cfg = validate_config({"council": {"chat": {"mode": "manual"}}})
+        assert cfg.council.chat.mode == "manual"
 
-    def test_bad_council_chat_mode_value(self) -> None:
-        with pytest.raises(ValueError, match="chat_mode must be one of"):
-            validate_config({"council": {"chat_mode": "invalid"}})
+    def test_chat_mode_natural(self) -> None:
+        cfg = validate_config({"council": {"chat": {"mode": "natural"}}})
+        assert cfg.council.chat.mode == "natural"
 
-    def test_council_chat_auto_rounds(self) -> None:
-        cfg = validate_config({"council": {"chat_auto_rounds": 3}})
-        assert cfg.council.chat_auto_rounds == 3
+    def test_bad_chat_mode_type(self) -> None:
+        with pytest.raises(ValueError, match="council.chat.mode must be a string"):
+            validate_config({"council": {"chat": {"mode": 123}}})
 
-    def test_council_chat_auto_rounds_zero(self) -> None:
-        cfg = validate_config({"council": {"chat_auto_rounds": 0}})
-        assert cfg.council.chat_auto_rounds == 0
+    def test_bad_chat_mode_value(self) -> None:
+        with pytest.raises(ValueError, match="council.chat.mode must be one of"):
+            validate_config({"council": {"chat": {"mode": "invalid"}}})
 
-    def test_bad_council_chat_auto_rounds_type(self) -> None:
-        with pytest.raises(ValueError, match="chat_auto_rounds must be an integer"):
-            validate_config({"council": {"chat_auto_rounds": "many"}})
+    def test_chat_auto_rounds(self) -> None:
+        cfg = validate_config({"council": {"chat": {"auto_rounds": 3}}})
+        assert cfg.council.chat.auto_rounds == 3
 
-    def test_bad_council_chat_auto_rounds_negative(self) -> None:
-        with pytest.raises(ValueError, match="chat_auto_rounds must be non-negative"):
-            validate_config({"council": {"chat_auto_rounds": -1}})
+    def test_chat_auto_rounds_zero(self) -> None:
+        cfg = validate_config({"council": {"chat": {"auto_rounds": 0}}})
+        assert cfg.council.chat.auto_rounds == 0
+
+    def test_bad_chat_auto_rounds_type(self) -> None:
+        with pytest.raises(ValueError, match="council.chat.auto_rounds must be an integer"):
+            validate_config({"council": {"chat": {"auto_rounds": "many"}}})
+
+    def test_bad_chat_auto_rounds_negative(self) -> None:
+        with pytest.raises(ValueError, match="council.chat.auto_rounds must be non-negative"):
+            validate_config({"council": {"chat": {"auto_rounds": -1}}})
 
     def test_peasant_timeout_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
