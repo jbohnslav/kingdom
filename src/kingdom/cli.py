@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Annotated, NamedTuple
 if TYPE_CHECKING:
     from kingdom.thread import ThreadStatus
 
+import click
 import typer
 from rich.console import Console, Group
 from rich.markdown import Markdown
@@ -276,11 +277,15 @@ def start(
         bool, typer.Option("--force", "-f", help="Force start even if a session is already active.")
     ] = False,
 ) -> None:
-    # start may auto-init, so fall back to cwd if no project root found
-    try:
-        base = find_project_root()
-    except ValueError:
-        base = Path.cwd()
+    # If KD_BASE is explicitly set, require it to be valid — no auto-init fallback.
+    # Otherwise, fall back to cwd so auto-init can create .kd/ in a fresh repo.
+    if os.environ.get("KD_BASE"):
+        base = require_project_root()
+    else:
+        try:
+            base = find_project_root()
+        except ValueError:
+            base = Path.cwd()
 
     # Auto-init if .kd/ doesn't exist (with git check)
     if not state_root(base).exists():
@@ -1536,6 +1541,14 @@ def chat(
     writable: Annotated[
         bool, typer.Option("--writable", "-w", help="Grant council members full write permissions.")
     ] = False,
+    color: Annotated[
+        str,
+        typer.Option(
+            "--color",
+            help="Color mode: auto, truecolor, ansi, none.",
+            click_type=click.Choice(["auto", "truecolor", "ansi", "none"]),
+        ),
+    ] = "auto",
 ) -> None:
     """Open the council chat TUI.
 
@@ -1582,9 +1595,39 @@ def chat(
             raise typer.Exit(code=0)
 
     from kingdom.tui.app import ChatApp
+    from kingdom.tui.terminal import in_tmux_control_mode
 
-    app_instance = ChatApp(base=base, branch=feature, thread_id=tid, debug_streams=debug, writable=writable)
-    app_instance.run()
+    # Resolve color mode
+    explicit_color = color != "auto"
+    if color == "auto":
+        use_ansi = in_tmux_control_mode()
+        if use_ansi:
+            typer.echo("Detected tmux control mode (-CC) — using ANSI colors for compatibility.")
+    elif color == "ansi":
+        use_ansi = True
+    elif color == "none":
+        os.environ["NO_COLOR"] = "1"
+        use_ansi = True
+    else:  # truecolor
+        use_ansi = False
+
+    app_instance = ChatApp(
+        base=base, branch=feature, thread_id=tid, debug_streams=debug, writable=writable, ansi_color=use_ansi
+    )
+
+    try:
+        app_instance.run()
+    except AttributeError as exc:
+        if "_color" not in str(exc) or explicit_color:
+            raise
+        # Crash fallback: retry once with ANSI color mode (only when --color was auto)
+        typer.echo()
+        typer.echo("TUI crashed with a color rendering error. Retrying with ANSI color mode...")
+        typer.echo("Hint: run with --color ansi to skip auto-detection, or --color none to disable colors.")
+        app_instance = ChatApp(
+            base=base, branch=feature, thread_id=tid, debug_streams=debug, writable=writable, ansi_color=True
+        )
+        app_instance.run()
 
 
 design_app = typer.Typer(name="design", help="Manage design documents.")
@@ -1835,7 +1878,7 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
         auto_pull: If True, move backlog tickets into the current branch.
             Only set for mutating commands (peasant start, kd work).
     """
-    base = base or Path.cwd()
+    base = base or require_project_root()
 
     try:
         feature = resolve_current_run(base)
@@ -4351,7 +4394,7 @@ def ticket_dep_cycle() -> None:
                 if color[dep_id] == GRAY:
                     # Found a cycle — extract it
                     cycle_start = path.index(dep_id)
-                    cycles.append(path[cycle_start:] + [dep_id])
+                    cycles.append([*path[cycle_start:], dep_id])
                 elif color[dep_id] == WHITE:
                     dfs(dep_id, [*path, dep_id])
         color[tid] = BLACK

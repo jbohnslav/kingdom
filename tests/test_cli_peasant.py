@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from kingdom import cli
+from kingdom.cli import resolve_peasant_context
 from kingdom.session import AgentState, get_agent_state, set_agent_state
 from kingdom.state import backlog_root, ensure_branch_layout, logs_root, set_current_run
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
@@ -1764,3 +1765,52 @@ class TestPeasantNoResultsMessages:
             assert result.exit_code == 0
             assert "No messages from" in result.output
             assert "may still be working" in result.output
+
+
+class TestProjectRootDiscovery:
+    """Peasant commands resolve .kd/ state from subdirectories."""
+
+    def test_peasant_command_from_subdirectory(self, tmp_path: Path) -> None:
+        """resolve_peasant_context finds .kd/ at repo root when invoked from a subdirectory."""
+        setup_project(tmp_path)
+        create_test_ticket(tmp_path)
+
+        subdir = tmp_path / "src" / "deep" / "nested"
+        subdir.mkdir(parents=True)
+
+        # From repo root (cwd = tmp_path)
+        with patch("kingdom.state.Path.cwd", return_value=tmp_path):
+            ctx_root = resolve_peasant_context("kin-test")
+
+        # From nested subdirectory (cwd = subdir, should walk up to tmp_path)
+        with patch("kingdom.state.Path.cwd", return_value=subdir):
+            ctx_sub = resolve_peasant_context("kin-test")
+
+        assert ctx_root.base == ctx_sub.base == tmp_path
+        assert ctx_root.full_ticket_id == ctx_sub.full_ticket_id
+        assert ctx_root.ticket.title == ctx_sub.ticket.title
+
+    def test_work_worktree_defaults_to_cwd(self, tmp_path: Path) -> None:
+        """kd work defaults worktree to cwd, not project root — intentional exception."""
+        setup_project(tmp_path)
+        create_test_ticket(tmp_path)
+
+        fake_cwd = tmp_path / "worktrees" / "my-worktree"
+        fake_cwd.mkdir(parents=True)
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=fake_cwd),
+            patch("kingdom.harness.run_agent_loop", return_value="done") as mock_loop,
+            patch("kingdom.config.load_config") as mock_cfg,
+        ):
+            mock_cfg.return_value.peasant.agent = "test-agent"
+            result = runner.invoke(
+                cli.app,
+                ["work", "kin-test", "--base", str(tmp_path)],
+            )
+
+        assert result.exit_code == 0
+        assert mock_loop.call_count == 1
+        call_kwargs = mock_loop.call_args.kwargs
+        # Worktree should be cwd (fake_cwd), NOT the project root (tmp_path)
+        assert call_kwargs["worktree"] == fake_cwd

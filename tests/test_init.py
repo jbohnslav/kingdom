@@ -185,6 +185,28 @@ def test_cli_init_does_not_overwrite_existing_config() -> None:
         assert data == custom
 
 
+def test_cli_start_kd_base_invalid_hard_fails(tmp_path: Path) -> None:
+    """kd start with KD_BASE set to an invalid path errors instead of auto-initializing."""
+    runner = CliRunner()
+    bad_path = tmp_path / "nonsense"
+    bad_path.mkdir()
+    with patch.dict("os.environ", {"KD_BASE": str(bad_path)}):
+        result = runner.invoke(cli.app, ["start", "test-branch"])
+    assert result.exit_code == 1
+    assert "KD_BASE=" in result.output
+    assert "does not contain a .kd/" in result.output
+
+
+def test_cli_start_kd_base_unset_keeps_auto_init() -> None:
+    """kd start without KD_BASE and no .kd/ falls through to auto-init."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        result = runner.invoke(cli.app, ["start", "test-feature"])
+    assert result.exit_code == 0
+    assert "Auto-initializing" in result.output
+
+
 def test_cli_start_auto_init_requires_git_repo() -> None:
     """kd start fails when auto-initializing in a non-git directory."""
     runner = CliRunner()

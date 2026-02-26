@@ -348,9 +348,15 @@ class ChatApp(App):
         return ChatScreen(id="_default")
 
     def __init__(
-        self, base: Path, branch: str, thread_id: str, debug_streams: bool = False, writable: bool = False
+        self,
+        base: Path,
+        branch: str,
+        thread_id: str,
+        debug_streams: bool = False,
+        writable: bool = False,
+        ansi_color: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(ansi_color=ansi_color)
         self.base = base
         self.branch = branch
         self.thread_id = thread_id

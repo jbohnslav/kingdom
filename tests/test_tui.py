@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -105,6 +106,7 @@ class TestChatCommand:
             thread_id="council-debug",
             debug_streams=True,
             writable=False,
+            ansi_color=False,
         )
         mock_chat_app.return_value.run.assert_called_once()
 
@@ -876,6 +878,107 @@ class TestPhase1SmokeTest:
             result = runner.invoke(app, ["chat", "--new"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
+
+    def test_chat_color_auto_detects_tmux_cc(self, project: Path) -> None:
+        """--color auto enables ansi_color when tmux -CC is detected."""
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run"),
+            patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=True),
+            patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
+        ):
+            result = runner.invoke(app, ["chat", "--new"])
+        assert result.exit_code == 0
+        assert "tmux control mode" in result.output
+        assert mock_init.call_args.kwargs["ansi_color"] is True
+
+    def test_chat_color_auto_no_tmux(self, project: Path) -> None:
+        """--color auto (default) uses normal colors when not in tmux -CC."""
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run"),
+            patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
+            patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
+        ):
+            result = runner.invoke(app, ["chat", "--new"])
+        assert result.exit_code == 0
+        assert mock_init.call_args.kwargs["ansi_color"] is False
+
+    def test_chat_color_ansi_forces_ansi(self, project: Path) -> None:
+        """--color ansi forces ansi_color regardless of environment."""
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run"),
+            patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
+        ):
+            result = runner.invoke(app, ["chat", "--new", "--color", "ansi"])
+        assert result.exit_code == 0
+        assert mock_init.call_args.kwargs["ansi_color"] is True
+
+    def test_chat_color_none_sets_ansi_and_no_color(self, project: Path) -> None:
+        """--color none sets NO_COLOR=1 AND uses ansi_color=True to bypass truecolor conversion."""
+        no_color_was_set = False
+
+        def check_no_color(*args, **kwargs):
+            nonlocal no_color_was_set
+            no_color_was_set = os.environ.get("NO_COLOR") == "1"
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run", side_effect=check_no_color),
+            patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
+        ):
+            result = runner.invoke(app, ["chat", "--new", "--color", "none"])
+        assert result.exit_code == 0
+        assert mock_init.call_args.kwargs["ansi_color"] is True
+        assert no_color_was_set, "NO_COLOR should be set in environment when app runs"
+
+    def test_chat_color_invalid_exits(self, project: Path) -> None:
+        """--color with invalid value is rejected by click.Choice before function body runs."""
+        result = runner.invoke(app, ["chat", "--new", "--color", "bogus"])
+        assert result.exit_code != 0
+        assert "Invalid value" in result.output or "bogus" in result.output
+
+    def test_chat_crash_fallback_retries_with_ansi(self, project: Path) -> None:
+        """On _color AttributeError, retries once with ansi_color=True."""
+        call_count = 0
+
+        def run_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise AttributeError("'Style' object has no attribute '_color'")
+            # Second call succeeds
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run", side_effect=run_side_effect),
+            patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
+        ):
+            result = runner.invoke(app, ["chat", "--new"])
+        assert result.exit_code == 0
+        assert "color rendering error" in result.output
+        assert call_count == 2
+
+    def test_chat_crash_no_retry_with_explicit_color(self, project: Path) -> None:
+        """Crash fallback does NOT retry when user passed explicit --color."""
+
+        def crash(*args, **kwargs):
+            raise AttributeError("'Style' object has no attribute '_color'")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run", side_effect=crash),
+        ):
+            result = runner.invoke(app, ["chat", "--new", "--color", "truecolor"])
+        # Should re-raise, not silently retry
+        assert result.exit_code != 0
 
 
 class TestErrorDetection:

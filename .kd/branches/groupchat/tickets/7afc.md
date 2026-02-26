@@ -1,11 +1,12 @@
 ---
 id: "7afc"
-status: in_progress
+status: closed
 deps: [27ce]
 links: []
 created: 2026-02-16T18:50:43Z
 type: task
 priority: 2
+closed_at: 2026-02-25T04:41:38Z
 ---
 # Group chat modes: natural, round_robin, manual, broadcast
 
