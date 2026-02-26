@@ -240,6 +240,24 @@ def test_cli_start_from_subdirectory_with_existing_kd() -> None:
         assert not (subdir / ".kd").exists()
 
 
+def test_cli_start_auto_init_handles_git_timeout() -> None:
+    """kd start should not crash if git rev-parse --show-toplevel times out."""
+    runner = CliRunner()
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if "--show-toplevel" in cmd:
+            raise subprocess.TimeoutExpired(cmd, 5)
+        return real_run(cmd, **kwargs)
+
+    with runner.isolated_filesystem():
+        subprocess.run(["git", "init", "-q"], check=True)
+        with patch("kingdom.cli.subprocess.run", side_effect=fake_run):
+            result = runner.invoke(cli.app, ["start", "test-feature"])
+    assert result.exit_code == 0
+    assert "Auto-initializing" in result.output
+
+
 def test_cli_start_auto_init_requires_git_repo() -> None:
     """kd start fails when auto-initializing in a non-git directory."""
     runner = CliRunner()

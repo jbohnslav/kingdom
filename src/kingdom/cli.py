@@ -293,15 +293,18 @@ def start(
             print_error("Not a git repository. Run `kd init --no-git` first.")
             raise typer.Exit(code=1)
         # Always auto-init at the git root, not wherever cwd happens to be
-        git_root_result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            cwd=base,
-            timeout=5,
-        )
-        if git_root_result.returncode == 0 and git_root_result.stdout.strip():
-            base = Path(git_root_result.stdout.strip())
+        try:
+            git_root_result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                cwd=base,
+                timeout=5,
+            )
+            if git_root_result.returncode == 0 and git_root_result.stdout.strip():
+                base = Path(git_root_result.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass  # Fall back to using base as-is
         typer.echo("Auto-initializing .kd/ directory...")
         ensure_base_layout(base)
         install_skill()
