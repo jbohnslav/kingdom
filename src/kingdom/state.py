@@ -68,6 +68,55 @@ def state_root(base: Path) -> Path:
     return base / ".kd"
 
 
+def find_project_root() -> Path:
+    """Locate the Kingdom project root directory.
+
+    Resolution order:
+    1. KD_BASE env var (explicit override for agents/CI)
+    2. cwd (if .kd/ exists here, fast path)
+    3. Walk parent directories looking for .kd/
+    4. git rev-parse --show-toplevel (belt-and-suspenders fallback)
+    5. Error with clear hint to run kd init
+
+    Raises ValueError with a descriptive message if no root is found.
+    """
+    # 1. KD_BASE env var — explicit override, fail loudly if invalid
+    kd_base = os.environ.get("KD_BASE")
+    if kd_base:
+        p = Path(kd_base).resolve()
+        if not (p / ".kd").is_dir():
+            raise ValueError(f"KD_BASE={kd_base} does not contain a .kd/ directory")
+        return p
+
+    # 2. cwd fast path
+    cwd = Path.cwd()
+    if (cwd / ".kd").is_dir():
+        return cwd
+
+    # 3. Walk parent directories
+    for parent in cwd.parents:
+        if (parent / ".kd").is_dir():
+            return parent
+
+    # 4. git rev-parse fallback
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            git_root = Path(result.stdout.strip())
+            if (git_root / ".kd").is_dir():
+                return git_root
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # 5. Error
+    raise ValueError("No .kd/ directory found. Run `kd init` to initialize.")
+
+
 def runs_root(base: Path) -> Path:
     """DEPRECATED: Use branches_root() instead."""
     return state_root(base) / "runs"

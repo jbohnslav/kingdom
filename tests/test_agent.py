@@ -665,3 +665,70 @@ class TestExtractStreamThinking:
         from kingdom.agent import extract_stream_thinking
 
         assert extract_stream_thinking("not json", "cursor") is None
+
+
+class TestExtractStreamToolUse:
+    def test_claude_content_block_start_tool_use(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        line = json.dumps(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "content_block": {"type": "tool_use", "name": "Read", "id": "toolu_123"},
+                },
+            }
+        )
+        assert extract_stream_tool_use(line, "claude_code") == "Read"
+
+    def test_claude_text_delta_returns_none(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        line = json.dumps(
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}},
+            }
+        )
+        assert extract_stream_tool_use(line, "claude_code") is None
+
+    def test_cursor_tool_call_started(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        line = json.dumps({"type": "tool_call", "subtype": "started", "call_id": "t1"})
+        assert extract_stream_tool_use(line, "cursor") == "tool"
+
+    def test_cursor_tool_call_started_with_name(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        line = json.dumps({"type": "tool_call", "subtype": "started", "name": "Bash", "call_id": "t1"})
+        assert extract_stream_tool_use(line, "cursor") == "Bash"
+
+    def test_cursor_tool_call_completed_returns_none(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        line = json.dumps({"type": "tool_call", "subtype": "completed", "call_id": "t1"})
+        assert extract_stream_tool_use(line, "cursor") is None
+
+    def test_codex_function_call(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        line = json.dumps({"type": "item.completed", "item": {"type": "function_call", "name": "shell", "id": "fc1"}})
+        assert extract_stream_tool_use(line, "codex") == "shell"
+
+    def test_codex_non_function_call_returns_none(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        line = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}})
+        assert extract_stream_tool_use(line, "codex") is None
+
+    def test_unknown_backend(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        assert extract_stream_tool_use('{"type":"tool_call"}', "unknown") is None
+
+    def test_invalid_json(self) -> None:
+        from kingdom.agent import extract_stream_tool_use
+
+        assert extract_stream_tool_use("not json", "claude_code") is None

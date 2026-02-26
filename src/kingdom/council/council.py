@@ -61,8 +61,8 @@ class Council:
         return cls(
             members=members,
             timeout=cfg.council.timeout,
-            auto_messages=cfg.council.auto_messages,
-            mode=cfg.council.mode,
+            auto_messages=cfg.council.ask.auto_messages,
+            mode=cfg.council.ask.mode,
         )
 
     def query(self, prompt: str) -> dict[str, AgentResponse]:
@@ -121,7 +121,15 @@ class Council:
                 responses[member.name] = response
 
                 # Write to thread
-                add_message(base, branch, thread_id, from_=member.name, to="king", body=response.thread_body())
+                add_message(
+                    base,
+                    branch,
+                    thread_id,
+                    from_=member.name,
+                    to="king",
+                    body=response.thread_body(),
+                    status=response.thread_status(),
+                )
 
                 # Cleanup stream file
                 if stream_path.exists():

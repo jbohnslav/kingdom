@@ -321,6 +321,33 @@ class TestRunAgentLoop:
         set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
         return thread_id, session_name
 
+    def test_loop_writes_iteration_start_to_worklog(self, project: Path, ticket_path: Path) -> None:
+        """Each iteration appends a 'calling agent' entry to the worklog."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+        ):
+            run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        ticket = read_ticket(ticket_path)
+        assert "Iteration 1/" in ticket.body
+        assert "calling agent" in ticket.body
+
     def test_loop_done_when_gates_pass(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 

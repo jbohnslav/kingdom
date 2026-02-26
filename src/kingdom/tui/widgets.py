@@ -20,6 +20,7 @@ from rich.style import Style
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import LoadingIndicator, Static
+from textual.widgets import Markdown as TextualMarkdown
 
 from kingdom.tui.clipboard import ClipboardUnavailableError, copy_to_clipboard
 
@@ -170,11 +171,13 @@ class ColoredMentionMarkdown:
                     yield Segment(part, style)
 
 
-class MessagePanel(Static):
-    """A finalized message rendered as Markdown inside a bordered panel.
+class MessagePanel(Widget):
+    """A finalized message rendered with Textual's native Markdown widget.
 
-    Click on a council member's message to reply (prefills input with quote
-    and @mention).  Shift+click copies the message to the clipboard.
+    Uses the built-in Markdown widget for proper code-fence scrolling,
+    clickable links, and table rendering.  Click on a council member's
+    message to reply (prefills input with @mention).  Shift+click copies
+    the message body to the clipboard.
     """
 
     class Reply(Message):
@@ -184,18 +187,6 @@ class MessagePanel(Static):
             super().__init__()
             self.sender = sender
             self.body = body
-
-    DEFAULT_CSS = """
-    MessagePanel {
-        margin: 0 1;
-        padding: 0 1;
-        border: round $secondary;
-    }
-    MessagePanel.king {
-        border: none;
-        color: $text-muted;
-    }
-    """
 
     def __init__(
         self,
@@ -211,6 +202,9 @@ class MessagePanel(Static):
         self.member_names: list[str] = member_names or []
         self.timestamp_str = timestamp
 
+    def compose(self):
+        yield TextualMarkdown(self.body)
+
     def compose_text(self) -> str:
         """Format the display text (sender shown in border title, not body)."""
         return self.body
@@ -218,6 +212,7 @@ class MessagePanel(Static):
     def on_mount(self) -> None:
         if self.sender == "king":
             self.add_class("king")
+            self.border_title = "you"
         else:
             color = color_for_member(self.sender)
             self.styles.border = ("round", color)
@@ -226,13 +221,9 @@ class MessagePanel(Static):
                 title = f"{self.sender} · {self.timestamp_str}"
             self.border_title = title
             self.border_subtitle = "click: reply \u00b7 shift: copy"
-        if self.member_names:
-            self.update(ColoredMentionMarkdown(self.compose_text(), self.member_names))
-        else:
-            self.update(RichMarkdown(self.compose_text()))
 
     def on_click(self, event) -> None:
-        """Handle click: reply (default) or copy (shift)."""
+        """Handle click: reply toggle (default) or copy (shift)."""
         event.stop()
         if self.sender == "king":
             return
@@ -240,8 +231,6 @@ class MessagePanel(Static):
             self.do_copy()
         else:
             self.post_message(self.Reply(sender=self.sender, body=self.body))
-            self.border_subtitle = "replying..."
-            self.set_timer(1.5, self.reset_subtitle)
 
     def do_copy(self) -> None:
         """Copy message body to the system clipboard."""
@@ -259,21 +248,27 @@ class MessagePanel(Static):
         self.border_subtitle = "click: reply \u00b7 shift: copy"
 
 
-class StreamingPanel(Static):
-    """An in-progress response that updates as tokens stream in."""
+class StreamingPanel(Widget):
+    """An in-progress response that renders streaming Markdown.
 
-    DEFAULT_CSS = """
-    StreamingPanel {
-        margin: 0 1;
-        padding: 0 1;
-        border: round $secondary;
-    }
+    Uses Textual's Markdown widget so formatting (bold, code fences, etc.)
+    is visible *during* streaming, not only after finalization.  Markdown
+    re-renders are throttled to avoid excessive work on rapid token deltas.
     """
+
+    THROTTLE_SECONDS = 0.10  # max render frequency
 
     def __init__(self, sender: str, **kwargs) -> None:
         super().__init__(**kwargs)
         self.sender = sender
         self.content_text = ""
+        self.md: TextualMarkdown | None = None
+        self.last_render_time: float = 0.0
+        self.render_pending: bool = False
+
+    def compose(self):
+        self.md = TextualMarkdown("")
+        yield self.md
 
     def on_mount(self) -> None:
         color = color_for_member(self.sender)
@@ -288,20 +283,25 @@ class StreamingPanel(Static):
         """Replace the streamed text and refresh the display."""
         self.content_text = text
         self.update_title()
-        self.update(text + "\u258d")  # cursor
+        if self.md is None:
+            return
+        now = time.monotonic()
+        if now - self.last_render_time >= self.THROTTLE_SECONDS:
+            self.flush_markdown()
+        elif not self.render_pending:
+            self.render_pending = True
+            self.set_timer(self.THROTTLE_SECONDS, self.flush_markdown)
+
+    def flush_markdown(self) -> None:
+        """Push current content to the Markdown widget."""
+        if self.md is not None:
+            self.md.update(self.content_text + " \u258d")
+            self.last_render_time = time.monotonic()
+            self.render_pending = False
 
 
 class WaitingPanel(Widget):
     """Animated placeholder shown before streaming starts."""
-
-    DEFAULT_CSS = """
-    WaitingPanel {
-        margin: 0 1;
-        padding: 0;
-        border: dashed $secondary;
-        height: 3;
-    }
-    """
 
     def __init__(self, sender: str, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -356,14 +356,6 @@ class ErrorPanel(Static):
     retry actions so the user knows how to recover.
     """
 
-    DEFAULT_CSS = """
-    ErrorPanel {
-        margin: 0 1;
-        padding: 0 1;
-        border: round red;
-    }
-    """
-
     def __init__(self, sender: str, error: str, timed_out: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
         self.sender = sender
@@ -394,19 +386,6 @@ class ThinkingPanel(Static):
     Starts expanded while thinking streams in.  Auto-collapses on first answer
     token into a one-line summary.  Click or Enter toggles expanded/collapsed.
     Once the user manually toggles, auto-collapse is disabled (user_pinned).
-    """
-
-    DEFAULT_CSS = """
-    ThinkingPanel {
-        margin: 0 1;
-        padding: 0 1;
-        border: dashed $secondary;
-        color: $text-muted;
-    }
-    ThinkingPanel.collapsed {
-        height: 1;
-        padding: 0 1;
-    }
     """
 
     def __init__(self, sender: str, **kwargs) -> None:
@@ -529,21 +508,6 @@ class CommandHintBar(Static):
 
     Hidden by default. Call show_hints() with a prefix to display
     matching commands, or hide_hints() to remove it.
-    """
-
-    DEFAULT_CSS = """
-    CommandHintBar {
-        dock: bottom;
-        height: auto;
-        max-height: 6;
-        background: $surface;
-        color: $text-muted;
-        padding: 0 1;
-        display: none;
-    }
-    CommandHintBar.visible {
-        display: block;
-    }
     """
 
     def show_hints(self, prefix: str) -> None:

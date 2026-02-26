@@ -14,6 +14,7 @@ from textual.binding import BindingType
 from textual.containers import VerticalScroll
 from textual.css.query import QueryError
 from textual.message import Message
+from textual.screen import Screen
 from textual.widgets import Static, TextArea
 
 from kingdom.agent import resolve_all_agents
@@ -30,7 +31,7 @@ from kingdom.thread import (
     thread_dir,
 )
 
-from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller
+from .poll import NewMessage, StreamDelta, StreamFinished, StreamStarted, ThinkingDelta, ThreadPoller, ToolUseEvent
 from .widgets import (
     CommandHintBar,
     ErrorPanel,
@@ -43,15 +44,51 @@ from .widgets import (
 
 logger = logging.getLogger(__name__)
 
+MENTION_RE = re.compile(r"(?<!\w)@(\w+)")
+
+
+def mention_bump(response_text: str, remaining: list[str], valid_members: list[str]) -> list[str]:
+    """Reorder remaining queue by bumping @mentioned members to the front.
+
+    Mentioned valid members (that are in *remaining*) move to the front in
+    mention order.  Non-mentioned members keep their relative order.
+    @king and unknown names are ignored.  Duplicates are deduplicated.
+    """
+    mentions = MENTION_RE.findall(response_text)
+    valid_set = set(valid_members)
+    remaining_set = set(remaining)
+
+    # Collect mentioned names that are valid members in the remaining queue
+    bumped: list[str] = []
+    seen: set[str] = set()
+    for name in mentions:
+        if name in valid_set and name in remaining_set and name not in seen and name != "king":
+            bumped.append(name)
+            seen.add(name)
+
+    if not bumped:
+        return remaining
+
+    # Rest keeps relative order
+    rest = [n for n in remaining if n not in seen]
+    return bumped + rest
+
+
 CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
-    "Engage directly with the conversation — respond to questions, share your perspective, "
-    "and build on or challenge points raised by others. "
+    "This is a live conversation — read the full thread before responding. "
+    "Reference specific points others have made (agree, disagree, extend, or synthesize). "
+    "Don't just answer the King's question in isolation — engage with what's already been said. "
+    "If you disagree with another agent, say so directly and explain why. "
     "Do NOT create, edit, or write files. Do NOT run git commands that modify state.\n\n"
 )
 
 WRITABLE_CHAT_PREAMBLE = (
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
+    "This is a live conversation — read the full thread before responding. "
+    "Reference specific points others have made (agree, disagree, extend, or synthesize). "
+    "Don't just answer the King's question in isolation — engage with what's already been said. "
+    "If you disagree with another agent, say so directly and explain why. "
     "You have full permissions — you may edit files, create tickets, run git commands, "
     "and execute any action the King requests. Act on instructions directly.\n\n"
 )
@@ -108,49 +145,52 @@ class MessageLog(VerticalScroll):
 
     ``is_following`` — True when auto-scroll is active (user is near bottom).
     ``SCROLL_THRESHOLD`` — pixel distance from bottom that counts as "near".
+
+    Call ``scroll_if_following()`` **before** mounting or updating content so
+    that ``is_following`` reflects the user's position *before* the layout
+    shifts.  The actual ``scroll_end`` runs after the next refresh (when the
+    new layout has been computed).  Multiple calls coalesce into one scroll
+    per frame via a ``_scroll_pending`` flag.
     """
 
     SCROLL_THRESHOLD: int = 5
 
-    DEFAULT_CSS = """
-    MessageLog {
-        height: 1fr;
-    }
-    """
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._scroll_pending: bool = False
 
     @property
     def is_following(self) -> bool:
         """True when the viewport is at or near the bottom.
 
-        Uses the internal ``_anchor_released`` flag from Textual's anchor
-        mechanism.  When the user scrolls up, Textual releases the anchor;
-        when they scroll back to the bottom, it re-engages.
+        Uses a position-based check rather than Textual's internal anchor
+        state.  Returns True when ``scroll_y`` is within ``SCROLL_THRESHOLD``
+        pixels of ``max_scroll_y``, or when there is nothing to scroll.
         """
-        return not self._anchor_released
+        if self.max_scroll_y == 0:
+            return True
+        return self.scroll_y >= self.max_scroll_y - self.SCROLL_THRESHOLD
 
     def scroll_if_following(self) -> None:
-        """Scroll to bottom if the user hasn't scrolled up.
+        """Capture follow intent and schedule a single deferred scroll.
 
-        Textual's anchor() alone doesn't reliably scroll when new widgets
-        are mounted.  Call this after mounting content to keep the view
-        pinned to the bottom while respecting manual scroll-up.
+        Call **before** mounting or updating content so that ``is_following``
+        reflects the user's position before the layout shifts.  The actual
+        ``scroll_end`` runs after the next refresh (new layout computed).
+        Multiple calls coalesce into one scroll per frame.
         """
-        if self.is_following:
-            self.scroll_end(animate=False)
+        if self.is_following and not self._scroll_pending:
+            self._scroll_pending = True
+            self.call_after_refresh(self.do_deferred_scroll)
+
+    def do_deferred_scroll(self) -> None:
+        """Execute the deferred scroll-to-bottom."""
+        self._scroll_pending = False
+        self.scroll_end(animate=False)
 
 
 class StatusBar(Static):
     """Keybinding hints at the bottom."""
-
-    DEFAULT_CSS = """
-    StatusBar {
-        dock: bottom;
-        height: 1;
-        background: $surface;
-        color: $text-muted;
-        padding: 0 1;
-    }
-    """
 
 
 class InputArea(TextArea):
@@ -159,16 +199,6 @@ class InputArea(TextArea):
     Enter sends the message (posts Submit to the app).
     Shift+Enter inserts a newline.
     Tab after @partial completes member names.
-    """
-
-    DEFAULT_CSS = """
-    InputArea {
-        dock: bottom;
-        height: auto;
-        min-height: 3;
-        max-height: 10;
-        scrollbar-size-vertical: 0;
-    }
     """
 
     class Submit(Message):
@@ -184,10 +214,17 @@ class InputArea(TextArea):
         self.tab_prefix: str = ""  # the partial text after "@" that triggered completion
 
     async def handle_key(self, event) -> None:
-        if event.key == "enter" and "shift" not in event.key:
+        if event.key == "enter":
             event.stop()
             event.prevent_default()
             self.post_message(self.Submit())
+            return
+        if event.key == "shift+enter":
+            # Insert a literal newline instead of submitting.
+            event.stop()
+            event.prevent_default()
+            start, end = self.selection
+            self._replace_via_keyboard("\n", start, end)
             return
         if event.key == "tab":
             event.stop()
@@ -270,21 +307,34 @@ class InputArea(TextArea):
         self.replace(f"@{candidate} ", start, end, maintain_selection_offset=False)
 
 
+class ChatScreen(Screen):
+    """Non-scrollable screen so only MessageLog scrolls.
+
+    Textual's default Screen has ``overflow-y: auto`` in its ``DEFAULT_CSS``,
+    making it a scroll container.  Previous attempts to override via
+    ``ChatApp.CSS`` or inline styles lost the CSS specificity battle against
+    ``Screen.DEFAULT_CSS``.
+
+    Setting ``DEFAULT_CSS`` on the *subclass* with the ``ChatScreen`` selector
+    wins specificity over the base ``Screen`` rule.  The
+    ``allow_vertical_scroll`` overrides are belt-and-suspenders — they block
+    keyboard/mouse scroll actions even if CSS somehow slips.
+    """
+
+    @property
+    def allow_vertical_scroll(self) -> bool:
+        return False
+
+    @property
+    def allow_horizontal_scroll(self) -> bool:
+        return False
+
+
 class ChatApp(App):
     """Council chat TUI."""
 
     TITLE = "kd chat"
-
-    CSS = """
-    Screen {
-        layout: vertical;
-    }
-    .system-message {
-        margin: 0 1;
-        padding: 0 1;
-        color: $text-muted;
-    }
-    """
+    CSS_PATH = "chat.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         ("escape", "interrupt", "Interrupt/Quit"),
@@ -294,10 +344,19 @@ class ChatApp(App):
 
     THINKING_CYCLE: ClassVar[list[str]] = ["auto", "show", "hide"]
 
+    def get_default_screen(self) -> ChatScreen:
+        return ChatScreen(id="_default")
+
     def __init__(
-        self, base: Path, branch: str, thread_id: str, debug_streams: bool = False, writable: bool = False
+        self,
+        base: Path,
+        branch: str,
+        thread_id: str,
+        debug_streams: bool = False,
+        writable: bool = False,
+        ansi_color: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(ansi_color=ansi_color)
         self.base = base
         self.branch = branch
         self.thread_id = thread_id
@@ -310,6 +369,9 @@ class ChatApp(App):
         self.muted: set[str] = set()
         self.generation: int = 0
         self.thinking_visibility: str = "auto"
+        self.chat_mode: str = "natural"
+        self.auto_rounds: int = 1
+        self.reply_target: str | None = None
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -331,6 +393,7 @@ class ChatApp(App):
 
     def on_mount(self) -> None:
         """Initialize poller, council, and start polling."""
+
         tdir = thread_dir(self.base, self.branch, self.thread_id)
 
         # Clean up stale stream files from previous sessions so the poller
@@ -338,9 +401,11 @@ class ChatApp(App):
         for stale in tdir.glob(".stream-*.jsonl"):
             stale.unlink()
 
-        # Load config for backends and thinking visibility
+        # Load config for backends, thinking visibility, and chat settings
         cfg = load_config(self.base)
         self.thinking_visibility = cfg.council.thinking_visibility
+        self.chat_mode = cfg.council.chat.mode
+        self.auto_rounds = cfg.council.chat.auto_rounds
         agent_configs = resolve_all_agents(cfg.agents)
         member_backends = {}
         for name in self.member_names:
@@ -367,11 +432,6 @@ class ChatApp(App):
         # Load existing messages from thread history
         self.load_history()
 
-        # Enable smart auto-scroll: follows new content when at/near the
-        # bottom, pauses when user scrolls up, re-engages when they return.
-        log = self.query_one("#message-log", MessageLog)
-        log.anchor()
-
         self.set_interval(0.1, self.poll_updates)
 
         # Focus the input area
@@ -379,10 +439,9 @@ class ChatApp(App):
         input_area.focus()
 
     def action_scroll_bottom(self) -> None:
-        """Jump to bottom and re-engage auto-follow."""
+        """Jump to bottom (auto-follow re-engages via position check)."""
         log = self.query_one("#message-log", MessageLog)
         log.scroll_end(animate=False)
-        log.anchor()
         self.update_status_bar(log)
 
     def action_toggle_thinking(self) -> None:
@@ -497,19 +556,18 @@ class ChatApp(App):
         log = self.query_one("#message-log", MessageLog)
 
         for msg in messages:
-            if msg.from_ != "king" and is_error_response(msg.body):
-                timed_out = is_timeout_response(msg.body)
+            # Prefer msg.status metadata; fall back to body-prefix sniffing for legacy messages
+            has_error = (
+                msg.status in ("error", "timeout", "interrupted")
+                if msg.status
+                else (is_error_response(msg.body) or is_interrupted_response(msg.body))
+            )
+            if msg.from_ != "king" and has_error:
+                timed_out = msg.status == "timeout" if msg.status else is_timeout_response(msg.body)
                 panel = ErrorPanel(
                     sender=msg.from_,
                     error=msg.body,
                     timed_out=timed_out,
-                    id=f"msg-{msg.sequence}",
-                )
-            elif msg.from_ != "king" and is_interrupted_response(msg.body):
-                panel = ErrorPanel(
-                    sender=msg.from_,
-                    error=msg.body,
-                    timed_out=False,
                     id=f"msg-{msg.sequence}",
                 )
             else:
@@ -527,14 +585,6 @@ class ChatApp(App):
             self.poller.last_sequence = messages[-1].sequence
 
         log.scroll_end(animate=False)
-
-    def on_key(self, event) -> None:
-        """Handle Enter to send, let Shift+Enter pass through for newline."""
-        if event.key == "enter":
-            input_area = self.query_one("#input-area", TextArea)
-            if input_area.has_focus:
-                event.prevent_default()
-                self.send_message()
 
     def on_input_area_submit(self, _: InputArea.Submit) -> None:
         """Handle submit events from the input widget."""
@@ -554,17 +604,67 @@ class ChatApp(App):
             hint_bar.hide_hints()
 
     def on_message_panel_reply(self, event: MessagePanel.Reply) -> None:
-        """Handle reply: prefill input with @sender mention."""
-        reply_text = format_reply_text(event.sender)
+        """Toggle reply target: click sets, same click clears, different click switches."""
         input_area = self.query_one("#input-area", InputArea)
-        existing = input_area.text
-        if existing.strip():
-            input_area.load_text(reply_text + existing)
+
+        if self.reply_target == event.sender:
+            # Toggle off: clear reply target
+            self.clear_reply_target(input_area)
         else:
-            input_area.load_text(reply_text)
-        input_area.focus()
-        # Cursor ends up at (0,0) after load_text — move to end of the @mention prefix
-        input_area.move_cursor_relative(columns=len(reply_text))
+            # Set or switch reply target
+            old_target = self.reply_target
+            self.reply_target = event.sender
+
+            # Remove old @mention if switching targets
+            if old_target:
+                old_prefix = format_reply_text(old_target)
+                text = input_area.text
+                if text.startswith(old_prefix):
+                    text = text[len(old_prefix) :]
+                    input_area.load_text(text)
+
+            # Prefill with new @mention
+            reply_text = format_reply_text(event.sender)
+            existing = input_area.text
+            if not existing.startswith(reply_text):
+                if existing.strip():
+                    input_area.load_text(reply_text + existing)
+                else:
+                    input_area.load_text(reply_text)
+
+            input_area.focus()
+            input_area.move_cursor_relative(columns=len(reply_text))
+
+            # Update panel visuals
+            self.update_reply_panel_visuals()
+
+    def clear_reply_target(self, input_area: TextArea | None = None) -> None:
+        """Clear the active reply target and clean up input."""
+        if not self.reply_target:
+            return
+        old_prefix = format_reply_text(self.reply_target)
+        self.reply_target = None
+        if input_area is None:
+            input_area = self.query_one("#input-area", InputArea)
+        text = input_area.text
+        if text.startswith(old_prefix):
+            remaining = text[len(old_prefix) :]
+            input_area.load_text(remaining)
+        self.update_reply_panel_visuals()
+
+    def update_reply_panel_visuals(self) -> None:
+        """Update border subtitles on message panels to reflect reply state."""
+        try:
+            log = self.query_one("#message-log", MessageLog)
+        except QueryError:
+            return
+        for panel in log.query(MessagePanel):
+            if panel.sender == "king":
+                continue
+            if self.reply_target and panel.sender == self.reply_target:
+                panel.border_subtitle = "replying \u2022 click to cancel"
+            else:
+                panel.border_subtitle = "click: reply \u00b7 shift: copy"
 
     def send_message(self) -> None:
         """Send the current input as a king message or handle slash command."""
@@ -575,9 +675,21 @@ class ChatApp(App):
 
         input_area.clear()
 
+        # Clear reply target after sending
+        self.reply_target = None
+        self.update_reply_panel_visuals()
+
         # Handle slash commands
         if text.startswith("/"):
             self.handle_slash_command(text)
+            return
+
+        # Manual mode: require explicit @mention
+        mentions = re.findall(r"(?<!\w)@(\w+)", text)
+        if self.chat_mode == "manual" and not mentions:
+            self.notify("Use @member to direct your message (e.g. @claude). Try @all for everyone.", severity="warning")
+            # Put the text back so user can add @mention
+            input_area.load_text(text)
             return
 
         self.interrupted = False
@@ -593,6 +705,7 @@ class ChatApp(App):
 
         # Render king message immediately (don't wait for poll cycle)
         log = self.query_one("#message-log", MessageLog)
+        log.scroll_if_following()  # capture intent BEFORE mounts
         king_panel = MessagePanel(sender="king", body=text, member_names=self.member_names, id=f"king-{id(text)}")
         log.mount(king_panel)
 
@@ -608,29 +721,35 @@ class ChatApp(App):
             self.remove_member_panels(log, name)
 
         if to == "all":
-            # Broadcast: always query all targets in parallel, then optionally
-            # run auto-turn follow-ups (sequential round-robin).
-            for name in targets:
-                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            # Sequential modes (round_robin, manual): only show WaitingPanel for
+            # the first target; each mode mounts panels as it queries.
+            # Parallel modes (natural, broadcast): show all panels upfront.
+            sequential = self.chat_mode in ("round_robin", "manual")
+            panel_targets = targets[:1] if sequential else targets
+            for name in panel_targets:
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
             prior_messages = list_messages(self.base, self.branch, self.thread_id)
             is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
             self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
         else:
-            # Directed: single query, no auto-turns
-            log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
+            # Directed @mention: single query, no auto-turns
+            if not log.query(f"#wait-{targets[0]}"):
+                log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
             member = self.council.get_member(targets[0]) if self.council else None
             if member:
                 stream_path = tdir / f".stream-{targets[0]}.jsonl"
                 self.run_worker(self.run_query(member, stream_path, generation=gen), exclusive=False)
 
-        log.scroll_if_following()
-
-    async def run_query(self, member, stream_path: Path, generation: int | None = None) -> None:
+    async def run_query(self, member, stream_path: Path, generation: int | None = None) -> str | None:
         """Run a member query with full thread context, then persist and clean up.
 
         When *generation* is passed, the response is discarded if ``self.generation``
         has moved on (meaning the user sent a new message while this query was in flight).
+
+        Returns the response body text, or None if discarded/errored.
         """
+        body = None
         try:
             timeout = self.council.timeout if self.council else 600
             tdir = thread_dir(self.base, self.branch, self.thread_id)
@@ -642,7 +761,7 @@ class ChatApp(App):
                 logger.debug(
                     "Discarding stale response from %s (gen %d != %d)", member.name, generation, self.generation
                 )
-                return
+                return None
 
             # Use cleaner message for interrupted queries with no useful text
             if self.interrupted and not response.text:
@@ -674,6 +793,7 @@ class ChatApp(App):
             # Stream file is NOT deleted here — the poller needs to drain final
             # events (thinking tokens, last text deltas) before cleanup.  Stale
             # files are cleaned up on next session launch (on_mount).
+        return body
 
     def build_debug_stream_path(self, stream_path: Path, member_name: str) -> Path:
         """Build a unique path for preserved stream debug artifacts."""
@@ -683,77 +803,166 @@ class ChatApp(App):
     async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
         """Coordinate a chat round after the king sends a message.
 
-        Always starts with a parallel broadcast for the initial response to the
-        king's message.  On follow-up exchanges (not the first), continues with
-        sequential round-robin auto-turns after the broadcast.
+        Dispatches to mode-specific logic:
+        - natural: parallel broadcast first, then shuffled round-robin auto-turns
+        - round_robin: fixed-order sequential turns for auto_rounds rounds
+        - manual: only @mentioned targets, no auto-turns
+        - broadcast: parallel to all, auto_rounds additional parallel rounds
         """
         if not self.council:
             return
 
-        # Parallel broadcast (or sequential if configured).  WaitingPanels
-        # are already mounted by send_message().
-        mode = self.council.mode
-        if mode == "broadcast" and len(targets) > 1:
-            coros = []
-            for name in targets:
-                member = self.council.get_member(name)
-                if member:
-                    stream_path = tdir / f".stream-{name}.jsonl"
-                    coros.append(self.run_query(member, stream_path, generation=generation))
-            await asyncio.gather(*coros)
-            if self.generation != generation:
-                return
-        else:
-            for name in targets:
-                if self.interrupted or self.generation != generation:
-                    return
-                member = self.council.get_member(name)
-                if not member:
-                    continue
-                stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path, generation=generation)
+        mode = self.chat_mode
 
-        # First exchange: broadcast only, no auto-turns.
+        if mode == "manual":
+            await self.run_mode_manual(targets, generation, tdir)
+        elif mode == "broadcast":
+            await self.run_mode_broadcast(targets, generation, tdir, is_first_exchange)
+        elif mode == "round_robin":
+            await self.run_mode_round_robin(targets, generation, tdir)
+        else:
+            # natural (default)
+            await self.run_mode_natural(targets, generation, tdir, is_first_exchange)
+
+    async def run_mode_natural(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
+        """Natural mode: parallel broadcast first turn, then shuffled round-robin."""
+        # First turn: parallel broadcast (WaitingPanels mounted by send_message)
+        await self.parallel_query(targets, generation, tdir)
+        if self.generation != generation:
+            return
+
+        # First exchange in thread: broadcast only, no auto-turns
         if is_first_exchange:
             return
 
-        # Follow-up: sequential round-robin auto-turns after the broadcast.
-        active = [n for n in self.member_names if n not in self.muted]
-        budget = self.council.auto_messages
-        if budget == 0:
-            return
-        if budget < 0:
-            # -1 = auto: one message per active member
-            budget = len(active)
-        if budget <= 0:
-            return
-        messages_sent = 0
+        # Follow-up: shuffled round-robin auto-turns
+        await self.sequential_auto_turns(generation, tdir, shuffle=True)
 
-        while messages_sent < budget:
+    async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Round-robin mode: no initial broadcast, fixed-order sequential turns."""
+        # First turn: sequential through targets, mounting WaitingPanel per-agent
+        for name in targets:
+            if self.interrupted or self.generation != generation:
+                return
+            member = self.council.get_member(name)
+            if not member:
+                continue
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
+            await self.await_remove_member_panels(log, name)
+            if not log.query(f"#wait-{name}"):
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            stream_path = tdir / f".stream-{name}.jsonl"
+            await self.run_query(member, stream_path, generation=generation)
+
+        # Auto-turns: fixed-order sequential
+        await self.sequential_auto_turns(generation, tdir, shuffle=False)
+
+    async def run_mode_manual(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Manual mode: only query @mentioned targets, no auto-turns."""
+        # Sequential through mentioned targets, mounting WaitingPanel per-agent
+        for name in targets:
+            if self.interrupted or self.generation != generation:
+                return
+            member = self.council.get_member(name)
+            if not member:
+                continue
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
+            await self.await_remove_member_panels(log, name)
+            if not log.query(f"#wait-{name}"):
+                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            stream_path = tdir / f".stream-{name}.jsonl"
+            await self.run_query(member, stream_path, generation=generation)
+
+    async def run_mode_broadcast(
+        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool
+    ) -> None:
+        """Broadcast mode: parallel to all each turn, auto_rounds additional rounds."""
+        # First turn: parallel (WaitingPanels mounted by send_message)
+        await self.parallel_query(targets, generation, tdir)
+        if self.generation != generation:
+            return
+
+        # First exchange: no auto-rounds
+        if is_first_exchange:
+            return
+
+        # Additional broadcast rounds
+        if self.auto_rounds <= 0:
+            return
+        for _round in range(self.auto_rounds):
+            if self.interrupted or self.generation != generation:
+                return
+            active = [n for n in self.member_names if n not in self.muted]
+            log = self.query_one("#message-log", MessageLog)
+            log.scroll_if_following()
             for name in active:
-                if messages_sent >= budget:
-                    break
+                await self.await_remove_member_panels(log, name)
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+            await self.parallel_query(active, generation, tdir)
+            if self.generation != generation:
+                return
+
+    async def parallel_query(self, targets: list[str], generation: int, tdir: Path) -> None:
+        """Run queries for all targets in parallel."""
+        coros = []
+        for name in targets:
+            member = self.council.get_member(name)
+            if member:
+                stream_path = tdir / f".stream-{name}.jsonl"
+                coros.append(self.run_query(member, stream_path, generation=generation))
+        if coros:
+            await asyncio.gather(*coros)
+
+    async def sequential_auto_turns(self, generation: int, tdir: Path, shuffle: bool) -> None:
+        """Run sequential auto-turn rounds through eligible members.
+
+        After each response, parses @mentions and bumps mentioned members
+        to the front of the remaining queue for the current round.
+        """
+        if self.auto_rounds <= 0:
+            return
+        for _round in range(self.auto_rounds):
+            active = [n for n in self.member_names if n not in self.muted]
+            if shuffle:
+                import random
+
+                active = active.copy()
+                random.shuffle(active)
+            queue = list(active)
+            while queue:
                 if self.interrupted or self.generation != generation:
                     return
-                if name in self.muted:
-                    continue
+                name = queue.pop(0)
                 member = self.council.get_member(name)
                 if not member:
                     continue
-                # Mount WaitingPanel for this member's turn
                 log = self.query_one("#message-log", MessageLog)
-                self.remove_member_panels(log, name)
-                log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
                 log.scroll_if_following()
+                await self.await_remove_member_panels(log, name)
+                if not log.query(f"#wait-{name}"):
+                    log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
                 stream_path = tdir / f".stream-{name}.jsonl"
-                await self.run_query(member, stream_path, generation=generation)
-                messages_sent += 1
+                body = await self.run_query(member, stream_path, generation=generation)
+                if body and queue:
+                    queue = mention_bump(body, queue, self.member_names)
 
     def remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove any existing wait/stream/thinking/interrupted panels for a member."""
         for prefix in ("wait", "stream", "thinking", "interrupted"):
             for panel in list(log.query(f"#{prefix}-{name}")):
                 panel.remove()
+
+    async def await_remove_member_panels(self, log: MessageLog, name: str) -> None:
+        """Remove member panels and wait for DOM to update (for async callers)."""
+        removals = []
+        for prefix in ("wait", "stream", "thinking", "interrupted"):
+            for panel in list(log.query(f"#{prefix}-{name}")):
+                removals.append(panel.remove())
+        for awaitable in removals:
+            await awaitable
 
     def parse_targets(self, text: str) -> list[str]:
         """Parse @mentions from text to determine query targets.
@@ -902,9 +1111,9 @@ class ChatApp(App):
     def show_system_message(self, text: str) -> None:
         """Show a system message in the message log."""
         log = self.query_one("#message-log", MessageLog)
+        log.scroll_if_following()  # capture intent BEFORE mount
         panel = Static(text, classes="system-message")
         log.mount(panel)
-        log.scroll_if_following()
 
     # -- Polling ----------------------------------------------------------
 
@@ -918,6 +1127,7 @@ class ChatApp(App):
             return
 
         log = self.query_one("#message-log", MessageLog)
+        log.scroll_if_following()  # capture intent BEFORE processing events
 
         for event in events:
             if isinstance(event, NewMessage):
@@ -928,10 +1138,10 @@ class ChatApp(App):
                 self.handle_thinking_delta(log, event)
             elif isinstance(event, StreamDelta):
                 self.handle_stream_delta(log, event)
+            elif isinstance(event, ToolUseEvent):
+                self.handle_tool_use(log, event)
             elif isinstance(event, StreamFinished):
                 self.handle_stream_finished(event)
-
-        log.scroll_if_following()
 
         # Update status bar to reflect scroll state
         self.update_status_bar(log)
@@ -948,13 +1158,20 @@ class ChatApp(App):
             + list(log.query(f"#{interrupted_id}"))
         )
 
-        # Handle thinking panel persistence
+        # Handle thinking panel persistence — replace with sequence-specific id
+        # (Textual forbids reassigning .id after mount, so we remove + remount)
         thinking_panels = list(log.query(f"#{thinking_id}"))
         if thinking_panels:
-            thinking_panel = thinking_panels[0]
+            old_panel = thinking_panels[0]
+            new_panel = ThinkingPanel(sender=event.sender, id=f"thinking-{event.sender}-{event.sequence}")
+            new_panel.thinking_text = old_panel.thinking_text
+            new_panel.start_time = old_panel.start_time
+            new_panel.user_pinned = old_panel.user_pinned
+            new_panel.expanded = old_panel.expanded
+            log.mount(new_panel, before=old_panel)
+            old_panel.remove()
             if self.thinking_visibility == "auto":
-                thinking_panel.collapse()
-            thinking_panel.id = f"thinking-{event.sender}-{event.sequence}"
+                new_panel.collapse()
 
         # Detect error/interrupted responses from thread message body
         if event.sender != "king" and is_error_response(event.body):
@@ -1040,6 +1257,13 @@ class ChatApp(App):
         if panels:
             panel = panels[0]
             panel.update_content(event.full_text)
+
+    def handle_tool_use(self, log: MessageLog, event: ToolUseEvent) -> None:
+        """Show tool-use activity on the streaming panel's border subtitle."""
+        panel_id = f"stream-{event.member}"
+        panels = list(log.query(f"#{panel_id}"))
+        if panels:
+            panels[0].border_subtitle = f"using {event.tool_name}"
 
     def handle_stream_finished(self, event: StreamFinished) -> None:
         """Remove the streaming panel (finalized message replaces it)."""

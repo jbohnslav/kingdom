@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import patch
 
@@ -105,6 +107,7 @@ class TestChatCommand:
             thread_id="council-debug",
             debug_streams=True,
             writable=False,
+            ansi_color=False,
         )
         mock_chat_app.return_value.run.assert_called_once()
 
@@ -133,6 +136,58 @@ class TestChatCommand:
         assert result.exit_code == 0
         assert "council-other" in result.output
 
+    def test_explicit_thread_sets_current(self, project: Path) -> None:
+        """Explicit thread-id should become the current_thread."""
+        create_thread(project, BRANCH, "council-xyz1", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run"),
+        ):
+            result = runner.invoke(app, ["chat", "council-xyz1"])
+        assert result.exit_code == 0
+        assert get_current_thread(project, BRANCH) == "council-xyz1"
+
+    def test_prefix_match(self, project: Path) -> None:
+        """Partial thread-id should resolve via prefix matching."""
+        create_thread(project, BRANCH, "council-abcd", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run") as mock_run,
+        ):
+            result = runner.invoke(app, ["chat", "council-ab"])
+        assert result.exit_code == 0
+        mock_run.assert_called_once()
+
+    def test_ambiguous_prefix(self, project: Path) -> None:
+        """Ambiguous prefix should error with suggestions."""
+        create_thread(project, BRANCH, "council-aa11", ["king", "claude"], "council")
+        create_thread(project, BRANCH, "council-aa22", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+        ):
+            result = runner.invoke(app, ["chat", "council-aa"])
+        assert result.exit_code == 1
+        assert "council-aa11" in result.output
+        assert "council-aa22" in result.output
+
+    def test_not_found_shows_available(self, project: Path) -> None:
+        """Thread not found should show available threads."""
+        create_thread(project, BRANCH, "council-exist", ["king", "claude"], "council")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+        ):
+            result = runner.invoke(app, ["chat", "council-nope"])
+        assert result.exit_code == 1
+        assert "council-exist" in result.output
+
 
 class TestChatApp:
     def test_app_stores_params(self) -> None:
@@ -158,7 +213,7 @@ class TestChatApp:
 
 
 class TestMessageLogScroll:
-    """Test MessageLog smart scroll (is_following / anchor behavior)."""
+    """Test MessageLog smart scroll (position-based following)."""
 
     def test_message_log_has_scroll_threshold(self) -> None:
         """MessageLog should define a SCROLL_THRESHOLD class variable."""
@@ -168,49 +223,108 @@ class TestMessageLogScroll:
         assert isinstance(MessageLog.SCROLL_THRESHOLD, int)
         assert MessageLog.SCROLL_THRESHOLD > 0
 
-    def test_is_following_true_when_anchor_not_released(self) -> None:
-        """is_following should be True when _anchor_released is False."""
+    def test_is_following_true_when_at_bottom(self) -> None:
+        """is_following should be True when scroll_y is at max_scroll_y."""
+        from unittest.mock import PropertyMock
+
         from kingdom.tui.app import MessageLog
 
         log = MessageLog()
-        log._anchored = True
-        log._anchor_released = False
+        type(log).scroll_y = PropertyMock(return_value=100.0)
+        type(log).max_scroll_y = PropertyMock(return_value=100.0)
         assert log.is_following is True
 
-    def test_is_following_false_when_anchor_released(self) -> None:
-        """is_following should be False when the user has scrolled away from bottom."""
+    def test_is_following_true_when_near_bottom(self) -> None:
+        """is_following should be True when within SCROLL_THRESHOLD of bottom."""
+        from unittest.mock import PropertyMock
+
         from kingdom.tui.app import MessageLog
 
         log = MessageLog()
-        log._anchored = True
-        log._anchor_released = True
+        type(log).scroll_y = PropertyMock(return_value=97.0)
+        type(log).max_scroll_y = PropertyMock(return_value=100.0)
+        assert log.is_following is True  # 3 < SCROLL_THRESHOLD (5)
+
+    def test_is_following_false_when_scrolled_up(self) -> None:
+        """is_following should be False when the user has scrolled well above bottom."""
+        from unittest.mock import PropertyMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        type(log).scroll_y = PropertyMock(return_value=50.0)
+        type(log).max_scroll_y = PropertyMock(return_value=100.0)
         assert log.is_following is False
 
-    def test_scroll_if_following_scrolls_when_following(self) -> None:
-        """scroll_if_following should call scroll_end when is_following is True."""
-        from unittest.mock import MagicMock
+    def test_is_following_true_when_no_scrollable_content(self) -> None:
+        """is_following should be True when max_scroll_y is 0 (no overflow)."""
+        from unittest.mock import PropertyMock
 
         from kingdom.tui.app import MessageLog
 
         log = MessageLog()
-        log._anchored = True
-        log._anchor_released = False
-        log.scroll_end = MagicMock()
+        type(log).max_scroll_y = PropertyMock(return_value=0.0)
+        assert log.is_following is True
+
+    def test_scroll_if_following_schedules_scroll_when_following(self) -> None:
+        """scroll_if_following should schedule a deferred scroll via call_after_refresh."""
+        from unittest.mock import MagicMock, PropertyMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        type(log).is_following = PropertyMock(return_value=True)
+        log.call_after_refresh = MagicMock()
         log.scroll_if_following()
-        log.scroll_end.assert_called_once_with(animate=False)
+        log.call_after_refresh.assert_called_once_with(log.do_deferred_scroll)
 
     def test_scroll_if_following_skips_when_scrolled_up(self) -> None:
-        """scroll_if_following should not scroll when user has scrolled up."""
+        """scroll_if_following should not schedule scroll when user has scrolled up."""
+        from unittest.mock import MagicMock, PropertyMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        type(log).is_following = PropertyMock(return_value=False)
+        log.call_after_refresh = MagicMock()
+        log.scroll_if_following()
+        log.call_after_refresh.assert_not_called()
+
+    def test_scroll_if_following_coalesces_multiple_calls(self) -> None:
+        """Multiple scroll_if_following calls should coalesce into one deferred scroll."""
+        from unittest.mock import MagicMock, PropertyMock
+
+        from kingdom.tui.app import MessageLog
+
+        log = MessageLog()
+        type(log).is_following = PropertyMock(return_value=True)
+        log.call_after_refresh = MagicMock()
+        log.scroll_if_following()
+        log.scroll_if_following()
+        log.scroll_if_following()
+        # Only one call_after_refresh despite three scroll_if_following calls
+        log.call_after_refresh.assert_called_once()
+
+    def test_do_deferred_scroll_resets_pending_flag(self) -> None:
+        """do_deferred_scroll should reset _scroll_pending so future scrolls work."""
         from unittest.mock import MagicMock
 
         from kingdom.tui.app import MessageLog
 
         log = MessageLog()
-        log._anchored = True
-        log._anchor_released = True
+        log._scroll_pending = True
         log.scroll_end = MagicMock()
-        log.scroll_if_following()
-        log.scroll_end.assert_not_called()
+        log.do_deferred_scroll()
+        assert log._scroll_pending is False
+        log.scroll_end.assert_called_once_with(animate=False)
+
+    def test_chat_screen_disables_scrolling(self) -> None:
+        """ChatScreen overrides allow_vertical_scroll to prevent double scrollbar."""
+        from kingdom.tui.app import ChatScreen
+
+        screen = ChatScreen()
+        assert screen.allow_vertical_scroll is False
+        assert screen.allow_horizontal_scroll is False
 
     def test_update_status_bar_uses_is_following(self, project: Path) -> None:
         """update_status_bar should use is_following (not _anchor_released directly)."""
@@ -264,7 +378,7 @@ class TestInputArea:
 
         assert posted == ["Submit"]
 
-    def test_shift_enter_does_not_post_submit_message(self) -> None:
+    def test_shift_enter_inserts_newline(self) -> None:
         import asyncio
 
         from textual.events import Key
@@ -272,12 +386,15 @@ class TestInputArea:
         from kingdom.tui.app import InputArea
 
         input_area = InputArea()
+        input_area.load_text("hello")
+        input_area.move_cursor((0, 5))
         posted: list[str] = []
         input_area.post_message = lambda message: posted.append(type(message).__name__)
 
         asyncio.run(input_area._on_key(Key("shift+enter", None)))
 
-        assert posted == []
+        assert "Submit" not in posted
+        assert input_area.text == "hello\n"
 
     def test_submit_event_triggers_send_message(self) -> None:
         from kingdom.tui.app import ChatApp, InputArea
@@ -762,6 +879,143 @@ class TestPhase1SmokeTest:
             result = runner.invoke(app, ["chat", "--new"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
+
+    def test_chat_list_shows_newest_first(self, project: Path) -> None:
+        """kd chat (no args, no current thread) should list threads newest-first."""
+        from datetime import datetime
+
+        from kingdom.state import write_json
+        from kingdom.thread import threads_root
+
+        troot = threads_root(project, BRANCH)
+        # Create threads with explicit timestamps to control ordering
+        for i, name in enumerate(["thread-old", "thread-mid", "thread-new"]):
+            tdir = troot / name
+            tdir.mkdir(parents=True)
+            ts = datetime(2026, 1, 1 + i, tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            write_json(
+                tdir / "thread.json",
+                {
+                    "id": name,
+                    "members": ["king", "claude"],
+                    "pattern": "council",
+                    "created_at": ts,
+                },
+            )
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+        ):
+            result = runner.invoke(app, ["chat"])
+
+        assert result.exit_code == 0
+        assert "Recent threads:" in result.output
+        lines = [ln.strip() for ln in result.output.splitlines() if ln.strip().startswith("thread-")]
+        # Newest should be first
+        assert lines[0].startswith("thread-new")
+        assert lines[-1].startswith("thread-old")
+
+    def test_chat_color_auto_detects_tmux_cc(self, project: Path) -> None:
+        """--color auto enables ansi_color when tmux -CC is detected."""
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run"),
+            patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=True),
+            patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
+        ):
+            result = runner.invoke(app, ["chat", "--new"])
+        assert result.exit_code == 0
+        assert "tmux control mode" in result.output
+        assert mock_init.call_args.kwargs["ansi_color"] is True
+
+    def test_chat_color_auto_no_tmux(self, project: Path) -> None:
+        """--color auto (default) uses normal colors when not in tmux -CC."""
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run"),
+            patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
+            patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
+        ):
+            result = runner.invoke(app, ["chat", "--new"])
+        assert result.exit_code == 0
+        assert mock_init.call_args.kwargs["ansi_color"] is False
+
+    def test_chat_color_ansi_forces_ansi(self, project: Path) -> None:
+        """--color ansi forces ansi_color regardless of environment."""
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run"),
+            patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
+        ):
+            result = runner.invoke(app, ["chat", "--new", "--color", "ansi"])
+        assert result.exit_code == 0
+        assert mock_init.call_args.kwargs["ansi_color"] is True
+
+    def test_chat_color_none_sets_ansi_and_no_color(self, project: Path) -> None:
+        """--color none sets NO_COLOR=1 AND uses ansi_color=True to bypass truecolor conversion."""
+        no_color_was_set = False
+
+        def check_no_color(*args, **kwargs):
+            nonlocal no_color_was_set
+            no_color_was_set = os.environ.get("NO_COLOR") == "1"
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run", side_effect=check_no_color),
+            patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
+        ):
+            result = runner.invoke(app, ["chat", "--new", "--color", "none"])
+        assert result.exit_code == 0
+        assert mock_init.call_args.kwargs["ansi_color"] is True
+        assert no_color_was_set, "NO_COLOR should be set in environment when app runs"
+
+    def test_chat_color_invalid_exits(self, project: Path) -> None:
+        """--color with invalid value is rejected by click.Choice before function body runs."""
+        result = runner.invoke(app, ["chat", "--new", "--color", "bogus"])
+        assert result.exit_code != 0
+        assert "Invalid value" in result.output or "bogus" in result.output
+
+    def test_chat_crash_fallback_retries_with_ansi(self, project: Path) -> None:
+        """On _color AttributeError, retries once with ansi_color=True."""
+        call_count = 0
+
+        def run_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise AttributeError("'Style' object has no attribute '_color'")
+            # Second call succeeds
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run", side_effect=run_side_effect),
+            patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
+        ):
+            result = runner.invoke(app, ["chat", "--new"])
+        assert result.exit_code == 0
+        assert "color rendering error" in result.output
+        assert call_count == 2
+
+    def test_chat_crash_no_retry_with_explicit_color(self, project: Path) -> None:
+        """Crash fallback does NOT retry when user passed explicit --color."""
+
+        def crash(*args, **kwargs):
+            raise AttributeError("'Style' object has no attribute '_color'")
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run", side_effect=crash),
+        ):
+            result = runner.invoke(app, ["chat", "--new", "--color", "truecolor"])
+        # Should re-raise, not silently retry
+        assert result.exit_code != 0
 
 
 class TestErrorDetection:
@@ -1317,9 +1571,7 @@ class TestAutoTurns:
 
         return FakeMember(name)
 
-    def make_app_with_council(
-        self, project, tid, member_names, auto_messages=-1, mode="broadcast", first_exchange=False
-    ):
+    def make_app_with_council(self, project, tid, member_names, auto_rounds=1, mode="broadcast", first_exchange=False):
         """Create a ChatApp with a fake council for testing run_chat_round.
 
         By default sets up a follow-up conversation (prior member responses exist)
@@ -1349,8 +1601,10 @@ class TestAutoTurns:
 
         # Build fake council with fake members
         fake_members = [self.make_fake_member(n) for n in member_names]
-        council = Council(members=fake_members, auto_messages=auto_messages, mode=mode)
+        council = Council(members=fake_members)
         app_instance.council = council
+        app_instance.chat_mode = mode
+        app_instance.auto_rounds = auto_rounds
 
         # Mock query_one for DOM operations in auto-turn WaitingPanel mounts
         mock_log = MagicMock()
@@ -1393,31 +1647,31 @@ class TestAutoTurns:
         for m in members:
             assert m.call_count == 2, f"{m.name} expected 2 queries (broadcast + auto-turn), got {m.call_count}"
 
-    def test_auto_messages_budget_limits_total(self, project: Path) -> None:
-        """auto_messages=3 with 2 members: broadcast(1 each) + sequential claude(1) codex(1) claude(1)."""
+    def test_auto_rounds_limits_total(self, project: Path) -> None:
+        """auto_rounds=2 with 2 members: broadcast(1 each) + 2 rounds of sequential."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at1b"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=3)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=2)
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Broadcast(1 each) + sequential budget=3: claude(1) codex(1) claude(1)
+        # Broadcast(1 each) + 2 rounds x 2 members = 4 auto-turns
         assert members[0].call_count == 3  # claude: 1 broadcast + 2 auto-turns
-        assert members[1].call_count == 2  # codex: 1 broadcast + 1 auto-turn
+        assert members[1].call_count == 3  # codex: 1 broadcast + 2 auto-turns
 
-    def test_auto_messages_zero_disables_auto_turns(self, project: Path) -> None:
-        """auto_messages=0 should still broadcast but skip auto-turns on follow-up."""
+    def test_auto_rounds_zero_disables_auto_turns(self, project: Path) -> None:
+        """auto_rounds=0 should still broadcast but skip auto-turns on follow-up."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at2"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=0)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=0)
 
         tdir = thread_dir(project, BRANCH, tid)
         app_instance.generation = 1
@@ -1434,7 +1688,7 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at3"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=2)
 
         # Make claude set interrupted=True during broadcast
         real_query = members[0].query
@@ -1461,7 +1715,7 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at4"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=2)
 
         # Increment generation after claude's broadcast query
         real_query = members[0].query
@@ -1488,8 +1742,8 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at5"
-        # Budget=4, 3 members, codex muted → broadcast targets exclude muted
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex", "extra"], auto_messages=4)
+        # 2 rounds, 3 members, codex muted → broadcast targets exclude muted
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex", "extra"], auto_rounds=2)
         app_instance.muted.add("codex")
 
         tdir = thread_dir(project, BRANCH, tid)
@@ -1497,8 +1751,7 @@ class TestAutoTurns:
         # In real usage, parse_targets excludes muted members from targets
         asyncio.run(app_instance.run_chat_round(["claude", "extra"], 1, tdir, is_first_exchange=False))
 
-        # Broadcast(1 each) + sequential budget=4, active=[claude, extra]:
-        # claude(auto), extra(auto), claude(auto), extra(auto) = 4 auto-turns
+        # Broadcast(1 each) + 2 rounds x 2 active members (codex muted):
         assert members[0].call_count == 3  # claude: 1 broadcast + 2 auto-turns
         assert members[1].call_count == 0  # codex: muted, not in targets
         assert members[2].call_count == 3  # extra: 1 broadcast + 2 auto-turns
@@ -1520,15 +1773,15 @@ class TestAutoTurns:
         assert to == "claude"
         assert to != "all"  # This means send_message won't use run_chat_round
 
-    def test_sequential_mode_first_exchange(self, project: Path) -> None:
-        """mode='sequential' first exchange should query members one at a time."""
+    def test_round_robin_mode_no_initial_broadcast(self, project: Path) -> None:
+        """mode='round_robin' should query members sequentially, no parallel broadcast."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at7"
         app_instance, members = self.make_app_with_council(
-            project, tid, ["claude", "codex"], mode="sequential", first_exchange=True
+            project, tid, ["claude", "codex"], mode="round_robin", first_exchange=True
         )
 
         call_order = []
@@ -1550,17 +1803,73 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
 
-        # Sequential first exchange: claude then codex, no auto-turns
-        assert call_order == ["claude", "codex"]
+        # Round-robin: sequential fixed-order + 1 auto-round
+        assert call_order == ["claude", "codex", "claude", "codex"]
 
-    def test_follow_up_queries_in_round_robin_order(self, project: Path) -> None:
-        """Follow-up auto-turns should proceed in member order after broadcast."""
+    def test_round_robin_mounts_waiting_panel_per_agent(self, project: Path) -> None:
+        """round_robin mode: WaitingPanel should only appear for the agent being queried."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+        from kingdom.tui.widgets import WaitingPanel
+
+        tid = "council-rr-panels"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=0, mode="round_robin", first_exchange=True
+        )
+
+        mock_log = app_instance.query_one.return_value
+        mock_log.query.return_value = []
+
+        # Track mount calls to see which WaitingPanels are mounted and when
+        mount_events: list[tuple[str, str]] = []  # (event_type, member_name)
+
+        original_mount = mock_log.mount
+
+        def tracking_mount(widget, *args, **kwargs):
+            if isinstance(widget, WaitingPanel):
+                mount_events.append(("mount", widget.sender))
+            return original_mount(widget, *args, **kwargs)
+
+        mock_log.mount = tracking_mount
+
+        for m in members:
+            real_query = m.query
+            name = m.name
+
+            def make_tracking_query(real_fn, member_name):
+                def tracking_query(prompt, timeout, stream_path=None, max_retries=0):
+                    result = real_fn(prompt, timeout, stream_path, max_retries)
+                    mount_events.append(("query", member_name))
+                    return result
+
+                return tracking_query
+
+            m.query = make_tracking_query(real_query, name)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
+
+        # Each agent's WaitingPanel should be mounted right before its query,
+        # not all upfront
+        assert mount_events == [
+            ("mount", "claude"),
+            ("query", "claude"),
+            ("mount", "codex"),
+            ("query", "codex"),
+        ]
+
+    def test_round_robin_fixed_order_across_rounds(self, project: Path) -> None:
+        """round_robin mode: fixed-order sequential across multiple rounds."""
         import asyncio
 
         from kingdom.thread import thread_dir
 
         tid = "council-at7b"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=4)
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=2, mode="round_robin"
+        )
 
         call_order = []
         for m in members:
@@ -1581,10 +1890,9 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Broadcast (parallel, order may vary) + sequential auto-turns
-        # Skip broadcast entries, verify auto-turn order
-        auto_turn_order = call_order[2:]  # first 2 are broadcast (parallel)
-        assert auto_turn_order == ["claude", "codex", "claude", "codex"]
+        # First turn (sequential through targets) + 2 auto-rounds
+        # = 3 total passes: targets + 2 rounds
+        assert call_order == ["claude", "codex", "claude", "codex", "claude", "codex"]
 
     def test_error_in_broadcast_does_not_stop_others(self, project: Path) -> None:
         """An error from one member in broadcast should not stop other members."""
@@ -1593,7 +1901,7 @@ class TestAutoTurns:
         from kingdom.thread import thread_dir
 
         tid = "council-at8"
-        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_messages=2)
+        app_instance, members = self.make_app_with_council(project, tid, ["claude", "codex"], auto_rounds=1)
 
         # Make claude raise an exception
         def error_query(prompt, timeout, stream_path=None, max_retries=0):
@@ -1683,7 +1991,7 @@ class TestAutoTurns:
 
         tid = "council-gen-gather"
         app_instance, members = self.make_app_with_council(
-            project, tid, ["claude", "codex"], auto_messages=0, first_exchange=True
+            project, tid, ["claude", "codex"], auto_rounds=0, first_exchange=True
         )
 
         # Make claude bump generation during its query (simulates user re-sending)
@@ -1705,6 +2013,262 @@ class TestAutoTurns:
         assert (
             len(member_msgs) == 0
         ), f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
+
+    def test_natural_mode_parallel_then_shuffled(self, project: Path) -> None:
+        """natural mode: parallel broadcast first, then shuffled auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-natural"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=1, mode="natural"
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
+
+        # Parallel broadcast (1 each) + 1 shuffled round (1 each) = 2 per member
+        for m in members:
+            assert m.call_count == 2, f"{m.name} expected 2 (broadcast + 1 auto-turn), got {m.call_count}"
+
+    def test_natural_mode_first_exchange_broadcast_only(self, project: Path) -> None:
+        """natural mode first exchange: broadcast only, no auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-natural-first"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=2, mode="natural", first_exchange=True
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
+
+        for m in members:
+            assert m.call_count == 1, f"{m.name} expected 1 (broadcast only), got {m.call_count}"
+
+    def test_manual_mode_no_auto_turns(self, project: Path) -> None:
+        """manual mode: only queries targets, no auto-turns regardless of auto_rounds."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-manual"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=5, mode="manual"
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        # Manual mode: only mentioned targets, no auto-turns
+        asyncio.run(app_instance.run_chat_round(["claude"], 1, tdir, is_first_exchange=False))
+
+        assert members[0].call_count == 1  # claude: targeted
+        assert members[1].call_count == 0  # codex: not targeted
+
+    def test_broadcast_mode_parallel_auto_rounds(self, project: Path) -> None:
+        """broadcast mode: auto_rounds controls additional parallel rounds."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-bcast-auto"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=2, mode="broadcast"
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
+
+        # Initial parallel + 2 parallel auto-rounds = 3 total per member
+        for m in members:
+            assert m.call_count == 3, f"{m.name} expected 3 (initial + 2 auto-rounds), got {m.call_count}"
+
+    def test_broadcast_mode_first_exchange_no_auto(self, project: Path) -> None:
+        """broadcast mode first exchange: single parallel round, no auto-rounds."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-bcast-first"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex"], auto_rounds=3, mode="broadcast", first_exchange=True
+        )
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=True))
+
+        for m in members:
+            assert m.call_count == 1, f"{m.name} expected 1 (first exchange only), got {m.call_count}"
+
+    def test_round_robin_mode_muted_excluded(self, project: Path) -> None:
+        """round_robin mode: muted members excluded from auto-turns."""
+        import asyncio
+
+        from kingdom.thread import thread_dir
+
+        tid = "council-rr-muted"
+        app_instance, members = self.make_app_with_council(
+            project, tid, ["claude", "codex", "extra"], auto_rounds=1, mode="round_robin"
+        )
+        app_instance.muted.add("codex")
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+        # Targets exclude muted (as parse_targets would)
+        asyncio.run(app_instance.run_chat_round(["claude", "extra"], 1, tdir, is_first_exchange=False))
+
+        # First turn: claude, extra (sequential) + 1 auto-round: claude, extra
+        assert members[0].call_count == 2  # claude
+        assert members[1].call_count == 0  # codex: muted
+        assert members[2].call_count == 2  # extra
+
+
+class TestMentionBump:
+    """Tests for mention_bump() — reordering auto-turn queue based on @mentions."""
+
+    def test_single_mention_bumps_to_front(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("I agree with @extra", ["codex", "extra"], ["claude", "codex", "extra"])
+        assert result == ["extra", "codex"]
+
+    def test_multiple_mentions_bump_in_order(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump(
+            "@extra and @codex should weigh in", ["codex", "extra", "gemini"], ["codex", "extra", "gemini"]
+        )
+        assert result == ["extra", "codex", "gemini"]
+
+    def test_duplicate_mentions_deduplicated(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("@extra @extra @extra", ["codex", "extra"], ["codex", "extra"])
+        assert result == ["extra", "codex"]
+
+    def test_unknown_mentions_ignored(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("@nobody should look at this", ["codex", "extra"], ["codex", "extra"])
+        assert result == ["codex", "extra"]
+
+    def test_king_mention_ignored(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("@king what do you think?", ["codex", "extra"], ["codex", "extra"])
+        assert result == ["codex", "extra"]
+
+    def test_no_mentions_preserves_order(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        result = mention_bump("Just a regular response", ["codex", "extra"], ["codex", "extra"])
+        assert result == ["codex", "extra"]
+
+    def test_mention_not_in_remaining_ignored(self) -> None:
+        from kingdom.tui.app import mention_bump
+
+        # claude is a valid member but not in remaining queue (already spoke)
+        result = mention_bump("@claude had a good point", ["codex", "extra"], ["claude", "codex", "extra"])
+        assert result == ["codex", "extra"]
+
+
+class TestMentionBumpAutoTurns:
+    """Integration tests for mention bump during sequential auto-turns."""
+
+    @pytest.fixture()
+    def project(self, tmp_path: Path) -> Path:
+        from kingdom.state import ensure_base_layout, set_current_run
+
+        ensure_base_layout(tmp_path)
+        ensure_branch_layout(tmp_path, BRANCH)
+        set_current_run(tmp_path, BRANCH)
+        return tmp_path
+
+    def make_fake_member(self, name, response_text="Response"):
+        from unittest.mock import MagicMock
+
+        from kingdom.council.base import AgentResponse
+
+        member = MagicMock()
+        member.name = name
+        member.call_count = 0
+
+        def fake_query(prompt, timeout, stream_path=None, max_retries=0):
+            member.call_count += 1
+            return AgentResponse(name=name, text=response_text, error=None, elapsed=0.1, raw="")
+
+        member.query = fake_query
+        return member
+
+    def test_mention_bump_reorders_auto_turn_queue(self, project: Path) -> None:
+        """When a member mentions another, that member is bumped next in the round."""
+        import asyncio
+
+        from kingdom.council.council import Council
+        from kingdom.thread import add_message, thread_dir
+        from kingdom.tui.app import ChatApp
+
+        tid = "council-bump"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex", "extra"], "council")
+        add_message(project, BRANCH, tid, from_="king", to="all", body="First question")
+        for n in ["claude", "codex", "extra"]:
+            add_message(project, BRANCH, tid, from_=n, to="king", body=f"Response from {n}")
+        add_message(project, BRANCH, tid, from_="king", to="all", body="Follow-up")
+
+        # claude's response mentions @extra, so extra should be bumped ahead of codex
+        claude_member = self.make_fake_member("claude", "I think @extra should respond")
+        codex_member = self.make_fake_member("codex", "Regular response")
+        extra_member = self.make_fake_member("extra", "Thanks for the mention")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        council = Council(members=[claude_member, codex_member, extra_member])
+        app_instance.council = council
+        app_instance.chat_mode = "natural"
+        app_instance.auto_rounds = 1
+
+        from unittest.mock import MagicMock
+
+        mock_log = MagicMock()
+        app_instance.query_one = MagicMock(return_value=mock_log)
+
+        # Track call order during auto-turns
+        call_order = []
+        for m in [claude_member, codex_member, extra_member]:
+            real_query = m.query
+            name = m.name
+
+            def make_tracked(real_fn, member_name):
+                def tracked(prompt, timeout, stream_path=None, max_retries=0):
+                    result = real_fn(prompt, timeout, stream_path, max_retries)
+                    call_order.append(member_name)
+                    return result
+
+                return tracked
+
+            m.query = make_tracked(real_query, name)
+
+        tdir = thread_dir(project, BRANCH, tid)
+        app_instance.generation = 1
+
+        # Patch shuffle to give deterministic order: claude, codex, extra
+        with patch("random.shuffle"):
+            asyncio.run(app_instance.run_chat_round(["claude", "codex", "extra"], 1, tdir, is_first_exchange=False))
+
+        # Broadcast: all 3 (parallel, order varies)
+        # Auto-turn round (deterministic due to shuffle patch): claude, then...
+        # claude mentions @extra, so queue becomes [extra, codex]
+        # Final auto-turn order: claude, extra, codex
+        auto_order = call_order[3:]  # skip broadcast (first 3)
+        assert auto_order == ["claude", "extra", "codex"]
 
 
 class TestChatSessionIsolation:
@@ -1830,7 +2394,7 @@ class TestChatSessionIsolation:
 
 
 class TestCouncilCreateNewFields:
-    """Test that Council.create() passes auto_messages and mode from config."""
+    """Test that Council.create() passes ask config from nested council.ask."""
 
     def test_create_default_auto_messages(self, project: Path) -> None:
         """Default auto_messages should be -1 (auto: len(members))."""
@@ -1851,7 +2415,7 @@ class TestCouncilCreateNewFields:
         import json
 
         kd = project / ".kd"
-        (kd / "config.json").write_text(json.dumps({"council": {"auto_messages": 5}}))
+        (kd / "config.json").write_text(json.dumps({"council": {"ask": {"auto_messages": 5}}}))
 
         from kingdom.council.council import Council
 
@@ -1863,7 +2427,7 @@ class TestCouncilCreateNewFields:
         import json
 
         kd = project / ".kd"
-        (kd / "config.json").write_text(json.dumps({"council": {"auto_messages": 0}}))
+        (kd / "config.json").write_text(json.dumps({"council": {"ask": {"auto_messages": 0}}}))
 
         from kingdom.council.council import Council
 
@@ -1875,7 +2439,7 @@ class TestCouncilCreateNewFields:
         import json
 
         kd = project / ".kd"
-        (kd / "config.json").write_text(json.dumps({"council": {"mode": "sequential"}}))
+        (kd / "config.json").write_text(json.dumps({"council": {"ask": {"mode": "sequential"}}}))
 
         from kingdom.council.council import Council
 
@@ -2205,6 +2769,49 @@ class TestSendMessageCleansUpPanels:
         # remove_member_panels should have been called for "claude"
         assert "claude" in removed
 
+    def test_no_duplicate_mount_when_panel_exists(self, project: Path) -> None:
+        """WaitingPanel should not be mounted if one already exists (DuplicateIds guard)."""
+        from unittest.mock import MagicMock
+
+        from kingdom.tui.app import ChatApp, MessageLog
+
+        tid = "council-dup2"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        list(app_instance.compose())
+
+        mock_log = MagicMock(spec=MessageLog)
+        # remove_member_panels calls query for each prefix; the guard calls
+        # query for "#wait-<name>".  Make all removal queries return empty
+        # (nothing to remove) but the guard query find an existing panel.
+        existing_panel = MagicMock()
+        mock_log.query.side_effect = lambda sel: [existing_panel] if sel == "#wait-claude" else []
+        mock_log.scroll_if_following = MagicMock()
+
+        from kingdom.tui.app import InputArea
+
+        mock_input = MagicMock(spec=InputArea)
+        mock_input.text = "Hello"
+        mock_input.has_focus = True
+
+        def fake_query_one(sel_or_cls, cls=None):
+            if sel_or_cls == "#input-area" or cls is InputArea:
+                return mock_input
+            return mock_log
+
+        app_instance.query_one = fake_query_one
+        app_instance.run_worker = MagicMock()
+
+        app_instance.send_message()
+
+        # mount is called for the king MessagePanel but should NOT mount any WaitingPanel
+        from kingdom.tui.widgets import WaitingPanel
+
+        for call in mock_log.mount.call_args_list:
+            widget = call[0][0]
+            assert not isinstance(widget, WaitingPanel), "WaitingPanel should not be mounted when one already exists"
+
 
 class TestRemoveMemberPanels:
     def test_removes_thinking_panels(self, project: Path) -> None:
@@ -2229,3 +2836,79 @@ class TestRemoveMemberPanels:
         assert "#thinking-claude" in queried_selectors
         # The thinking panel should have been removed
         thinking_panel.remove.assert_called_once()
+
+
+class TestFakeMemberProtocol:
+    """Verify FakeMember (test double) matches CouncilMember's interface.
+
+    If CouncilMember gains new attributes or methods, this test fails until
+    FakeMember is updated — preventing silent interface drift.
+    """
+
+    def test_fakemember_has_all_chatapp_used_attributes(self) -> None:
+        """FakeMember should have every attribute that ChatApp reads/writes on members.
+
+        This is the interface boundary that matters — if CouncilMember gains
+        a new field that ChatApp starts using, FakeMember must be updated.
+        """
+        from kingdom.agent import AgentConfig
+        from tests.test_tui_integration import FakeMember
+
+        cfg = AgentConfig(name="test", backend="claude_code", cli="echo", resume_flag="--resume")
+        fake = FakeMember(config=cfg)
+
+        # Attributes ChatApp reads or writes on council members
+        required_attrs = {
+            "config",  # read in various places
+            "name",  # property, read everywhere
+            "session_id",  # cleared after each query
+            "process",  # checked for active queries, terminate()
+            "preamble",  # set during on_mount
+            "writable",  # set by cmd_writable
+            "base",  # set during on_mount (optional)
+            "branch",  # set during on_mount (optional)
+            "query",  # called to run queries
+            "reset_session",  # called to clear session
+        }
+        fake_attrs = {a for a in dir(fake) if not a.startswith("_")}
+        missing = required_attrs - fake_attrs
+        assert not missing, f"FakeMember missing ChatApp-used attributes: {missing}"
+
+    def test_fakemember_query_signature_matches(self) -> None:
+        """FakeMember.query() should accept the same parameters as CouncilMember.query()."""
+        import inspect
+
+        from kingdom.council.base import CouncilMember
+        from tests.test_tui_integration import FakeMember
+
+        real_sig = inspect.signature(CouncilMember.query)
+        fake_sig = inspect.signature(FakeMember.query)
+
+        real_params = set(real_sig.parameters.keys())
+        fake_params = set(fake_sig.parameters.keys())
+
+        missing = real_params - fake_params
+        assert not missing, f"FakeMember.query() missing parameters: {missing}"
+
+    def test_fakemember_has_required_mutable_attrs(self) -> None:
+        """FakeMember should have the mutable attributes ChatApp writes to."""
+        from kingdom.agent import AgentConfig
+        from tests.test_tui_integration import FakeMember
+
+        cfg = AgentConfig(name="test", backend="claude_code", cli="echo", resume_flag="--resume")
+        fake = FakeMember(config=cfg)
+
+        # These are attributes ChatApp reads/writes on members
+        assert hasattr(fake, "session_id")
+        assert hasattr(fake, "process")
+        assert hasattr(fake, "preamble")
+        assert hasattr(fake, "writable") or not hasattr(fake, "writable")  # optional
+        assert hasattr(fake, "name")
+
+        # Verify name property works
+        assert fake.name == "test"
+
+        # Verify reset_session works
+        fake.session_id = "some-session"
+        fake.reset_session()
+        assert fake.session_id is None

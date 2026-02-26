@@ -2522,6 +2522,38 @@ class TestTicketLink:
             assert result.exit_code == 1
             assert "at least two" in result.output
 
+    def test_link_rejects_self_link(self) -> None:
+        """kd tk link A A should reject self-links."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="open", title="T aaaa", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "link", "aaaa", "aaaa"])
+            assert result.exit_code == 1
+            assert "self-link" in result.output.lower() or "cannot link" in result.output.lower()
+
+    def test_link_deduplicates_ids(self) -> None:
+        """kd tk link A B A should deduplicate to just A ↔ B."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            for tid in ["aaaa", "bbbb"]:
+                write_ticket(
+                    Ticket(id=tid, status="open", title=f"T {tid}", body="", created=datetime.now(UTC)),
+                    tickets_dir / f"{tid}.md",
+                )
+            result = runner.invoke(cli.app, ["tk", "link", "aaaa", "bbbb", "aaaa"])
+            assert result.exit_code == 0
+            a = read_ticket(tickets_dir / "aaaa.md")
+            # aaaa should link to bbbb only once, not to itself
+            assert a.links.count("bbbb") == 1
+            assert "aaaa" not in a.links
+
 
 class TestTicketDepTree:
     """Tests for kd tk dep-tree."""
@@ -2624,6 +2656,25 @@ class TestTicketDepCycle:
             result = runner.invoke(cli.app, ["tk", "dep-cycle"])
             assert result.exit_code == 1
             assert "cycle" in result.output.lower()
+
+    def test_ignores_closed_ticket_cycles(self) -> None:
+        """dep-cycle should not report cycles involving only closed tickets."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            # A → B → A cycle, but both are closed
+            write_ticket(
+                Ticket(id="aaaa", status="closed", title="A", body="", deps=["bbbb"], created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="closed", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "dep-cycle"])
+            assert result.exit_code == 0
+            assert "No dependency cycles" in result.output
 
 
 class TestTicketBlocked:
@@ -2809,6 +2860,38 @@ class TestTicketClosed:
             assert result.exit_code == 0
             assert "arch1" in result.output
             assert "Archived backlog ticket" in result.output
+
+    def test_includes_done_branch_tickets(self) -> None:
+        """kd tk closed should include tickets from done branches."""
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create a "done" branch with a closed ticket
+            done_branch = "feature/done-branch"
+            ensure_branch_layout(base, done_branch)
+            done_branch_root = branch_root(base, done_branch)
+            state_path = done_branch_root / "state.json"
+            state_path.write_text(json.dumps({"status": "done"}))
+
+            tickets_dir = done_branch_root / "tickets"
+            write_ticket(
+                Ticket(
+                    id="done1",
+                    status="closed",
+                    title="Ticket from done branch",
+                    body="",
+                    created=datetime.now(UTC),
+                ),
+                tickets_dir / "done1.md",
+            )
+
+            result = runner.invoke(cli.app, ["tk", "closed"])
+            assert result.exit_code == 0
+            assert "done1" in result.output
+            assert "Ticket from done branch" in result.output
 
 
 class TestTicketAddNote:

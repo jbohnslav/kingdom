@@ -21,49 +21,71 @@ Gastown minus the polecats.
 uv tool install kingdom-cli
 ```
 
-## Getting Started
+## Workflow Scales
 
-1. Initialize the project on your current branch:
+`kd` scales down gracefully. You pick the parts of the workflow that fit the size of the work.
+
+### Full workflow (new features)
+
+Design with the council, break into tickets, dispatch peasants, review, and merge.
+
+```bash
+kd start                   # initialize branch session
+kd chat --new              # discuss design with the council TUI
+kd design approve          # lock in the design
+kd breakdown               # generate tickets from the design
+kd peasant start <id>      # dispatch parallel workers
+kd done                    # archive and clean up
+```
+
+### Medium workflow (refactors, smaller features)
+
+Pull tickets into a branch, work them directly or with peasants. No design phase needed.
 
 ```bash
 kd start
-```
-
-2. Configure council agent CLIs in `.kd/config.json` (check effective config with `kd config show`).
-
-3. Design with the council in the TUI:
-
-```bash
-kd chat --new
-```
-
-4. Break your design into markdown tickets:
-
-```bash
-kd breakdown
-```
-
-5. Review and refine tickets:
-
-```bash
-kd ticket list
-kd ticket show <id>
-```
-
-6. Execute tickets:
-- Serial: tell Claude Code or Codex to work tickets directly, or run `kd work <id>`.
-- Parallel: dispatch peasants in worktrees.
-
-```bash
-kd peasant start <id>
-kd peasant status
-```
-
-7. Close out the session:
-
-```bash
+kd tk pull <id> <id>       # pull backlog tickets onto this branch
+kd tk start <id>           # work tickets one at a time
+kd tk close <id>
 kd done
 ```
+
+### Lightweight workflow (bug fixes)
+
+Work a single ticket, close it, make a PR. Or batch several bug-fix tickets on one branch.
+
+```bash
+kd start
+kd tk create "fix: login redirect loop"
+kd tk start <id>
+# ... fix the bug ...
+kd tk close <id>
+kd done
+```
+
+Design docs, council sessions, and peasant workers are all optional. A branch with one ticket and no design doc is a perfectly valid `kd` workflow.
+
+## Getting Started
+
+```bash
+kd init                    # one-time: create .kd/ directory
+kd start                   # start a session on the current branch
+```
+
+Configure council agent CLIs in `.kd/config.json` (check effective config with `kd config show`).
+
+## Chat Modes
+
+The council chat TUI (`kd chat`) supports four modes, configured via `council.chat.mode`:
+
+| Mode | First turn | Auto-turns | Default |
+|------|-----------|------------|---------|
+| `natural` | parallel broadcast | shuffled round-robin | yes |
+| `round_robin` | sequential fixed-order | sequential fixed-order | |
+| `manual` | only @mentioned | only @mentioned | |
+| `broadcast` | parallel to all | parallel to all | |
+
+LLM-to-LLM @mentions in responses automatically bump the mentioned member to the front of the auto-turn queue.
 
 ## How It Works
 

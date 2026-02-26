@@ -212,10 +212,11 @@ def list_tickets(directory: Path) -> list[Ticket]:
     return tickets
 
 
-def collect_all_tickets(base: Path, *, include_archive: bool = False) -> list[Ticket]:
+def collect_all_tickets(base: Path, *, include_archive: bool = False, include_done: bool = False) -> list[Ticket]:
     """Collect all tickets across branches, backlog, and optionally archive.
 
-    Searches branches/*/tickets/ (skipping done branches) and backlog/tickets/.
+    Searches branches/*/tickets/ (skipping done branches unless include_done=True)
+    and backlog/tickets/.
     With include_archive=True, also searches archive/*/tickets/.
     """
     from kingdom.state import archive_root, backlog_root, branches_root
@@ -227,7 +228,7 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False) -> list[Ti
         for branch_dir in branches_dir.iterdir():
             if branch_dir.is_dir():
                 state_path = branch_dir / "state.json"
-                if state_path.exists():
+                if not include_done and state_path.exists():
                     import json
 
                     try:

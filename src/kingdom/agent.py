@@ -646,3 +646,84 @@ def extract_stream_thinking(line: str, backend: str) -> str | None:
     if extractor is None:
         return None
     return extractor(line)
+
+
+# ---------------------------------------------------------------------------
+# Stream tool-use extractors — extract tool invocation names from NDJSON
+# ---------------------------------------------------------------------------
+
+
+def extract_claude_stream_tool_use(line: str) -> str | None:
+    """Extract tool name from a Claude Code stream-json NDJSON line.
+
+    Claude Code emits ``content_block_start`` with a ``tool_use`` block
+    containing the tool name (e.g. "Read", "Bash", "Write").
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "stream_event":
+        event = event.get("event", {})
+    if event.get("type") == "content_block_start":
+        block = event.get("content_block", {})
+        if block.get("type") == "tool_use":
+            return block.get("name")
+    return None
+
+
+def extract_cursor_stream_tool_use(line: str) -> str | None:
+    """Extract tool name from a Cursor stream-json NDJSON line.
+
+    Cursor emits ``{"type": "tool_call", "subtype": "started", ...}``
+    when a tool invocation begins.  The ``name`` field may or may not
+    be present depending on the Cursor version.
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "tool_call" and event.get("subtype") == "started":
+        return event.get("name") or "tool"
+    return None
+
+
+def extract_codex_stream_tool_use(line: str) -> str | None:
+    """Extract tool name from a Codex NDJSON line.
+
+    Codex emits ``item.completed`` events for tool calls with
+    ``item.type == "function_call"``.
+    """
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "item.completed":
+        item = event.get("item", {})
+        if item.get("type") == "function_call":
+            return item.get("name", "tool")
+    return None
+
+
+STREAM_TOOL_USE_EXTRACTORS: dict[str, StreamExtractor] = {
+    "claude_code": extract_claude_stream_tool_use,
+    "codex": extract_codex_stream_tool_use,
+    "cursor": extract_cursor_stream_tool_use,
+}
+
+
+def extract_stream_tool_use(line: str, backend: str) -> str | None:
+    """Extract tool name from a single NDJSON line for the given backend.
+
+    Returns the tool name string, or None for non-tool-use events.
+    """
+    extractor = STREAM_TOOL_USE_EXTRACTORS.get(backend)
+    if extractor is None:
+        return None
+    return extractor(line)

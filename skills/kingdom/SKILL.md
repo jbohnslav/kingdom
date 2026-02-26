@@ -10,161 +10,87 @@ description: >
 compatibility: Requires Python 3.10+, kd CLI (uv tool install kingdom), git
 ---
 
-You assist the developer (the "King") using the `kd` CLI for AI-assisted software development.
+You assist the developer (the "King") using the `kd` CLI. There are two common workflows — pick the one that fits.
 
-**Important:** This document is a reference guide. Only run state-modifying `kd` commands (creating tickets, starting/closing tickets, approving designs, etc.) when the King explicitly asks you to. Read-only commands like `kd status`, `kd tk list`, `kd tk show`, and `kd design show` are always safe.
+**Safety rule:** Only run state-modifying `kd` commands when the King explicitly asks. Read-only commands (`kd status`, `kd tk list`, `kd tk show`, `kd design show`) are always safe.
 
-## Prerequisites
-
-Install the kd CLI:
-
-```bash
-uv tool install kingdom    # or: pip install kingdom
-```
-
-Verify installation:
-
-```bash
-kd --help                  # confirm kd is on PATH
-kd doctor                  # check agent CLIs are available
-```
-
-## Core Workflow
-
-Every feature follows this lifecycle:
+## Workflow A: New Feature (design-first)
 
 ```
 git checkout -b <branch>
-kd start                   # initialize branch session
-kd design                  # create design doc template
+kd start                        # init branch
+kd design                       # create design doc
+# iterate with council, co-author the design with the King
+kd design approve
+kd breakdown                    # split design into tickets
+# execute tickets (see below)
+kd done                         # archive branch before merging PR
 ```
 
-1. **Design** — Write the design doc at `.kd/branches/<branch>/design.md`. For major decisions, consult the council: `kd council ask "question"`. When ready: `kd design approve`.
+The design phase is collaborative: the King drives direction, you draft content, the council reviews. Use `kd council ask` to get multi-model feedback during design.
 
-2. **Breakdown** — Run `kd breakdown` to get an agent prompt for creating tickets from the design doc.
+## Workflow B: Backlog Sprint (execution-first)
 
-3. **Tickets** — Work through tickets: `kd tk start <id>`, do the work, `kd tk close <id>`. Use `kd tk ready` to see what's unblocked.
+```
+git checkout -b <branch>
+kd start
+kd tk pull <id> <id> ...        # pull existing backlog tickets in
+# execute tickets (see below)
+kd done
+```
 
-4. **Peasants** — For isolated ticket work, spawn a peasant: `kd peasant start <id>` (worktree) or `kd peasant start <id> --hand` (serial, current dir).
+No design phase — tickets are already scoped. If a ticket is ambiguous, escalate to the King or ask the council. Don't guess.
 
-5. **Done** — When all tickets are closed: `kd done` to archive the branch. Always run `kd done` before merging a PR.
+## Executing Tickets
 
-Check status anytime with `kd status`.
+After either workflow produces tickets, the King (or the coding agent they're working with, sometimes called the "Hand") chooses how to work through them:
 
-## Command Reference
+**Option A: Work tickets directly.** The King and their coding agent work tickets one at a time, following the Working Tickets guidelines below.
 
-### Lifecycle
+**Option B: Spin up peasants.** `kd peasant start <id>` spawns a background worker in its own worktree. Each peasant works one ticket at a time — the council reviews automatically, the peasant iterates until approved. Spin up multiple peasants for parallel throughput. The King monitors with `kd peasant status` and `kd peasant watch <id>`. See [peasant reference](references/peasants.md) for details.
 
-| Command | Description |
-|---------|-------------|
-| `kd init` | Initialize `.kd/` directory |
-| `kd start` | Initialize branch session |
-| `kd status` | Show branch, design, and ticket status |
-| `kd done` | Archive branch and clear session |
-| `kd doctor` | Check agent CLIs are installed |
-
-### Design & Breakdown
-
-| Command | Description |
-|---------|-------------|
-| `kd design` | Create design doc template |
-| `kd design show` | Print design document |
-| `kd design approve` | Mark design as approved |
-| `kd breakdown` | Print agent prompt to create tickets from design |
-
-### Council
-
-| Command | Description |
-|---------|-------------|
-| `kd council ask "prompt"` | Query all council members |
-| `kd council ask --to <member> "prompt"` | Query one member |
-| `kd council ask --new-thread "prompt"` | Start a fresh thread |
-| `kd council ask --async --no-watch "prompt"` | Dispatch in background (non-blocking) |
-| `kd council review` | Review current branch diff (always new thread) |
-| `kd council review --async --no-watch` | Dispatch review in background |
-| `kd council show <thread-id>` | Display a thread |
-| `kd council list` | List all threads |
-| `kd council status [thread-id]` | Show per-member response status |
-| `kd council status --all` | Show status for all threads |
-| `kd council watch <thread-id>` | Watch for incoming responses |
-| `kd council reset` | Clear all sessions |
-
-### Tickets
-
-| Command | Description |
-|---------|-------------|
-| `kd tk list` | List tickets |
-| `kd tk show <id>` | Show ticket details |
-| `kd tk create "title"` | Create a ticket |
-| `kd tk start <id>` | Mark in progress |
-| `kd tk close <id>` | Mark complete |
-| `kd tk reopen <id>` | Reopen a closed ticket |
-| `kd tk ready` | Show tickets ready to work on |
-| `kd tk move <id> <branch>` | Move ticket to another branch |
-| `kd tk pull <id>...` | Pull backlog tickets into current branch |
-| `kd tk dep <id> <dep-id>` | Add dependency |
-| `kd tk undep <id> <dep-id>` | Remove dependency |
-| `kd tk dep-tree <id>` | Show dependency tree (--full to show dupes) |
-| `kd tk dep-cycle` | Detect dependency cycles |
-| `kd tk blocked` | List tickets with unresolved deps |
-| `kd tk link <id> <id> [id...]` | Add symmetric links between tickets |
-| `kd tk unlink <id> <id>` | Remove a link |
-| `kd tk closed` | List recently closed tickets (--limit N) |
-| `kd tk add-note <id> "text"` | Append timestamped note |
-| `kd tk query [jq-filter]` | Output tickets as JSON (optional jq) |
-| `kd tk delete <id>` | Delete a ticket (--force to skip confirm) |
-| `kd tk assign <id> <agent>` | Assign to agent |
-| `kd tk unassign <id>` | Clear assignment |
-
-### Peasants
-
-| Command | Description |
-|---------|-------------|
-| `kd peasant start <id>` | Launch peasant in worktree |
-| `kd peasant start <id> --hand` | Launch in current dir (serial) |
-| `kd peasant status` | Show active peasants |
-| `kd peasant logs <id>` | Show peasant logs |
-| `kd peasant stop <id>` | Stop a running peasant |
-| `kd peasant clean <id>` | Remove peasant worktree |
-| `kd peasant sync <id>` | Pull parent branch changes |
-| `kd peasant msg <id> "text"` | Send directive to peasant |
-| `kd peasant read <id>` | Read messages from peasant |
-| `kd peasant review <id>` | Review peasant's completed work |
-
-### Config
-
-| Command | Description |
-|---------|-------------|
-| `kd config show` | Print effective config with source annotations |
-
-### Other
-
-| Command | Description |
-|---------|-------------|
-| `kd work <id>` | Run autonomous agent loop on a ticket |
+Use A when the King wants to be hands-on. Use B for throughput on well-scoped tickets. Both can be mixed — the King might work one tricky ticket directly while peasants handle the straightforward ones.
 
 ## Working Tickets
 
-When the King asks you to work a ticket, the workflow is:
+This applies regardless of execution mode.
 
-- **One at a time**: the agent starts a ticket (`kd tk start`), does the work, closes it (`kd tk close`), commits, then moves to the next.
-- **Worklog**: progress notes are appended to the ticket's `## Worklog` section as work proceeds.
-- **Acceptance criteria**: a ticket should only be closed when all acceptance criteria are met.
-- **Decisions**: difficult design decisions should be raised with the King or the council (`kd council ask`) — don't guess.
-- **Green suite**: the full test suite must pass before closing a ticket. "Pre-existing failure" is not an excuse — fix it or raise it with the King.
-- **Bugs from this branch**: write a failing test that reproduces it, then fix.
-- **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create --backlog "title"`) and move on.
-- **Commit often**: commit `.kd/` changes (ticket closures, worklogs, threads) and code changes as you go.
+- **One at a time per worker**: `kd tk start <id>` → do the work → `kd tk close <id>` → commit → next ticket.
+- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go. Log what you're doing, what you found, commands and results, decisions and why. The King reads these to stay informed — don't make them ask.
+- **Acceptance criteria**: only close a ticket when all acceptance criteria are met and the full test suite is green.
+- **Decisions**: ask the King or consult the council (`kd council ask "..."`) for difficult design decisions — don't guess. Never silently resolve ambiguity on architectural, product, or UX tradeoffs.
+- **For bugs: test BEFORE you fix!** Write a test that fails in the current state, fix it, then verify.
+- **Bugs from this branch**: immediately write a failing test that reproduces it, then fix.
+- **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create --backlog "..."`) and move on.
+- **Commit often**: commit code changes as you go. Commit `.kd/` changes (ticket state, worklogs) alongside code.
+- **One-off tests**: write a script or temp file to test an end-to-end flow with real data. Then consider if it can be an automated integration test.
+- **Dogfooding**: notice a UX issue with `kd` itself? File a backlog ticket immediately (`kd tk create --backlog "..."`).
 
-## Council Guidelines
+## Council
 
-- **When to consult**: major architectural decisions, technology choices with trade-offs, design patterns that could go multiple ways, when uncertain about an approach.
-- **When not to**: straightforward implementation, bug fixes with obvious solutions, tasks the King has already decided on.
-- **Always use `--no-watch`** with `--async` to avoid blocking the agent's shell. Use `kd council watch <thread-id>` separately to check responses.
-- **Do not synthesize**: council responses are saved to `.kd/branches/<branch>/threads/`. Point the King to the thread and let them read directly. The King decides — you execute.
-- **Commit `.kd/` changes** as you go (ticket moves, closures, threads).
+- `kd council ask "prompt"` queries all members for independent perspectives.
+- Use it proactively at decision points, not just when stuck.
+- Present each member's perspective distinctly — don't flatten disagreements. Summarize if the King asks, but preserve the tensions.
+- See [council reference](references/council.md) for threading, async flags, and session management.
 
-## Deep Dives
+## Command Quick-Ref
+
+```bash
+kd start / status / done              # branch lifecycle
+kd design / design approve            # design doc
+kd breakdown                          # design → tickets
+kd tk list / show / ready             # inspect tickets
+kd tk start <id> / close <id>         # work a ticket
+kd tk create "title"                  # new ticket (--backlog for backlog)
+kd tk pull <id>...                    # pull from backlog
+kd council ask "prompt"               # consult council
+kd peasant start <id>                 # launch background worker
+kd peasant status / watch <id>        # monitor peasants
+```
+
+Run `kd <command> --help` for flags and options not listed here.
+
+## References
 
 - [Council patterns and usage](references/council.md)
 - [Ticket lifecycle and management](references/tickets.md)
