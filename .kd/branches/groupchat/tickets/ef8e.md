@@ -1,11 +1,12 @@
 ---
 id: "ef8e"
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-02-25T14:09:51Z
 type: task
 priority: 1
+closed_at: 2026-02-26T13:28:53Z
 ---
 # Fix remaining find_project_root() gaps from 5394
 
