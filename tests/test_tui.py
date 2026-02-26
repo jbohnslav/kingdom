@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import patch
 
@@ -878,6 +879,42 @@ class TestPhase1SmokeTest:
             result = runner.invoke(app, ["chat", "--new"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
+
+    def test_chat_list_shows_newest_first(self, project: Path) -> None:
+        """kd chat (no args, no current thread) should list threads newest-first."""
+        from datetime import datetime
+
+        from kingdom.state import write_json
+        from kingdom.thread import threads_root
+
+        troot = threads_root(project, BRANCH)
+        # Create threads with explicit timestamps to control ordering
+        for i, name in enumerate(["thread-old", "thread-mid", "thread-new"]):
+            tdir = troot / name
+            tdir.mkdir(parents=True)
+            ts = datetime(2026, 1, 1 + i, tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            write_json(
+                tdir / "thread.json",
+                {
+                    "id": name,
+                    "members": ["king", "claude"],
+                    "pattern": "council",
+                    "created_at": ts,
+                },
+            )
+
+        with (
+            patch("kingdom.cli.Path.cwd", return_value=project),
+            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+        ):
+            result = runner.invoke(app, ["chat"])
+
+        assert result.exit_code == 0
+        assert "Recent threads:" in result.output
+        lines = [ln.strip() for ln in result.output.splitlines() if ln.strip().startswith("thread-")]
+        # Newest should be first
+        assert lines[0].startswith("thread-new")
+        assert lines[-1].startswith("thread-old")
 
     def test_chat_color_auto_detects_tmux_cc(self, project: Path) -> None:
         """--color auto enables ansi_color when tmux -CC is detected."""

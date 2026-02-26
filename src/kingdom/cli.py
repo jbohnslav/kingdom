@@ -1597,7 +1597,7 @@ def chat(
             threads = list_threads(base, feature)
             if threads:
                 typer.echo("Recent threads:")
-                for t in threads[-5:]:
+                for t in reversed(threads[-5:]):
                     created = t.created_at.strftime("%Y-%m-%d %H:%M")
                     members = ", ".join(m for m in t.members if m != "king")
                     typer.echo(f"  {t.id}  {created}  [{members}]")
