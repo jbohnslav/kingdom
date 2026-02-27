@@ -3436,6 +3436,7 @@ def ticket_create(
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
     parent: Annotated[str | None, typer.Option("--parent", help="Parent ticket ID.")] = None,
     tags: Annotated[str | None, typer.Option("--tags", help="Comma-separated tags.")] = None,
+    ac: Annotated[list[str] | None, typer.Option("--ac", help="Acceptance criteria (repeatable).")] = None,
 ) -> None:
     """Create a new ticket in the current branch or backlog."""
     from datetime import datetime
@@ -3488,8 +3489,12 @@ def ticket_create(
 
     # Build body with acceptance criteria section
     body = description or ""
-    if not body:
-        body = "## Acceptance Criteria\n\n- [ ]"
+    ac_items = ac or []
+    ac_lines = "\n".join(f"- [ ] {item}" for item in ac_items) if ac_items else "- [ ]"
+    if body:
+        body = f"{body}\n\n## Acceptance Criteria\n\n{ac_lines}"
+    else:
+        body = f"## Acceptance Criteria\n\n{ac_lines}"
 
     # Create ticket
     ticket = Ticket(

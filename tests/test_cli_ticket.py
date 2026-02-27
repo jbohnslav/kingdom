@@ -97,7 +97,7 @@ class TestTicketCreate:
             found = find_ticket(base, ticket_id)
             assert found is not None
             created_ticket, _ = found
-            assert created_ticket.body == "Body from flag"
+            assert created_ticket.body == "Body from flag\n\n## Acceptance Criteria\n\n- [ ]"
             assert created_ticket.type == "bug"
 
     def test_create_out_of_range_priority_clamps(self) -> None:
@@ -2991,6 +2991,71 @@ class TestTicketCreateOptions:
             ticket = read_ticket(created_files[0])
             assert "frontend" in ticket.tags
             assert "polish" in ticket.tags
+
+    def test_create_with_ac_flags(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            result = runner.invoke(
+                cli.app,
+                ["tk", "create", "AC ticket", "--ac", "Tests pass", "--ac", "No regressions"],
+            )
+            assert result.exit_code == 0, result.output
+
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            created_files = list(tickets_dir.glob("*.md"))
+            assert len(created_files) == 1
+            ticket = read_ticket(created_files[0])
+            assert "- [ ] Tests pass" in ticket.body
+            assert "- [ ] No regressions" in ticket.body
+            assert "## Acceptance Criteria" in ticket.body
+
+    def test_create_with_description_and_ac(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            result = runner.invoke(
+                cli.app,
+                [
+                    "tk",
+                    "create",
+                    "Full ticket",
+                    "-d",
+                    "Timeout handler bug",
+                    "--ac",
+                    "Tests pass",
+                    "--ac",
+                    "No regressions",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            created_files = list(tickets_dir.glob("*.md"))
+            assert len(created_files) == 1
+            ticket = read_ticket(created_files[0])
+            assert ticket.body == (
+                "Timeout handler bug\n\n" "## Acceptance Criteria\n\n" "- [ ] Tests pass\n" "- [ ] No regressions"
+            )
+
+    def test_create_description_without_ac_still_has_ac_section(self) -> None:
+        """When -d is provided without --ac, the AC section should still be present."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            result = runner.invoke(
+                cli.app,
+                ["tk", "create", "Desc only", "-d", "Some description"],
+            )
+            assert result.exit_code == 0, result.output
+
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            created_files = list(tickets_dir.glob("*.md"))
+            assert len(created_files) == 1
+            ticket = read_ticket(created_files[0])
+            assert "## Acceptance Criteria" in ticket.body
+            assert "- [ ]" in ticket.body
+            assert ticket.body.startswith("Some description")
 
 
 class TestTicketListFilters:
