@@ -323,11 +323,11 @@ class TestValidateConfigErrors:
         assert cfg.council.chat.mode == "natural"
 
     def test_bad_chat_mode_type(self) -> None:
-        with pytest.raises(ValueError, match="council.chat.mode must be a string"):
+        with pytest.raises(ValueError, match=r"council\.chat\.mode must be a string"):
             validate_config({"council": {"chat": {"mode": 123}}})
 
     def test_bad_chat_mode_value(self) -> None:
-        with pytest.raises(ValueError, match="council.chat.mode must be one of"):
+        with pytest.raises(ValueError, match=r"council\.chat\.mode must be one of"):
             validate_config({"council": {"chat": {"mode": "invalid"}}})
 
     def test_chat_auto_rounds(self) -> None:
@@ -339,11 +339,11 @@ class TestValidateConfigErrors:
         assert cfg.council.chat.auto_rounds == 0
 
     def test_bad_chat_auto_rounds_type(self) -> None:
-        with pytest.raises(ValueError, match="council.chat.auto_rounds must be an integer"):
+        with pytest.raises(ValueError, match=r"council\.chat\.auto_rounds must be an integer"):
             validate_config({"council": {"chat": {"auto_rounds": "many"}}})
 
     def test_bad_chat_auto_rounds_negative(self) -> None:
-        with pytest.raises(ValueError, match="council.chat.auto_rounds must be non-negative"):
+        with pytest.raises(ValueError, match=r"council\.chat\.auto_rounds must be non-negative"):
             validate_config({"council": {"chat": {"auto_rounds": -1}}})
 
     def test_peasant_timeout_must_be_positive(self) -> None:
@@ -418,5 +418,5 @@ class TestLoadConfig:
         kd.mkdir()
         data = {"council": {"timeout": "slow"}}
         (kd / "config.json").write_text(json.dumps(data))
-        with pytest.raises(ValueError, match="council.timeout must be an integer"):
+        with pytest.raises(ValueError, match=r"council\.timeout must be an integer"):
             load_config(tmp_path)
