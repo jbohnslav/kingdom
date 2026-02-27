@@ -33,8 +33,9 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from kingdom.council import Council
+from kingdom.council import Council, create_council  # noqa: F401 (Council used by tests)
 from kingdom.design import ensure_design_initialized
+from kingdom.parsing import parse_iso_datetime
 from kingdom.session import get_current_thread, set_current_thread
 from kingdom.state import (
     archive_root,
@@ -114,6 +115,70 @@ def verbose_echo(message: str) -> None:
     """Print a debug message to stderr when --verbose is set."""
     if VERBOSE:
         error_console.print(f"[dim]{message}[/dim]")
+
+
+def resolve_ticket_or_exit(
+    base: Path,
+    ticket_id: str,
+    *,
+    not_found_label: str = "Ticket not found",
+    branch: str | None = None,
+) -> tuple[Ticket, Path]:
+    """Find a ticket by ID or exit with a clear error.
+
+    Handles ``AmbiguousTicketMatch`` and not-found cases with consistent
+    error messages and exit code 1.
+    """
+    try:
+        result = find_ticket(base, ticket_id, branch=branch)
+    except AmbiguousTicketMatch as e:
+        print_error(f"{e}")
+        raise typer.Exit(code=1) from None
+    if result is None:
+        print_error(f"{not_found_label}: {ticket_id}")
+        raise typer.Exit(code=1)
+    return result
+
+
+def run_init_script(base: Path, worktree_path: Path, *, step_prefix: str = "") -> None:
+    """Run ``.kd/init-worktree.sh`` if present and executable."""
+    init_script = state_root(base) / "init-worktree.sh"
+    if init_script.exists() and os.access(init_script, os.X_OK):
+        typer.echo(f"{step_prefix}Running init-worktree.sh...")
+        init_result = subprocess.run(
+            [str(init_script), str(worktree_path)],
+            capture_output=True,
+            text=True,
+        )
+        if init_result.stdout.strip():
+            typer.echo(init_result.stdout.strip())
+        if init_result.returncode != 0:
+            typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
+            if init_result.stderr.strip():
+                typer.echo(init_result.stderr.strip())
+    elif init_script.exists():
+        typer.echo(f"{step_prefix}init-worktree.sh exists but is not executable, skipping.")
+    else:
+        typer.echo(f"{step_prefix}No init-worktree.sh found, skipping dependency refresh.")
+
+
+def peasant_session_name(ticket_id: str) -> str:
+    """Return the canonical session name for a peasant working on *ticket_id*."""
+    return f"peasant-{ticket_id}"
+
+
+def peasant_thread_id(ticket_id: str) -> str:
+    """Return the canonical thread ID for a peasant work thread."""
+    return f"{ticket_id}-work"
+
+
+def is_process_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def not_implemented(command: str) -> None:
@@ -527,25 +592,16 @@ def council_ask(
     base = require_project_root()
     feature = resolve_current_run(base)
 
-    logs_dir = logs_root(base, feature)
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
     console = Console()
 
-    c = Council.create(logs_dir=logs_dir, base=base)
-    if writable:
-        for m in c.members:
-            m.writable = True
-    if timeout is not None:
-        c.timeout = timeout
+    c = create_council(base, feature, writable=writable, timeout=timeout)
     timeout = c.timeout
-    c.load_sessions(base, feature)
 
     verbose_echo(f"base: {base}")
     verbose_echo(f"branch: {feature}")
     verbose_echo(f"members: {', '.join(m.name for m in c.members)}")
     verbose_echo(f"timeout: {timeout}s")
-    verbose_echo(f"logs: {logs_dir}")
+    verbose_echo(f"logs: {logs_root(base, feature)}")
 
     # Parse @mentions from prompt (kin-09c9), ignoring content inside code blocks
     available_names = {m.name for m in c.members}
@@ -808,13 +864,7 @@ def council_reset(
     base = require_project_root()
     feature = resolve_current_run(base)
 
-    logs_dir = logs_root(base, feature)
-
-    # Ensure directories exist
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    c = Council.create(logs_dir=logs_dir, base=base)
-    c.load_sessions(base, feature)
+    c = create_council(base, feature)
 
     if member_name:
         m = c.get_member(member_name)
@@ -1393,12 +1443,7 @@ def council_retry(
         return
 
     # Set up council filtered to failed members only
-    logs_dir = logs_root(base, feature)
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    c = Council.create(logs_dir=logs_dir, base=base)
-    if timeout is not None:
-        c.timeout = timeout
-    c.load_sessions(base, feature)
+    c = create_council(base, feature, timeout=timeout)
     c.members = [m for m in c.members if m.name in failed]
 
     if not c.members:
@@ -1696,20 +1741,7 @@ def create_worktree(base: Path, full_ticket_id: str) -> Path:
     if result.returncode != 0:
         raise RuntimeError(f"Error creating worktree: {result.stderr.strip()}")
 
-    init_script = state_root(base) / "init-worktree.sh"
-    if init_script.exists() and os.access(init_script, os.X_OK):
-        typer.echo("Running init-worktree.sh...")
-        init_result = subprocess.run(
-            [str(init_script), str(worktree_path)],
-            capture_output=True,
-            text=True,
-        )
-        if init_result.stdout.strip():
-            typer.echo(init_result.stdout.strip())
-        if init_result.returncode != 0:
-            typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
-            if init_result.stderr.strip():
-                typer.echo(init_result.stderr.strip())
+    run_init_script(base, worktree_path)
 
     try:
         feature = resolve_current_run(base)
@@ -1780,17 +1812,7 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
         print_error(str(exc))
         raise typer.Exit(code=1) from None
 
-    try:
-        result = find_ticket(base, ticket_id, branch=feature)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id, branch=feature)
     full_ticket_id = ticket.id
 
     # Auto-pull backlog tickets into the current branch (mutating commands only)
@@ -1906,7 +1928,7 @@ def launch_work_tmux(
         ]
     )
 
-    window_name = f"peasant-{ticket_id}"
+    window_name = peasant_session_name(ticket_id)
     tmux_cmd = [
         "tmux",
         "new-window",
@@ -1969,21 +1991,16 @@ def peasant_start(
         cfg = load_config(base)
         agent = cfg.peasant.agent
 
-    session_name = f"peasant-{full_ticket_id}"
-    thread_id = f"{full_ticket_id}-work"
+    session_name = peasant_session_name(full_ticket_id)
+    thread_id = peasant_thread_id(full_ticket_id)
 
     # Check if already running
     from kingdom.session import get_agent_state
 
     existing = get_agent_state(base, feature, session_name)
-    if existing.status == "working" and existing.pid:
-        # Check if process is actually alive
-        try:
-            os.kill(existing.pid, 0)
-            print_error(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
-            raise typer.Exit(code=1)
-        except OSError:
-            pass  # Process is dead, continue
+    if existing.status == "working" and existing.pid and is_process_alive(existing.pid):
+        print_error(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
+        raise typer.Exit(code=1)
 
     # 1. Create worktree (or use base if hand mode)
     if hand:
@@ -1993,16 +2010,17 @@ def peasant_start(
         for active in list_active_agents(base, feature):
             if active.name == session_name:
                 continue  # already handled above
-            if active.status == "working" and active.pid and active.name.startswith("peasant-"):
-                try:
-                    os.kill(active.pid, 0)
-                    print_error(
-                        f"peasant {active.name} (pid {active.pid}) is already working "
-                        f"on this checkout. Stop it first or use worktree mode."
-                    )
-                    raise typer.Exit(code=1)
-                except OSError:
-                    pass  # Process is dead, safe to continue
+            if (
+                active.status == "working"
+                and active.pid
+                and active.name.startswith("peasant-")
+                and is_process_alive(active.pid)
+            ):
+                print_error(
+                    f"peasant {active.name} (pid {active.pid}) is already working "
+                    f"on this checkout. Stop it first or use worktree mode."
+                )
+                raise typer.Exit(code=1)
         worktree_path = base
         typer.echo(f"Running in hand mode (serial) on {base}")
     else:
@@ -2125,7 +2143,7 @@ def peasant_status(
         elapsed = ""
         if p.started_at:
             try:
-                started = datetime.fromisoformat(p.started_at.replace("Z", "+00:00"))
+                started = parse_iso_datetime(p.started_at)
                 delta = now - started
                 minutes = int(delta.total_seconds() / 60)
                 elapsed = f"{minutes}m"
@@ -2136,7 +2154,7 @@ def peasant_status(
         last = ""
         if p.last_activity:
             try:
-                last_dt = datetime.fromisoformat(p.last_activity.replace("Z", "+00:00"))
+                last_dt = parse_iso_datetime(p.last_activity)
                 ago = int((now - last_dt).total_seconds() / 60)
                 last = f"{ago}m ago"
             except (ValueError, TypeError):
@@ -2144,11 +2162,8 @@ def peasant_status(
 
         # Check if process is still alive
         display_status = p.status
-        if p.pid and p.status == "working":
-            try:
-                os.kill(p.pid, 0)
-            except OSError:
-                display_status = "dead"
+        if p.pid and p.status == "working" and not is_process_alive(p.pid):
+            display_status = "dead"
 
         # Color status
         status_style = {
@@ -2190,7 +2205,7 @@ def peasant_logs(
     """Show stdout/stderr logs for a peasant."""
     ctx = resolve_peasant_context(ticket_id)
 
-    session_name = f"peasant-{ctx.full_ticket_id}"
+    session_name = peasant_session_name(ctx.full_ticket_id)
     peasant_logs_dir = logs_root(ctx.base, ctx.feature) / session_name
     stdout_log = peasant_logs_dir / "stdout.log"
     stderr_log = peasant_logs_dir / "stderr.log"
@@ -2237,7 +2252,7 @@ def peasant_watch(
     from kingdom.session import get_agent_state
 
     ctx = resolve_peasant_context(ticket_id)
-    session_name = f"peasant-{ctx.full_ticket_id}"
+    session_name = peasant_session_name(ctx.full_ticket_id)
 
     console = Console()
     console.print(f"[bold]Watching {session_name}[/bold]  (Ctrl+C to stop)\n")
@@ -2284,7 +2299,7 @@ def peasant_stop(
     ctx = resolve_peasant_context(ticket_id)
     base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
-    session_name = f"peasant-{full_ticket_id}"
+    session_name = peasant_session_name(full_ticket_id)
     state = get_agent_state(base, feature, session_name)
 
     if state.status != "working":
@@ -2366,17 +2381,11 @@ def peasant_sync(
     base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
     # Refuse if peasant is actively running
-    session_name = f"peasant-{full_ticket_id}"
+    session_name = peasant_session_name(full_ticket_id)
     state = get_agent_state(base, feature, session_name)
-    if state.status == "working" and state.pid:
-        try:
-            os.kill(state.pid, 0)
-            print_error(
-                f"Peasant is running on {full_ticket_id} (pid {state.pid}). Stop it first with `kd peasant stop`."
-            )
-            raise typer.Exit(code=1)
-        except OSError:
-            pass  # Process is dead, safe to sync
+    if state.status == "working" and state.pid and is_process_alive(state.pid):
+        print_error(f"Peasant is running on {full_ticket_id} (pid {state.pid}). Stop it first with `kd peasant stop`.")
+        raise typer.Exit(code=1)
 
     # Find worktree
     worktree_path = worktree_path_for(base, full_ticket_id)
@@ -2411,24 +2420,7 @@ def peasant_sync(
         typer.echo(merge_out)
 
     # Run init-worktree.sh to refresh dependencies
-    init_script = state_root(base) / "init-worktree.sh"
-    if init_script.exists() and os.access(init_script, os.X_OK):
-        typer.echo("[2/2] Running init-worktree.sh...")
-        init_result = subprocess.run(
-            [str(init_script), str(worktree_path)],
-            capture_output=True,
-            text=True,
-        )
-        if init_result.stdout.strip():
-            typer.echo(init_result.stdout.strip())
-        if init_result.returncode != 0:
-            typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
-            if init_result.stderr.strip():
-                typer.echo(init_result.stderr.strip())
-    elif init_script.exists():
-        typer.echo("[2/2] init-worktree.sh exists but is not executable, skipping.")
-    else:
-        typer.echo("[2/2] No init-worktree.sh found, skipping dependency refresh.")
+    run_init_script(base, worktree_path, step_prefix="[2/2] ")
 
     typer.echo(f"{full_ticket_id}: sync complete")
 
@@ -2444,10 +2436,10 @@ def peasant_msg(
     ctx = resolve_peasant_context(ticket_id)
     base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
-    thread_id = f"{full_ticket_id}-work"
+    thread_id = peasant_thread_id(full_ticket_id)
 
     try:
-        add_message(base, feature, thread_id, from_="king", to=f"peasant-{full_ticket_id}", body=message)
+        add_message(base, feature, thread_id, from_="king", to=peasant_session_name(full_ticket_id), body=message)
     except FileNotFoundError:
         print_error(f"No work thread found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1) from None
@@ -2457,15 +2449,9 @@ def peasant_msg(
     # Warn if peasant is not running
     from kingdom.session import get_agent_state
 
-    session_name = f"peasant-{full_ticket_id}"
+    session_name = peasant_session_name(full_ticket_id)
     state = get_agent_state(base, feature, session_name)
-    process_alive = False
-    if state.status == "working" and state.pid:
-        try:
-            os.kill(state.pid, 0)
-            process_alive = True
-        except OSError:
-            pass
+    process_alive = state.status == "working" and state.pid and is_process_alive(state.pid)
     if not process_alive:
         typer.echo(
             f"Warning: peasant is not running (status: {state.status}). Message won't be picked up until restarted."
@@ -2483,8 +2469,8 @@ def peasant_read(
     ctx = resolve_peasant_context(ticket_id)
     base, full_ticket_id, feature = ctx.base, ctx.full_ticket_id, ctx.feature
 
-    thread_id = f"{full_ticket_id}-work"
-    session_name = f"peasant-{full_ticket_id}"
+    thread_id = peasant_thread_id(full_ticket_id)
+    session_name = peasant_session_name(full_ticket_id)
 
     try:
         messages = list_messages(base, feature, thread_id)
@@ -2519,8 +2505,8 @@ def peasant_review(
     base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
     full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
 
-    session_name = f"peasant-{full_ticket_id}"
-    thread_id = f"{full_ticket_id}-work"
+    session_name = peasant_session_name(full_ticket_id)
+    thread_id = peasant_thread_id(full_ticket_id)
     branch_name = f"ticket/{full_ticket_id}"
 
     console = Console()
@@ -2602,7 +2588,7 @@ def peasant_accept(
     base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
     full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
 
-    session_name = f"peasant-{full_ticket_id}"
+    session_name = peasant_session_name(full_ticket_id)
     branch_name = f"ticket/{full_ticket_id}"
 
     # Gate: ticket must be in_review
@@ -2683,8 +2669,8 @@ def peasant_reject(
     base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
     full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
 
-    session_name = f"peasant-{full_ticket_id}"
-    thread_id = f"{full_ticket_id}-work"
+    session_name = peasant_session_name(full_ticket_id)
+    thread_id = peasant_thread_id(full_ticket_id)
 
     # Gate: ticket must be in_review
     if ticket.status != "in_review":
@@ -2698,13 +2684,9 @@ def peasant_reject(
         raise typer.Exit(code=1)
 
     # Gate: old process must be dead before relaunching
-    if not no_resume and state.pid:
-        try:
-            os.kill(state.pid, 0)
-            print_error(f"Peasant process (pid {state.pid}) is still alive. Stop it first or use --no-resume.")
-            raise typer.Exit(code=1)
-        except OSError:
-            pass  # Process is dead, safe to relaunch
+    if not no_resume and state.pid and is_process_alive(state.pid):
+        print_error(f"Peasant process (pid {state.pid}) is still alive. Stop it first or use --no-resume.")
+        raise typer.Exit(code=1)
 
     try:
         add_message(base, feature, thread_id, from_="king", to=session_name, body=feedback)
@@ -2739,16 +2721,17 @@ def peasant_reject(
         for active in list_active_agents(base, feature):
             if active.name == session_name:
                 continue
-            if active.status == "working" and active.pid and active.name.startswith("peasant-"):
-                try:
-                    os.kill(active.pid, 0)
-                    print_error(
-                        f"Peasant {active.name} (pid {active.pid}) is already working on this checkout. "
-                        "Stop it first or use --no-resume."
-                    )
-                    raise typer.Exit(code=1)
-                except OSError:
-                    pass
+            if (
+                active.status == "working"
+                and active.pid
+                and active.name.startswith("peasant-")
+                and is_process_alive(active.pid)
+            ):
+                print_error(
+                    f"Peasant {active.name} (pid {active.pid}) is already working on this checkout. "
+                    "Stop it first or use --no-resume."
+                )
+                raise typer.Exit(code=1)
         worktree_path = base
     else:
         # Worktree mode: use the ticket worktree
@@ -3164,28 +3147,14 @@ def ticket_create(
     resolved_deps: list[str] = []
     if dep:
         for dep_id in dep:
-            try:
-                dep_result = find_ticket(base, dep_id)
-            except AmbiguousTicketMatch as e:
-                print_error(f"{e}")
-                raise typer.Exit(code=1) from None
-            if dep_result is None:
-                print_error(f"Dependency ticket not found: {dep_id}")
-                raise typer.Exit(code=1)
-            resolved_deps.append(dep_result[0].id)
+            dep_ticket, _ = resolve_ticket_or_exit(base, dep_id, not_found_label="Dependency ticket not found")
+            resolved_deps.append(dep_ticket.id)
 
     # Resolve parent
     resolved_parent = None
     if parent:
-        try:
-            parent_result = find_ticket(base, parent)
-        except AmbiguousTicketMatch as e:
-            print_error(f"{e}")
-            raise typer.Exit(code=1) from None
-        if parent_result is None:
-            print_error(f"Parent ticket not found: {parent}")
-            raise typer.Exit(code=1)
-        resolved_parent = parent_result[0].id
+        parent_ticket, _ = resolve_ticket_or_exit(base, parent, not_found_label="Parent ticket not found")
+        resolved_parent = parent_ticket.id
 
     # Parse tags
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
@@ -3426,28 +3395,14 @@ def ticket_list(
                 result.append(t)
         return result
 
-    def ticket_to_json(t: Ticket, location: str | None = None) -> dict:
-        """Serialize a ticket to its full JSON schema."""
-        data: dict = {
-            "id": t.id,
-            "status": t.status,
-            "priority": t.priority,
-            "type": t.type,
-            "title": t.title,
-            "assignee": t.assignee,
-            "deps": t.deps,
-            "links": t.links,
-            "tags": t.tags,
-            "parent": t.parent,
-            "created": t.created.isoformat(),
-        }
-        if location is not None:
-            data["location"] = location
-        return data
-
     def output_tickets_json(tickets: list[Ticket], location_map: dict[str, str] | None = None) -> None:
         """Output tickets as JSON, optionally piping through jq."""
-        data = [ticket_to_json(t, location_map.get(t.id) if location_map else None) for t in tickets]
+        data = []
+        for t in tickets:
+            d = ticket_to_json(t)
+            if location_map and t.id in location_map:
+                d["location"] = location_map[t.id]
+            data.append(d)
         if jq_filter:
             import shutil as sh
 
@@ -3566,6 +3521,31 @@ def resolve_dep_status(base: Path, dep_id: str) -> str:
         return "unknown"
     dep_ticket, _ = result
     return dep_ticket.status
+
+
+def ticket_to_json(t: Ticket, *, detailed: bool = False, base: Path | None = None, path: Path | None = None) -> dict:
+    """Serialize a ticket to a JSON-friendly dict.
+
+    With ``detailed=True``, includes body, path, and enriched deps ``[{id, status}]``.
+    """
+    data: dict = {
+        "id": t.id,
+        "status": t.status,
+        "priority": t.priority,
+        "type": t.type,
+        "title": t.title,
+        "assignee": t.assignee,
+        "deps": ([{"id": d, "status": resolve_dep_status(base, d)} for d in t.deps] if detailed and base else t.deps),
+        "links": t.links,
+        "tags": t.tags,
+        "parent": t.parent,
+        "created": t.created.isoformat(),
+    }
+    if detailed:
+        data["body"] = t.body
+        if path is not None:
+            data["path"] = str(path)
+    return data
 
 
 STATUS_COLORS = {"open": "yellow", "in_progress": "cyan", "in_review": "magenta", "closed": "green"}
@@ -3707,15 +3687,7 @@ def ticket_show(
             raise typer.Exit(code=0)
     elif ticket_ids:
         for tid in ticket_ids:
-            try:
-                result = find_ticket(base, tid)
-            except AmbiguousTicketMatch as e:
-                print_error(f"{e}")
-                raise typer.Exit(code=1) from None
-            if result is None:
-                print_error(f"Ticket not found: {tid}")
-                raise typer.Exit(code=1)
-            pairs.append(result)
+            pairs.append(resolve_ticket_or_exit(base, tid))
     else:
         # No args: find ticket assigned to "hand"
         try:
@@ -3738,20 +3710,7 @@ def ticket_show(
     # Render
     if output_json:
         results_json = [
-            {
-                "id": ticket.id,
-                "status": ticket.status,
-                "priority": ticket.priority,
-                "type": ticket.type,
-                "title": ticket.title,
-                "body": ticket.body,
-                "deps": [{"id": d, "status": resolve_dep_status(base, d)} for d in ticket.deps],
-                "links": ticket.links,
-                "created": ticket.created.isoformat(),
-                "assignee": ticket.assignee,
-                "path": str(ticket_path),
-            }
-            for ticket, ticket_path in pairs
+            ticket_to_json(ticket, detailed=True, base=base, path=ticket_path) for ticket, ticket_path in pairs
         ]
         typer.echo(json.dumps(results_json if len(results_json) > 1 else results_json[0], indent=2))
     else:
@@ -3767,17 +3726,7 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
     """Helper to update a ticket's status."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     old_status = ticket.status
     ticket.status = new_status
     write_ticket(ticket, ticket_path)
@@ -3840,27 +3789,14 @@ def ticket_current(
     ticket_path = tickets_dir / f"{ticket.id}.md"
 
     if output_json:
-        result_json = {
-            "id": ticket.id,
-            "status": ticket.status,
-            "priority": ticket.priority,
-            "type": ticket.type,
-            "title": ticket.title,
-            "body": ticket.body,
-            "deps": [{"id": d, "status": resolve_dep_status(base, d)} for d in ticket.deps],
-            "links": ticket.links,
-            "created": ticket.created.isoformat(),
-            "assignee": ticket.assignee,
-            "path": str(ticket_path),
-        }
+        result_json = ticket_to_json(ticket, detailed=True, base=base, path=ticket_path)
         typer.echo(json.dumps(result_json, indent=2))
     else:
         console = Console()
         console.print(f"[dim]{ticket_path.relative_to(base)}[/dim]")
         console.print(Rule(style="dim"))
 
-        status_colors = {"open": "yellow", "in_progress": "cyan", "in_review": "magenta", "closed": "green"}
-        status_color = status_colors.get(ticket.status, "white")
+        status_color = STATUS_COLORS.get(ticket.status, "white")
         console.print(
             f"[bold]{ticket.id}[/bold]  "
             f"[{status_color}]{ticket.status}[/{status_color}]  "
@@ -3871,7 +3807,7 @@ def ticket_current(
             dep_parts = []
             for dep_id in ticket.deps:
                 dep_status = resolve_dep_status(base, dep_id)
-                dep_color = status_colors.get(dep_status, "white")
+                dep_color = STATUS_COLORS.get(dep_status, "white")
                 dep_parts.append(f"{dep_id} [{dep_color}]{dep_status}[/{dep_color}]")
             console.print(f"[dim]deps:[/dim] {', '.join(dep_parts)}")
         if ticket.links:
@@ -3898,28 +3834,11 @@ def ticket_close(
     """Set ticket status to closed."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
 
     if duplicate_of:
         # Validate target exists and is not self-referencing
-        try:
-            dup_result = find_ticket(base, duplicate_of)
-        except AmbiguousTicketMatch as e:
-            print_error(f"Duplicate target: {e}")
-            raise typer.Exit(code=1) from None
-        if dup_result is None:
-            print_error(f"Duplicate target not found: {duplicate_of}")
-            raise typer.Exit(code=1)
-        dup_ticket, _ = dup_result
+        dup_ticket, _ = resolve_ticket_or_exit(base, duplicate_of, not_found_label="Duplicate target not found")
         if dup_ticket.id == ticket.id:
             print_error("A ticket cannot be a duplicate of itself")
             raise typer.Exit(code=1)
@@ -3967,17 +3886,7 @@ def ticket_delete(
 ) -> None:
     """Remove a ticket file from disk."""
     base = require_project_root()
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
 
     # Guard: refuse to delete if a peasant is actively working on this ticket
     branch_dir = ticket_path.parent.parent  # .kd/branches/<branch> or .kd/backlog
@@ -3985,7 +3894,7 @@ def ticket_delete(
         from kingdom.session import get_agent_state
 
         branch_name = branch_dir.name
-        session_name = f"peasant-{ticket.id}"
+        session_name = peasant_session_name(ticket.id)
         state = get_agent_state(base, branch_name, session_name)
         if state.status in ("working", "needs_king_review"):
             print_error(
@@ -4013,22 +3922,8 @@ def deps_add(
     base = require_project_root()
 
     # Find both tickets
-    try:
-        result = find_ticket(base, ticket_id)
-        dep_result = find_ticket(base, depends_on)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-    if dep_result is None:
-        print_error(f"Dependency ticket not found: {depends_on}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
-    dep_ticket, _ = dep_result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    dep_ticket, _ = resolve_ticket_or_exit(base, depends_on, not_found_label="Dependency ticket not found")
 
     # Add dependency if not already present
     if dep_ticket.id not in ticket.deps:
@@ -4047,17 +3942,7 @@ def deps_remove(
     """Remove a dependency from a ticket."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
 
     # Resolve the dependency ID via find_ticket (handles partial IDs properly)
     try:
@@ -4092,20 +3977,10 @@ def deps_tree(
     """Display the dependency tree rooted at a ticket."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
+    root_ticket, _ = resolve_ticket_or_exit(base, ticket_id)
 
     all_tickets = collect_all_tickets(base)
     ticket_map = {t.id: t for t in all_tickets}
-
-    root_ticket = result[0]
     seen: set[str] = set()
 
     def print_tree(tid: str, prefix: str = "", last: bool = True, ancestors: frozenset[str] = frozenset()) -> None:
@@ -4196,14 +4071,7 @@ def ticket_link(
     # Resolve all tickets first, deduplicating by resolved ID
     seen_ids: dict[str, tuple[Ticket, Path]] = {}
     for tid in ticket_ids:
-        try:
-            result = find_ticket(base, tid)
-        except AmbiguousTicketMatch as e:
-            print_error(f"{e}")
-            raise typer.Exit(code=1) from None
-        if result is None:
-            print_error(f"Ticket not found: {tid}")
-            raise typer.Exit(code=1)
+        result = resolve_ticket_or_exit(base, tid)
         seen_ids[result[0].id] = result
 
     resolved = list(seen_ids.values())
@@ -4234,26 +4102,8 @@ def ticket_unlink(
     """Remove a symmetric link between two tickets."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    try:
-        target_result = find_ticket(base, target_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-    if target_result is None:
-        print_error(f"Ticket not found: {target_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
-    target, target_path = target_result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    target, target_path = resolve_ticket_or_exit(base, target_id)
 
     removed = False
     if target.id in ticket.links:
@@ -4279,17 +4129,7 @@ def ticket_assign(
     """Set the assignee field on a ticket."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     ticket.assignee = agent
     write_ticket(ticket, ticket_path)
     typer.echo(f"{ticket.id}: assigned to {agent}")
@@ -4302,17 +4142,7 @@ def ticket_unassign(
     """Clear the assignee field on a ticket."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     ticket.assignee = None
     write_ticket(ticket, ticket_path)
     typer.echo(f"{ticket.id}: unassigned")
@@ -4365,17 +4195,7 @@ def ticket_move(
     # Pass 1: validate all tickets
     validated: list[tuple[Ticket, Path]] = []
     for tid in ticket_ids:
-        try:
-            result = find_ticket(base, tid)
-        except AmbiguousTicketMatch as e:
-            print_error(f"{e}")
-            raise typer.Exit(code=1) from None
-
-        if result is None:
-            print_error(f"Ticket not found: {tid}")
-            raise typer.Exit(code=1)
-
-        ticket, ticket_path = result
+        ticket, ticket_path = resolve_ticket_or_exit(base, tid)
         if ticket_path.parent.resolve() == dest_dir.resolve():
             typer.echo(f"Ticket {ticket.id} is already in {dest_label}")
             continue
@@ -4442,17 +4262,7 @@ def ticket_add_note(
     """Append a timestamped note to the ticket body."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
 
     if text is None:
         text = sys.stdin.read().strip()
@@ -4483,17 +4293,7 @@ def ticket_log(
 
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    ticket, ticket_path = result
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     entry = append_worklog_entry(ticket_path, message)
     typer.echo(f"{ticket.id}: {entry}")
 
@@ -4505,19 +4305,7 @@ def ticket_edit(
     """Open a ticket file in the default editor."""
     base = require_project_root()
 
-    try:
-        result = find_ticket(base, ticket_id)
-    except AmbiguousTicketMatch as e:
-        print_error(f"{e}")
-        raise typer.Exit(code=1) from None
-
-    if result is None:
-        print_error(f"Ticket not found: {ticket_id}")
-        raise typer.Exit(code=1)
-
-    import shlex
-
-    _, ticket_path = result
+    _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     editor = os.environ.get("EDITOR", "vim")
     subprocess.run([*shlex.split(editor), str(ticket_path)])
 

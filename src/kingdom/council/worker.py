@@ -19,8 +19,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from kingdom.council.council import Council
-from kingdom.state import logs_root
+from kingdom.council import create_council
 from kingdom.thread import add_message
 
 
@@ -35,15 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--writable", action="store_true", default=False)
     args = parser.parse_args(argv)
 
-    logs_dir = logs_root(args.base, args.feature)
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    c = Council.create(logs_dir=logs_dir, base=args.base)
-    if args.writable:
-        for member in c.members:
-            member.writable = True
-    c.timeout = args.timeout
-    c.load_sessions(args.base, args.feature)
+    c = create_council(args.base, args.feature, writable=args.writable, timeout=args.timeout)
 
     if args.to_member:
         from kingdom.thread import thread_dir

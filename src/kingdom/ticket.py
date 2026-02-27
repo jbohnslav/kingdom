@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kingdom.parsing import parse_frontmatter, serialize_yaml_value
+from kingdom.parsing import parse_frontmatter, parse_iso_datetime, serialize_frontmatter
 
 STATUSES = {"open", "in_progress", "in_review", "closed"}
 
@@ -108,18 +108,14 @@ def parse_ticket(content: str) -> Ticket:
 
     created_str = frontmatter_dict.get("created")
     if created_str and isinstance(created_str, str):
-        if created_str.endswith("Z"):
-            created_str = created_str[:-1] + "+00:00"
-        created = datetime.fromisoformat(created_str)
+        created = parse_iso_datetime(created_str)
     else:
         created = datetime.now(UTC)
 
     closed_at_str = frontmatter_dict.get("closed_at")
     closed_at: datetime | None = None
     if closed_at_str and isinstance(closed_at_str, str):
-        if closed_at_str.endswith("Z"):
-            closed_at_str = closed_at_str[:-1] + "+00:00"
-        closed_at = datetime.fromisoformat(closed_at_str)
+        closed_at = parse_iso_datetime(closed_at_str)
 
     deps = coerce_to_str_list(frontmatter_dict.get("deps", []))
     links = coerce_to_str_list(frontmatter_dict.get("links", []))
@@ -145,36 +141,28 @@ def parse_ticket(content: str) -> Ticket:
 
 
 def serialize_ticket(ticket: Ticket) -> str:
-    lines = ["---"]
-
-    lines.append(f'id: "{ticket.id}"')
-    lines.append(f"status: {ticket.status}")
-    lines.append(f"deps: {serialize_yaml_value(ticket.deps)}")
-    lines.append(f"links: {serialize_yaml_value(ticket.links)}")
-
     created_str = ticket.created.strftime("%Y-%m-%dT%H:%M:%SZ")
-    lines.append(f"created: {created_str}")
+    closed_str = ticket.closed_at.strftime("%Y-%m-%dT%H:%M:%SZ") if ticket.closed_at else None
 
-    lines.append(f"type: {ticket.type}")
-    lines.append(f"priority: {ticket.priority}")
+    fm = serialize_frontmatter(
+        [
+            ("id", f'"{ticket.id}"'),
+            ("status", ticket.status),
+            ("deps", ticket.deps),
+            ("links", ticket.links),
+            ("created", created_str),
+            ("type", ticket.type),
+            ("priority", ticket.priority),
+            ("closed_at", closed_str),
+            ("assignee", ticket.assignee),
+            ("external-ref", ticket.external_ref),
+            ("parent", ticket.parent),
+            ("tags", ticket.tags or None),
+            ("duplicate-of", ticket.duplicate_of),
+        ]
+    )
 
-    if ticket.closed_at:
-        lines.append(f"closed_at: {ticket.closed_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")
-    if ticket.assignee:
-        lines.append(f"assignee: {ticket.assignee}")
-    if ticket.external_ref:
-        lines.append(f"external-ref: {ticket.external_ref}")
-    if ticket.parent:
-        lines.append(f"parent: {ticket.parent}")
-    if ticket.tags:
-        lines.append(f"tags: {serialize_yaml_value(ticket.tags)}")
-    if ticket.duplicate_of:
-        lines.append(f"duplicate-of: {ticket.duplicate_of}")
-
-    lines.append("---")
-
-    lines.append(f"# {ticket.title}")
-    lines.append("")
+    lines = [fm, f"# {ticket.title}", ""]
     if ticket.body:
         lines.append(ticket.body)
         lines.append("")

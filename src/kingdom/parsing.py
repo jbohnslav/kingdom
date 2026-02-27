@@ -9,6 +9,14 @@ to duplicate the split + line-parse logic.
 from __future__ import annotations
 
 import re
+from datetime import datetime
+
+
+def parse_iso_datetime(s: str) -> datetime:
+    """Parse an ISO 8601 datetime string, normalizing trailing ``Z`` to ``+00:00``."""
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return datetime.fromisoformat(s)
 
 
 def parse_yaml_value(value: str) -> str | int | list[str] | None:
@@ -100,3 +108,23 @@ def parse_frontmatter(content: str) -> tuple[FrontmatterDict, str]:
         fm[key.strip()] = parse_yaml_value(value)
 
     return fm, body
+
+
+def serialize_frontmatter(fields: list[tuple[str, object]]) -> str:
+    """Serialize a list of (key, value) pairs as ``---``-delimited YAML frontmatter.
+
+    None values are omitted.  All other values are formatted via
+    :func:`serialize_yaml_value`.
+
+    Example::
+
+        serialize_frontmatter([("id", '"abc"'), ("status", "open"), ("assignee", None)])
+        # '---\\nid: "abc"\\nstatus: open\\n---'
+    """
+    lines = ["---"]
+    for key, value in fields:
+        if value is None:
+            continue
+        lines.append(f"{key}: {serialize_yaml_value(value)}")
+    lines.append("---")
+    return "\n".join(lines)
