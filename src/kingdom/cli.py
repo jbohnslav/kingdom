@@ -4185,6 +4185,15 @@ def ticket_move(
     if target.lower() == "backlog":
         dest_dir = backlog_root(base) / "tickets"
         dest_label = "backlog"
+    elif target.lower() == "branch":
+        # "branch" is a keyword meaning "current git branch"
+        try:
+            resolved = resolve_current_run(base)
+        except RuntimeError:
+            print_error("No current branch active. Use a branch name or run `kd start` first.")
+            raise typer.Exit(code=1) from None
+        dest_dir = branches_root(base) / normalize_branch_name(resolved) / "tickets"
+        dest_label = f"branch '{resolved}'"
     else:
         normalized = normalize_branch_name(target)
         dest_dir = branches_root(base) / normalized / "tickets"

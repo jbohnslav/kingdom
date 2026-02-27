@@ -756,6 +756,23 @@ class TestTicketMove:
             assert "No current branch active" in result.output
             assert "kd start" in result.output
 
+    def test_move_to_branch_resolves_current_branch(self) -> None:
+        """--to branch should resolve to the current branch, not literal 'branch'."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            backlog_dir = backlog_root(base) / "tickets"
+            create_ticket_in(backlog_dir, "kin-mv05")
+
+            result = runner.invoke(cli.app, ["tk", "move", "kin-mv05", "--to", "branch"])
+
+            assert result.exit_code == 0, result.output
+            assert "Moved" in result.output
+            assert f"branch '{BRANCH}'" in result.output
+            branch_tickets = branch_root(base, BRANCH) / "tickets" / "kin-mv05.md"
+            assert branch_tickets.exists()
+            assert not (backlog_dir / "kin-mv05.md").exists()
+
 
 class TestTicketList:
     def test_list_hides_closed_by_default(self) -> None:
