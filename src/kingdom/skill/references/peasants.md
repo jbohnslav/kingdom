@@ -46,8 +46,4 @@ kd peasant clean <id>        # remove worktree when done
 
 ## Autonomous Work
 
-For running an agent loop on a ticket without the peasant/worktree setup:
-
-```bash
-kd work <id>                 # run autonomous agent loop on a ticket
-```
+The worker agent loop is invoked internally by `kd peasant start` via `python -m kingdom.worker`.

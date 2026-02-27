@@ -926,7 +926,7 @@ class TestPeasantReview:
             assert result.exit_code == 0, result.output
             assert "Did some work" in result.output
             assert "needs_king_review" in result.output
-            assert "--accept" in result.output
+            assert "kd peasant accept" in result.output
 
     def test_review_accept_closes_ticket(self) -> None:
         with runner.isolated_filesystem():
@@ -956,7 +956,7 @@ class TestPeasantReview:
                 return result
 
             with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+                result = runner.invoke(cli.app, ["peasant", "accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "accepted" in result.output
@@ -1000,7 +1000,7 @@ class TestPeasantReview:
                 return result
 
             with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+                result = runner.invoke(cli.app, ["peasant", "accept", "kin-test"])
 
             assert result.exit_code == 1
             assert "Cannot accept" in result.output
@@ -1033,7 +1033,7 @@ class TestPeasantReview:
                 return result
 
             with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+                result = runner.invoke(cli.app, ["peasant", "accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "Hand mode" in result.output
@@ -1066,7 +1066,7 @@ class TestPeasantReview:
             )
 
             with patch("kingdom.cli.launch_work_background", return_value=77777) as mock_launch:
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "try again"])
+                result = runner.invoke(cli.app, ["peasant", "reject", "kin-test", "try again"])
 
             assert result.exit_code == 0, result.output
             assert "rejected" in result.output
@@ -1102,7 +1102,7 @@ class TestPeasantReview:
             )
 
             with patch("kingdom.cli.launch_work_background", return_value=54321) as mock_launch:
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix the edge case"])
+                result = runner.invoke(cli.app, ["peasant", "reject", "kin-test", "fix the edge case"])
 
             assert result.exit_code == 0, result.output
             assert "rejected" in result.output
@@ -1145,7 +1145,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review", pid=os.getpid(), agent_backend="claude"),
             )
 
-            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "fix it"])
+            result = runner.invoke(cli.app, ["peasant", "reject", "kin-test", "fix it"])
 
             assert result.exit_code == 1
             assert "still alive" in result.output
@@ -1169,7 +1169,7 @@ class TestPeasantReview:
             with patch("kingdom.cli.launch_work_background") as mock_launch:
                 result = runner.invoke(
                     cli.app,
-                    ["peasant", "review", "kin-test", "--reject", "try again", "--no-resume"],
+                    ["peasant", "reject", "kin-test", "try again", "--no-resume"],
                 )
 
             assert result.exit_code == 0, result.output
@@ -1190,17 +1190,6 @@ class TestPeasantReview:
             messages = list_messages(base, BRANCH, thread_id)
             assert len(messages) == 1
             assert "try again" in messages[0].body
-
-    def test_review_accept_reject_mutually_exclusive(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            create_test_ticket(base)
-
-            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept", "--reject", "nope"])
-
-            assert result.exit_code == 1
-            assert "mutually exclusive" in result.output
 
     def test_review_diff_error_shown(self) -> None:
         with runner.isolated_filesystem():
@@ -1282,7 +1271,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
-            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+            result = runner.invoke(cli.app, ["peasant", "accept", "kin-test"])
 
             assert result.exit_code == 1
             assert "in_progress" in result.output
@@ -1303,7 +1292,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="working"),
             )
 
-            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+            result = runner.invoke(cli.app, ["peasant", "accept", "kin-test"])
 
             assert result.exit_code == 1
             assert "working" in result.output
@@ -1324,7 +1313,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
-            result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--reject", "nope"])
+            result = runner.invoke(cli.app, ["peasant", "reject", "kin-test", "nope"])
 
             assert result.exit_code == 1
             assert "open" in result.output
@@ -1363,7 +1352,7 @@ class TestPeasantReview:
                 return result
 
             with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-                result = runner.invoke(cli.app, ["peasant", "review", "kin-test", "--accept"])
+                result = runner.invoke(cli.app, ["peasant", "accept", "kin-test"])
 
             assert result.exit_code == 1
             assert "Integration failed" in result.output
@@ -1417,7 +1406,7 @@ class TestPeasantReview:
             assert "in_review" in result.output
             assert "needs_king_review" in result.output
             assert "Review bounces: 1" in result.output
-            assert "--accept" in result.output
+            assert "kd peasant accept" in result.output
 
     def test_review_warns_on_no_diff(self) -> None:
         """Review should warn when peasant reports done but has no code changes."""
@@ -1789,52 +1778,3 @@ class TestProjectRootDiscovery:
         assert ctx_root.base == ctx_sub.base == tmp_path
         assert ctx_root.full_ticket_id == ctx_sub.full_ticket_id
         assert ctx_root.ticket.title == ctx_sub.ticket.title
-
-    def test_work_worktree_defaults_to_cwd(self, tmp_path: Path) -> None:
-        """kd work defaults worktree to cwd, not project root — intentional exception."""
-        setup_project(tmp_path)
-        create_test_ticket(tmp_path)
-
-        fake_cwd = tmp_path / "worktrees" / "my-worktree"
-        fake_cwd.mkdir(parents=True)
-
-        with (
-            patch("kingdom.cli.Path.cwd", return_value=fake_cwd),
-            patch("kingdom.harness.run_agent_loop", return_value="done") as mock_loop,
-            patch("kingdom.config.load_config") as mock_cfg,
-        ):
-            mock_cfg.return_value.peasant.agent = "test-agent"
-            result = runner.invoke(
-                cli.app,
-                ["work", "kin-test", "--base", str(tmp_path)],
-            )
-
-        assert result.exit_code == 0
-        assert mock_loop.call_count == 1
-        call_kwargs = mock_loop.call_args.kwargs
-        # Worktree should be cwd (fake_cwd), NOT the project root (tmp_path)
-        assert call_kwargs["worktree"] == fake_cwd
-
-    def test_work_from_subdirectory_without_base(self, tmp_path: Path) -> None:
-        """kd work from a subdirectory without --base resolves project root via parent walk."""
-        setup_project(tmp_path)
-        create_test_ticket(tmp_path)
-
-        subdir = tmp_path / "src" / "deep"
-        subdir.mkdir(parents=True)
-
-        with (
-            patch("kingdom.state.Path.cwd", return_value=subdir),
-            patch("kingdom.cli.Path.cwd", return_value=subdir),
-            patch("kingdom.harness.run_agent_loop", return_value="done") as mock_loop,
-            patch("kingdom.config.load_config") as mock_cfg,
-        ):
-            mock_cfg.return_value.peasant.agent = "test-agent"
-            result = runner.invoke(cli.app, ["work", "kin-test"])
-
-        assert result.exit_code == 0
-        call_kwargs = mock_loop.call_args.kwargs
-        # Base should be the project root (tmp_path), found via parent walk
-        assert call_kwargs["base"] == tmp_path
-        # Worktree should be cwd (subdir) — intentional exception
-        assert call_kwargs["worktree"] == subdir

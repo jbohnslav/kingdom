@@ -56,135 +56,6 @@ def test_ensure_run_layout_creates_tickets_and_learnings(tmp_path: Path) -> None
     assert paths["learnings_md"] == tmp_path / ".kd" / "runs" / "test-feature" / "learnings.md"
 
 
-def test_cli_init_creates_structure() -> None:
-    """kd init creates .kd/ directory structure."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        # Create a git repo for the test
-        subprocess.run(["git", "init", "-q"], check=True)
-
-        result = runner.invoke(cli.app, ["init"])
-
-        assert result.exit_code == 0
-        assert "Initialized" in result.output
-        assert (base / ".kd").is_dir()
-        assert (base / ".kd" / "runs").is_dir()
-        assert (base / ".kd" / "worktrees").is_dir()
-        assert (base / ".kd" / "config.json").exists()
-        assert (base / ".kd" / ".gitignore").exists()
-
-
-def test_cli_init_requires_git_repo() -> None:
-    """kd init fails when not in a git repo."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        result = runner.invoke(cli.app, ["init"])
-
-        assert result.exit_code == 1
-        assert "Not a git repository" in result.output
-
-
-def test_cli_init_no_git_flag_skips_check() -> None:
-    """kd init --no-git works without a git repo."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-
-        result = runner.invoke(cli.app, ["init", "--no-git"])
-
-        assert result.exit_code == 0
-        assert (base / ".kd").is_dir()
-
-
-def test_cli_init_no_gitignore_flag() -> None:
-    """kd init --no-gitignore skips .gitignore creation."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        subprocess.run(["git", "init", "-q"], check=True)
-
-        result = runner.invoke(cli.app, ["init", "--no-gitignore"])
-
-        assert result.exit_code == 0
-        assert (base / ".kd").is_dir()
-        assert not (base / ".kd" / ".gitignore").exists()
-
-
-def test_cli_init_idempotent() -> None:
-    """kd init can be run multiple times."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        subprocess.run(["git", "init", "-q"], check=True)
-
-        result1 = runner.invoke(cli.app, ["init"])
-        result2 = runner.invoke(cli.app, ["init"])
-
-        assert result1.exit_code == 0
-        assert result2.exit_code == 0
-
-
-def test_gitignore_content_matches_spec() -> None:
-    """The generated .gitignore matches the architecture doc."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        subprocess.run(["git", "init", "-q"], check=True)
-
-        runner.invoke(cli.app, ["init"])
-
-        gitignore = (base / ".kd" / ".gitignore").read_text()
-        assert "*.json" in gitignore
-        assert "*.jsonl" in gitignore
-        assert "**/logs/" in gitignore
-        assert "worktrees/" in gitignore
-        assert "!config.json" in gitignore
-
-
-def test_cli_init_creates_config_with_defaults() -> None:
-    """kd init creates config.json with default agent definitions."""
-    import json
-
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        subprocess.run(["git", "init", "-q"], check=True)
-
-        runner.invoke(cli.app, ["init"])
-
-        config_path = base / ".kd" / "config.json"
-        assert config_path.exists()
-        data = json.loads(config_path.read_text())
-        assert "agents" in data
-        assert "claude" in data["agents"]
-        assert "codex" in data["agents"]
-        assert data["council"]["members"] == ["claude", "codex"]
-        assert data["peasant"]["agent"] == "claude"
-
-
-def test_cli_init_does_not_overwrite_existing_config() -> None:
-    """kd init preserves existing config.json."""
-    import json
-
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        subprocess.run(["git", "init", "-q"], check=True)
-
-        # First init
-        runner.invoke(cli.app, ["init"])
-        config_path = base / ".kd" / "config.json"
-
-        # Modify config
-        custom = {"agents": {"claude": {"backend": "claude_code", "model": "opus-4-6"}}}
-        config_path.write_text(json.dumps(custom))
-
-        # Second init should not overwrite
-        runner.invoke(cli.app, ["init"])
-        data = json.loads(config_path.read_text())
-        assert data == custom
-
-
 def test_cli_start_kd_base_invalid_hard_fails(tmp_path: Path) -> None:
     """kd start with KD_BASE set to an invalid path errors instead of auto-initializing."""
     runner = CliRunner()
@@ -303,8 +174,8 @@ def test_cli_start_initializes_design_and_prints_path() -> None:
         assert f"Design: {design_path}" in result.output
 
 
-def test_cli_design_is_idempotent_after_start() -> None:
-    """Running kd design after kd start should keep existing design content."""
+def test_cli_design_prints_path_after_start() -> None:
+    """Running kd design after kd start should print the design path."""
     runner = CliRunner()
     with runner.isolated_filesystem():
         base = Path.cwd()
@@ -319,7 +190,7 @@ def test_cli_design_is_idempotent_after_start() -> None:
 
         design_result = runner.invoke(cli.app, ["design"])
         assert design_result.exit_code == 0
-        assert "Design already exists at" in design_result.output
+        assert design_result.output.strip().endswith("design.md")
         assert design_path.read_text(encoding="utf-8") == before
 
 
@@ -395,39 +266,3 @@ def test_install_skill_runtime_error_warns() -> None:
     """install_skill should warn and continue when Path.home() raises RuntimeError."""
     with patch("kingdom.cli.Path.home", side_effect=RuntimeError("no home")):
         cli.install_skill()  # should not raise
-
-
-def test_cli_init_succeeds_when_skill_dir_unwritable(tmp_path: Path) -> None:
-    """kd init should succeed even when skill target dir is unwritable."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    claude_dir = fake_home / ".claude"
-    claude_dir.mkdir()
-    claude_dir.chmod(0o444)
-    runner = CliRunner()
-
-    with runner.isolated_filesystem():
-        subprocess.run(["git", "init", "-q"], check=True)
-        with patch("kingdom.cli.Path.home", return_value=fake_home):
-            result = runner.invoke(cli.app, ["init"])
-
-    claude_dir.chmod(0o755)
-    assert result.exit_code == 0
-    assert "Initialized" in result.output
-    assert "Warning" in result.output
-
-
-def test_cli_init_installs_skill(tmp_path: Path) -> None:
-    """kd init should install the skill as part of initialization."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    runner = CliRunner()
-
-    with runner.isolated_filesystem():
-        subprocess.run(["git", "init", "-q"], check=True)
-        with patch("kingdom.cli.Path.home", return_value=fake_home):
-            result = runner.invoke(cli.app, ["init"])
-
-    assert result.exit_code == 0
-    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
-    assert (skill_dir / "SKILL.md").exists()

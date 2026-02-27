@@ -451,8 +451,8 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/unmute <member>", "re-include member in broadcast"),
     ("/writable", "toggle writable mode (allow/deny file edits)"),
     ("/writeable", "toggle writable mode (alias)"),
-    ("/quit", "quit kd chat"),
-    ("/exit", "quit kd chat"),
+    ("/quit", "quit kd council chat"),
+    ("/exit", "quit kd council chat"),
 ]
 
 

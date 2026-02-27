@@ -432,7 +432,7 @@ class TestTicketPull:
             assert result.exit_code == 0, result.output
 
             # Now check tk ready
-            result = runner.invoke(cli.app, ["tk", "ready", "--json"])
+            result = runner.invoke(cli.app, ["tk", "list", "--ready", "--json"])
             assert result.exit_code == 0, result.output
             assert "kin-rdy1" in result.output
 
@@ -791,7 +791,7 @@ class TestTicketList:
             write_ticket(open_ticket, tickets_dir / "aaaa.md")
             write_ticket(closed_ticket, tickets_dir / "bbbb.md")
 
-            result = runner.invoke(cli.app, ["tk", "list", "--include-closed"])
+            result = runner.invoke(cli.app, ["tk", "list", "--closed"])
 
             assert result.exit_code == 0
             assert "Open ticket" in result.output
@@ -1604,88 +1604,6 @@ class TestTicketShow:
             assert ".kd/" in result.output
 
 
-class TestMigrate:
-    def test_dry_run_shows_changes(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-ab12")
-
-            result = runner.invoke(cli.app, ["migrate"])
-
-            assert result.exit_code == 0, result.output
-            assert "rename:" in result.output
-            assert "rewrite:" in result.output
-            assert "Dry run complete" in result.output
-
-            # File should NOT have been renamed (dry-run)
-            assert (tickets_dir / "kin-ab12.md").exists()
-            assert not (tickets_dir / "ab12.md").exists()
-
-    def test_apply_renames_and_rewrites(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-
-            # Create ticket with a dep that references another kin- ID
-            ticket = Ticket(
-                id="kin-ab12",
-                status="open",
-                title="Test",
-                body="See kin-cd34 for details",
-                deps=["kin-cd34"],
-                created=datetime.now(UTC),
-            )
-            path = tickets_dir / "kin-ab12.md"
-            tickets_dir.mkdir(parents=True, exist_ok=True)
-            write_ticket(ticket, path)
-
-            result = runner.invoke(cli.app, ["migrate", "--apply"])
-
-            assert result.exit_code == 0, result.output
-            assert "Migrated" in result.output
-
-            # File should be renamed
-            assert not (tickets_dir / "kin-ab12.md").exists()
-            assert (tickets_dir / "ab12.md").exists()
-
-            # Content should have kin- prefix removed
-            content = (tickets_dir / "ab12.md").read_text()
-            assert "kin-ab12" not in content
-            assert 'id: "ab12"' in content
-            assert "kin-cd34" not in content
-            assert "cd34" in content
-
-    def test_apply_is_idempotent(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-ab12")
-
-            runner.invoke(cli.app, ["migrate", "--apply"])
-            result = runner.invoke(cli.app, ["migrate", "--apply"])
-
-            assert result.exit_code == 0
-            assert "0 files renamed" in result.output
-
-    def test_collision_aborts(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-ab12")
-            # Create a file that would collide
-            (tickets_dir / "ab12.md").write_text("collision")
-
-            result = runner.invoke(cli.app, ["migrate", "--apply"])
-
-            assert result.exit_code == 1
-            assert "collision" in result.output
-
-
 class TestTicketCloseUnblocked:
     def test_close_shows_newly_unblocked_ticket(self) -> None:
         """Closing a dep should print the ticket that becomes unblocked."""
@@ -1960,12 +1878,12 @@ class TestTicketDep:
                 write_ticket(t, tickets_dir / f"{tid}.md")
 
             # First dep: cf1a depends on 3642
-            result1 = runner.invoke(cli.app, ["tk", "dep", "cf1a", "3642"])
+            result1 = runner.invoke(cli.app, ["tk", "deps", "add", "cf1a", "3642"])
             assert result1.exit_code == 0, result1.output
             assert "now depends on" in result1.output
 
             # Second dep: cf1a depends on d869
-            result2 = runner.invoke(cli.app, ["tk", "dep", "cf1a", "d869"])
+            result2 = runner.invoke(cli.app, ["tk", "deps", "add", "cf1a", "d869"])
             assert result2.exit_code == 0, result2.output
             assert "now depends on" in result2.output
 
@@ -2007,7 +1925,7 @@ class TestTicketDep:
             assert "3642" in ticket_before.deps, f"Dep lost after roundtrip! deps={ticket_before.deps}"
 
             # Add second dep via CLI
-            result = runner.invoke(cli.app, ["tk", "dep", "cf1a", "d869"])
+            result = runner.invoke(cli.app, ["tk", "deps", "add", "cf1a", "d869"])
             assert result.exit_code == 0, result.output
             assert "now depends on" in result.output
 
@@ -2031,11 +1949,11 @@ class TestTicketDep:
                 write_ticket(t, tickets_dir / f"{tid}.md")
 
             # Add first dep
-            runner.invoke(cli.app, ["tk", "dep", "cf1a", "aaaa"])
+            runner.invoke(cli.app, ["tk", "deps", "add", "cf1a", "aaaa"])
             # Change status (rewrites ticket)
             runner.invoke(cli.app, ["tk", "start", "cf1a"])
             # Add second dep
-            runner.invoke(cli.app, ["tk", "dep", "cf1a", "bbbb"])
+            runner.invoke(cli.app, ["tk", "deps", "add", "cf1a", "bbbb"])
 
             found = find_ticket(base, "cf1a")
             assert found is not None
@@ -2063,8 +1981,8 @@ class TestTicketDep:
                 write_ticket(t, tickets_dir / f"{tid}.md")
 
             # Add dep twice
-            runner.invoke(cli.app, ["tk", "dep", "cf1a", "aaaa"])
-            result = runner.invoke(cli.app, ["tk", "dep", "cf1a", "aaaa"])
+            runner.invoke(cli.app, ["tk", "deps", "add", "cf1a", "aaaa"])
+            result = runner.invoke(cli.app, ["tk", "deps", "add", "cf1a", "aaaa"])
 
             assert result.exit_code == 0
             assert "already depends on" in result.output
@@ -2084,7 +2002,7 @@ class TestTicketDep:
             t = Ticket(id="cf1a", status="open", title="Target", body="", created=datetime.now(UTC))
             write_ticket(t, tickets_dir / "cf1a.md")
 
-            result = runner.invoke(cli.app, ["tk", "dep", "cf1a", "zzzz"])
+            result = runner.invoke(cli.app, ["tk", "deps", "add", "cf1a", "zzzz"])
             assert result.exit_code == 1
             assert "not found" in result.output
 
@@ -2101,7 +2019,7 @@ class TestTicketUndep:
             t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["aaaa"], created=datetime.now(UTC))
             write_ticket(t, tickets_dir / "cf1a.md")
 
-            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "aaaa"])
+            result = runner.invoke(cli.app, ["tk", "deps", "remove", "cf1a", "aaaa"])
 
             assert result.exit_code == 0, result.output
             assert "removed dependency" in result.output
@@ -2119,7 +2037,7 @@ class TestTicketUndep:
             t = Ticket(id="cf1a", status="open", title="Target", body="", created=datetime.now(UTC))
             write_ticket(t, tickets_dir / "cf1a.md")
 
-            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "zzzz"])
+            result = runner.invoke(cli.app, ["tk", "deps", "remove", "cf1a", "zzzz"])
 
             assert result.exit_code == 1
             assert "does not depend on" in result.output
@@ -2137,7 +2055,7 @@ class TestTicketUndep:
             t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["abcd1234"], created=datetime.now(UTC))
             write_ticket(t, tickets_dir / "cf1a.md")
 
-            result = runner.invoke(cli.app, ["tk", "undep", "cf1a", "abcd"])
+            result = runner.invoke(cli.app, ["tk", "deps", "remove", "cf1a", "abcd"])
 
             assert result.exit_code == 0, result.output
             assert "removed dependency" in result.output
@@ -2165,7 +2083,7 @@ class TestTicketUndep:
             write_ticket(target, tickets_dir / "cc03.md")
 
             # "ab" is ambiguous — should error, not silently remove both
-            result = runner.invoke(cli.app, ["tk", "undep", "cc03", "ab"])
+            result = runner.invoke(cli.app, ["tk", "deps", "remove", "cc03", "ab"])
             # With proper resolution, this should fail as ambiguous
             assert result.exit_code == 1, f"Expected failure for ambiguous 'ab' but got: {result.output}"
 
@@ -2185,9 +2103,9 @@ class TestTicketUndep:
                 t = Ticket(id=tid, status="open", title=f"Ticket {tid}", body="", created=datetime.now(UTC))
                 write_ticket(t, tickets_dir / f"{tid}.md")
 
-            runner.invoke(cli.app, ["tk", "dep", "aaaa", "bbbb"])
-            runner.invoke(cli.app, ["tk", "dep", "aaaa", "cccc"])
-            runner.invoke(cli.app, ["tk", "undep", "aaaa", "bbbb"])
+            runner.invoke(cli.app, ["tk", "deps", "add", "aaaa", "bbbb"])
+            runner.invoke(cli.app, ["tk", "deps", "add", "aaaa", "cccc"])
+            runner.invoke(cli.app, ["tk", "deps", "remove", "aaaa", "bbbb"])
 
             found = find_ticket(base, "aaaa")
             assert found is not None
@@ -2231,16 +2149,15 @@ class TestNoResultsMessages:
             assert "No tickets found" in result.output
             assert "kd tk create" in result.output
 
-    def test_ready_empty_shows_guidance(self) -> None:
+    def test_ready_empty_shows_no_tickets(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(cli.app, ["tk", "ready"])
+            result = runner.invoke(cli.app, ["tk", "list", "--ready"])
 
             assert result.exit_code == 0
-            assert "No ready tickets" in result.output
-            assert "kd tk create" in result.output
+            assert "No tickets found" in result.output
 
     def test_ready_excludes_in_review(self) -> None:
         with runner.isolated_filesystem():
@@ -2255,14 +2172,13 @@ class TestNoResultsMessages:
             write_ticket(open_ticket, tickets_dir / "aaaa.md")
             write_ticket(review_ticket, tickets_dir / "bbbb.md")
 
-            result = runner.invoke(cli.app, ["tk", "ready"])
+            result = runner.invoke(cli.app, ["tk", "list", "--ready"])
 
             assert result.exit_code == 0
-            assert "Branch:" in result.output
             assert "aaaa" in result.output
             assert "bbbb" not in result.output
 
-    def test_ready_separates_branch_and_backlog(self) -> None:
+    def test_ready_filters_with_all(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -2275,33 +2191,30 @@ class TestNoResultsMessages:
             write_ticket(branch_tk, tickets_dir / "aaaa.md")
             write_ticket(backlog_tk, backlog_dir / "bbbb.md")
 
-            result = runner.invoke(cli.app, ["tk", "ready"])
+            result = runner.invoke(cli.app, ["tk", "list", "--ready", "--all"])
 
             assert result.exit_code == 0
-            lines = result.output.strip().split("\n")
-            assert lines[0] == "Branch:"
-            assert "aaaa" in lines[1]
-            # blank line separator
-            assert lines[2] == ""
-            assert lines[3] == "Backlog:"
-            assert "bbbb" in lines[4]
+            assert "aaaa" in result.output
+            assert "bbbb" in result.output
 
-    def test_ready_backlog_only(self) -> None:
+    def test_ready_excludes_blocked_tickets(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
-            backlog_dir = backlog_root(base) / "tickets"
-            backlog_dir.mkdir(parents=True, exist_ok=True)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
 
-            backlog_tk = Ticket(id="cccc", status="open", title="Backlog only", body="", created=datetime.now(UTC))
-            write_ticket(backlog_tk, backlog_dir / "cccc.md")
+            blocker = Ticket(id="aaaa", status="open", title="Blocker", body="", created=datetime.now(UTC))
+            blocked = Ticket(
+                id="bbbb", status="open", title="Blocked", body="", deps=["aaaa"], created=datetime.now(UTC)
+            )
+            write_ticket(blocker, tickets_dir / "aaaa.md")
+            write_ticket(blocked, tickets_dir / "bbbb.md")
 
-            result = runner.invoke(cli.app, ["tk", "ready"])
+            result = runner.invoke(cli.app, ["tk", "list", "--ready"])
 
             assert result.exit_code == 0
-            assert "Branch:" not in result.output
-            assert "Backlog:" in result.output
-            assert "cccc" in result.output
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
 
     def test_show_all_empty_branch_shows_guidance(self) -> None:
         with runner.isolated_filesystem():
@@ -2571,7 +2484,7 @@ class TestTicketDepTree:
                 Ticket(id="bbbb", status="open", title="Dep", body="", created=datetime.now(UTC)),
                 tickets_dir / "bbbb.md",
             )
-            result = runner.invoke(cli.app, ["tk", "dep-tree", "aaaa"])
+            result = runner.invoke(cli.app, ["tk", "deps", "tree", "aaaa"])
             assert result.exit_code == 0
             assert "Root" in result.output
             assert "bbbb" in result.output
@@ -2596,7 +2509,7 @@ class TestTicketDepTree:
                 Ticket(id="cccc", status="open", title="C", body="", created=datetime.now(UTC)),
                 tickets_dir / "cccc.md",
             )
-            result = runner.invoke(cli.app, ["tk", "dep-tree", "aaaa"])
+            result = runner.invoke(cli.app, ["tk", "deps", "tree", "aaaa"])
             assert result.exit_code == 0
             assert "see above" in result.output
 
@@ -2615,7 +2528,7 @@ class TestTicketDepTree:
                 Ticket(id="bbbb", status="open", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
                 tickets_dir / "bbbb.md",
             )
-            result = runner.invoke(cli.app, ["tk", "dep-tree", "--full", "aaaa"])
+            result = runner.invoke(cli.app, ["tk", "deps", "tree", "--full", "aaaa"])
             assert result.exit_code == 0
             assert "cycle" in result.output
 
@@ -2636,7 +2549,7 @@ class TestTicketDepCycle:
                 Ticket(id="bbbb", status="open", title="B", body="", created=datetime.now(UTC)),
                 tickets_dir / "bbbb.md",
             )
-            result = runner.invoke(cli.app, ["tk", "dep-cycle"])
+            result = runner.invoke(cli.app, ["tk", "deps", "cycle"])
             assert result.exit_code == 0
             assert "No dependency cycles" in result.output
 
@@ -2653,7 +2566,7 @@ class TestTicketDepCycle:
                 Ticket(id="bbbb", status="open", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
                 tickets_dir / "bbbb.md",
             )
-            result = runner.invoke(cli.app, ["tk", "dep-cycle"])
+            result = runner.invoke(cli.app, ["tk", "deps", "cycle"])
             assert result.exit_code == 1
             assert "cycle" in result.output.lower()
 
@@ -2672,13 +2585,13 @@ class TestTicketDepCycle:
                 Ticket(id="bbbb", status="closed", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
                 tickets_dir / "bbbb.md",
             )
-            result = runner.invoke(cli.app, ["tk", "dep-cycle"])
+            result = runner.invoke(cli.app, ["tk", "deps", "cycle"])
             assert result.exit_code == 0
             assert "No dependency cycles" in result.output
 
 
 class TestTicketBlocked:
-    """Tests for kd tk blocked."""
+    """Tests for kd tk list --blocked."""
 
     def test_lists_blocked_tickets(self) -> None:
         with runner.isolated_filesystem():
@@ -2693,38 +2606,11 @@ class TestTicketBlocked:
                 Ticket(id="bbbb", status="open", title="Blocked", body="", deps=["aaaa"], created=datetime.now(UTC)),
                 tickets_dir / "bbbb.md",
             )
-            result = runner.invoke(cli.app, ["tk", "blocked"])
+            result = runner.invoke(cli.app, ["tk", "list", "--blocked"])
             assert result.exit_code == 0
             assert "bbbb" in result.output
-            assert "blocked by" in result.output
-
-    def test_blocked_by_line_aligns_with_ticket_line(self) -> None:
-        """The 'blocked by:' line should be indented to align under the ticket info."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            write_ticket(
-                Ticket(id="aa", status="open", title="Blocker", body="", created=datetime.now(UTC)),
-                tickets_dir / "aa.md",
-            )
-            write_ticket(
-                Ticket(id="bb", status="open", title="Blocked", body="", deps=["aa"], created=datetime.now(UTC)),
-                tickets_dir / "bb.md",
-            )
-            result = runner.invoke(cli.app, ["tk", "blocked"])
-            assert result.exit_code == 0
-            lines = result.output.split("\n")
-            # Find the ticket line and blocked-by line
-            ticket_line = next(line for line in lines if "bb" in line and "Blocked" in line)
-            blocked_line = next(line for line in lines if "blocked by:" in line)
-            # The "blocked by:" should start at the same column as "[P..." on the ticket line
-            bracket_col = ticket_line.index("[P")
-            blocked_indent = len(blocked_line) - len(blocked_line.lstrip())
-            assert blocked_indent == bracket_col, (
-                f"'blocked by:' starts at col {blocked_indent}, but '[P...' starts at col {bracket_col}\n"
-                f"  ticket:  {ticket_line!r}\n  blocked: {blocked_line!r}"
-            )
+            # aaaa shows in deps column but should appear only once (as dep, not as its own row)
+            assert "Blocker" not in result.output  # blocker ticket title should not appear
 
     def test_no_blocked_when_deps_closed(self) -> None:
         with runner.isolated_filesystem():
@@ -2739,13 +2625,13 @@ class TestTicketBlocked:
                 Ticket(id="bbbb", status="open", title="Ready", body="", deps=["aaaa"], created=datetime.now(UTC)),
                 tickets_dir / "bbbb.md",
             )
-            result = runner.invoke(cli.app, ["tk", "blocked"])
+            result = runner.invoke(cli.app, ["tk", "list", "--blocked"])
             assert result.exit_code == 0
-            assert "No blocked tickets" in result.output
+            assert "No tickets found" in result.output
 
 
 class TestTicketClosed:
-    """Tests for kd tk closed."""
+    """Tests for kd tk list --closed and kd tk close."""
 
     def test_lists_closed_tickets(self) -> None:
         with runner.isolated_filesystem():
@@ -2756,23 +2642,27 @@ class TestTicketClosed:
                 Ticket(id="aaaa", status="closed", title="Done ticket", body="", created=datetime.now(UTC)),
                 tickets_dir / "aaaa.md",
             )
-            result = runner.invoke(cli.app, ["tk", "closed"])
+            result = runner.invoke(cli.app, ["tk", "list", "--closed"])
             assert result.exit_code == 0
             assert "aaaa" in result.output
 
-    def test_respects_limit(self) -> None:
+    def test_closed_flag_includes_closed_with_open(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
             tickets_dir = branch_root(base, BRANCH) / "tickets"
-            for tid in ["aaaa", "bbbb", "cccc"]:
-                write_ticket(
-                    Ticket(id=tid, status="closed", title=f"Done {tid}", body="", created=datetime.now(UTC)),
-                    tickets_dir / f"{tid}.md",
-                )
-            result = runner.invoke(cli.app, ["tk", "closed", "--limit", "1"])
+            write_ticket(
+                Ticket(id="aaaa", status="closed", title="Done", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Open", body="", created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "list", "--closed"])
             assert result.exit_code == 0
-            assert "1 closed" in result.output
+            assert "aaaa" in result.output
+            assert "bbbb" in result.output
 
     def test_close_sets_closed_at(self) -> None:
         """kd tk close should set the closed_at timestamp."""
@@ -2796,102 +2686,24 @@ class TestTicketClosed:
             # Serialization truncates to seconds, so allow 1s tolerance
             assert before - timedelta(seconds=1) <= ticket.closed_at <= after + timedelta(seconds=1)
 
-    def test_sorts_by_closed_at(self) -> None:
-        """kd tk closed should sort by closed_at (newest first), not created date."""
+    def test_status_closed_filter(self) -> None:
+        """kd tk list --status closed shows only closed tickets."""
         with runner.isolated_filesystem():
-            from datetime import timedelta
-
             base = Path.cwd()
             setup_project(base)
             tickets_dir = branch_root(base, BRANCH) / "tickets"
-
-            now = datetime.now(UTC)
-            # Ticket "old" was created first but closed last
             write_ticket(
-                Ticket(
-                    id="old1",
-                    status="closed",
-                    title="Old created, closed last",
-                    body="",
-                    created=now - timedelta(days=10),
-                    closed_at=now,
-                ),
-                tickets_dir / "old1.md",
+                Ticket(id="aaaa", status="closed", title="Done", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
             )
-            # Ticket "new" was created last but closed first
             write_ticket(
-                Ticket(
-                    id="new1",
-                    status="closed",
-                    title="New created, closed first",
-                    body="",
-                    created=now,
-                    closed_at=now - timedelta(days=5),
-                ),
-                tickets_dir / "new1.md",
+                Ticket(id="bbbb", status="open", title="Open", body="", created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
             )
-
-            result = runner.invoke(cli.app, ["tk", "closed"])
+            result = runner.invoke(cli.app, ["tk", "list", "--status", "closed"])
             assert result.exit_code == 0
-            # old1 (closed_at=now) should appear before new1 (closed_at=5 days ago)
-            old_pos = result.output.index("old1")
-            new_pos = result.output.index("new1")
-            assert old_pos < new_pos, "Expected old1 (closed later) to appear first"
-
-    def test_includes_archived_backlog_tickets(self) -> None:
-        """kd tk closed should show tickets that were closed from backlog (archived)."""
-        with runner.isolated_filesystem():
-            from kingdom.state import archive_root
-
-            base = Path.cwd()
-            setup_project(base)
-
-            # Place a closed ticket in the archive (as ticket_close does for backlog tickets)
-            archive_tickets = archive_root(base) / "backlog" / "tickets"
-            archive_tickets.mkdir(parents=True)
-            write_ticket(
-                Ticket(
-                    id="arch1", status="closed", title="Archived backlog ticket", body="", created=datetime.now(UTC)
-                ),
-                archive_tickets / "arch1.md",
-            )
-
-            result = runner.invoke(cli.app, ["tk", "closed"])
-            assert result.exit_code == 0
-            assert "arch1" in result.output
-            assert "Archived backlog ticket" in result.output
-
-    def test_includes_done_branch_tickets(self) -> None:
-        """kd tk closed should include tickets from done branches."""
-        import json
-
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-
-            # Create a "done" branch with a closed ticket
-            done_branch = "feature/done-branch"
-            ensure_branch_layout(base, done_branch)
-            done_branch_root = branch_root(base, done_branch)
-            state_path = done_branch_root / "state.json"
-            state_path.write_text(json.dumps({"status": "done"}))
-
-            tickets_dir = done_branch_root / "tickets"
-            write_ticket(
-                Ticket(
-                    id="done1",
-                    status="closed",
-                    title="Ticket from done branch",
-                    body="",
-                    created=datetime.now(UTC),
-                ),
-                tickets_dir / "done1.md",
-            )
-
-            result = runner.invoke(cli.app, ["tk", "closed"])
-            assert result.exit_code == 0
-            assert "done1" in result.output
-            assert "Ticket from done branch" in result.output
+            assert "aaaa" in result.output
+            assert "bbbb" not in result.output
 
 
 class TestTicketAddNote:
@@ -2915,8 +2727,8 @@ class TestTicketAddNote:
             assert "**Note (" in content
 
 
-class TestTicketQuery:
-    """Tests for kd tk query."""
+class TestTicketListJson:
+    """Tests for kd tk list --json."""
 
     def test_outputs_json(self) -> None:
         import json
@@ -2929,13 +2741,18 @@ class TestTicketQuery:
                 Ticket(id="aaaa", status="open", title="Test", body="", created=datetime.now(UTC)),
                 tickets_dir / "aaaa.md",
             )
-            result = runner.invoke(cli.app, ["tk", "query"])
+            result = runner.invoke(cli.app, ["tk", "list", "--json"])
             assert result.exit_code == 0
             data = json.loads(result.output)
             assert len(data) == 1
             assert data[0]["id"] == "aaaa"
+            # Full schema should include these fields
+            assert "status" in data[0]
+            assert "priority" in data[0]
+            assert "type" in data[0]
+            assert "created" in data[0]
 
-    def test_excludes_closed(self) -> None:
+    def test_json_excludes_closed_by_default(self) -> None:
         import json
 
         with runner.isolated_filesystem():
@@ -2950,11 +2767,31 @@ class TestTicketQuery:
                 Ticket(id="bbbb", status="open", title="Open", body="", created=datetime.now(UTC)),
                 tickets_dir / "bbbb.md",
             )
-            result = runner.invoke(cli.app, ["tk", "query"])
+            result = runner.invoke(cli.app, ["tk", "list", "--json"])
             assert result.exit_code == 0
             data = json.loads(result.output)
             assert len(data) == 1
             assert data[0]["id"] == "bbbb"
+
+    def test_json_closed_includes_all(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="aaaa", status="closed", title="Closed", body="", created=datetime.now(UTC)),
+                tickets_dir / "aaaa.md",
+            )
+            write_ticket(
+                Ticket(id="bbbb", status="open", title="Open", body="", created=datetime.now(UTC)),
+                tickets_dir / "bbbb.md",
+            )
+            result = runner.invoke(cli.app, ["tk", "list", "--json", "--closed"])
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 2
 
 
 class TestTicketCreateOptions:

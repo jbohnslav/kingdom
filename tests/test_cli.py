@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -261,135 +260,6 @@ def test_config_show_invalid_config(tmp_path) -> None:
         assert "timout" in result.output
 
 
-class TestSetupSkill:
-    def test_creates_symlink(self, tmp_path) -> None:
-        # Create skills directory in fake project
-        skill_dir = tmp_path / "skills" / "kingdom"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Skill")
-
-        claude_skills = tmp_path / ".claude_skills"
-
-        with (
-            patch("kingdom.cli.Path.cwd", return_value=tmp_path),
-            patch("kingdom.cli.Path.home", return_value=tmp_path),
-        ):
-            # Patch the home directory to use tmp_path
-            claude_skills / "kingdom"
-            with patch.object(cli, "Path"):
-                # This is complex to mock; use runner with isolated fs instead
-                pass
-
-        # Simpler: test via runner.isolated_filesystem
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            base = P.cwd()
-            (base / "skills" / "kingdom").mkdir(parents=True)
-            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
-
-            fake_home = base / "fakehome"
-            fake_home.mkdir()
-
-            with (
-                patch("kingdom.cli.Path.home", return_value=fake_home),
-            ):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 0, result.output
-            assert "Linked" in result.output
-
-            link = fake_home / ".claude" / "skills" / "kingdom"
-            assert link.is_symlink()
-            assert link.resolve() == (base / "skills" / "kingdom").resolve()
-
-    def test_already_linked(self) -> None:
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            base = P.cwd()
-            (base / "skills" / "kingdom").mkdir(parents=True)
-            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
-
-            fake_home = base / "fakehome"
-            target = fake_home / ".claude" / "skills" / "kingdom"
-            target.parent.mkdir(parents=True)
-            target.symlink_to(base / "skills" / "kingdom")
-
-            with patch("kingdom.cli.Path.home", return_value=fake_home):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 0, result.output
-            assert "Already linked" in result.output
-
-    def test_no_skill_dir(self) -> None:
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            fake_home = P.cwd() / "fakehome"
-            fake_home.mkdir()
-
-            with patch("kingdom.cli.Path.home", return_value=fake_home):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 1
-            assert "not found" in result.output
-
-    def test_updates_stale_symlink(self) -> None:
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            base = P.cwd()
-            (base / "skills" / "kingdom").mkdir(parents=True)
-            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
-
-            fake_home = base / "fakehome"
-            target = fake_home / ".claude" / "skills" / "kingdom"
-            target.parent.mkdir(parents=True)
-            target.symlink_to("/nonexistent/old/path")
-
-            with patch("kingdom.cli.Path.home", return_value=fake_home):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 0, result.output
-            assert "Updating" in result.output
-            assert target.resolve() == (base / "skills" / "kingdom").resolve()
-
-    def test_works_from_subdirectory(self) -> None:
-        """setup-skill should resolve repo root via git, not cwd."""
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            base = P.cwd()
-            (base / "skills" / "kingdom").mkdir(parents=True)
-            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
-            subdir = base / "src" / "deep"
-            subdir.mkdir(parents=True)
-
-            fake_home = base / "fakehome"
-            fake_home.mkdir()
-
-            original_run = subprocess.run
-
-            def mock_run(cmd, **kwargs):
-                if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
-                    return MagicMock(returncode=0, stdout=str(base) + "\n")
-                return original_run(cmd, **kwargs)
-
-            with (
-                patch("kingdom.cli.Path.home", return_value=fake_home),
-                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
-                patch("kingdom.cli.Path.cwd", return_value=subdir),
-            ):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 0, result.output
-            assert "Linked" in result.output
-            link = fake_home / ".claude" / "skills" / "kingdom"
-            assert link.is_symlink()
-            assert link.resolve() == (base / "skills" / "kingdom").resolve()
-
-
 class TestNoColor:
     def test_styled_echo_strips_color_when_no_color(self) -> None:
         """styled_echo should not pass fg when NO_COLOR is set."""
@@ -563,23 +433,9 @@ class TestProjectRootDiscovery:
         assert "bad-path" in result.output
         assert ".kd/" in result.output
 
-    def test_init_ignores_discovery_uses_cwd(self, tmp_path: Path) -> None:
-        """kd init uses cwd, not project root discovery."""
-        # Parent has .kd/, but init should create in cwd
-        parent = tmp_path / "parent"
-        parent.mkdir()
-        (parent / ".kd").mkdir()
-        child = parent / "child"
-        child.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=child, check=True)
-        with patch("kingdom.state.Path.cwd", return_value=child):
-            result = runner.invoke(cli.app, ["init"])
-        assert result.exit_code == 0
-        assert (child / ".kd").is_dir()
-
     def test_no_kd_anywhere_shows_clear_error(self) -> None:
         """Missing .kd/ everywhere produces clear error message."""
         with runner.isolated_filesystem():
             result = runner.invoke(cli.app, ["tk", "list"])
         assert result.exit_code == 1
-        assert "kd init" in result.output
+        assert "kd start" in result.output or ".kd/" in result.output

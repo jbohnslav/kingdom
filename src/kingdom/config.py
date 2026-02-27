@@ -49,7 +49,7 @@ class AskConfig:
 
 @dataclass
 class ChatConfig:
-    """Settings for ``kd chat`` (interactive group chat).
+    """Settings for ``kd council chat`` (interactive group chat).
 
     Modes: natural (default), round_robin, manual, broadcast.
     """

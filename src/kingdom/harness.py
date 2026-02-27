@@ -9,7 +9,7 @@ The harness runs an autonomous loop:
   6. Write response as message to work thread
   7. Check stop conditions: done, blocked, stopped, failed
 
-Called in-process by ``kd work <ticket>``.
+Called by ``python -m kingdom.worker`` (spawned by peasant start).
 """
 
 from __future__ import annotations

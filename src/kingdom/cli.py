@@ -33,9 +33,8 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from kingdom.breakdown import build_breakdown_template
 from kingdom.council import Council
-from kingdom.design import build_design_template, ensure_design_initialized
+from kingdom.design import ensure_design_initialized
 from kingdom.session import get_current_thread, set_current_thread
 from kingdom.state import (
     archive_root,
@@ -165,79 +164,6 @@ def ensure_feature_branch(feature: str) -> None:
     typer.echo(f"Warning: current branch '{current}' does not match feature '{feature}'.")
 
 
-@app.command(help="Initialize .kd/ directory structure.")
-def init(
-    no_git: Annotated[bool, typer.Option("--no-git", help="Skip git repository check.")] = False,
-    no_gitignore: Annotated[bool, typer.Option("--no-gitignore", help="Skip .gitignore creation.")] = False,
-) -> None:
-    """Initialize the .kd/ directory structure for Kingdom.
-
-    Idempotent: creates missing pieces, skips existing.
-    """
-    base = Path.cwd()  # init anchors to cwd — user chooses where to create .kd/
-
-    if not no_git and not is_git_repo(base):
-        print_error("Not a git repository. Use --no-git to initialize anyway.")
-        raise typer.Exit(code=1)
-
-    paths = ensure_base_layout(base, create_gitignore=not no_gitignore)
-
-    # Scaffold config.json with defaults (idempotent)
-    from kingdom.config import default_config
-
-    config_path = paths["state_root"] / "config.json"
-    if not config_path.exists():
-        import json
-
-        cfg = default_config()
-        data = {
-            "agents": {name: {"backend": a.backend} for name, a in cfg.agents.items()},
-            "council": {"members": cfg.council.members, "timeout": cfg.council.timeout},
-            "peasant": {
-                "agent": cfg.peasant.agent,
-                "timeout": cfg.peasant.timeout,
-                "max_iterations": cfg.peasant.max_iterations,
-            },
-        }
-        config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-
-    install_skill()
-
-    typer.echo(f"Initialized {paths['state_root']}")
-
-
-@app.command("setup-skill", help="Symlink the kingdom agent skill into ~/.claude/skills/.")
-def setup_skill() -> None:
-    """Create a symlink from ~/.claude/skills/kingdom to skills/kingdom/ in this repo."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-    )
-    base = Path(result.stdout.strip()) if result.returncode == 0 and result.stdout.strip() else Path.cwd()
-    source = base / "skills" / "kingdom"
-    if not source.exists():
-        print_error(f"Skill directory not found: {source}")
-        raise typer.Exit(code=1)
-
-    target = Path.home() / ".claude" / "skills" / "kingdom"
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    if target.is_symlink():
-        existing = target.resolve()
-        if existing == source.resolve():
-            typer.echo(f"Already linked: {target} -> {source}")
-            return
-        typer.echo(f"Updating symlink: {target} (was -> {existing})")
-        target.unlink()
-    elif target.exists():
-        print_error(f"{target} exists and is not a symlink. Remove it manually to proceed.")
-        raise typer.Exit(code=1)
-
-    target.symlink_to(source)
-    typer.echo(f"Linked {target} -> {source}")
-
-
 def install_skill() -> None:
     """Install the bundled kingdom skill to ~/.claude/skills/kingdom/.
 
@@ -290,7 +216,7 @@ def start(
     # Auto-init if .kd/ doesn't exist (with git check)
     if not state_root(base).exists():
         if not is_git_repo(base):
-            print_error("Not a git repository. Run `kd init --no-git` first.")
+            print_error("Not a git repository. Initialize a git repo first, then run `kd start`.")
             raise typer.Exit(code=1)
         # Always auto-init at the git root, not wherever cwd happens to be
         try:
@@ -1536,12 +1462,12 @@ def display_rich_panels(responses, thread_id, console):
 
 
 # ---------------------------------------------------------------------------
-# kd chat — TUI council chat
+# kd council chat — TUI council chat
 # ---------------------------------------------------------------------------
 
 
-@app.command(help="Open council chat TUI.")
-def chat(
+@council_app.command("chat", help="Open council chat TUI.")
+def council_chat(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID to open.")] = None,
     new: Annotated[bool, typer.Option("--new", help="Create a new thread.")] = False,
     debug: Annotated[
@@ -1602,9 +1528,9 @@ def chat(
                     members = ", ".join(m for m in t.members if m != "king")
                     typer.echo(f"  {t.id}  {created}  [{members}]")
                 typer.echo()
-                typer.echo("Usage: kd chat <thread-id>  or  kd chat --new")
+                typer.echo("Usage: kd council chat <thread-id>  or  kd council chat --new")
             else:
-                typer.echo("No threads found. Create one with: kd chat --new")
+                typer.echo("No threads found. Create one with: kd council chat --new")
             raise typer.Exit(code=0)
 
     from kingdom.tui.app import ChatApp
@@ -1678,7 +1604,7 @@ def get_design_paths(base: Path, feature: str) -> tuple[Path, Path]:
 
 @design_app.callback(invoke_without_command=True)
 def design_default(ctx: typer.Context) -> None:
-    """Draft the design doc (creates template if empty)."""
+    """Print the path to the design document."""
     if ctx.invoked_subcommand is not None:
         return
     base = require_project_root()
@@ -1686,12 +1612,10 @@ def design_default(ctx: typer.Context) -> None:
     design_path, _ = get_design_paths(base, feature)
 
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
-        design_path.parent.mkdir(parents=True, exist_ok=True)
-        design_path.write_text(build_design_template(feature), encoding="utf-8")
-        typer.echo(f"Created design template at {design_path.relative_to(base)}")
-        return
+        print_error("No design document found. Run `kd start` to create one.")
+        raise typer.Exit(code=1)
 
-    typer.echo(f"Design already exists at {design_path.relative_to(base)}")
+    typer.echo(str(design_path.relative_to(base)))
 
 
 @design_app.command("show", help="Print the design document.")
@@ -1724,49 +1648,6 @@ def design_approve() -> None:
     state["design_approved"] = True
     write_json(state_path, state)
     typer.echo("Design approved")
-
-
-@app.command(help="Draft or iterate the current breakdown.")
-def breakdown() -> None:
-    base = require_project_root()
-    feature = resolve_current_run(base)
-    _, design_path, breakdown_path, _ = get_branch_paths(base, feature)
-
-    # Ensure breakdown template exists
-    if not breakdown_path.exists() or not breakdown_path.read_text(encoding="utf-8").strip():
-        breakdown_path.parent.mkdir(parents=True, exist_ok=True)
-        breakdown_path.write_text(build_breakdown_template(feature), encoding="utf-8")
-
-    design_rel = design_path.relative_to(base)
-
-    prompt = "\n".join(
-        [
-            f"# Ticket Breakdown: {feature}",
-            "",
-            f"Read the design doc at `{design_rel}`, then create tickets for this branch.",
-            "",
-            "## Instructions",
-            "",
-            f"1. Read the design doc: `{design_rel}`",
-            "2. For each work item, create a ticket:",
-            '   `kd tk create "<title>" -p <priority>` (1=critical, 2=normal, 3=low)',
-            "3. Edit each ticket file to add:",
-            "   - A clear **problem statement** or context",
-            "   - Specific **acceptance criteria** (checkboxes, not blank)",
-            "4. Set dependencies between tickets where one must finish before another:",
-            "   `kd tk dep <ticket-id> <depends-on-id>`",
-            "5. Review the result: `kd tk list`",
-            "",
-            "## Guidelines",
-            "",
-            "- Set **priority** on every ticket (`-p 1` for blockers, `-p 2` for normal, `-p 3` for nice-to-have)",
-            "- Identify **dependencies** — if ticket B can't start until ticket A is done, set `kd tk dep B A`",
-            "- Write **meaningful acceptance criteria** — not empty checkboxes. Each criterion should be verifiable.",
-            "- Keep tickets small and focused — one logical change per ticket",
-        ]
-    )
-
-    typer.echo(prompt)
 
 
 peasant_app = typer.Typer(name="peasant", help="Manage peasant agents.")
@@ -1889,7 +1770,7 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
 
     Args:
         auto_pull: If True, move backlog tickets into the current branch.
-            Only set for mutating commands (peasant start, kd work).
+            Only set for mutating commands (peasant start).
     """
     base = base or require_project_root()
 
@@ -1934,10 +1815,10 @@ def launch_work_background(
     thread_id: str,
     session_name: str,
 ) -> int:
-    """Launch ``kd work`` as a background process.
+    """Launch the worker as a background process.
 
     Builds the command, opens log file descriptors, spawns via Popen, and
-    returns the child PID.  Used by ``peasant start`` and ``peasant review --reject``.
+    returns the child PID.  Used by ``peasant start`` and ``peasant reject``.
     """
     peasant_logs_dir = logs_root(base, feature) / session_name
     peasant_logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1947,8 +1828,7 @@ def launch_work_background(
     work_cmd = [
         sys.executable,
         "-m",
-        "kingdom.cli",
-        "work",
+        "kingdom.worker",
         ticket_id,
         "--agent",
         agent,
@@ -1987,7 +1867,7 @@ def launch_work_tmux(
     thread_id: str,
     session_name: str,
 ) -> int:
-    """Launch ``kd work`` in a new tmux window.
+    """Launch the worker in a new tmux window.
 
     Errors if tmux is not running. Returns the PID of the tmux
     new-window shell (the agent process runs inside it).
@@ -2011,8 +1891,7 @@ def launch_work_tmux(
         [
             shlex.quote(sys.executable),
             "-m",
-            "kingdom.cli",
-            "work",
+            "kingdom.worker",
             shlex.quote(ticket_id),
             "--agent",
             shlex.quote(agent),
@@ -2631,14 +2510,10 @@ def peasant_read(
 @peasant_app.command("review", help="Review a peasant's completed work.")
 def peasant_review(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
-    accept: Annotated[bool, typer.Option("--accept", help="Accept the work (close ticket).")] = False,
-    reject: Annotated[str | None, typer.Option("--reject", help="Reject with feedback message.")] = None,
-    no_resume: Annotated[bool, typer.Option("--no-resume", help="Don't auto-resume peasant on reject.")] = False,
 ) -> None:
-    """Show diff, worklog, and council feedback. Accept or reject the work."""
+    """Show diff, worklog, and council feedback for a peasant's work."""
     from kingdom.harness import extract_worklog
-    from kingdom.session import get_agent_state, update_agent_state
-    from kingdom.thread import add_message
+    from kingdom.session import get_agent_state
 
     ctx = resolve_peasant_context(ticket_id)
     base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
@@ -2649,169 +2524,6 @@ def peasant_review(
     branch_name = f"ticket/{full_ticket_id}"
 
     console = Console()
-
-    # --- Accept / Reject actions ---
-    if accept and reject is not None:
-        print_error("--accept and --reject are mutually exclusive.")
-        raise typer.Exit(code=1)
-
-    if accept:
-        # Gate: ticket must be in_review
-        if ticket.status != "in_review":
-            print_error(f"Cannot accept: ticket is '{ticket.status}', expected 'in_review'.")
-            raise typer.Exit(code=1)
-
-        # Gate: session must be needs_king_review
-        state = get_agent_state(base, feature, session_name)
-        if state.status != "needs_king_review":
-            print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
-            raise typer.Exit(code=1)
-
-        # Gate: must be on the feature branch
-        current_branch = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            cwd=str(base),
-        ).stdout.strip()
-        if normalize_branch_name(current_branch) != normalize_branch_name(feature):
-            print_error(
-                f"Cannot accept: expected to be on '{feature}' but HEAD is on '{current_branch}'. "
-                "Switch branches and retry."
-            )
-            raise typer.Exit(code=1)
-
-        if state.hand_mode:
-            # Hand mode: changes are already on the feature branch, skip merge
-            typer.echo(f"Hand mode — changes already on {feature}, skipping merge")
-        else:
-            # Worktree mode: merge ticket branch into feature branch
-            worktree_path = worktree_path_for(base, full_ticket_id)
-            merge_result = subprocess.run(
-                ["git", "merge", branch_name, "--no-edit"],
-                capture_output=True,
-                text=True,
-                cwd=str(base),
-            )
-            if merge_result.returncode != 0:
-                # Integration failed — keep in_review, show recovery steps
-                merge_err = merge_result.stdout.strip()
-                if merge_result.stderr.strip():
-                    merge_err += "\n" + merge_result.stderr.strip()
-                print_error("Integration failed — ticket remains in_review.")
-                error_console.print(f"\n{merge_err}\n")
-                error_console.print("Recovery steps:")
-                error_console.print(f"  1. cd {worktree_path}")
-                error_console.print(f"  2. git merge {feature} (resolve conflicts)")
-                error_console.print(f"  3. kd peasant review {full_ticket_id} --accept (retry)")
-                raise typer.Exit(code=1)
-
-            typer.echo(f"Integrated {branch_name} into {feature}")
-
-        ticket.status = "closed"
-        write_ticket(ticket, ticket_path)
-        update_agent_state(
-            base,
-            feature,
-            session_name,
-            status="done",
-            last_activity=datetime.now(UTC).isoformat(),
-        )
-        typer.echo(f"{full_ticket_id}: accepted — ticket closed")
-        return
-
-    if reject is not None:
-        # Gate: ticket must be in_review
-        if ticket.status != "in_review":
-            print_error(f"Cannot reject: ticket is '{ticket.status}', expected 'in_review'.")
-            raise typer.Exit(code=1)
-
-        # Gate: session must be needs_king_review
-        state = get_agent_state(base, feature, session_name)
-        if state.status != "needs_king_review":
-            print_error(f"Cannot reject: session is '{state.status}', expected 'needs_king_review'.")
-            raise typer.Exit(code=1)
-
-        # Gate: old process must be dead before relaunching
-        if not no_resume and state.pid:
-            try:
-                os.kill(state.pid, 0)
-                print_error(f"Peasant process (pid {state.pid}) is still alive. Stop it first or use --no-resume.")
-                raise typer.Exit(code=1)
-            except OSError:
-                pass  # Process is dead, safe to relaunch
-
-        try:
-            add_message(base, feature, thread_id, from_="king", to=session_name, body=reject)
-        except FileNotFoundError:
-            print_error(
-                f"No work thread found for {full_ticket_id}. Start one with `kd peasant start {full_ticket_id}`."
-            )
-            raise typer.Exit(code=1) from None
-
-        # Transition ticket back to in_progress
-        ticket.status = "in_progress"
-        write_ticket(ticket, ticket_path)
-
-        if no_resume:
-            update_agent_state(
-                base,
-                feature,
-                session_name,
-                status="working",
-                pid=None,
-                review_bounce_count=0,
-                last_activity=datetime.now(UTC).isoformat(),
-            )
-            typer.echo(f"{full_ticket_id}: rejected — feedback sent, ticket back to in_progress")
-            return
-
-        # Auto-resume: relaunch the peasant
-        agent_backend = state.agent_backend or "claude"
-
-        if state.hand_mode:
-            # Hand mode: relaunch in-place using base repo
-            from kingdom.session import list_active_agents
-
-            for active in list_active_agents(base, feature):
-                if active.name == session_name:
-                    continue
-                if active.status == "working" and active.pid and active.name.startswith("peasant-"):
-                    try:
-                        os.kill(active.pid, 0)
-                        print_error(
-                            f"Peasant {active.name} (pid {active.pid}) is already working on this checkout. "
-                            "Stop it first or use --no-resume."
-                        )
-                        raise typer.Exit(code=1)
-                    except OSError:
-                        pass
-            worktree_path = base
-        else:
-            # Worktree mode: use the ticket worktree
-            worktree_path = worktree_path_for(base, full_ticket_id)
-            if not worktree_path.exists():
-                print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
-                raise typer.Exit(code=1)
-
-        pid = launch_work_background(
-            base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
-        )
-
-        now = datetime.now(UTC).isoformat()
-        update_agent_state(
-            base,
-            feature,
-            session_name,
-            status="working",
-            pid=pid,
-            review_bounce_count=0,
-            last_activity=now,
-        )
-        typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant relaunched (pid {pid})")
-        return
-
-    # --- Show review info ---
 
     # 1. Show diff
     review_state = get_agent_state(base, feature, session_name)
@@ -2839,14 +2551,14 @@ def peasant_review(
     else:
         styled_echo("⚠ No code diff — the peasant may not have made any changes.", fg=typer.colors.YELLOW)
 
-    # 4. Show worklog
+    # 2. Show worklog
     worklog = extract_worklog(ticket_path)
     if worklog:
         console.print(Markdown(f"## Worklog\n\n{worklog}"))
     else:
         typer.echo("(no worklog entries)")
 
-    # 5. Show council feedback (messages from council members in the work thread)
+    # 3. Show council feedback (messages from council members in the work thread)
     try:
         from kingdom.thread import list_messages
 
@@ -2860,7 +2572,7 @@ def peasant_review(
     except FileNotFoundError:
         pass  # No work thread yet — skip council feedback
 
-    # 6. Show session status
+    # 4. Show session status
     state = get_agent_state(base, feature, session_name)
     typer.echo(f"\nTicket status: {ticket.status}")
     typer.echo(f"Peasant status: {state.status}")
@@ -2874,92 +2586,190 @@ def peasant_review(
     # Prompt for action
     can_accept = ticket.status == "in_review" and state.status == "needs_king_review"
     if can_accept:
-        typer.echo("\nUse --accept to close the ticket or --reject 'feedback' to send feedback.")
+        typer.echo(f"\nUse `kd peasant accept {full_ticket_id}` or `kd peasant reject {full_ticket_id} 'feedback'`.")
     else:
-        typer.echo("\nUse --reject 'feedback' to send feedback.")
+        typer.echo(f"\nUse `kd peasant reject {full_ticket_id} 'feedback'` to send feedback.")
 
 
-@app.command("work", help="Run autonomous agent loop on a ticket.")
-def work(
+@peasant_app.command("accept", help="Accept a peasant's work and close the ticket.")
+def peasant_accept(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
-    agent: Annotated[str | None, typer.Option("--agent", help="Agent name (default: from config).")] = None,
-    worktree: Annotated[str | None, typer.Option("--worktree", help="Worktree path (internal).")] = None,
-    thread: Annotated[str | None, typer.Option("--thread", help="Thread ID (internal).")] = None,
-    session: Annotated[str | None, typer.Option("--session", help="Session name (internal).")] = None,
-    base_dir: Annotated[str | None, typer.Option("--base", help="Project root.")] = None,
 ) -> None:
-    """Run the autonomous agent harness loop.
+    """Accept a peasant's completed work: merge changes and close the ticket."""
+    from kingdom.session import get_agent_state, update_agent_state
 
-    Can be run directly (foreground) or via `kd peasant start` (background).
-    If run directly, it works in the current directory.
-    """
-    import logging
+    ctx = resolve_peasant_context(ticket_id)
+    base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
+    full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
 
-    from kingdom.config import load_config
-    from kingdom.harness import run_agent_loop
+    session_name = f"peasant-{full_ticket_id}"
+    branch_name = f"ticket/{full_ticket_id}"
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        stream=sys.stdout,
+    # Gate: ticket must be in_review
+    if ticket.status != "in_review":
+        print_error(f"Cannot accept: ticket is '{ticket.status}', expected 'in_review'.")
+        raise typer.Exit(code=1)
+
+    # Gate: session must be needs_king_review
+    state = get_agent_state(base, feature, session_name)
+    if state.status != "needs_king_review":
+        print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
+        raise typer.Exit(code=1)
+
+    # Gate: must be on the feature branch
+    current_branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        cwd=str(base),
+    ).stdout.strip()
+    if normalize_branch_name(current_branch) != normalize_branch_name(feature):
+        print_error(
+            f"Cannot accept: expected to be on '{feature}' but HEAD is on '{current_branch}'. "
+            "Switch branches and retry."
+        )
+        raise typer.Exit(code=1)
+
+    if state.hand_mode:
+        # Hand mode: changes are already on the feature branch, skip merge
+        typer.echo(f"Hand mode — changes already on {feature}, skipping merge")
+    else:
+        # Worktree mode: merge ticket branch into feature branch
+        worktree_path = worktree_path_for(base, full_ticket_id)
+        merge_result = subprocess.run(
+            ["git", "merge", branch_name, "--no-edit"],
+            capture_output=True,
+            text=True,
+            cwd=str(base),
+        )
+        if merge_result.returncode != 0:
+            # Integration failed — keep in_review, show recovery steps
+            merge_err = merge_result.stdout.strip()
+            if merge_result.stderr.strip():
+                merge_err += "\n" + merge_result.stderr.strip()
+            print_error("Integration failed — ticket remains in_review.")
+            error_console.print(f"\n{merge_err}\n")
+            error_console.print("Recovery steps:")
+            error_console.print(f"  1. cd {worktree_path}")
+            error_console.print(f"  2. git merge {feature} (resolve conflicts)")
+            error_console.print(f"  3. kd peasant accept {full_ticket_id} (retry)")
+            raise typer.Exit(code=1)
+
+        typer.echo(f"Integrated {branch_name} into {feature}")
+
+    ticket.status = "closed"
+    write_ticket(ticket, ticket_path)
+    update_agent_state(
+        base,
+        feature,
+        session_name,
+        status="done",
+        last_activity=datetime.now(UTC).isoformat(),
     )
+    typer.echo(f"{full_ticket_id}: accepted — ticket closed")
 
-    base = Path(base_dir).resolve() if base_dir else require_project_root()
+
+@peasant_app.command("reject", help="Reject a peasant's work with feedback.")
+def peasant_reject(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    feedback: Annotated[str, typer.Argument(help="Feedback message for the peasant.")],
+    no_resume: Annotated[bool, typer.Option("--no-resume", help="Don't auto-resume peasant on reject.")] = False,
+) -> None:
+    """Reject a peasant's work: send feedback and optionally relaunch the peasant."""
+    from kingdom.session import get_agent_state, update_agent_state
+    from kingdom.thread import add_message
+
+    ctx = resolve_peasant_context(ticket_id)
+    base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
+    full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
+
+    session_name = f"peasant-{full_ticket_id}"
+    thread_id = f"{full_ticket_id}-work"
+
+    # Gate: ticket must be in_review
+    if ticket.status != "in_review":
+        print_error(f"Cannot reject: ticket is '{ticket.status}', expected 'in_review'.")
+        raise typer.Exit(code=1)
+
+    # Gate: session must be needs_king_review
+    state = get_agent_state(base, feature, session_name)
+    if state.status != "needs_king_review":
+        print_error(f"Cannot reject: session is '{state.status}', expected 'needs_king_review'.")
+        raise typer.Exit(code=1)
+
+    # Gate: old process must be dead before relaunching
+    if not no_resume and state.pid:
+        try:
+            os.kill(state.pid, 0)
+            print_error(f"Peasant process (pid {state.pid}) is still alive. Stop it first or use --no-resume.")
+            raise typer.Exit(code=1)
+        except OSError:
+            pass  # Process is dead, safe to relaunch
+
     try:
-        feature = resolve_current_run(base)
-    except RuntimeError as exc:
-        print_error(str(exc))
+        add_message(base, feature, thread_id, from_="king", to=session_name, body=feedback)
+    except FileNotFoundError:
+        print_error(f"No work thread found for {full_ticket_id}. Start one with `kd peasant start {full_ticket_id}`.")
         raise typer.Exit(code=1) from None
 
-    # Default agent from config if not specified on CLI
-    if agent is None:
-        cfg = load_config(base)
-        agent = cfg.peasant.agent
+    # Transition ticket back to in_progress
+    ticket.status = "in_progress"
+    write_ticket(ticket, ticket_path)
 
-    # Resolve ticket context if not provided (interactive mode)
-    if not (worktree and thread and session):
-        ctx = resolve_peasant_context(ticket_id, base=base, auto_pull=True)
-        # In interactive mode, we are the session
-        session = session or f"hand-{ctx.full_ticket_id}"
-        thread = thread or f"{ctx.full_ticket_id}-work"
-        worktree = worktree or str(Path.cwd())
-        # Ensure thread exists
-        from kingdom.thread import add_message, create_thread, thread_dir
+    if no_resume:
+        update_agent_state(
+            base,
+            feature,
+            session_name,
+            status="working",
+            pid=None,
+            review_bounce_count=0,
+            last_activity=datetime.now(UTC).isoformat(),
+        )
+        typer.echo(f"{full_ticket_id}: rejected — feedback sent, ticket back to in_progress")
+        return
 
-        with contextlib.suppress(FileExistsError):
-            create_thread(base, feature, thread, [session, "king"], "work")
+    # Auto-resume: relaunch the peasant
+    agent_backend = state.agent_backend or "claude"
 
-        # Seed thread with ticket content (same as peasant_start)
-        tdir = thread_dir(base, feature, thread)
-        existing_msgs = list(tdir.glob("[0-9][0-9][0-9][0-9]-*.md"))
-        if not existing_msgs:
-            seed_body = f"# Starting work on {ctx.full_ticket_id}\n\n"
-            seed_body += f"**Title:** {ctx.ticket.title}\n\n"
-            seed_body += ctx.ticket.body
-            add_message(base, feature, thread, from_="king", to=session, body=seed_body)
+    if state.hand_mode:
+        # Hand mode: relaunch in-place using base repo
+        from kingdom.session import list_active_agents
 
-    worktree_path = Path(worktree).resolve()
+        for active in list_active_agents(base, feature):
+            if active.name == session_name:
+                continue
+            if active.status == "working" and active.pid and active.name.startswith("peasant-"):
+                try:
+                    os.kill(active.pid, 0)
+                    print_error(
+                        f"Peasant {active.name} (pid {active.pid}) is already working on this checkout. "
+                        "Stop it first or use --no-resume."
+                    )
+                    raise typer.Exit(code=1)
+                except OSError:
+                    pass
+        worktree_path = base
+    else:
+        # Worktree mode: use the ticket worktree
+        worktree_path = worktree_path_for(base, full_ticket_id)
+        if not worktree_path.exists():
+            print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
+            raise typer.Exit(code=1)
 
-    status = run_agent_loop(
-        base=base,
-        branch=feature,
-        agent_name=agent,
-        ticket_id=ticket_id,
-        worktree=worktree_path,
-        thread_id=thread,
-        session_name=session,
+    pid = launch_work_background(base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name)
+
+    now = datetime.now(UTC).isoformat()
+    update_agent_state(
+        base,
+        feature,
+        session_name,
+        status="working",
+        pid=pid,
+        review_bounce_count=0,
+        last_activity=now,
     )
-
-    if status != "done":
-        raise typer.Exit(code=1)
-
-
-@app.command(help="Reserved for broader develop phase (MVP stub).")
-def dev(ticket: str | None = typer.Argument(None, help="Optional ticket id.")) -> None:
-    if ticket:
-        print_error("MVP uses `kd peasant start <ticket>` for single-ticket execution.")
-        raise typer.Exit(code=1)
-    typer.echo("`kd dev` is reserved. Use `kd peasant start <ticket>` in the MVP.")
+    typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant relaunched (pid {pid})")
 
 
 def get_doc_status(path: Path) -> str:
@@ -3293,118 +3103,14 @@ def doctor(
         raise typer.Exit(code=1)
 
 
-@app.command(help="Print the current agent's role and name.")
-def whoami() -> None:
-    """Identify the current agent role via KD_ROLE and KD_AGENT_NAME env vars."""
-    import os
-
-    role = os.environ.get("KD_ROLE", "")
-    agent_name = os.environ.get("KD_AGENT_NAME", "")
-
-    if not role:
-        role = "hand" if os.environ.get("CLAUDECODE") else "king"
-
-    if agent_name:
-        typer.echo(f"{role}: {agent_name}")
-    else:
-        typer.echo(role)
-
-
-@app.command(help="Migrate legacy kin-XXXX ticket IDs to short XXXX format.")
-def migrate(
-    apply: Annotated[bool, typer.Option("--apply", help="Apply changes (default is dry-run).")] = False,
-) -> None:
-    """Rename ticket files and rewrite frontmatter IDs, deps, and parent refs to drop 'kin-' prefix.
-
-    By default shows what would change (dry-run). Use --apply to execute.
-    """
-    import re
-
-    base = require_project_root()
-    dry_run = not apply
-
-    # Collect all ticket files across backlog, branches, and archive
-    ticket_dirs: list[Path] = []
-
-    backlog_tickets = backlog_root(base) / "tickets"
-    if backlog_tickets.exists():
-        ticket_dirs.append(backlog_tickets)
-
-    bdir = branches_root(base)
-    if bdir.exists():
-        for branch_dir in bdir.iterdir():
-            if branch_dir.is_dir():
-                td = branch_dir / "tickets"
-                if td.exists():
-                    ticket_dirs.append(td)
-
-    adir = archive_root(base)
-    if adir.exists():
-        for archive_item in adir.iterdir():
-            if archive_item.is_dir():
-                td = archive_item / "tickets"
-                if td.exists():
-                    ticket_dirs.append(td)
-
-    renamed = 0
-    rewritten = 0
-    collisions: list[str] = []
-
-    # Preflight: check for collisions before any renames
-    for td in ticket_dirs:
-        for ticket_file in sorted(td.glob("kin-*.md")):
-            new_name = ticket_file.name[4:]  # Remove "kin-" prefix
-            new_path = ticket_file.parent / new_name
-            if new_path.exists():
-                collisions.append(str(ticket_file.relative_to(base)))
-
-    if collisions:
-        print_error("collision detected — target files already exist:")
-        for c in collisions:
-            error_console.print(f"  {c}")
-        raise typer.Exit(code=1)
-
-    # Pass 1: rename files (git mv for history preservation)
-    for td in ticket_dirs:
-        for ticket_file in sorted(td.glob("kin-*.md")):
-            new_name = ticket_file.name[4:]
-            new_path = ticket_file.parent / new_name
-
-            if dry_run:
-                typer.echo(f"  rename: {ticket_file.relative_to(base)} → {new_name}")
-            else:
-                # Use git mv if in a git repo, fall back to plain rename
-                result = subprocess.run(
-                    ["git", "mv", str(ticket_file), str(new_path)],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    ticket_file.rename(new_path)
-                renamed += 1
-
-    # Pass 2: rewrite frontmatter in all ticket files
-    for td in ticket_dirs:
-        for ticket_file in sorted(td.glob("*.md")):
-            content = ticket_file.read_text(encoding="utf-8")
-            new_content = re.sub(r"\bkin-([0-9a-f]{4})\b", r"\1", content)
-            if new_content != content:
-                if dry_run:
-                    typer.echo(f"  rewrite: {ticket_file.relative_to(base)}")
-                else:
-                    ticket_file.write_text(new_content, encoding="utf-8")
-                    rewritten += 1
-
-    if dry_run:
-        typer.echo("\nDry run complete. Run with --apply to execute.")
-    else:
-        typer.echo(f"Migrated {renamed} files renamed, {rewritten} files rewritten")
-
-
 # Ticket subcommand group
 ticket_app = typer.Typer(name="ticket", help="Manage tickets.")
 app.add_typer(ticket_app, name="ticket")
 app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
+
+# Dependency management sub-app
+deps_app = typer.Typer(name="deps", help="Manage ticket dependencies.")
+ticket_app.add_typer(deps_app, name="deps")
 
 
 def get_tickets_dir(base: Path, backlog: bool = False) -> Path:
@@ -3654,13 +3360,15 @@ def ticket_list(
     include_done: Annotated[
         bool, typer.Option("--include-done", help="Include tickets from done branches (with --all).")
     ] = False,
-    include_closed: Annotated[bool, typer.Option("--include-closed", help="Include closed tickets in output.")] = False,
+    include_closed: Annotated[bool, typer.Option("--closed", help="Include closed tickets in output.")] = False,
+    ready: Annotated[bool, typer.Option("--ready", help="Show only tickets ready to work (no open deps).")] = False,
+    blocked: Annotated[bool, typer.Option("--blocked", help="Show only tickets blocked by open deps.")] = False,
     status: Annotated[
         str | None,
         typer.Option(
             "--status",
             "-s",
-            help="Filter by status (open, in_progress, in_review, closed). Overrides --include-closed.",
+            help="Filter by status (open, in_progress, in_review, closed).",
         ),
     ] = None,
     priority: Annotated[
@@ -3670,9 +3378,18 @@ def ticket_list(
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     assignee: Annotated[str | None, typer.Option("--assignee", "-A", help="Filter by assignee.")] = None,
     tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
-    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON (full ticket schema).")] = False,
+    jq_filter: Annotated[str | None, typer.Option("--jq", help="Apply a jq filter (implies --json).")] = None,
 ) -> None:
     """List tickets in the current branch or all locations."""
+    if ready and blocked:
+        print_error("--ready and --blocked are mutually exclusive.")
+        raise typer.Exit(code=1)
+
+    # --jq implies --json
+    if jq_filter:
+        output_json = True
+
     if status is not None:
         status = status.lower()
         if status not in STATUSES:
@@ -3696,26 +3413,76 @@ def ticket_list(
             return tickets
         return [t for t in tickets if t.priority == priority]
 
+    def apply_dep_filters(tickets: list[Ticket], status_by_id: dict[str, str]) -> list[Ticket]:
+        """Apply --ready or --blocked filters based on dependency status."""
+        if not ready and not blocked:
+            return tickets
+        result = []
+        for t in tickets:
+            if t.status == "closed":
+                continue
+            has_open_dep = any(status_by_id.get(d, "unknown") != "closed" for d in t.deps)
+            if (ready and not has_open_dep and t.status not in ("in_review", "closed")) or (blocked and has_open_dep):
+                result.append(t)
+        return result
+
+    def ticket_to_json(t: Ticket, location: str | None = None) -> dict:
+        """Serialize a ticket to its full JSON schema."""
+        data: dict = {
+            "id": t.id,
+            "status": t.status,
+            "priority": t.priority,
+            "type": t.type,
+            "title": t.title,
+            "assignee": t.assignee,
+            "deps": t.deps,
+            "links": t.links,
+            "tags": t.tags,
+            "parent": t.parent,
+            "created": t.created.isoformat(),
+        }
+        if location is not None:
+            data["location"] = location
+        return data
+
+    def output_tickets_json(tickets: list[Ticket], location_map: dict[str, str] | None = None) -> None:
+        """Output tickets as JSON, optionally piping through jq."""
+        data = [ticket_to_json(t, location_map.get(t.id) if location_map else None) for t in tickets]
+        if jq_filter:
+            import shutil as sh
+
+            if not sh.which("jq"):
+                print_error("jq is not installed. Install it or omit the --jq filter.")
+                raise typer.Exit(code=1)
+            proc = subprocess.run(
+                ["jq", jq_filter],
+                input=json.dumps(data),
+                capture_output=True,
+                text=True,
+            )
+            typer.echo(proc.stdout.rstrip())
+            if proc.returncode != 0:
+                typer.echo(proc.stderr.rstrip(), err=True)
+                raise typer.Exit(code=proc.returncode)
+        else:
+            typer.echo(json.dumps(data, indent=2))
+
     base = require_project_root()
+
+    # Build a global status lookup for dep-based filtering
+    all_known_tickets = collect_all_tickets(base) if (ready or blocked) else []
+    status_by_id = {t.id: t.status for t in all_known_tickets}
 
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
         all_backlog_tickets = list_tickets(backlog_dir) if backlog_dir.exists() else []
-        tickets = apply_filters(apply_priority(filter_tickets_by_status(all_backlog_tickets, status, include_closed)))
+        tickets = apply_dep_filters(
+            apply_filters(apply_priority(filter_tickets_by_status(all_backlog_tickets, status, include_closed))),
+            status_by_id,
+        )
 
         if output_json:
-            results = [
-                {
-                    "id": t.id,
-                    "priority": t.priority,
-                    "status": t.status,
-                    "title": t.title,
-                    "deps": t.deps,
-                    "location": "backlog",
-                }
-                for t in tickets
-            ]
-            typer.echo(json.dumps(results, indent=2))
+            output_tickets_json(tickets, {t.id: "backlog" for t in tickets})
         else:
             if not tickets:
                 typer.echo('No backlog tickets. Create one with `kd tk create --backlog "title"`.')
@@ -3746,24 +3513,16 @@ def ticket_list(
         location_map: dict[str, str] = {}
         for location_name, tickets_dir in locations:
             tickets = list_tickets(tickets_dir)
-            filtered = apply_filters(apply_priority(filter_tickets_by_status(tickets, status, include_closed)))
+            filtered = apply_dep_filters(
+                apply_filters(apply_priority(filter_tickets_by_status(tickets, status, include_closed))),
+                status_by_id,
+            )
             for ticket in filtered:
                 location_map[ticket.id] = location_name
             all_filtered.extend(filtered)
 
         if output_json:
-            results = [
-                {
-                    "id": t.id,
-                    "priority": t.priority,
-                    "status": t.status,
-                    "title": t.title,
-                    "deps": t.deps,
-                    "location": location_map.get(t.id, ""),
-                }
-                for t in all_filtered
-            ]
-            typer.echo(json.dumps(results, indent=2))
+            output_tickets_json(all_filtered, location_map)
         else:
             if not all_filtered:
                 typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
@@ -3774,20 +3533,13 @@ def ticket_list(
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
         all_branch_tickets = list_tickets(tickets_dir)
-        tickets = apply_filters(apply_priority(filter_tickets_by_status(all_branch_tickets, status, include_closed)))
+        tickets = apply_dep_filters(
+            apply_filters(apply_priority(filter_tickets_by_status(all_branch_tickets, status, include_closed))),
+            status_by_id,
+        )
 
         if output_json:
-            results = [
-                {
-                    "id": t.id,
-                    "priority": t.priority,
-                    "status": t.status,
-                    "title": t.title,
-                    "deps": t.deps,
-                }
-                for t in tickets
-            ]
-            typer.echo(json.dumps(results, indent=2))
+            output_tickets_json(tickets)
         else:
             if not tickets:
                 typer.echo('No tickets found. Create one with `kd tk create "title"`.')
@@ -4252,8 +4004,8 @@ def ticket_delete(
     typer.echo(f"Deleted {ticket.id} — {ticket.title}")
 
 
-@ticket_app.command("dep", help="Add a dependency to a ticket.")
-def ticket_dep(
+@deps_app.command("add", help="Add a dependency to a ticket.")
+def deps_add(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
     depends_on: Annotated[str, typer.Argument(help="ID of ticket this depends on.")],
 ) -> None:
@@ -4287,8 +4039,8 @@ def ticket_dep(
         typer.echo(f"{ticket.id}: already depends on {dep_ticket.id}")
 
 
-@ticket_app.command("undep", help="Remove a dependency from a ticket.")
-def ticket_undep(
+@deps_app.command("remove", help="Remove a dependency from a ticket.")
+def deps_remove(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
     depends_on: Annotated[str, typer.Argument(help="ID of dependency to remove.")],
 ) -> None:
@@ -4332,8 +4084,8 @@ def ticket_undep(
     typer.echo(f"{ticket.id}: removed dependency → {dep_id}")
 
 
-@ticket_app.command("dep-tree", help="Show dependency tree for a ticket.")
-def ticket_dep_tree(
+@deps_app.command("tree", help="Show dependency tree for a ticket.")
+def deps_tree(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
     full: Annotated[bool, typer.Option("--full", help="Show duplicate subtrees instead of deduplicating.")] = False,
 ) -> None:
@@ -4388,8 +4140,8 @@ def ticket_dep_tree(
         print_tree(dep_id, "", last=(i == len(root_ticket.deps) - 1), ancestors=root_ancestors)
 
 
-@ticket_app.command("dep-cycle", help="Detect dependency cycles.")
-def ticket_dep_cycle() -> None:
+@deps_app.command("cycle", help="Detect dependency cycles.")
+def deps_cycle() -> None:
     """Find and report any dependency cycles among open tickets."""
     base = require_project_root()
     all_tickets = collect_all_tickets(base)
@@ -4428,42 +4180,6 @@ def ticket_dep_cycle() -> None:
         for cycle in cycles:
             error_console.print(f"  {' → '.join(cycle)}")
         raise typer.Exit(code=1)
-
-
-@ticket_app.command("blocked", help="List tickets blocked by unresolved dependencies.")
-def ticket_blocked(
-    assignee: Annotated[str | None, typer.Option("--assignee", "-a", help="Filter by assignee.")] = None,
-    tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
-) -> None:
-    """List open tickets that have at least one unresolved dependency."""
-    base = require_project_root()
-    all_tickets = collect_all_tickets(base)
-    status_by_id = {t.id: t.status for t in all_tickets}
-
-    blocked = []
-    for ticket in all_tickets:
-        if ticket.status == "closed":
-            continue
-        if not ticket.deps:
-            continue
-        open_deps = [d for d in ticket.deps if status_by_id.get(d, "unknown") != "closed"]
-        if not open_deps:
-            continue
-        if assignee and ticket.assignee != assignee:
-            continue
-        if tag and tag not in ticket.tags:
-            continue
-        blocked.append((ticket, open_deps))
-
-    if not blocked:
-        typer.echo("No blocked tickets.")
-        return
-
-    for ticket, open_deps in blocked:
-        dep_str = ", ".join(open_deps)
-        prefix = f"  {ticket.id} "
-        typer.echo(f"{prefix}[P{ticket.priority}][{ticket.status}] {ticket.title}")
-        typer.echo(f"{' ' * len(prefix)}blocked by: {dep_str}")
 
 
 @ticket_app.command("link", help="Add symmetric links between tickets.")
@@ -4718,111 +4434,6 @@ def ticket_pull(
         typer.echo(f"Pulled {ticket.id} — {ticket.title}")
 
 
-@ticket_app.command("ready", help="List tickets ready to work on.")
-def ticket_ready(
-    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
-) -> None:
-    """List open tickets with no open dependencies."""
-    base = require_project_root()
-
-    # Collect all tickets to build status lookup
-    all_tickets: list[tuple[Ticket, str]] = []  # (ticket, location)
-
-    # branches/*/tickets/ (skip done branches)
-    branches_dir = branches_root(base)
-    if branches_dir.exists():
-        for branch_dir in branches_dir.iterdir():
-            if branch_dir.is_dir() and not is_branch_done(branch_dir):
-                tickets_dir = branch_dir / "tickets"
-                if tickets_dir.exists():
-                    for t in list_tickets(tickets_dir):
-                        all_tickets.append((t, f"branch:{branch_dir.name}"))
-
-    # backlog/tickets/
-    backlog_tickets = backlog_root(base) / "tickets"
-    if backlog_tickets.exists():
-        for t in list_tickets(backlog_tickets):
-            all_tickets.append((t, "backlog"))
-
-    # Build status lookup for dependency checking
-    status_by_id = {t.id: t.status for t, _ in all_tickets}
-
-    # Filter: open tickets with no open dependencies
-    ready_tickets = []
-    for ticket, location in all_tickets:
-        if ticket.status not in ("open", "in_progress"):
-            continue
-        # Check if all dependencies are closed
-        has_open_dep = False
-        for dep_id in ticket.deps:
-            dep_status = status_by_id.get(dep_id, "unknown")
-            if dep_status != "closed":
-                has_open_dep = True
-                break
-        if not has_open_dep:
-            ready_tickets.append((ticket, location))
-
-    if output_json:
-        results = [
-            {
-                "id": t.id,
-                "priority": t.priority,
-                "status": t.status,
-                "title": t.title,
-                "location": loc,
-            }
-            for t, loc in ready_tickets
-        ]
-        typer.echo(json.dumps(results, indent=2))
-    else:
-        if not ready_tickets:
-            typer.echo('No ready tickets. Create one with `kd tk create "title"` or check deps with `kd tk list`.')
-            return
-
-        branch_tickets = [(t, loc) for t, loc in ready_tickets if loc != "backlog"]
-        backlog_tickets_list = [(t, loc) for t, loc in ready_tickets if loc == "backlog"]
-
-        def format_ticket(ticket: Ticket) -> str:
-            return f"  {ticket.id} [P{ticket.priority}][{ticket.status}] {ticket.title}"
-
-        if branch_tickets:
-            typer.echo("Branch:")
-            for ticket, _ in branch_tickets:
-                typer.echo(format_ticket(ticket))
-        if backlog_tickets_list:
-            if branch_tickets:
-                typer.echo("")
-            typer.echo("Backlog:")
-            for ticket, _ in backlog_tickets_list:
-                typer.echo(format_ticket(ticket))
-
-
-@ticket_app.command("closed", help="List recently closed tickets.")
-def ticket_closed(
-    limit: Annotated[int, typer.Option("--limit", "-n", help="Max tickets to show.")] = 20,
-    assignee: Annotated[str | None, typer.Option("--assignee", "-a", help="Filter by assignee.")] = None,
-    tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
-) -> None:
-    """List recently closed tickets across all locations, sorted by close date (newest first)."""
-    base = require_project_root()
-    all_tickets = collect_all_tickets(base, include_archive=True, include_done=True)
-
-    closed = [t for t in all_tickets if t.status == "closed"]
-    if assignee:
-        closed = [t for t in closed if t.assignee == assignee]
-    if tag:
-        closed = [t for t in closed if tag in t.tags]
-    closed.sort(key=lambda t: t.closed_at or t.created, reverse=True)
-    closed = closed[:limit]
-
-    if not closed:
-        typer.echo("No closed tickets found.")
-        return
-
-    render_ticket_table(closed)
-    typer.echo(f"{len(closed)} closed ticket(s)")
-
-
 @ticket_app.command("add-note", help="Append a timestamped note to a ticket.")
 def ticket_add_note(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
@@ -4860,52 +4471,6 @@ def ticket_add_note(
     ticket_path.write_text(content, encoding="utf-8")
 
     typer.echo(f"{ticket.id}: note added")
-
-
-@ticket_app.command("query", help="Output tickets as JSON with optional jq filtering.")
-def ticket_query(
-    jq_filter: Annotated[str | None, typer.Argument(help="Optional jq filter expression.")] = None,
-) -> None:
-    """Output all non-closed tickets as JSON. Pipe through jq if a filter is given."""
-    base = require_project_root()
-    all_tickets = collect_all_tickets(base)
-
-    data = [
-        {
-            "id": t.id,
-            "status": t.status,
-            "priority": t.priority,
-            "type": t.type,
-            "title": t.title,
-            "assignee": t.assignee,
-            "deps": t.deps,
-            "links": t.links,
-            "tags": t.tags,
-            "parent": t.parent,
-            "created": t.created.isoformat(),
-        }
-        for t in all_tickets
-        if t.status != "closed"
-    ]
-
-    if jq_filter:
-        import shutil as sh
-
-        if not sh.which("jq"):
-            print_error("jq is not installed. Install it or omit the filter.")
-            raise typer.Exit(code=1)
-        proc = subprocess.run(
-            ["jq", jq_filter],
-            input=json.dumps(data),
-            capture_output=True,
-            text=True,
-        )
-        typer.echo(proc.stdout.rstrip())
-        if proc.returncode != 0:
-            typer.echo(proc.stderr.rstrip(), err=True)
-            raise typer.Exit(code=proc.returncode)
-    else:
-        typer.echo(json.dumps(data, indent=2))
 
 
 @ticket_app.command("log", help="Append a worklog entry to a ticket.")

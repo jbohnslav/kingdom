@@ -1,4 +1,4 @@
-"""ChatApp — main Textual application for kd chat."""
+"""ChatApp — main Textual application for kd council chat."""
 
 from __future__ import annotations
 
@@ -333,7 +333,7 @@ class ChatScreen(Screen):
 class ChatApp(App):
     """Council chat TUI."""
 
-    TITLE = "kd chat"
+    TITLE = "kd council chat"
     CSS_PATH = "chat.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -383,7 +383,7 @@ class ChatApp(App):
 
         members_str = " ".join(self.member_names) if self.member_names else "no members"
         yield Static(
-            f"kd chat · {self.thread_id} · {members_str}",
+            f"kd council chat · {self.thread_id} · {members_str}",
             id="header-bar",
         )
         yield MessageLog(id="message-log")
@@ -1093,7 +1093,7 @@ class ChatApp(App):
             "/writable        — toggle writable mode (file edits, commands)\n"
             "/mute            — show currently muted members\n"
             "/help            — show this help\n"
-            "/quit or /exit   — quit kd chat\n"
+            "/quit or /exit   — quit kd council chat\n"
             "\n"
             "Esc: interrupt running queries / quit\n"
             "Enter: send message\n"
