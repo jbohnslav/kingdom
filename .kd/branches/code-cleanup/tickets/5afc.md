@@ -1,11 +1,12 @@
 ---
 id: "5afc"
-status: open
+status: closed
 deps: [4c83]
 links: []
 created: 2026-02-27T11:55:19Z
 type: task
 priority: 1
+closed_at: 2026-02-27T14:46:52Z
 ---
 # Redesign command surface (R1)
 
