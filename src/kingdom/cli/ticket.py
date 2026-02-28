@@ -28,13 +28,16 @@ from kingdom.state import (
     branches_root,
     normalize_branch_name,
     resolve_current_run,
-    state_root,
 )
 from kingdom.ticket import (
     STATUSES,
     AmbiguousTicketMatch,
     Ticket,
     collect_all_tickets,
+    collect_tickets_by_location,
+    filter_tickets,
+    filter_tickets_by_deps,
+    filter_tickets_by_status,
     find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
@@ -46,7 +49,6 @@ from kingdom.ticket import (
 
 from .display import STATUS_COLORS, STATUS_STYLES, console_width, error_console, print_error
 from .helpers import (
-    is_branch_done,
     peasant_session_name,
     require_project_root,
     resolve_ticket_or_exit,
@@ -67,12 +69,7 @@ def get_tickets_dir(base: Path, backlog: bool = False) -> Path:
     # Try to get current branch's tickets directory
     try:
         feature = resolve_current_run(base)
-        normalize_branch_name(feature)
-        branch_dir = branch_root(base, feature)
-        if branch_dir.exists():
-            return branch_dir / "tickets"
-        # Fall back to legacy runs structure
-        return state_root(base) / "runs" / feature / "tickets"
+        return branch_root(base, feature) / "tickets"
     except RuntimeError:
         # No active branch, use backlog
         return backlog_root(base) / "tickets"
@@ -99,18 +96,6 @@ def format_ticket_summary(tickets: list) -> str:
             parts.append(f"{counts[label]} {label}")
     parts.append(f"{total} total")
     return " · ".join(parts)
-
-
-def filter_tickets_by_status(
-    tickets: list[Ticket],
-    status: str | None,
-    include_closed: bool,
-) -> list[Ticket]:
-    if status is not None:
-        return [ticket for ticket in tickets if ticket.status == status]
-    if not include_closed:
-        return [ticket for ticket in tickets if ticket.status != "closed"]
-    return tickets
 
 
 def format_ticket_line(ticket: Ticket, location: str | None = None) -> str:
@@ -467,31 +452,10 @@ def ticket_list(
         print_error(f"Invalid priority {priority}. Must be 1, 2, or 3.")
         raise typer.Exit(code=1)
 
-    def apply_filters(tickets: list[Ticket]) -> list[Ticket]:
-        result = tickets
-        if assignee:
-            result = [t for t in result if t.assignee == assignee]
-        if tag:
-            result = [t for t in result if tag in t.tags]
-        return result
-
-    def apply_priority(tickets: list[Ticket]) -> list[Ticket]:
-        if priority is None:
-            return tickets
-        return [t for t in tickets if t.priority == priority]
-
-    def apply_dep_filters(tickets: list[Ticket], status_by_id: dict[str, str]) -> list[Ticket]:
-        """Apply --ready or --blocked filters based on dependency status."""
-        if not ready and not blocked:
-            return tickets
-        result = []
-        for t in tickets:
-            if t.status == "closed":
-                continue
-            has_open_dep = any(status_by_id.get(d, "unknown") != "closed" for d in t.deps)
-            if (ready and not has_open_dep and t.status not in ("in_review", "closed")) or (blocked and has_open_dep):
-                result.append(t)
-        return result
+    def apply_all_filters(tickets: list[Ticket], status_by_id: dict[str, str]) -> list[Ticket]:
+        filtered = filter_tickets_by_status(tickets, status, include_closed)
+        filtered = filter_tickets(filtered, assignee=assignee, tag=tag, priority=priority)
+        return filter_tickets_by_deps(filtered, status_by_id, ready=ready, blocked=blocked)
 
     def output_tickets_json(tickets: list[Ticket], location_map: dict[str, str] | None = None) -> None:
         """Output tickets as JSON, optionally piping through jq."""
@@ -529,10 +493,7 @@ def ticket_list(
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
         all_backlog_tickets = list_tickets(backlog_dir) if backlog_dir.exists() else []
-        tickets = apply_dep_filters(
-            apply_filters(apply_priority(filter_tickets_by_status(all_backlog_tickets, status, include_closed))),
-            status_by_id,
-        )
+        tickets = apply_all_filters(all_backlog_tickets, status_by_id)
 
         if output_json:
             output_tickets_json(tickets, {t.id: "backlog" for t in tickets})
@@ -545,34 +506,16 @@ def ticket_list(
         return
 
     if all_tickets:
-        # Collect tickets from all locations
-        locations: list[tuple[str, Path]] = []
-
-        # branches/*/tickets/
-        branches_dir = branches_root(base)
-        if branches_dir.exists():
-            for branch_dir in branches_dir.iterdir():
-                if branch_dir.is_dir() and (include_done or not is_branch_done(branch_dir)):
-                    tickets_dir = branch_dir / "tickets"
-                    if tickets_dir.exists():
-                        locations.append((f"branch:{branch_dir.name}", tickets_dir))
-
-        # backlog/tickets/
-        backlog_tickets = backlog_root(base) / "tickets"
-        if backlog_tickets.exists():
-            locations.append(("backlog", backlog_tickets))
-
+        pairs = collect_tickets_by_location(base, include_done=include_done)
         all_filtered: list[Ticket] = []
         location_map: dict[str, str] = {}
-        for location_name, tickets_dir in locations:
-            tickets = list_tickets(tickets_dir)
-            filtered = apply_dep_filters(
-                apply_filters(apply_priority(filter_tickets_by_status(tickets, status, include_closed))),
-                status_by_id,
-            )
-            for ticket in filtered:
-                location_map[ticket.id] = location_name
-            all_filtered.extend(filtered)
+        for location_name, ticket in pairs:
+            location_map[ticket.id] = location_name
+            all_filtered.append(ticket)
+        all_filtered = apply_all_filters(all_filtered, status_by_id)
+        # Re-build location_map for only the filtered set
+        filtered_ids = {t.id for t in all_filtered}
+        location_map = {tid: loc for tid, loc in location_map.items() if tid in filtered_ids}
 
         if output_json:
             output_tickets_json(all_filtered, location_map)
@@ -586,10 +529,7 @@ def ticket_list(
         # List tickets for current branch only
         tickets_dir = get_tickets_dir(base)
         all_branch_tickets = list_tickets(tickets_dir)
-        tickets = apply_dep_filters(
-            apply_filters(apply_priority(filter_tickets_by_status(all_branch_tickets, status, include_closed))),
-            status_by_id,
-        )
+        tickets = apply_all_filters(all_branch_tickets, status_by_id)
 
         if output_json:
             output_tickets_json(tickets)

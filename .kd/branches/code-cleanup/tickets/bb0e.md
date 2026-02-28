@@ -1,11 +1,12 @@
 ---
 id: "bb0e"
-status: open
+status: closed
 deps: [ffc8]
 links: []
 created: 2026-02-27T11:55:29Z
 type: task
 priority: 2
+closed_at: 2026-02-28T00:26:37Z
 ---
 # Kill legacy runs/ fallback — hard cut (R4)
 

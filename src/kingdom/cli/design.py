@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 from rich.markdown import Markdown
 
-from kingdom.state import branch_root, read_json, resolve_current_run, state_root, write_json
+from kingdom.state import branch_root, read_json, resolve_current_run, write_json
 
 from .display import print_error
 from .helpers import require_project_root
@@ -27,25 +27,16 @@ def get_doc_status(path: Path) -> str:
 
 
 def get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path, Path]:
-    """Get design.md, breakdown.md, state.json paths, preferring branch structure.
+    """Get branch_dir, design.md, breakdown.md, state.json paths.
 
     Returns: (branch_dir, design_path, breakdown_path, state_path)
     """
     branch_dir = branch_root(base, feature)
-    if branch_dir.exists():
-        return (
-            branch_dir,
-            branch_dir / "design.md",
-            branch_dir / "breakdown.md",
-            branch_dir / "state.json",
-        )
-    # Fall back to legacy runs structure
-    legacy_dir = state_root(base) / "runs" / feature
     return (
-        legacy_dir,
-        legacy_dir / "design.md",
-        legacy_dir / "breakdown.md",
-        legacy_dir / "state.json",
+        branch_dir,
+        branch_dir / "design.md",
+        branch_dir / "breakdown.md",
+        branch_dir / "state.json",
     )
 
 

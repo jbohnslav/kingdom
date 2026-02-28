@@ -5,7 +5,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from kingdom import cli
-from kingdom.state import ensure_run_layout, set_current_run
+from kingdom.state import branch_root, ensure_branch_layout, set_current_run
 
 
 def test_cli_design_prints_path() -> None:
@@ -14,10 +14,10 @@ def test_cli_design_prints_path() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
-        design_path = base / ".kd" / "runs" / feature / "design.md"
+        design_path = branch_root(base, feature) / "design.md"
         design_path.write_text("# Design: example-feature\n", encoding="utf-8")
 
         result = runner.invoke(cli.app, ["design"])
@@ -31,7 +31,7 @@ def test_cli_design_fails_when_no_design() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
         result = runner.invoke(cli.app, ["design"])
@@ -45,10 +45,10 @@ def test_cli_design_show_renders_markdown() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
-        design_path = base / ".kd" / "runs" / feature / "design.md"
+        design_path = branch_root(base, feature) / "design.md"
         design_path.write_text("# Design: example-feature\n\nThis is the design.\n", encoding="utf-8")
 
         result = runner.invoke(cli.app, ["design", "show"])
@@ -64,15 +64,15 @@ def test_cli_design_approve_sets_flag() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
-        design_path = base / ".kd" / "runs" / feature / "design.md"
+        design_path = branch_root(base, feature) / "design.md"
         design_path.write_text("# Design: example-feature\n", encoding="utf-8")
 
         result = runner.invoke(cli.app, ["design", "approve"])
         assert result.exit_code == 0
 
-        state_path = base / ".kd" / "runs" / feature / "state.json"
+        state_path = branch_root(base, feature) / "state.json"
         state = json.loads(state_path.read_text())
         assert state.get("design_approved") is True

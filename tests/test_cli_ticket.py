@@ -14,7 +14,6 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     ensure_branch_layout,
-    ensure_run_layout,
     set_current_run,
 )
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
@@ -382,25 +381,6 @@ class TestTicketPull:
             branch_path = branch_root(base, BRANCH) / "tickets" / "kin-dupe.md"
             assert branch_path.exists()
             assert not (backlog_dir / "kin-dupe.md").exists()
-
-    def test_pull_legacy_run_moves_into_legacy_tickets_dir(self) -> None:
-        """With a legacy active run, pull should target .kd/runs/<run>/tickets."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-
-            legacy_run = "legacy-feature"
-            ensure_run_layout(base, legacy_run)
-            set_current_run(base, legacy_run)
-
-            backlog_dir = backlog_root(base) / "tickets"
-            create_ticket_in(backlog_dir, "kin-legacy")
-
-            result = runner.invoke(cli.app, ["tk", "pull", "kin-legacy"])
-
-            assert result.exit_code == 0, result.output
-            legacy_ticket_path = base / ".kd" / "runs" / legacy_run / "tickets" / "kin-legacy.md"
-            assert legacy_ticket_path.exists()
-            assert "Pulled kin-legacy" in result.output
 
     def test_pull_already_on_branch_errors(self) -> None:
         """Pulling a ticket that's already on the current branch should error."""

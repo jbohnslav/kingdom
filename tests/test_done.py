@@ -11,7 +11,6 @@ from kingdom import cli
 from kingdom.state import (
     branch_root,
     ensure_branch_layout,
-    ensure_run_layout,
     read_json,
     set_current_run,
     state_root,
@@ -215,28 +214,6 @@ def test_done_idempotent() -> None:
         assert result.exit_code == 0
 
         state = read_json(branch_root(base, "test-feature") / "state.json")
-        assert state["status"] == "done"
-
-
-def test_done_with_legacy_runs_structure() -> None:
-    """kd done works with legacy .kd/runs/ structure for backwards compatibility."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        subprocess.run(["git", "init", "-q"], check=True)
-
-        ensure_run_layout(base, "legacy-feature")
-        set_current_run(base, "legacy-feature")
-
-        result = runner.invoke(cli.app, ["done"])
-
-        assert result.exit_code == 0
-        assert "Done:" in result.output
-        assert "legacy-feature" in result.output
-
-        # state.json updated in the legacy location
-        legacy_dir = state_root(base) / "runs" / "legacy-feature"
-        state = read_json(legacy_dir / "state.json")
         assert state["status"] == "done"
 
 

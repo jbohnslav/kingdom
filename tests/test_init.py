@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from kingdom import cli
 from kingdom.cli import install_skill
-from kingdom.state import branch_root, ensure_base_layout, ensure_run_layout
+from kingdom.state import branch_root, ensure_base_layout
 
 
 def test_ensure_base_layout_creates_structure(tmp_path: Path) -> None:
@@ -16,7 +16,6 @@ def test_ensure_base_layout_creates_structure(tmp_path: Path) -> None:
     paths = ensure_base_layout(tmp_path)
 
     assert (tmp_path / ".kd").is_dir()
-    assert (tmp_path / ".kd" / "runs").is_dir()
     assert (tmp_path / ".kd" / "worktrees").is_dir()
     assert (tmp_path / ".kd" / ".gitignore").exists()
     init_script = tmp_path / ".kd" / "init-worktree.sh"
@@ -24,7 +23,6 @@ def test_ensure_base_layout_creates_structure(tmp_path: Path) -> None:
     assert init_script.stat().st_mode & 0o111  # executable
 
     assert paths["state_root"] == tmp_path / ".kd"
-    assert paths["runs_root"] == tmp_path / ".kd" / "runs"
     assert paths["worktrees_root"] == tmp_path / ".kd" / "worktrees"
 
 
@@ -44,16 +42,6 @@ def test_ensure_base_layout_skips_gitignore_when_requested(tmp_path: Path) -> No
     assert (tmp_path / ".kd").is_dir()
     assert not (tmp_path / ".kd" / ".gitignore").exists()
     assert paths["gitignore"] is None
-
-
-def test_ensure_run_layout_creates_tickets_and_learnings(tmp_path: Path) -> None:
-    """ensure_run_layout creates tickets/ dir and learnings.md file."""
-    paths = ensure_run_layout(tmp_path, "test-feature")
-
-    assert (tmp_path / ".kd" / "runs" / "test-feature" / "tickets").is_dir()
-    assert (tmp_path / ".kd" / "runs" / "test-feature" / "learnings.md").exists()
-    assert paths["tickets_root"] == tmp_path / ".kd" / "runs" / "test-feature" / "tickets"
-    assert paths["learnings_md"] == tmp_path / ".kd" / "runs" / "test-feature" / "learnings.md"
 
 
 def test_cli_start_kd_base_invalid_hard_fails(tmp_path: Path) -> None:
@@ -266,3 +254,20 @@ def test_install_skill_runtime_error_warns() -> None:
     """install_skill should warn and continue when Path.home() raises RuntimeError."""
     with patch("kingdom.cli.Path.home", side_effect=RuntimeError("no home")):
         cli.install_skill()  # should not raise
+
+
+def test_legacy_runs_guard_shows_clean_cli_error() -> None:
+    """kd status with non-empty .kd/runs/ should show a clean error, not a traceback."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        ensure_base_layout(base)
+        runs_dir = base / ".kd" / "runs"
+        runs_dir.mkdir()
+        (runs_dir / "old-branch").mkdir()
+
+        result = runner.invoke(cli.app, ["status"])
+        assert result.exit_code == 1
+        assert "Legacy .kd/runs/ directory found" in result.output
+        assert "Traceback" not in result.output

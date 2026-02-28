@@ -33,6 +33,7 @@ from kingdom.state import (
     write_json,
 )
 from kingdom.ticket import Ticket, list_tickets
+from kingdom.worktree import create_worktree, remove_worktree, worktree_path_for  # noqa: F401
 
 from .config import check_cli, check_config, config_app, get_doctor_checks
 from .council import council_app
@@ -41,11 +42,9 @@ from .display import error_console, print_error, styled_echo
 from .helpers import VERBOSE, install_skill, is_git_repo, require_project_root, verbose_echo  # noqa: F401
 from .peasant import (  # noqa: F401
     PeasantContext,
-    create_worktree,
     launch_work_background,
     launch_work_tmux,
     peasant_app,
-    remove_worktree,
     resolve_peasant_context,
 )
 from .ticket import format_ticket_line, format_ticket_summary, get_tickets_dir, ticket_app  # noqa: F401
@@ -195,13 +194,8 @@ def done(
 
     # Check if it exists
     if not source_dir.exists():
-        # Fall back to legacy runs structure
-        legacy_dir = state_root(base) / "runs" / feature
-        if legacy_dir.exists():
-            source_dir = legacy_dir
-        else:
-            print_error(f"Branch '{feature}' not found.")
-            raise typer.Exit(code=1)
+        print_error(f"Branch '{feature}' not found.")
+        raise typer.Exit(code=1)
 
     # Check for open tickets
     if not force:
@@ -300,20 +294,11 @@ def status(
         print_error(str(exc))
         raise typer.Exit(code=1) from None
 
-    # Try new branch-based structure first, fall back to legacy
     normalized = normalize_branch_name(feature)
     bdir = branch_root(base, feature)
-
-    if bdir.exists():
-        state_path = bdir / "state.json"
-        design_path = bdir / "design.md"
-        breakdown_path = bdir / "breakdown.md"
-    else:
-        # Fall back to legacy runs structure
-        legacy_dir = state_root(base) / "runs" / feature
-        state_path = legacy_dir / "state.json"
-        design_path = legacy_dir / "design.md"
-        breakdown_path = legacy_dir / "breakdown.md"
+    state_path = bdir / "state.json"
+    design_path = bdir / "design.md"
+    breakdown_path = bdir / "breakdown.md"
 
     # Read state to get original branch name
     if state_path.exists():

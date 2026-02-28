@@ -1,11 +1,11 @@
-"""State layout helpers for Kingdom runs.
+"""State layout helpers for Kingdom branches.
 
 Example:
     from pathlib import Path
-    from kingdom.state import ensure_run_layout, set_current_run, resolve_current_run
+    from kingdom.state import ensure_branch_layout, set_current_run, resolve_current_run
 
     root = Path(".")
-    ensure_run_layout(root, "example")
+    ensure_branch_layout(root, "example")
     set_current_run(root, "example")
     resolve_current_run(root)
 """
@@ -80,79 +80,78 @@ def find_project_root() -> Path:
 
     Raises ValueError with a descriptive message if no root is found.
     """
+    root: Path | None = None
+
     # 1. KD_BASE env var — explicit override, fail loudly if invalid
     kd_base = os.environ.get("KD_BASE")
     if kd_base:
         p = Path(kd_base).resolve()
         if not (p / ".kd").is_dir():
             raise ValueError(f"KD_BASE={kd_base} does not contain a .kd/ directory")
-        return p
+        root = p
 
     # 2. cwd fast path
-    cwd = Path.cwd()
-    if (cwd / ".kd").is_dir():
-        return cwd
+    if root is None:
+        cwd = Path.cwd()
+        if (cwd / ".kd").is_dir():
+            root = cwd
 
     # 3. Walk parent directories
-    for parent in cwd.parents:
-        if (parent / ".kd").is_dir():
-            return parent
+    if root is None:
+        for parent in cwd.parents:
+            if (parent / ".kd").is_dir():
+                root = parent
+                break
 
     # 4. git rev-parse fallback
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            git_root = Path(result.stdout.strip())
-            if (git_root / ".kd").is_dir():
-                return git_root
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    if root is None:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                git_root = Path(result.stdout.strip())
+                if (git_root / ".kd").is_dir():
+                    root = git_root
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
 
     # 5. Error
-    raise ValueError("No .kd/ directory found. Run `kd init` to initialize.")
+    if root is None:
+        raise ValueError("No .kd/ directory found. Run `kd init` to initialize.")
+
+    check_no_legacy_runs(root)
+    return root
 
 
-def runs_root(base: Path) -> Path:
-    """DEPRECATED: Use branches_root() instead."""
-    return state_root(base) / "runs"
+def check_no_legacy_runs(base: Path) -> None:
+    """Raise if a non-empty legacy .kd/runs/ directory exists.
+
+    The runs/ → branches/ migration is complete. If .kd/runs/ still has content,
+    the user must rename it manually before proceeding.
+    """
+    runs_dir = state_root(base) / "runs"
+    if runs_dir.is_dir() and any(runs_dir.iterdir()):
+        raise ValueError("Legacy .kd/runs/ directory found. Rename it to .kd/branches/ manually and retry.")
 
 
 def worktrees_root(base: Path) -> Path:
     return state_root(base) / "worktrees"
 
 
-def run_root(base: Path, feature: str) -> Path:
-    """DEPRECATED: Use branch_root() instead."""
-    return runs_root(base) / feature
-
-
 def logs_root(base: Path, feature: str) -> Path:
-    """Path to logs directory, preferring branch structure."""
-    branch_dir = branch_root(base, feature)
-    if branch_dir.exists():
-        return branch_dir / "logs"
-    return run_root(base, feature) / "logs"
+    return branch_root(base, feature) / "logs"
 
 
 def sessions_root(base: Path, feature: str) -> Path:
-    """Path to sessions directory, preferring branch structure."""
-    branch_dir = branch_root(base, feature)
-    if branch_dir.exists():
-        return branch_dir / "sessions"
-    return run_root(base, feature) / "sessions"
+    return branch_root(base, feature) / "sessions"
 
 
 def tickets_root(base: Path, feature: str) -> Path:
-    """Path to tickets directory, preferring branch structure."""
-    branch_dir = branch_root(base, feature)
-    if branch_dir.exists():
-        return branch_dir / "tickets"
-    return run_root(base, feature) / "tickets"
+    return branch_root(base, feature) / "tickets"
 
 
 def threads_root(base: Path, feature: str) -> Path:
@@ -237,13 +236,8 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 
 def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, Path]:
-    """Create base .kd/ structure. Idempotent.
-
-    Creates both old structure (runs/) and new structure (branches/, backlog/, archive/).
-    """
+    """Create base .kd/ structure. Idempotent."""
     ensure_dir(state_root(base))
-    # Old structure (kept for backwards compatibility)
-    ensure_dir(runs_root(base))
     ensure_dir(worktrees_root(base))
     # New branch-centric structure
     ensure_dir(branches_root(base))
@@ -286,7 +280,6 @@ current
 
     return {
         "state_root": state_root(base),
-        "runs_root": runs_root(base),
         "worktrees_root": worktrees_root(base),
         "branches_root": branches_root(base),
         "backlog_root": backlog_root(base),
@@ -341,51 +334,6 @@ def ensure_branch_layout(base: Path, branch: str) -> Path:
     return branch_dir
 
 
-def ensure_run_layout(base: Path, feature: str) -> dict[str, Path]:
-    """DEPRECATED: Use ensure_branch_layout() instead.
-
-    Create run-specific structure under .kd/runs/<feature>/. Idempotent.
-    """
-    # Ensure base layout exists first
-    base_paths = ensure_base_layout(base)
-
-    run_dir = run_root(base, feature)
-    ensure_dir(run_dir)
-    ensure_dir(logs_root(base, feature))
-    ensure_dir(council_logs_root(base, feature))
-    ensure_dir(sessions_root(base, feature))
-    ensure_dir(tickets_root(base, feature))
-
-    state_path = run_dir / "state.json"
-    if not state_path.exists():
-        write_json(state_path, {})
-
-    design_path = run_dir / "design.md"
-    if not design_path.exists():
-        design_path.write_text("", encoding="utf-8")
-
-    breakdown_path = run_dir / "breakdown.md"
-    if not breakdown_path.exists():
-        breakdown_path.write_text("", encoding="utf-8")
-
-    learnings_path = run_dir / "learnings.md"
-    if not learnings_path.exists():
-        learnings_path.write_text("", encoding="utf-8")
-
-    return {
-        "state_root": base_paths["state_root"],
-        "run_root": run_dir,
-        "logs_root": logs_root(base, feature),
-        "council_logs_root": council_logs_root(base, feature),
-        "sessions_root": sessions_root(base, feature),
-        "tickets_root": tickets_root(base, feature),
-        "state_json": state_path,
-        "design_md": design_path,
-        "breakdown_md": breakdown_path,
-        "learnings_md": learnings_path,
-    }
-
-
 def set_current_run(base: Path, feature: str) -> None:
     ensure_dir(state_root(base))
     current_path = state_root(base) / "current"
@@ -428,14 +376,8 @@ def resolve_current_run(base: Path) -> str:
     if current_path.exists():
         feature = current_path.read_text(encoding="utf-8").strip()
         if feature:
-            # Check new branch-based structure first
             branch_dir = branch_root(base, feature)
             if branch_dir.exists():
-                return feature
-
-            # Fall back to legacy runs structure
-            legacy_run_dir = run_root(base, feature)
-            if legacy_run_dir.exists():
                 return feature
 
             # Stale pointer — fall through to git auto-detect instead of raising

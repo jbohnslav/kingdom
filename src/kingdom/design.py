@@ -8,7 +8,7 @@ Usage example:
 
     from kingdom.design import ensure_design_initialized, parse_design_update_response
 
-    design_path = Path(".kd/runs/example/design.md")
+    design_path = Path(".kd/branches/example/design.md")
     current = ensure_design_initialized(design_path, feature="example")
 
     response_text = "<DESIGN_MD>...</DESIGN_MD><SUMMARY>Updated.</SUMMARY>"

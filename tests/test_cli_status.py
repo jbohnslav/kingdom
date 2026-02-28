@@ -6,7 +6,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from kingdom import cli
-from kingdom.state import ensure_run_layout, set_current_run
+from kingdom.state import branch_root, ensure_branch_layout, set_current_run
 from kingdom.ticket import Ticket, write_ticket
 
 runner = CliRunner()
@@ -16,7 +16,7 @@ def test_status_human_readable_no_tickets() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
         result = runner.invoke(cli.app, ["status"])
@@ -37,11 +37,10 @@ def test_status_human_readable_with_tickets() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
-        tickets_dir = base / ".kd" / "runs" / feature / "tickets"
-        tickets_dir.mkdir(parents=True, exist_ok=True)
+        tickets_dir = branch_root(base, feature) / "tickets"
 
         write_ticket(Ticket(id="kin-0001", title="First", status="open"), tickets_dir / "kin-0001.md")
         write_ticket(Ticket(id="kin-0002", title="Second", status="in_progress"), tickets_dir / "kin-0002.md")
@@ -60,11 +59,10 @@ def test_status_counts_in_review_separately() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
-        tickets_dir = base / ".kd" / "runs" / feature / "tickets"
-        tickets_dir.mkdir(parents=True, exist_ok=True)
+        tickets_dir = branch_root(base, feature) / "tickets"
 
         write_ticket(Ticket(id="kin-0001", title="First", status="open"), tickets_dir / "kin-0001.md")
         write_ticket(Ticket(id="kin-0002", title="Second", status="in_review"), tickets_dir / "kin-0002.md")
@@ -88,7 +86,7 @@ def test_status_json_still_includes_design_breakdown(monkeypatch) -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
         result = runner.invoke(cli.app, ["status", "--json"])
@@ -105,11 +103,10 @@ def test_status_human_readable_shows_assignments_section() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
-        tickets_dir = base / ".kd" / "runs" / feature / "tickets"
-        tickets_dir.mkdir(parents=True, exist_ok=True)
+        tickets_dir = branch_root(base, feature) / "tickets"
 
         write_ticket(
             Ticket(id="kin-0001", title="Assigned", status="open", assignee="hand"),
@@ -131,11 +128,10 @@ def test_status_json_includes_identity_and_assignments() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
-        ensure_run_layout(base, feature)
+        ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
-        tickets_dir = base / ".kd" / "runs" / feature / "tickets"
-        tickets_dir.mkdir(parents=True, exist_ok=True)
+        tickets_dir = branch_root(base, feature) / "tickets"
 
         write_ticket(
             Ticket(id="kin-0001", title="Assigned to hand", status="open", assignee="hand"),
