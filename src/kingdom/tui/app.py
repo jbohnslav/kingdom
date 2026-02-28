@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from textual.app import App, ComposeResult, ScreenStackError
-from textual.binding import BindingType
+from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.css.query import QueryError
 from textual.message import Message
@@ -200,6 +200,13 @@ class InputArea(TextArea):
     Shift+Enter inserts a newline.
     Tab after @partial completes member names.
     """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("alt+left", "cursor_word_left", "Cursor word left", show=False),
+        Binding("alt+right", "cursor_word_right", "Cursor word right", show=False),
+        Binding("alt+shift+left", "cursor_word_left(True)", "Cursor word left select", show=False),
+        Binding("alt+shift+right", "cursor_word_right(True)", "Cursor word right select", show=False),
+    ]
 
     class Submit(Message):
         """Posted when the user presses Enter to send."""

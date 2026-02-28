@@ -521,6 +521,15 @@ class TestInputArea:
         asyncio.run(input_area._on_key(Key("tab", None)))
         assert input_area.text == "@claude "
 
+    def test_alt_arrow_word_bindings(self) -> None:
+        from kingdom.tui.app import InputArea
+
+        keys = {b.key for b in InputArea.BINDINGS if hasattr(b, "key")}
+        assert "alt+left" in keys
+        assert "alt+right" in keys
+        assert "alt+shift+left" in keys
+        assert "alt+shift+right" in keys
+
 
 class TestParseTargets:
     """Test @mention parsing for query dispatch."""
