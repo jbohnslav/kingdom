@@ -22,6 +22,7 @@ Example ticket file format:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shutil
@@ -63,7 +64,7 @@ def clamp_priority(value: int | str | None) -> int:
         p = int(value)
     except (ValueError, TypeError):
         return 2
-    return max(1, min(3, p))
+    return max(0, min(3, p))
 
 
 def generate_ticket_id(tickets_dir: Path | None = None) -> str:
@@ -88,8 +89,10 @@ def coerce_to_str_list(value: str | int | list[str] | None) -> list[str]:
     if value is None:
         return []
     if isinstance(value, list):
-        return [str(item) for item in value]
-    return [str(value)]
+        items = [str(item) for item in value]
+    else:
+        items = [str(value)]
+    return list(dict.fromkeys(items))
 
 
 def parse_ticket(content: str) -> Ticket:
@@ -243,7 +246,14 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False, include_do
                     if tickets_dir.exists():
                         all_tickets.extend(list_tickets(tickets_dir))
 
-    return all_tickets
+    # Deduplicate by ID — branches are collected first, so they win
+    seen: set[str] = set()
+    deduped: list[Ticket] = []
+    for t in all_tickets:
+        if t.id not in seen:
+            seen.add(t.id)
+            deduped.append(t)
+    return deduped
 
 
 def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
@@ -279,17 +289,49 @@ def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
     return newly_unblocked
 
 
+class TicketMatch:
+    """Result from find_ticket — backward-compatible with ``ticket, path = result`` unpacking.
+
+    Supports 2-tuple unpacking (ticket, path) for existing callers,
+    plus a ``.location`` attribute for the search origin.
+    """
+
+    __slots__ = ("location", "path", "ticket")
+
+    def __init__(self, ticket: Ticket, path: Path, location: str) -> None:
+        self.ticket = ticket
+        self.path = path
+        self.location = location
+
+    def __iter__(self):
+        yield self.ticket
+        yield self.path
+
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index: int) -> Ticket | Path:
+        if index == 0:
+            return self.ticket
+        if index == 1:
+            return self.path
+        raise IndexError(index)
+
+    def __repr__(self) -> str:
+        return f"TicketMatch(ticket={self.ticket!r}, path={self.path!r}, location={self.location!r})"
+
+
 class AmbiguousTicketMatch(Exception):
     """Raised when a partial ID matches multiple tickets."""
 
-    def __init__(self, partial_id: str, matches: list[tuple[Ticket, Path]]) -> None:
+    def __init__(self, partial_id: str, matches: list[TicketMatch]) -> None:
         self.partial_id = partial_id
         self.matches = matches
-        match_ids = [t.id for t, _ in matches]
+        match_ids = [m.ticket.id for m in matches]
         super().__init__(f"Partial ID '{partial_id}' matches multiple tickets: {', '.join(match_ids)}")
 
 
-def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> tuple[Ticket, Path] | None:
+def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> TicketMatch | None:
     """Find a ticket by full ID or prefix across branch/backlog/archive locations."""
     from kingdom.state import archive_root, backlog_root, branch_root, branches_root
 
@@ -297,25 +339,37 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> tuple
     if search_id.startswith("kin-"):
         search_id = search_id[4:]
 
-    matches: list[tuple[Ticket, Path]] = []
-    search_dirs: list[Path] = []
+    matches: list[TicketMatch] = []
+    search_dirs: list[tuple[Path, str]] = []
 
     if branch:
         scoped = branch_root(base, branch) / "tickets"
         if scoped.exists():
-            search_dirs.append(scoped)
+            search_dirs.append((scoped, f"branch:{branch}"))
     else:
+        # Put current branch first so dedup prefers it
+        from kingdom.state import resolve_current_run
+
+        current: str | None = None
+        with contextlib.suppress(Exception):
+            current = resolve_current_run(base)
+
         branches_dir = branches_root(base)
         if branches_dir.exists():
+            if current:
+                current_tickets = branch_root(base, current) / "tickets"
+                if current_tickets.exists():
+                    search_dirs.append((current_tickets, f"branch:{current}"))
+
             for branch_dir in branches_dir.iterdir():
-                if branch_dir.is_dir():
+                if branch_dir.is_dir() and branch_dir.name != current:
                     tickets_dir = branch_dir / "tickets"
                     if tickets_dir.exists():
-                        search_dirs.append(tickets_dir)
+                        search_dirs.append((tickets_dir, f"branch:{branch_dir.name}"))
 
     backlog_tickets = backlog_root(base) / "tickets"
     if backlog_tickets.exists():
-        search_dirs.append(backlog_tickets)
+        search_dirs.append((backlog_tickets, "backlog"))
 
     archive_dir = archive_root(base)
     if archive_dir.exists():
@@ -323,9 +377,9 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> tuple
             if archive_item.is_dir():
                 tickets_dir = archive_item / "tickets"
                 if tickets_dir.exists():
-                    search_dirs.append(tickets_dir)
+                    search_dirs.append((tickets_dir, f"archive:{archive_item.name}"))
 
-    for search_dir in search_dirs:
+    for search_dir, location in search_dirs:
         for ticket_file in search_dir.glob("*.md"):
             file_id = ticket_file.stem.lower()
             if file_id.startswith("kin-"):
@@ -336,17 +390,25 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> tuple
             if file_id_suffix.startswith(search_id) or file_id.startswith(f"kin-{search_id}"):
                 try:
                     ticket = read_ticket(ticket_file)
-                    matches.append((ticket, ticket_file))
+                    matches.append(TicketMatch(ticket, ticket_file, location))
                 except (ValueError, FileNotFoundError):
                     continue
 
     if not matches:
         return None
 
-    if len(matches) > 1:
-        raise AmbiguousTicketMatch(partial_id, matches)
+    # Deduplicate by ticket ID — keep first occurrence (branch → backlog → archive)
+    seen: set[str] = set()
+    deduped: list[TicketMatch] = []
+    for m in matches:
+        if m.ticket.id not in seen:
+            seen.add(m.ticket.id)
+            deduped.append(m)
 
-    return matches[0]
+    if len(deduped) > 1:
+        raise AmbiguousTicketMatch(partial_id, deduped)
+
+    return deduped[0]
 
 
 def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:

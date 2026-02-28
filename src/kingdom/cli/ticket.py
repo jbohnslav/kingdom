@@ -329,7 +329,7 @@ def render_ticket_panel(
 def ticket_create(
     title: Annotated[str, typer.Argument(help="Ticket title.")],
     description: Annotated[str | None, typer.Option("-d", "--description", help="Ticket description.")] = None,
-    priority: Annotated[int, typer.Option("-p", "--priority", help="Priority (1-3, 1 is highest).")] = 2,
+    priority: Annotated[int, typer.Option("-p", "--priority", help="Priority (0-3, 0 is highest).")] = 2,
     ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
@@ -342,10 +342,10 @@ def ticket_create(
 
     base = require_project_root()
 
-    # Validate priority range (1-3)
-    if priority < 1 or priority > 3:
-        sys.stderr.write(f"Warning: Priority {priority} outside valid range (1-3), clamping.\n")
-        priority = max(1, min(3, priority))
+    # Validate priority range (0-3)
+    if priority < 0 or priority > 3:
+        sys.stderr.write(f"Warning: Priority {priority} outside valid range (0-3), clamping.\n")
+        priority = max(0, min(3, priority))
 
     # Ensure base layout exists
     ensure_base_layout(base)
@@ -425,7 +425,7 @@ def ticket_list(
     ] = None,
     priority: Annotated[
         int | None,
-        typer.Option("--priority", "-p", help="Filter by priority (1-3)."),
+        typer.Option("--priority", "-p", help="Filter by priority (0-3)."),
     ] = None,
     backlog: Annotated[bool, typer.Option("--backlog", help="List open tickets in backlog only.")] = False,
     assignee: Annotated[str | None, typer.Option("--assignee", "-A", help="Filter by assignee.")] = None,
@@ -448,8 +448,8 @@ def ticket_list(
             print_error(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
             raise typer.Exit(code=1)
 
-    if priority is not None and priority not in (1, 2, 3):
-        print_error(f"Invalid priority {priority}. Must be 1, 2, or 3.")
+    if priority is not None and priority not in (0, 1, 2, 3):
+        print_error(f"Invalid priority {priority}. Must be 0, 1, 2, or 3.")
         raise typer.Exit(code=1)
 
     def apply_all_filters(tickets: list[Ticket], status_by_id: dict[str, str]) -> list[Ticket]:

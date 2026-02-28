@@ -10,8 +10,10 @@ import pytest
 from kingdom.ticket import (
     AmbiguousTicketMatch,
     Ticket,
+    TicketMatch,
     append_worklog_entry,
     coerce_to_str_list,
+    collect_all_tickets,
     collect_tickets_by_location,
     filter_tickets,
     filter_tickets_by_deps,
@@ -365,8 +367,8 @@ Body
         ticket = parse_ticket(content)
         assert ticket.priority == 3
 
-    def test_priority_clamped_low(self) -> None:
-        """Priority below 1 is clamped to 1."""
+    def test_priority_zero_allowed(self) -> None:
+        """Priority 0 is valid and preserved."""
         content = """---
 id: kin-test
 status: open
@@ -381,10 +383,10 @@ priority: 0
 Body
 """
         ticket = parse_ticket(content)
-        assert ticket.priority == 1
+        assert ticket.priority == 0
 
     def test_priority_clamped_negative(self) -> None:
-        """Negative priority is clamped to 1."""
+        """Negative priority is clamped to 0."""
         content = """---
 id: kin-test
 status: open
@@ -399,7 +401,7 @@ priority: -5
 Body
 """
         ticket = parse_ticket(content)
-        assert ticket.priority == 1
+        assert ticket.priority == 0
 
 
 class TestSerializeTicket:
@@ -676,7 +678,6 @@ class TestListTickets:
         tickets_dir.mkdir()
 
         created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
-        # Use priorities 1, 2, 3 to avoid priority 0 (known parse_ticket bug where 0 is treated as falsy)
         for priority, suffix in [(3, "low"), (1, "high"), (2, "medium")]:
             ticket = Ticket(
                 id=f"kin-{suffix}",
@@ -1430,3 +1431,149 @@ class TestCollectTicketsByLocation:
         pairs = collect_tickets_by_location(tmp_path, include_done=True)
         ids = [t.id for _, t in pairs]
         assert "ddd4" in ids
+
+
+class TestPriorityZero:
+    """Priority 0 should survive parse/serialize round-trip."""
+
+    def test_priority_zero_preserved(self) -> None:
+        ticket = Ticket(id="p0", status="open", title="P0 ticket", priority=0)
+        content = serialize_ticket(ticket)
+        parsed = parse_ticket(content)
+        assert parsed.priority == 0
+
+    def test_clamp_priority_allows_zero(self) -> None:
+        from kingdom.ticket import clamp_priority
+
+        assert clamp_priority(0) == 0
+        assert clamp_priority(-1) == 0
+        assert clamp_priority(4) == 3
+
+
+class TestFindTicketDedup:
+    """find_ticket should deduplicate by ID and prefer branch copies."""
+
+    def test_same_id_in_branch_and_backlog_returns_branch(self, tmp_path: Path) -> None:
+        """Same ticket in branch and backlog returns the branch copy, not raise."""
+        from kingdom.state import ensure_base_layout, ensure_branch_layout
+
+        ensure_base_layout(tmp_path)
+        ensure_branch_layout(tmp_path, "my-branch")
+
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="dup1", status="open", created=created, title="Dup ticket")
+
+        # Write same ticket to branch and backlog
+        write_ticket(ticket, tmp_path / ".kd" / "branches" / "my-branch" / "tickets" / "dup1.md")
+        write_ticket(ticket, tmp_path / ".kd" / "backlog" / "tickets" / "dup1.md")
+
+        result = find_ticket(tmp_path, "dup1")
+        assert result is not None
+        assert isinstance(result, TicketMatch)
+        assert result.ticket.id == "dup1"
+        assert result.location.startswith("branch:")
+
+    def test_ticket_match_location_field(self, tmp_path: Path) -> None:
+        """TicketMatch exposes the location field."""
+        from kingdom.state import ensure_base_layout, ensure_branch_layout
+
+        ensure_base_layout(tmp_path)
+        ensure_branch_layout(tmp_path, "feat")
+
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="loc1", status="open", created=created, title="Loc ticket")
+        write_ticket(ticket, tmp_path / ".kd" / "branches" / "feat" / "tickets" / "loc1.md")
+
+        result = find_ticket(tmp_path, "loc1")
+        assert result is not None
+        assert result.location == "branch:feat"
+
+    def test_ticket_match_backlog_location(self, tmp_path: Path) -> None:
+        """Backlog tickets get location='backlog'."""
+        from kingdom.state import ensure_base_layout
+
+        ensure_base_layout(tmp_path)
+
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="bl01", status="open", created=created, title="Backlog ticket")
+        write_ticket(ticket, tmp_path / ".kd" / "backlog" / "tickets" / "bl01.md")
+
+        result = find_ticket(tmp_path, "bl01")
+        assert result is not None
+        assert result.location == "backlog"
+
+    def test_current_branch_preferred_over_other_branches(self, tmp_path: Path) -> None:
+        """When same ticket exists in current branch and another branch, current branch wins."""
+        from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
+
+        ensure_base_layout(tmp_path)
+        # Use names that force alphabetical order to differ from current-branch order
+        ensure_branch_layout(tmp_path, "aaa-other")
+        ensure_branch_layout(tmp_path, "zzz-current")
+        set_current_run(tmp_path, "zzz-current")
+
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="same1", status="open", created=created, title="Same ticket")
+
+        write_ticket(ticket, tmp_path / ".kd" / "branches" / "aaa-other" / "tickets" / "same1.md")
+        write_ticket(ticket, tmp_path / ".kd" / "branches" / "zzz-current" / "tickets" / "same1.md")
+
+        result = find_ticket(tmp_path, "same1")
+        assert result is not None
+        assert result.location == "branch:zzz-current"
+
+    def test_ticket_match_unpacking_still_works(self, tmp_path: Path) -> None:
+        """Existing callers using ``ticket, path = result`` still work."""
+        from kingdom.state import ensure_base_layout
+
+        ensure_base_layout(tmp_path)
+
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="unp1", status="open", created=created, title="Unpack test")
+        write_ticket(ticket, tmp_path / ".kd" / "backlog" / "tickets" / "unp1.md")
+
+        result = find_ticket(tmp_path, "unp1")
+        assert result is not None
+        ticket, path = result
+        assert ticket.id == "unp1"
+        assert path.name == "unp1.md"
+
+
+class TestCollectAllTicketsDedup:
+    """collect_all_tickets should deduplicate by ticket ID."""
+
+    def test_same_ticket_in_branch_and_backlog(self, tmp_path: Path) -> None:
+        """Same ticket in branch + backlog returns only one copy (branch)."""
+        from kingdom.state import ensure_base_layout, ensure_branch_layout
+
+        ensure_base_layout(tmp_path)
+        ensure_branch_layout(tmp_path, "my-branch")
+
+        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
+        ticket = Ticket(id="dup2", status="open", created=created, title="Dup ticket")
+
+        write_ticket(ticket, tmp_path / ".kd" / "branches" / "my-branch" / "tickets" / "dup2.md")
+        write_ticket(ticket, tmp_path / ".kd" / "backlog" / "tickets" / "dup2.md")
+
+        all_tickets = collect_all_tickets(tmp_path)
+        ids = [t.id for t in all_tickets]
+        assert ids.count("dup2") == 1
+
+
+class TestCoerceToStrListDedup:
+    """coerce_to_str_list should return order-preserved unique values."""
+
+    def test_duplicates_removed(self) -> None:
+        assert coerce_to_str_list(["a", "b", "a", "c"]) == ["a", "b", "c"]
+
+    def test_order_preserved(self) -> None:
+        assert coerce_to_str_list(["c", "b", "a", "b"]) == ["c", "b", "a"]
+
+    def test_single_value_unchanged(self) -> None:
+        assert coerce_to_str_list("x") == ["x"]
+
+    def test_none_unchanged(self) -> None:
+        assert coerce_to_str_list(None) == []
+
+    def test_no_duplicates_unchanged(self) -> None:
+        assert coerce_to_str_list(["a", "b", "c"]) == ["a", "b", "c"]
