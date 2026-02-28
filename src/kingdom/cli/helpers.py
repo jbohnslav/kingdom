@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from kingdom.state import find_project_root, read_json, state_root
+from kingdom.state import find_project_root
 from kingdom.ticket import AmbiguousTicketMatch, Ticket, find_ticket
 
 from .display import print_error
@@ -46,28 +46,6 @@ def resolve_ticket_or_exit(
         print_error(f"{not_found_label}: {ticket_id}")
         raise typer.Exit(code=1)
     return result
-
-
-def run_init_script(base: Path, worktree_path: Path, *, step_prefix: str = "") -> None:
-    """Run ``.kd/init-worktree.sh`` if present and executable."""
-    init_script = state_root(base) / "init-worktree.sh"
-    if init_script.exists() and os.access(init_script, os.X_OK):
-        typer.echo(f"{step_prefix}Running init-worktree.sh...")
-        init_result = subprocess.run(
-            [str(init_script), str(worktree_path)],
-            capture_output=True,
-            text=True,
-        )
-        if init_result.stdout.strip():
-            typer.echo(init_result.stdout.strip())
-        if init_result.returncode != 0:
-            typer.echo(f"Warning: init-worktree.sh failed (exit {init_result.returncode})")
-            if init_result.stderr.strip():
-                typer.echo(init_result.stderr.strip())
-    elif init_script.exists():
-        typer.echo(f"{step_prefix}init-worktree.sh exists but is not executable, skipping.")
-    else:
-        typer.echo(f"{step_prefix}No init-worktree.sh found, skipping dependency refresh.")
 
 
 def peasant_session_name(ticket_id: str) -> str:
@@ -135,15 +113,6 @@ def ensure_feature_branch(feature: str) -> None:
         return
 
     typer.echo(f"Warning: current branch '{current}' does not match feature '{feature}'.")
-
-
-def is_branch_done(branch_dir: Path) -> bool:
-    """Check if a branch directory has status 'done' in its state.json."""
-    state_path = branch_dir / "state.json"
-    if state_path.exists():
-        state = read_json(state_path)
-        return state.get("status") == "done"
-    return False
 
 
 def install_skill() -> None:

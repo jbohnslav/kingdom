@@ -57,7 +57,7 @@ class TestPeasantStart:
 
             # Mock worktree creation
             with (
-                patch("kingdom.cli.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
@@ -91,7 +91,7 @@ class TestPeasantStart:
 
             # Mock worktree creation - ensure it is NOT called
             with (
-                patch("kingdom.cli.create_worktree") as mock_create_worktree,
+                patch("kingdom.cli.peasant.create_worktree") as mock_create_worktree,
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
@@ -449,7 +449,7 @@ class TestPeasantClean:
             setup_project(base)
             create_test_ticket(base)
 
-            with patch("kingdom.cli.remove_worktree") as mock_remove:
+            with patch("kingdom.cli.peasant.remove_worktree") as mock_remove:
                 result = runner.invoke(cli.app, ["peasant", "clean", "--force", "kin-test"])
 
             assert result.exit_code == 0
@@ -462,7 +462,7 @@ class TestPeasantClean:
             setup_project(base)
             create_test_ticket(base)
 
-            with patch("kingdom.cli.remove_worktree") as mock_remove:
+            with patch("kingdom.cli.peasant.remove_worktree") as mock_remove:
                 result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"], input="y\n")
 
             assert result.exit_code == 0
@@ -475,7 +475,7 @@ class TestPeasantClean:
             setup_project(base)
             create_test_ticket(base)
 
-            with patch("kingdom.cli.remove_worktree") as mock_remove:
+            with patch("kingdom.cli.peasant.remove_worktree") as mock_remove:
                 result = runner.invoke(cli.app, ["peasant", "clean", "kin-test"], input="n\n")
 
             assert result.exit_code != 0
@@ -487,7 +487,7 @@ class TestPeasantClean:
             setup_project(base)
             create_test_ticket(base)
 
-            with patch("kingdom.cli.remove_worktree", side_effect=FileNotFoundError("No worktree")):
+            with patch("kingdom.cli.peasant.remove_worktree", side_effect=FileNotFoundError("No worktree")):
                 result = runner.invoke(cli.app, ["peasant", "clean", "--force", "kin-test"])
 
             assert result.exit_code == 1
@@ -1465,7 +1465,7 @@ class TestBacklogAutoPull:
             mock_proc.pid = 12345
 
             with (
-                patch("kingdom.cli.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-back"),
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-back"),
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
@@ -1509,7 +1509,7 @@ class TestBacklogAutoPull:
             mock_proc.pid = 12345
 
             with (
-                patch("kingdom.cli.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-list"),
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-list"),
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),

@@ -12,10 +12,15 @@ from kingdom.ticket import (
     Ticket,
     append_worklog_entry,
     coerce_to_str_list,
+    collect_tickets_by_location,
+    filter_tickets,
+    filter_tickets_by_deps,
+    filter_tickets_by_status,
     find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
     get_ticket_location,
+    insert_worklog_entry,
     list_tickets,
     move_ticket,
     parse_ticket,
@@ -1238,3 +1243,190 @@ Some notes here.
 
         # Entry should contain a timestamp within the test window
         assert before.strftime("%Y-%m-%d %H:%M") in entry or after.strftime("%Y-%m-%d %H:%M") in entry
+
+
+class TestInsertWorklogEntry:
+    """Tests for insert_worklog_entry pure string transform."""
+
+    def test_creates_worklog_section_when_missing(self) -> None:
+        content = "---\nid: test\n---\n# Title\n\nBody text.\n"
+        result = insert_worklog_entry(content, "- 2026-02-27 12:00 — did stuff")
+        assert "## Worklog" in result
+        assert "- 2026-02-27 12:00 — did stuff" in result
+
+    def test_appends_to_existing_worklog(self) -> None:
+        content = "---\nid: test\n---\n# Title\n\n## Worklog\n\n- 2026-02-27 10:00 — first\n"
+        result = insert_worklog_entry(content, "- 2026-02-27 11:00 — second")
+        assert "- 2026-02-27 10:00 — first" in result
+        assert "- 2026-02-27 11:00 — second" in result
+        # Second entry should come after the first
+        assert result.index("first") < result.index("second")
+
+    def test_inserts_before_next_section(self) -> None:
+        content = "---\nid: test\n---\n# Title\n\n## Worklog\n\n- old entry\n\n## Notes\n\nSome notes.\n"
+        result = insert_worklog_entry(content, "- new entry")
+        assert result.index("new entry") < result.index("## Notes")
+
+    def test_returns_string_not_modifies_in_place(self) -> None:
+        content = "---\nid: test\n---\n# Title\n"
+        result = insert_worklog_entry(content, "- entry")
+        assert result != content
+        assert "- entry" in result
+
+
+class TestFilterTicketsByStatus:
+    """Tests for filter_tickets_by_status."""
+
+    def _tickets(self) -> list[Ticket]:
+        return [
+            Ticket(id="a", status="open", title="A"),
+            Ticket(id="b", status="in_progress", title="B"),
+            Ticket(id="c", status="closed", title="C"),
+            Ticket(id="d", status="open", title="D"),
+        ]
+
+    def test_filter_by_specific_status(self) -> None:
+        result = filter_tickets_by_status(self._tickets(), "open", include_closed=False)
+        assert [t.id for t in result] == ["a", "d"]
+
+    def test_exclude_closed_by_default(self) -> None:
+        result = filter_tickets_by_status(self._tickets(), None, include_closed=False)
+        assert all(t.status != "closed" for t in result)
+        assert len(result) == 3
+
+    def test_include_closed(self) -> None:
+        result = filter_tickets_by_status(self._tickets(), None, include_closed=True)
+        assert len(result) == 4
+
+    def test_filter_by_closed_status(self) -> None:
+        result = filter_tickets_by_status(self._tickets(), "closed", include_closed=False)
+        assert [t.id for t in result] == ["c"]
+
+
+class TestFilterTickets:
+    """Tests for filter_tickets (assignee, tag, priority)."""
+
+    def _tickets(self) -> list[Ticket]:
+        return [
+            Ticket(id="a", status="open", title="A", assignee="alice", tags=["frontend"], priority=1),
+            Ticket(id="b", status="open", title="B", assignee="bob", tags=["backend"], priority=2),
+            Ticket(id="c", status="open", title="C", assignee="alice", tags=["backend", "frontend"], priority=1),
+            Ticket(id="d", status="open", title="D", tags=[], priority=3),
+        ]
+
+    def test_filter_by_assignee(self) -> None:
+        result = filter_tickets(self._tickets(), assignee="alice")
+        assert [t.id for t in result] == ["a", "c"]
+
+    def test_filter_by_tag(self) -> None:
+        result = filter_tickets(self._tickets(), tag="backend")
+        assert [t.id for t in result] == ["b", "c"]
+
+    def test_filter_by_priority(self) -> None:
+        result = filter_tickets(self._tickets(), priority=1)
+        assert [t.id for t in result] == ["a", "c"]
+
+    def test_combined_filters(self) -> None:
+        result = filter_tickets(self._tickets(), assignee="alice", tag="frontend", priority=1)
+        assert [t.id for t in result] == ["a", "c"]
+
+    def test_no_filters_returns_all(self) -> None:
+        tickets = self._tickets()
+        result = filter_tickets(tickets)
+        assert len(result) == len(tickets)
+
+    def test_no_match_returns_empty(self) -> None:
+        result = filter_tickets(self._tickets(), assignee="nobody")
+        assert result == []
+
+
+class TestFilterTicketsByDeps:
+    """Tests for filter_tickets_by_deps."""
+
+    def _tickets(self) -> list[Ticket]:
+        return [
+            Ticket(id="a", status="open", title="No deps"),
+            Ticket(id="b", status="open", title="Dep on closed", deps=["x"]),
+            Ticket(id="c", status="open", title="Dep on open", deps=["y"]),
+            Ticket(id="d", status="in_review", title="In review no deps"),
+            Ticket(id="e", status="closed", title="Already closed"),
+        ]
+
+    def _status_map(self) -> dict[str, str]:
+        return {"x": "closed", "y": "open", "a": "open", "b": "open", "c": "open", "d": "in_review", "e": "closed"}
+
+    def test_ready_returns_unblocked_non_review(self) -> None:
+        result = filter_tickets_by_deps(self._tickets(), self._status_map(), ready=True)
+        ids = [t.id for t in result]
+        assert "a" in ids  # no deps
+        assert "b" in ids  # dep on closed ticket
+        assert "c" not in ids  # dep on open ticket
+        assert "d" not in ids  # in_review excluded from ready
+        assert "e" not in ids  # closed excluded
+
+    def test_blocked_returns_tickets_with_open_deps(self) -> None:
+        result = filter_tickets_by_deps(self._tickets(), self._status_map(), blocked=True)
+        ids = [t.id for t in result]
+        assert ids == ["c"]
+
+    def test_neither_ready_nor_blocked_returns_all(self) -> None:
+        tickets = self._tickets()
+        result = filter_tickets_by_deps(tickets, self._status_map())
+        assert len(result) == len(tickets)
+
+
+class TestCollectTicketsByLocation:
+    """Tests for collect_tickets_by_location."""
+
+    def test_collects_from_branches_and_backlog(self, tmp_path: Path) -> None:
+        from kingdom.state import ensure_base_layout, ensure_branch_layout
+
+        ensure_base_layout(tmp_path)
+        ensure_branch_layout(tmp_path, "feat-one")
+
+        # Create tickets in branch and backlog
+        from kingdom.state import backlog_root, branch_root
+
+        branch_tickets = branch_root(tmp_path, "feat-one") / "tickets"
+        t1 = Ticket(id="aaa1", status="open", title="Branch ticket")
+        write_ticket(t1, branch_tickets / "aaa1.md")
+
+        backlog_tickets = backlog_root(tmp_path) / "tickets"
+        t2 = Ticket(id="bbb2", status="open", title="Backlog ticket")
+        write_ticket(t2, backlog_tickets / "bbb2.md")
+
+        pairs = collect_tickets_by_location(tmp_path)
+        labels = {tid: loc for loc, t in pairs for tid in [t.id]}
+        assert labels["aaa1"].startswith("branch:")
+        assert labels["bbb2"] == "backlog"
+
+    def test_excludes_done_branches_by_default(self, tmp_path: Path) -> None:
+        from kingdom.state import ensure_base_layout, ensure_branch_layout, write_json
+
+        ensure_base_layout(tmp_path)
+        branch_dir = ensure_branch_layout(tmp_path, "done-branch")
+
+        # Mark branch as done
+        write_json(branch_dir / "state.json", {"status": "done"})
+
+        t = Ticket(id="ccc3", status="open", title="Done branch ticket")
+        write_ticket(t, branch_dir / "tickets" / "ccc3.md")
+
+        pairs = collect_tickets_by_location(tmp_path)
+        ids = [t.id for _, t in pairs]
+        assert "ccc3" not in ids
+
+    def test_includes_done_branches_when_requested(self, tmp_path: Path) -> None:
+        from kingdom.state import ensure_base_layout, ensure_branch_layout, write_json
+
+        ensure_base_layout(tmp_path)
+        branch_dir = ensure_branch_layout(tmp_path, "done-branch")
+
+        write_json(branch_dir / "state.json", {"status": "done"})
+
+        t = Ticket(id="ddd4", status="open", title="Done branch ticket")
+        write_ticket(t, branch_dir / "tickets" / "ddd4.md")
+
+        pairs = collect_tickets_by_location(tmp_path, include_done=True)
+        ids = [t.id for _, t in pairs]
+        assert "ddd4" in ids

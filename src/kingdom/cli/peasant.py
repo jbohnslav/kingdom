@@ -24,14 +24,16 @@ from kingdom.state import (
     branch_root,
     logs_root,
     normalize_branch_name,
-    read_json,
     resolve_current_run,
-    state_root,
-    write_json,
 )
 from kingdom.ticket import Ticket, move_ticket, write_ticket
+from kingdom.worktree import (
+    create_worktree,
+    remove_worktree,
+    run_init_script,
+    worktree_path_for,
+)
 
-from .design import get_design_paths
 from .display import error_console, print_error, styled_echo
 from .helpers import (
     is_process_alive,
@@ -39,7 +41,6 @@ from .helpers import (
     peasant_thread_id,
     require_project_root,
     resolve_ticket_or_exit,
-    run_init_script,
     verbose_echo,
 )
 
@@ -54,91 +55,6 @@ class PeasantContext(NamedTuple):
     ticket_path: Path
     full_ticket_id: str
     feature: str
-
-
-def worktree_path_for(base: Path, full_ticket_id: str) -> Path:
-    """Return the canonical worktree path for a ticket (may not exist yet)."""
-    return state_root(base) / "worktrees" / full_ticket_id
-
-
-def create_worktree(base: Path, full_ticket_id: str) -> Path:
-    """Create a git worktree for a ticket. Returns the worktree path."""
-    worktree_path = worktree_path_for(base, full_ticket_id)
-
-    if worktree_path.exists():
-        return worktree_path
-
-    worktrees_dir = worktree_path.parent
-    worktrees_dir.mkdir(parents=True, exist_ok=True)
-
-    branch_name = f"ticket/{full_ticket_id}"
-
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    branch_exists = result.returncode == 0
-
-    if branch_exists:
-        typer.echo(f"Creating worktree from existing branch {branch_name}...")
-        result = subprocess.run(
-            ["git", "worktree", "add", str(worktree_path), branch_name],
-            capture_output=True,
-            text=True,
-        )
-    else:
-        typer.echo(f"Creating worktree with new branch {branch_name}...")
-        result = subprocess.run(
-            ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
-            capture_output=True,
-            text=True,
-        )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Error creating worktree: {result.stderr.strip()}")
-
-    run_init_script(base, worktree_path)
-
-    try:
-        feature = resolve_current_run(base)
-        _, state_path = get_design_paths(base, feature)
-        state = read_json(state_path) if state_path.exists() else {}
-        worktrees = state.get("worktrees", {})
-        worktrees[full_ticket_id] = str(worktree_path)
-        state["worktrees"] = worktrees
-        write_json(state_path, state)
-    except RuntimeError as exc:
-        typer.echo(f"Warning: could not record worktree in state.json: {exc}")
-
-    return worktree_path
-
-
-def remove_worktree(base: Path, full_ticket_id: str) -> None:
-    """Remove a git worktree for a ticket."""
-    worktree_path = worktree_path_for(base, full_ticket_id)
-
-    if not worktree_path.exists():
-        raise FileNotFoundError(f"No worktree found for {full_ticket_id}")
-
-    result = subprocess.run(
-        ["git", "worktree", "remove", "--force", str(worktree_path)],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Error removing worktree: {result.stderr.strip()}")
-
-    try:
-        feature = resolve_current_run(base)
-        _, state_path = get_design_paths(base, feature)
-        state = read_json(state_path) if state_path.exists() else {}
-        worktrees = state.get("worktrees", {})
-        worktrees.pop(full_ticket_id, None)
-        state["worktrees"] = worktrees
-        write_json(state_path, state)
-    except RuntimeError as exc:
-        typer.echo(f"Warning: could not update state.json worktree map: {exc}")
 
 
 def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull: bool = False) -> PeasantContext:
@@ -373,7 +289,7 @@ def peasant_start(
         typer.echo(f"Running in hand mode (serial) on {base}")
     else:
         try:
-            worktree_path = _cli.create_worktree(base, full_ticket_id)
+            worktree_path = create_worktree(base, full_ticket_id, log=typer.echo)
         except RuntimeError as exc:
             print_error(str(exc))
             raise typer.Exit(code=1) from None
@@ -703,7 +619,6 @@ def peasant_clean(
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Remove the git worktree for a ticket."""
-    import kingdom.cli as _cli
 
     ctx = resolve_peasant_context(ticket_id)
 
@@ -711,7 +626,7 @@ def peasant_clean(
         typer.confirm(f"Remove worktree for {ctx.full_ticket_id}?", abort=True)
 
     try:
-        _cli.remove_worktree(ctx.base, ctx.full_ticket_id)
+        remove_worktree(ctx.base, ctx.full_ticket_id)
         typer.echo(f"{ctx.full_ticket_id}: worktree removed")
     except FileNotFoundError:
         print_error(f"No worktree found for {ctx.full_ticket_id}")
@@ -771,7 +686,7 @@ def peasant_sync(
         typer.echo(merge_out)
 
     # Run init-worktree.sh to refresh dependencies
-    run_init_script(base, worktree_path, step_prefix="[2/2] ")
+    run_init_script(base, worktree_path, step_prefix="[2/2] ", log=typer.echo)
 
     typer.echo(f"{full_ticket_id}: sync complete")
 

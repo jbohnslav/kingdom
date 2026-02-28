@@ -366,27 +366,13 @@ def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
     return new_path
 
 
-def append_worklog_entry(
-    path: Path,
-    message: str,
-    timestamp: datetime | None = None,
-    timestamp_text: str | None = None,
-) -> str:
-    """Append to the ticket's ``## Worklog`` section (created if missing).
+def insert_worklog_entry(content: str, entry: str) -> str:
+    """Insert an entry into the ``## Worklog`` section of ticket markdown.
 
-    Works on raw markdown to avoid round-trip issues with frontmatter parsing.
+    Pure string transform — finds the ``## Worklog`` heading, inserts the entry
+    at the end of that section (before the next ``## `` heading or EOF), and
+    returns the new content.  Creates the section if it doesn't exist.
     """
-    if not path.exists():
-        raise FileNotFoundError(f"Ticket file not found: {path}")
-
-    if timestamp is None:
-        timestamp = datetime.now(UTC)
-
-    if timestamp_text is None:
-        timestamp_text = timestamp.strftime("%Y-%m-%d %H:%M")
-    entry = f"- {timestamp_text} — {message}"
-
-    content = path.read_text(encoding="utf-8")
     lines = content.split("\n")
 
     worklog_idx = None
@@ -420,7 +406,32 @@ def append_worklog_entry(
     if lines and lines[-1] != "":
         lines.append("")
 
-    path.write_text("\n".join(lines), encoding="utf-8")
+    return "\n".join(lines)
+
+
+def append_worklog_entry(
+    path: Path,
+    message: str,
+    timestamp: datetime | None = None,
+    timestamp_text: str | None = None,
+) -> str:
+    """Append to the ticket's ``## Worklog`` section (created if missing).
+
+    Thin I/O wrapper around :func:`insert_worklog_entry`.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Ticket file not found: {path}")
+
+    if timestamp is None:
+        timestamp = datetime.now(UTC)
+
+    if timestamp_text is None:
+        timestamp_text = timestamp.strftime("%Y-%m-%d %H:%M")
+    entry = f"- {timestamp_text} — {message}"
+
+    content = path.read_text(encoding="utf-8")
+    new_content = insert_worklog_entry(content, entry)
+    path.write_text(new_content, encoding="utf-8")
     return entry
 
 
@@ -429,3 +440,107 @@ def get_ticket_location(base: Path, ticket_id: str) -> Path | None:
     if result is None:
         return None
     return result[1]
+
+
+# ---------------------------------------------------------------------------
+# Pure filtering functions (no I/O, no CLI deps)
+# ---------------------------------------------------------------------------
+
+
+def filter_tickets_by_status(
+    tickets: list[Ticket],
+    status: str | None,
+    include_closed: bool,
+) -> list[Ticket]:
+    """Filter tickets by explicit status or exclude closed tickets."""
+    if status is not None:
+        return [ticket for ticket in tickets if ticket.status == status]
+    if not include_closed:
+        return [ticket for ticket in tickets if ticket.status != "closed"]
+    return tickets
+
+
+def filter_tickets(
+    tickets: list[Ticket],
+    *,
+    assignee: str | None = None,
+    tag: str | None = None,
+    priority: int | None = None,
+) -> list[Ticket]:
+    """Filter tickets by assignee, tag, and/or priority."""
+    result = tickets
+    if assignee:
+        result = [t for t in result if t.assignee == assignee]
+    if tag:
+        result = [t for t in result if tag in t.tags]
+    if priority is not None:
+        result = [t for t in result if t.priority == priority]
+    return result
+
+
+def filter_tickets_by_deps(
+    tickets: list[Ticket],
+    status_by_id: dict[str, str],
+    *,
+    ready: bool = False,
+    blocked: bool = False,
+) -> list[Ticket]:
+    """Filter tickets by dependency status (ready or blocked).
+
+    - ready: tickets with no open deps and status not in_review/closed
+    - blocked: tickets with at least one open dep
+    """
+    if not ready and not blocked:
+        return tickets
+    result = []
+    for t in tickets:
+        if t.status == "closed":
+            continue
+        has_open_dep = any(status_by_id.get(d, "unknown") != "closed" for d in t.deps)
+        if (ready and not has_open_dep and t.status not in ("in_review", "closed")) or (blocked and has_open_dep):
+            result.append(t)
+    return result
+
+
+def collect_tickets_by_location(
+    base: Path,
+    *,
+    include_done: bool = False,
+) -> list[tuple[str, Ticket]]:
+    """Collect tickets from all branches and backlog with location labels.
+
+    Returns a list of ``(location_label, ticket)`` pairs where location_label
+    is e.g. ``"branch:feature-foo"`` or ``"backlog"``.
+    """
+    import json as _json
+
+    from kingdom.state import backlog_root, branches_root
+
+    pairs: list[tuple[str, Ticket]] = []
+
+    branches_dir = branches_root(base)
+    if branches_dir.exists():
+        for branch_dir in branches_dir.iterdir():
+            if not branch_dir.is_dir():
+                continue
+            if not include_done:
+                state_path = branch_dir / "state.json"
+                if state_path.exists():
+                    try:
+                        state = _json.loads(state_path.read_text())
+                        if state.get("status") == "done":
+                            continue
+                    except (_json.JSONDecodeError, OSError):
+                        pass
+            tickets_dir = branch_dir / "tickets"
+            if tickets_dir.exists():
+                label = f"branch:{branch_dir.name}"
+                for ticket in list_tickets(tickets_dir):
+                    pairs.append((label, ticket))
+
+    backlog_tickets = backlog_root(base) / "tickets"
+    if backlog_tickets.exists():
+        for ticket in list_tickets(backlog_tickets):
+            pairs.append(("backlog", ticket))
+
+    return pairs
