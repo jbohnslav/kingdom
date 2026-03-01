@@ -1141,9 +1141,14 @@ def council_chat(
                     typer.echo(f"  {t.id}  {created}  [{members}]")
                 typer.echo()
                 typer.echo("Usage: kd council chat <thread-id>  or  kd council chat --new")
+                raise typer.Exit(code=0)
             else:
-                typer.echo("No threads found. Create one with: kd council chat --new")
-            raise typer.Exit(code=0)
+                # Auto-create a thread when none exist
+                tid = f"council-{secrets.token_hex(2)}"
+                member_names = cfg.council.members or list(cfg.agents)
+                create_thread(base, feature, tid, ["king", *member_names], "council")
+                set_current_thread(base, feature, tid)
+                typer.echo(f"Created new thread: {tid}")
 
     from kingdom.tui.app import ChatApp
     from kingdom.tui.terminal import in_tmux_control_mode

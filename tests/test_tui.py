@@ -42,14 +42,22 @@ class TestChatCommand:
         assert result.exit_code == 1
         assert "Thread not found" in result.output
 
-    def test_no_args_no_threads(self, project: Path) -> None:
+    def test_no_args_no_threads_auto_creates(self, project: Path) -> None:
+        """Auto-create a new thread when none exist for the branch."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(app, ["council", "chat"])
         assert result.exit_code == 0
-        assert "kd council chat --new" in result.output
+        assert "Created new thread:" in result.output
+        mock_run.assert_called_once()
+
+        # Verify a current thread was set
+        current = get_current_thread(project, BRANCH)
+        assert current is not None
+        assert current.startswith("council-")
 
     def test_no_args_lists_threads(self, project: Path) -> None:
         create_thread(project, BRANCH, "council-abc1", ["king", "claude"], "council")
