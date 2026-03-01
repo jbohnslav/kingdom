@@ -1245,6 +1245,27 @@ Some notes here.
         # Entry should contain a timestamp within the test window
         assert before.strftime("%Y-%m-%d %H:%M") in entry or after.strftime("%Y-%m-%d %H:%M") in entry
 
+    def test_multiline_entry_indents_continuation(self, tmp_path: Path) -> None:
+        """Multiline messages indent continuation lines by 2 spaces."""
+        ticket = Ticket(
+            id="wlml",
+            status="open",
+            title="Multiline test",
+            body="Body",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+        )
+        path = tmp_path / "wlml.md"
+        write_ticket(ticket, path)
+
+        ts = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
+        entry = append_worklog_entry(path, "Council review: APPROVED\n[claude] Looks great!", timestamp=ts)
+
+        assert "- 2026-02-10 14:30 — Council review: APPROVED" in entry
+        assert "\n  [claude] Looks great!" in entry
+
+        content = path.read_text()
+        assert "  [claude] Looks great!" in content
+
 
 class TestInsertWorklogEntry:
     """Tests for insert_worklog_entry pure string transform."""

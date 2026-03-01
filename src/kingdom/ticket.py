@@ -489,7 +489,13 @@ def append_worklog_entry(
 
     if timestamp_text is None:
         timestamp_text = timestamp.strftime("%Y-%m-%d %H:%M")
-    entry = f"- {timestamp_text} — {message}"
+
+    # Indent continuation lines so multiline entries render as grouped bullets
+    lines = message.split("\n")
+    first = lines[0]
+    rest = [f"  {line}" for line in lines[1:]]
+    formatted = "\n".join([first, *rest])
+    entry = f"- {timestamp_text} — {formatted}"
 
     content = path.read_text(encoding="utf-8")
     new_content = insert_worklog_entry(content, entry)
