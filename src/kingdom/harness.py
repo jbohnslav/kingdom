@@ -643,11 +643,12 @@ def run_agent_loop(
                 ticket_path, f"Iteration {iteration}/{max_iterations} — calling agent\nTicket: {ticket_title}"
             )
         elif last_bounce_feedback:
-            bounce_summary = summarize_feedback(last_bounce_feedback)
+            n_blocking = sum(1 for f in last_bounce_feedback if parse_verdict(f) == "blocking")
+            n_total = len(last_bounce_feedback)
             append_worklog(
                 ticket_path,
                 f"Iteration {iteration}/{max_iterations} — calling agent\n"
-                f"Council feedback from last bounce:\n{bounce_summary}",
+                f"Bouncing on council feedback ({n_blocking} blocking, {n_total - n_blocking} approved) — see review above",
             )
             last_bounce_feedback = []
         else:
