@@ -1,11 +1,12 @@
 ---
 id: "fb7f"
-status: in_progress
+status: closed
 deps: []
 links: [5b14]
 created: 2026-03-01T02:01:14Z
 type: task
 priority: 2
+closed_at: 2026-03-01T03:50:05Z
 ---
 # Fix 5b14 implementation gaps: diff stat, first-iteration context, blocking feedback, and lossy agent summaries
 
