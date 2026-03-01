@@ -133,14 +133,17 @@ def extract_worklog_entry(response_text: str) -> str:
 
 
 def format_worklog_timestamp(dt: datetime) -> str:
-    """Format a worklog timestamp, including date when the entry is not from today.
+    """Format a worklog timestamp in local time.
 
     Returns "[HH:MM]" for today's entries, "[YYYY-MM-DD HH:MM]" for older ones.
+    All times are converted to local timezone so they align with worktree
+    poll timestamps in ``kd peasant watch``.
     """
-    today = datetime.now(UTC).date()
-    if dt.date() == today:
-        return f"[{dt.strftime('%H:%M')}]"
-    return f"[{dt.strftime('%Y-%m-%d %H:%M')}]"
+    local_dt = dt.astimezone()
+    today = datetime.now().astimezone().date()
+    if local_dt.date() == today:
+        return f"[{local_dt.strftime('%H:%M')}]"
+    return f"[{local_dt.strftime('%Y-%m-%d %H:%M')}]"
 
 
 def append_worklog(ticket_path: Path, entry: str) -> None:

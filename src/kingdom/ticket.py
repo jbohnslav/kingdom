@@ -488,7 +488,8 @@ def append_worklog_entry(
         timestamp = datetime.now(UTC)
 
     if timestamp_text is None:
-        timestamp_text = timestamp.strftime("%Y-%m-%d %H:%M")
+        local_ts = timestamp.astimezone()
+        timestamp_text = local_ts.strftime("%Y-%m-%d %H:%M")
 
     # Indent continuation lines so multiline entries render as grouped bullets
     lines = message.split("\n")

@@ -1109,13 +1109,14 @@ class TestAppendWorklogEntry:
         write_ticket(ticket, path)
 
         ts = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
+        local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
         entry = append_worklog_entry(path, "Started implementation", timestamp=ts)
 
-        assert entry == "- 2026-02-10 14:30 — Started implementation"
+        assert entry == f"- {local_ts} — Started implementation"
 
         content = path.read_text()
         assert "## Worklog" in content
-        assert "- 2026-02-10 14:30 — Started implementation" in content
+        assert f"- {local_ts} — Started implementation" in content
 
     def test_appends_to_existing_worklog_section(self, tmp_path: Path) -> None:
         """Appends entry to an existing ## Worklog section."""
@@ -1131,12 +1132,14 @@ class TestAppendWorklogEntry:
 
         ts1 = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
         ts2 = datetime(2026, 2, 10, 15, 0, 0, tzinfo=UTC)
+        local_ts1 = ts1.astimezone().strftime("%Y-%m-%d %H:%M")
+        local_ts2 = ts2.astimezone().strftime("%Y-%m-%d %H:%M")
         append_worklog_entry(path, "First entry", timestamp=ts1)
         append_worklog_entry(path, "Second entry", timestamp=ts2)
 
         content = path.read_text()
-        assert "- 2026-02-10 14:30 — First entry" in content
-        assert "- 2026-02-10 15:00 — Second entry" in content
+        assert f"- {local_ts1} — First entry" in content
+        assert f"- {local_ts2} — Second entry" in content
 
         # Entries should appear in order
         first_pos = content.index("First entry")
@@ -1212,11 +1215,12 @@ Some notes here.
         path.write_text(content)
 
         ts = datetime(2026, 2, 10, 15, 0, 0, tzinfo=UTC)
+        local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
         append_worklog_entry(path, "New entry", timestamp=ts)
 
         updated = path.read_text()
         assert "- 2026-02-10 14:00 — Existing entry" in updated
-        assert "- 2026-02-10 15:00 — New entry" in updated
+        assert f"- {local_ts} — New entry" in updated
         assert "## Notes" in updated
         assert "Some notes here." in updated
 
@@ -1227,7 +1231,7 @@ Some notes here.
         assert existing_pos < new_pos < notes_pos
 
     def test_default_timestamp_is_utc_now(self, tmp_path: Path) -> None:
-        """When no timestamp provided, uses current UTC time."""
+        """When no timestamp provided, uses current UTC time displayed in local tz."""
         ticket = Ticket(
             id="wl06",
             status="open",
@@ -1238,11 +1242,11 @@ Some notes here.
         path = tmp_path / "wl06.md"
         write_ticket(ticket, path)
 
-        before = datetime.now(UTC)
+        before = datetime.now(UTC).astimezone()
         entry = append_worklog_entry(path, "Auto-timestamp")
-        after = datetime.now(UTC)
+        after = datetime.now(UTC).astimezone()
 
-        # Entry should contain a timestamp within the test window
+        # Entry should contain a local timestamp within the test window
         assert before.strftime("%Y-%m-%d %H:%M") in entry or after.strftime("%Y-%m-%d %H:%M") in entry
 
     def test_multiline_entry_indents_continuation(self, tmp_path: Path) -> None:
@@ -1258,9 +1262,10 @@ Some notes here.
         write_ticket(ticket, path)
 
         ts = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
+        local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
         entry = append_worklog_entry(path, "Council review: APPROVED\n[claude] Looks great!", timestamp=ts)
 
-        assert "- 2026-02-10 14:30 — Council review: APPROVED" in entry
+        assert f"- {local_ts} — Council review: APPROVED" in entry
         assert "\n  [claude] Looks great!" in entry
 
         content = path.read_text()
