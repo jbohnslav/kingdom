@@ -540,7 +540,7 @@ def peasant_watch(
             lines = get_worklog_lines()
             if len(lines) > shown_lines:
                 for line in lines[shown_lines:]:
-                    console.print(line)
+                    console.print(line, markup=False)
                 shown_lines = len(lines)
 
             # Check if peasant is still running

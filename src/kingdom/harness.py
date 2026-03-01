@@ -164,7 +164,7 @@ def is_placeholder_worklog_paragraph(paragraph: str) -> bool:
     }
 
 
-def summarize_feedback(feedback: list[str], max_chars: int = 120) -> str:
+def summarize_feedback(feedback: list[str], max_chars: int = 500) -> str:
     """Summarize council feedback for worklog entries.
 
     Takes each "[name] response_text" entry, extracts the name and truncates
