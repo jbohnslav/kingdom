@@ -2869,7 +2869,7 @@ class TestTicketCreateOptions:
             assert len(created_files) == 1
             ticket = read_ticket(created_files[0])
             assert ticket.body == (
-                "Timeout handler bug\n\n" "## Acceptance Criteria\n\n" "- [ ] Tests pass\n" "- [ ] No regressions"
+                "Timeout handler bug\n\n## Acceptance Criteria\n\n- [ ] Tests pass\n- [ ] No regressions"
             )
 
     def test_create_description_without_ac_still_has_ac_section(self) -> None:
