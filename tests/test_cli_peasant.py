@@ -1781,3 +1781,130 @@ class TestProjectRootDiscovery:
         assert ctx_root.base == ctx_sub.base == tmp_path
         assert ctx_root.full_ticket_id == ctx_sub.full_ticket_id
         assert ctx_root.ticket.title == ctx_sub.ticket.title
+
+
+class TestPollWorktree:
+    """Unit tests for poll_worktree flag→verb mapping."""
+
+    def test_maps_flags_to_verbs(self, tmp_path: Path) -> None:
+        git_output = "M  src/foo.py\nA  tests/bar.py\n?? newfile.txt\nD  old.py\nR  renamed.py\n"
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=git_output)
+            from kingdom.cli.peasant import poll_worktree
+
+            result = poll_worktree(tmp_path)
+
+        assert result == [
+            "Editing src/foo.py",
+            "Created tests/bar.py",
+            "New file newfile.txt",
+            "Deleted old.py",
+            "Renamed renamed.py",
+        ]
+
+    def test_returns_none_for_clean_worktree(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            from kingdom.cli.peasant import poll_worktree
+
+            assert poll_worktree(tmp_path) is None
+
+    def test_returns_none_for_missing_worktree(self) -> None:
+        from kingdom.cli.peasant import poll_worktree
+
+        assert poll_worktree(Path("/nonexistent/path")) is None
+
+    def test_unknown_flag_passes_through(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="C  copied.py\n")
+            from kingdom.cli.peasant import poll_worktree
+
+            result = poll_worktree(tmp_path)
+
+        assert result == ["C copied.py"]
+
+
+class TestPollHeadCommit:
+    """Unit tests for poll_head_commit SHA/subject parsing."""
+
+    def test_parses_sha_and_subject(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="a1b2c3d Add feature\n")
+            from kingdom.cli.peasant import poll_head_commit
+
+            result = poll_head_commit(tmp_path)
+
+        assert result == ("a1b2c3d", "Add feature")
+
+    def test_returns_none_for_missing_worktree(self) -> None:
+        from kingdom.cli.peasant import poll_head_commit
+
+        assert poll_head_commit(Path("/nonexistent/path")) is None
+
+    def test_returns_none_on_failure(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=128, stdout="")
+            from kingdom.cli.peasant import poll_head_commit
+
+            assert poll_head_commit(tmp_path) is None
+
+    def test_handles_subject_with_spaces(self, tmp_path: Path) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="f00baa Fix the broken thing\n")
+            from kingdom.cli.peasant import poll_head_commit
+
+            result = poll_head_commit(tmp_path)
+
+        assert result == ("f00baa", "Fix the broken thing")
+
+
+class TestWatchRichRendering:
+    """Regression test: bracketed timestamps and paths survive Rich printing with markup=False."""
+
+    def test_markup_false_preserves_s_tag(self) -> None:
+        """With markup=False, [s] is printed literally — not parsed as strikethrough."""
+        import re
+        from io import StringIO
+
+        from rich.console import Console
+
+        # [s] is Rich's strikethrough tag. With highlight=False (old code), Rich
+        # still parses markup, so "[s]rc/..." silently eats the 's'. markup=False
+        # prevents this.
+        buf = StringIO()
+        console = Console(file=buf, width=120, force_terminal=True)
+        console.print("  [09:10] [s]rc/kingdom/cli/council.py", markup=False)
+
+        # Strip ANSI to check plain text content
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())
+        assert "[09:10]" in plain
+        assert "[s]rc/kingdom" in plain  # literal [s], not consumed as style
+
+    def test_highlight_false_would_eat_s_tag(self) -> None:
+        """Prove the bug: highlight=False still parses [s] as strikethrough markup."""
+        import re
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        console = Console(file=buf, width=120, force_terminal=True)
+        console.print("  [09:10] [s]rc/kingdom/cli/council.py", highlight=False)
+
+        # Strip ANSI — [s] was consumed as a style tag, so the literal "[s]" is gone
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())
+        assert "[s]rc/kingdom" not in plain
+
+    def test_committed_line_preserves_brackets(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        console = Console(file=buf, width=120)
+
+        console.print('  [09:54] Committed a1b2c3d "Add feature"', markup=False)
+
+        output = buf.getvalue()
+        assert "[09:54]" in output
+        assert "a1b2c3d" in output

@@ -504,8 +504,17 @@ def peasant_logs(
         typer.echo("Log files are empty. The peasant may still be starting up.")
 
 
-def poll_worktree(worktree: Path) -> str | None:
-    """Poll git status in a worktree, returning a compact summary or None."""
+FLAG_VERBS: dict[str, str] = {
+    "M": "Editing",
+    "A": "Created",
+    "D": "Deleted",
+    "R": "Renamed",
+    "??": "New file",
+}
+
+
+def poll_worktree(worktree: Path) -> list[str] | None:
+    """Poll git status in a worktree, returning human-readable entries or None."""
     import subprocess
 
     if not worktree.exists():
@@ -520,13 +529,36 @@ def poll_worktree(worktree: Path) -> str | None:
         )
         if result.returncode != 0 or not result.stdout.strip():
             return None
-        # Compact: "M src/foo.py, A tests/bar.py"
         entries = []
         for line in result.stdout.strip().splitlines():
             flag = line[:2].strip()
             path = line[3:].strip()
-            entries.append(f"{flag} {path}")
-        return ", ".join(entries)
+            verb = FLAG_VERBS.get(flag, flag)
+            entries.append(f"{verb} {path}")
+        return entries
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def poll_head_commit(worktree: Path) -> tuple[str, str] | None:
+    """Return (short_sha, subject) for HEAD in the worktree, or None."""
+    import subprocess
+
+    if not worktree.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%h %s"],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        line = result.stdout.strip()
+        sha, _, subject = line.partition(" ")
+        return (sha, subject)
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
 
@@ -560,8 +592,12 @@ def peasant_watch(
     last_activity_time: float = time_mod.monotonic()
     last_worktree_poll: float = 0.0
     last_heartbeat_time: float = 0.0
-    last_worktree_status: str | None = None
+    last_worktree_status: list[str] | None = None
     worktree_poll_interval = 30.0  # seconds between worktree polls
+
+    # Seed HEAD SHA so we can detect commits
+    head = poll_head_commit(worktree)
+    last_head_sha: str | None = head[0] if head else None
 
     def get_worklog_lines() -> list[str]:
         """Read current worklog lines from the ticket file."""
@@ -616,20 +652,23 @@ def peasant_watch(
                 last_worktree_poll = now
                 wt_status = poll_worktree(worktree)
                 if wt_status and wt_status != last_worktree_status:
-                    elapsed_mins = int((now - last_activity_time) / 60)
                     ts = time_mod.strftime("%H:%M")
-                    if elapsed_mins >= 1:
-                        console.print(
-                            f"  [{ts}] worktree: {wt_status}  ({elapsed_mins}m since last entry)", markup=False
-                        )
-                    else:
-                        console.print(f"  [{ts}] worktree: {wt_status}", markup=False)
+                    for entry in wt_status:
+                        console.print(f"  [{ts}] {entry}", markup=False)
                     last_worktree_status = wt_status
                     last_activity_time = now
                 elif not wt_status and last_worktree_status:
-                    # Files were committed
+                    # Dirty→clean transition: check if HEAD changed
+                    head = poll_head_commit(worktree)
                     ts = time_mod.strftime("%H:%M")
-                    console.print(f"  [{ts}] worktree: (committed)", markup=False)
+                    if head and head[0] != last_head_sha:
+                        last_head_sha = head[0]
+                        console.print(
+                            f'  [{ts}] Committed {head[0]} "{head[1]}"',
+                            markup=False,
+                        )
+                    else:
+                        console.print(f"  [{ts}] Changes cleared", markup=False)
                     last_worktree_status = None
                     last_activity_time = now
 
