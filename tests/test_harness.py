@@ -17,12 +17,14 @@ from kingdom.harness import (
     extract_worklog_entry,
     format_worklog_timestamp,
     get_diff,
+    get_diff_stat,
     get_new_directives,
     has_code_changes,
     parse_status,
     parse_verdict,
     run_agent_loop,
     run_council_review,
+    summarize_feedback,
 )
 from kingdom.session import AgentState, get_agent_state, set_agent_state
 from kingdom.state import ensure_branch_layout, set_current_run
@@ -596,6 +598,11 @@ class TestRunAgentLoop:
                 result.stdout = "fake-sha\n"
                 result.returncode = 0
                 return result
+            if cmd and "--stat" in cmd:
+                result = MagicMock()
+                result.stdout = ""
+                result.returncode = 0
+                return result
             agent_call_count += 1
             result = MagicMock()
             if agent_call_count >= 3:
@@ -859,11 +866,11 @@ class TestParseVerdict:
         assert parse_verdict("VERDICT: approved") == "approved"
         assert parse_verdict("VERDICT: Blocking") == "blocking"
 
-    def test_missing_verdict_returns_approved(self) -> None:
-        assert parse_verdict("Just some review text without verdict") == "approved"
+    def test_missing_verdict_returns_unknown(self) -> None:
+        assert parse_verdict("Just some review text without verdict") == "unknown"
 
     def test_empty_string(self) -> None:
-        assert parse_verdict("") == "approved"
+        assert parse_verdict("") == "unknown"
 
     def test_verdict_in_middle_ignored(self) -> None:
         """Only the last VERDICT line counts."""
@@ -1047,7 +1054,10 @@ class TestRunCouncilReview:
             )
 
         assert outcome == "approved"
-        assert feedback == []
+        # Approval now preserves member feedback
+        assert len(feedback) == 2
+        assert any("claude" in f for f in feedback)
+        assert any("codex" in f for f in feedback)
 
     def test_one_blocking(self, project: Path, ticket_path: Path) -> None:
         """One councillor blocks — should return blocking with feedback."""
@@ -1076,9 +1086,11 @@ class TestRunCouncilReview:
             )
 
         assert outcome == "blocking"
-        assert len(feedback) == 1
-        assert "codex" in feedback[0]
-        assert "Missing tests" in feedback[0]
+        # Blocking reviews now return ALL members' feedback, not just blockers
+        assert len(feedback) == 2
+        assert any("claude" in f for f in feedback)
+        assert any("codex" in f for f in feedback)
+        assert any("Missing tests" in f for f in feedback)
 
     def test_error_response_skipped(self, project: Path, ticket_path: Path) -> None:
         """Errored council responses should be skipped, not block."""
@@ -1107,6 +1119,80 @@ class TestRunCouncilReview:
 
         assert outcome == "approved"
         assert feedback == []
+
+
+class TestSummarizeFeedback:
+    """Tests for summarize_feedback helper."""
+
+    def test_empty_feedback(self) -> None:
+        assert summarize_feedback([]) == ""
+
+    def test_single_member_approved(self) -> None:
+        feedback = ["[claude] Looks great! Clean implementation.\n\nVERDICT: APPROVED"]
+        result = summarize_feedback(feedback)
+        assert result == "[claude] APPROVED: Looks great! Clean implementation."
+
+    def test_multiple_members(self) -> None:
+        feedback = [
+            "[claude] Well done.\n\nVERDICT: APPROVED",
+            "[codex] Missing edge case.\n\nVERDICT: BLOCKING",
+        ]
+        result = summarize_feedback(feedback)
+        assert "[claude] APPROVED: Well done." in result
+        assert "[codex] BLOCKING: Missing edge case." in result
+
+    def test_truncates_long_text(self) -> None:
+        long_text = "A" * 200
+        feedback = [f"[claude] {long_text}\n\nVERDICT: APPROVED"]
+        result = summarize_feedback(feedback, max_chars=50)
+        assert len(result.split("] ", 1)[1]) <= 50
+        assert result.endswith("...")
+
+    def test_skips_empty_lines(self) -> None:
+        feedback = ["[claude] \n\nActual content here.\n\nVERDICT: APPROVED"]
+        result = summarize_feedback(feedback)
+        assert "Actual content here." in result
+
+    def test_no_bracket_prefix(self) -> None:
+        feedback = ["Just some feedback text\n\nVERDICT: APPROVED"]
+        result = summarize_feedback(feedback)
+        assert result == "APPROVED: Just some feedback text"
+
+    def test_missing_verdict_shows_unknown(self) -> None:
+        feedback = ["[claude] Some review text without a verdict line"]
+        result = summarize_feedback(feedback)
+        assert "[claude] UNKNOWN: Some review text without a verdict line" in result
+
+
+class TestGetDiffStat:
+    """Tests for get_diff_stat helper."""
+
+    def test_returns_none_on_error(self, tmp_path: Path) -> None:
+        """Non-git directory returns None."""
+        assert get_diff_stat(tmp_path) is None
+
+    def test_returns_none_when_no_changes(self, tmp_path: Path) -> None:
+        with patch(
+            "kingdom.harness.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout=""),
+        ):
+            assert get_diff_stat(tmp_path) is None
+
+    def test_returns_stat_output(self, tmp_path: Path) -> None:
+        stat_output = " src/foo.py | 5 ++---\n 1 file changed, 2 insertions(+), 3 deletions(-)"
+        with patch(
+            "kingdom.harness.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout=stat_output),
+        ):
+            result = get_diff_stat(tmp_path)
+            assert result is not None
+            assert "foo.py" in result
+
+    def test_handles_timeout(self, tmp_path: Path) -> None:
+        import subprocess as sp
+
+        with patch("kingdom.harness.subprocess.run", side_effect=sp.TimeoutExpired("git", 10)):
+            assert get_diff_stat(tmp_path) is None
 
 
 class TestCouncilReviewInLoop:
@@ -1162,6 +1248,11 @@ class TestCouncilReviewInLoop:
             if cmd and "rev-parse" in cmd:
                 result = MagicMock()
                 result.stdout = "fake-sha\n"
+                result.returncode = 0
+                return result
+            if cmd and "--stat" in cmd:
+                result = MagicMock()
+                result.stdout = ""
                 result.returncode = 0
                 return result
             agent_call_count += 1
@@ -1394,3 +1485,210 @@ class TestCouncilReviewInLoop:
 
         # During council review, ticket should have been in_review
         assert statuses_seen == ["in_review"]
+
+
+class TestGetDiffStatWithSince:
+    """Tests for get_diff_stat with the since parameter (committed changes)."""
+
+    def test_since_param_diffs_against_sha(self, tmp_path: Path) -> None:
+        """When since is provided, should run git diff --stat since..HEAD."""
+        stat_output = " src/foo.py | 3 ++-\n 1 file changed"
+        with patch("kingdom.harness.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=stat_output)
+            result = get_diff_stat(tmp_path, since="abc123")
+            assert result is not None
+            assert "foo.py" in result
+            # First call should use since..HEAD
+            cmd = mock_run.call_args_list[0][0][0]
+            assert "abc123..HEAD" in cmd
+
+    def test_since_empty_falls_back_to_uncommitted(self, tmp_path: Path) -> None:
+        """When since diff is empty, falls back to uncommitted changes."""
+        call_count = 0
+
+        def mock_run(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.returncode = 0
+            if call_count == 1:
+                result.stdout = ""  # No committed changes since SHA
+            else:
+                result.stdout = " src/bar.py | 1 +\n 1 file changed"
+            return result
+
+        with patch("kingdom.harness.subprocess.run", side_effect=mock_run):
+            result = get_diff_stat(tmp_path, since="abc123")
+            assert result is not None
+            assert "bar.py" in result
+            assert call_count == 2
+
+    def test_without_since_uses_head(self, tmp_path: Path) -> None:
+        """Without since, should diff against HEAD (original behavior)."""
+        stat_output = " src/foo.py | 2 +-\n 1 file changed"
+        with patch("kingdom.harness.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=stat_output)
+            result = get_diff_stat(tmp_path)
+            assert result is not None
+            cmd = mock_run.call_args_list[0][0][0]
+            assert cmd == ["git", "diff", "--stat", "HEAD"]
+
+
+class TestExtractWorklogEntryHeadings:
+    """Tests for extract_worklog_entry skipping bare markdown headings."""
+
+    def test_skips_bare_heading(self) -> None:
+        text = "## What I did this iteration\n\nImplemented the auth module.\n\nSTATUS: DONE"
+        entry = extract_worklog_entry(text)
+        assert entry == "Implemented the auth module."
+
+    def test_skips_multiple_headings(self) -> None:
+        text = "## Summary\n\n## Details\n\nFixed the parsing bug.\n\nSTATUS: CONTINUE"
+        entry = extract_worklog_entry(text)
+        assert entry == "Fixed the parsing bug."
+
+    def test_heading_with_content_below_on_same_para(self) -> None:
+        """A heading followed by content in the same paragraph is kept."""
+        text = "## Summary\nActual details here.\n\nSTATUS: DONE"
+        entry = extract_worklog_entry(text)
+        assert "Summary" in entry
+        assert "Actual details" in entry
+
+    def test_no_heading_still_works(self) -> None:
+        text = "I fixed the bug.\n\nSTATUS: DONE"
+        entry = extract_worklog_entry(text)
+        assert entry == "I fixed the bug."
+
+    def test_only_heading_returns_empty(self) -> None:
+        text = "## What I did\n\nSTATUS: DONE"
+        entry = extract_worklog_entry(text)
+        assert entry == ""
+
+    def test_skips_numbered_placeholder_heading(self) -> None:
+        text = "1. What I did this iteration\n\nImplemented the auth module.\n\nSTATUS: DONE"
+        entry = extract_worklog_entry(text)
+        assert entry == "Implemented the auth module."
+
+
+class TestFirstIterationContext:
+    """Tests for first iteration worklog entry including ticket context."""
+
+    def setup_for_loop(self, project: Path, ticket_path: Path) -> tuple[str, str]:
+        thread_id = "kin-test-work"
+        session_name = "peasant-kin-test"
+        create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
+        add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
+        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        return thread_id, session_name
+
+    def test_first_iteration_includes_ticket_title(self, project: Path, ticket_path: Path) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with (
+            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+        ):
+            run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        ticket = read_ticket(ticket_path)
+        assert "Test ticket" in ticket.body
+
+
+class TestAgentResultFallbackSummary:
+    """Tests for fallback agent-result summaries when extraction is empty."""
+
+    def setup_for_loop(self, project: Path, ticket_path: Path) -> tuple[str, str]:
+        thread_id = "kin-test-work"
+        session_name = "peasant-kin-test"
+        create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
+        add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
+        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        return thread_id, session_name
+
+    def test_empty_agent_summary_shows_diff_stat_only(self, project: Path, ticket_path: Path) -> None:
+        """When agent writes only a placeholder heading, the diff stat entry still appears."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        backend_result = MagicMock()
+        backend_result.stdout = '{"result": "1. What I did this iteration\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        backend_result.stderr = ""
+        backend_result.returncode = 0
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+                return MagicMock(returncode=0, stdout="fake-sha\n")
+            return backend_result
+
+        with (
+            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch(
+                "kingdom.harness.get_diff_stat",
+                return_value=" src/kingdom/harness.py | 2 +-\n 1 file changed",
+            ),
+            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.has_code_changes", return_value=True),
+        ):
+            run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        ticket = read_ticket(ticket_path)
+        # No redundant "Updated 1 file" fallback — just the diff stat entry
+        assert "Updated 1 file: src/kingdom/harness.py" not in ticket.body
+        assert "Files changed:" in ticket.body
+
+
+class TestBlockingReviewAllFeedback:
+    """Tests for blocking reviews including all members' verdicts."""
+
+    def test_blocking_review_includes_approving_member(self, project: Path, ticket_path: Path) -> None:
+        """When one member blocks, feedback should include approving members too."""
+        from kingdom.council.base import AgentResponse
+
+        thread_id = "review-all-feedback"
+        create_thread(project, BRANCH, thread_id, ["king", "claude", "codex"], "council")
+
+        mock_council = MagicMock()
+        mock_council.members = [MagicMock(name="claude"), MagicMock(name="codex")]
+        mock_council.query_to_thread.return_value = {
+            "claude": AgentResponse(name="claude", text="Looks fine.\n\nVERDICT: APPROVED"),
+            "codex": AgentResponse(name="codex", text="Missing tests.\n\nVERDICT: BLOCKING"),
+        }
+
+        with patch("kingdom.council.council.Council.create", return_value=mock_council):
+            outcome, feedback = run_council_review(
+                base=project,
+                branch=BRANCH,
+                worktree=project,
+                ticket_path=ticket_path,
+                session_name="peasant-test",
+                thread_id=thread_id,
+                start_sha="abc123",
+                council_timeout=600,
+            )
+
+        assert outcome == "blocking"
+        assert len(feedback) == 2
+        # Both members' feedback should be present
+        names_in_feedback = [f.split("]")[0] for f in feedback]
+        assert any("claude" in n for n in names_in_feedback)
+        assert any("codex" in n for n in names_in_feedback)
