@@ -500,7 +500,7 @@ def ticket_list(
         else:
             if not tickets:
                 closed_count = sum(1 for t in all_backlog_tickets if t.status == "closed")
-                if closed_count and not include_closed and status != "closed" and not ready and not blocked:
+                if closed_count and not include_closed and status is None and not ready and not blocked:
                     typer.echo(f"No open backlog tickets ({closed_count} closed). Use --closed to show them.")
                 else:
                     typer.echo('No backlog tickets. Create one with `kd tk create --backlog "title"`.')
@@ -526,7 +526,7 @@ def ticket_list(
         else:
             if not all_filtered:
                 closed_count = sum(1 for _, t in pairs if t.status == "closed")
-                if closed_count and not include_closed and status != "closed" and not ready and not blocked:
+                if closed_count and not include_closed and status is None and not ready and not blocked:
                     typer.echo(f"No open tickets ({closed_count} closed). Use --closed to show them.")
                 else:
                     typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
@@ -544,7 +544,7 @@ def ticket_list(
         else:
             if not tickets:
                 closed_count = sum(1 for t in all_branch_tickets if t.status == "closed")
-                if closed_count and not include_closed and status != "closed" and not ready and not blocked:
+                if closed_count and not include_closed and status is None and not ready and not blocked:
                     typer.echo(f"No open tickets ({closed_count} closed). Use --closed to show them.")
                 else:
                     typer.echo('No tickets found. Create one with `kd tk create "title"`.')
