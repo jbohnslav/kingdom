@@ -499,7 +499,11 @@ def ticket_list(
             output_tickets_json(tickets, {t.id: "backlog" for t in tickets})
         else:
             if not tickets:
-                typer.echo('No backlog tickets. Create one with `kd tk create --backlog "title"`.')
+                closed_count = sum(1 for t in all_backlog_tickets if t.status == "closed")
+                if closed_count and not include_closed and status != "closed" and not ready and not blocked:
+                    typer.echo(f"No open backlog tickets ({closed_count} closed). Use --closed to show them.")
+                else:
+                    typer.echo('No backlog tickets. Create one with `kd tk create --backlog "title"`.')
                 return
             render_ticket_table(tickets)
             typer.echo(format_ticket_summary(tickets))
@@ -521,7 +525,11 @@ def ticket_list(
             output_tickets_json(all_filtered, location_map)
         else:
             if not all_filtered:
-                typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
+                closed_count = sum(1 for _, t in pairs if t.status == "closed")
+                if closed_count and not include_closed and status != "closed" and not ready and not blocked:
+                    typer.echo(f"No open tickets ({closed_count} closed). Use --closed to show them.")
+                else:
+                    typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
                 return
             render_ticket_table(all_filtered, show_location=True, locations=location_map)
             typer.echo(format_ticket_summary(all_filtered))
@@ -535,7 +543,11 @@ def ticket_list(
             output_tickets_json(tickets)
         else:
             if not tickets:
-                typer.echo('No tickets found. Create one with `kd tk create "title"`.')
+                closed_count = sum(1 for t in all_branch_tickets if t.status == "closed")
+                if closed_count and not include_closed and status != "closed" and not ready and not blocked:
+                    typer.echo(f"No open tickets ({closed_count} closed). Use --closed to show them.")
+                else:
+                    typer.echo('No tickets found. Create one with `kd tk create "title"`.')
                 return
             render_ticket_table(tickets)
             typer.echo(format_ticket_summary(tickets))

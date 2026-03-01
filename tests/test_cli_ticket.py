@@ -1055,6 +1055,101 @@ class TestTicketList:
             assert "total" not in result.output
 
 
+class TestTicketListClosedCount:
+    """Tests for showing closed ticket count when no open tickets remain."""
+
+    def test_only_closed_tickets_shows_count(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            closed1 = Ticket(id="aaaa", status="closed", title="Done 1", body="", created=datetime.now(UTC))
+            closed2 = Ticket(id="bbbb", status="closed", title="Done 2", body="", created=datetime.now(UTC))
+            write_ticket(closed1, tickets_dir / "aaaa.md")
+            write_ticket(closed2, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "No open tickets (2 closed)" in result.output
+            assert "--closed" in result.output
+
+    def test_open_tickets_exist_no_closed_hint(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            open_ticket = Ticket(id="aaaa", status="open", title="Open", body="", created=datetime.now(UTC))
+            closed_ticket = Ticket(id="bbbb", status="closed", title="Done", body="", created=datetime.now(UTC))
+            write_ticket(open_ticket, tickets_dir / "aaaa.md")
+            write_ticket(closed_ticket, tickets_dir / "bbbb.md")
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "Open" in result.output
+            assert "No open tickets" not in result.output
+
+    def test_no_tickets_at_all_shows_create_hint(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(cli.app, ["tk", "list"])
+
+            assert result.exit_code == 0
+            assert "No tickets found" in result.output
+            assert "closed" not in result.output
+
+    def test_only_closed_with_all_flag(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            closed = Ticket(id="aaaa", status="closed", title="Done", body="", created=datetime.now(UTC))
+            write_ticket(closed, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--all"])
+
+            assert result.exit_code == 0
+            assert "No open tickets (1 closed)" in result.output
+            assert "--closed" in result.output
+
+    def test_only_closed_in_backlog(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            backlog_dir = backlog_root(base) / "tickets"
+            backlog_dir.mkdir(parents=True, exist_ok=True)
+
+            closed = Ticket(id="aaaa", status="closed", title="Done", body="", created=datetime.now(UTC))
+            write_ticket(closed, backlog_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--backlog"])
+
+            assert result.exit_code == 0
+            assert "No open backlog tickets (1 closed)" in result.output
+            assert "--closed" in result.output
+
+    def test_closed_flag_shows_closed_tickets_directly(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            closed = Ticket(id="aaaa", status="closed", title="Done ticket", body="", created=datetime.now(UTC))
+            write_ticket(closed, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--closed"])
+
+            assert result.exit_code == 0
+            assert "Done ticket" in result.output
+            assert "No open tickets" not in result.output
+
+
 class TestTicketListPriority:
     def test_priority_filter_branch(self) -> None:
         with runner.isolated_filesystem():
