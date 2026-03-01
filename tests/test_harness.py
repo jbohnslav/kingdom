@@ -201,7 +201,9 @@ class TestAppendWorklog:
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             append_worklog(ticket_path, "Old entry")
         ticket = read_ticket(ticket_path)
-        assert "[2025-06-15 09:30]" in ticket.body
+        local_yesterday = yesterday.astimezone()
+        expected_ts = f"[{local_yesterday.strftime('%Y-%m-%d %H:%M')}]"
+        assert expected_ts in ticket.body
 
     def test_appends_to_end_of_document(self, ticket_path: Path) -> None:
         """Worklog entries append to end of document (worklog is always last section)."""
@@ -219,8 +221,9 @@ class TestAppendWorklog:
 class TestFormatWorklogTimestamp:
     def test_today_shows_time_only(self) -> None:
         now = datetime.now(UTC)
+        local_now = now.astimezone()
         result = format_worklog_timestamp(now)
-        assert result == f"[{now.strftime('%H:%M')}]"
+        assert result == f"[{local_now.strftime('%H:%M')}]"
         # Should NOT contain a date
         assert "-" not in result
 
@@ -228,14 +231,17 @@ class TestFormatWorklogTimestamp:
         from datetime import timedelta
 
         yesterday = datetime.now(UTC) - timedelta(days=1)
+        local_yesterday = yesterday.astimezone()
         result = format_worklog_timestamp(yesterday)
-        expected = f"[{yesterday.strftime('%Y-%m-%d %H:%M')}]"
+        expected = f"[{local_yesterday.strftime('%Y-%m-%d %H:%M')}]"
         assert result == expected
 
     def test_old_date_shows_date_and_time(self) -> None:
         old = datetime(2024, 1, 15, 14, 30, tzinfo=UTC)
+        local_old = old.astimezone()
         result = format_worklog_timestamp(old)
-        assert result == "[2024-01-15 14:30]"
+        expected = f"[{local_old.strftime('%Y-%m-%d %H:%M')}]"
+        assert result == expected
 
     def test_format_consistency(self) -> None:
         """Today entries use [HH:MM], older entries use [YYYY-MM-DD HH:MM]."""
