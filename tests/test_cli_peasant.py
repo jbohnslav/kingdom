@@ -1566,7 +1566,10 @@ class TestPeasantStatusNewStatuses:
 
             result = runner.invoke(cli.app, ["peasant", "status"])
             assert result.exit_code == 0
+            # Must appear in the active table (with ticket ID), not just in hidden summary
+            assert "kin-test" in result.output
             assert "needs_king_review" in result.output
+            assert "No active peasants" not in result.output
 
 
 class TestPeasantStatusFiltering:

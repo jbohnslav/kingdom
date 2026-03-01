@@ -367,7 +367,8 @@ class TestPeasantWatch:
 
         assert result.exit_code == 0
         assert "Started" in result.output
-        assert "finished: done" in result.output
+        assert "DONE: t1" in result.output
+        assert "=" * 40 in result.output
 
 
 class TestPeasantTmux:

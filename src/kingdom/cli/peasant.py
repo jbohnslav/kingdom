@@ -350,6 +350,7 @@ def peasant_start(
 
 
 TERMINAL_STATUSES = {"done", "failed", "stopped"}
+WATCH_TERMINAL_STATUSES = {"done", "failed", "stopped", "needs_king_review", "blocked"}
 
 
 @peasant_app.command("status", help="Show active peasants.")
@@ -503,6 +504,33 @@ def peasant_logs(
         typer.echo("Log files are empty. The peasant may still be starting up.")
 
 
+def poll_worktree(worktree: Path) -> str | None:
+    """Poll git status in a worktree, returning a compact summary or None."""
+    import subprocess
+
+    if not worktree.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        # Compact: "M src/foo.py, A tests/bar.py"
+        entries = []
+        for line in result.stdout.strip().splitlines():
+            flag = line[:2].strip()
+            path = line[3:].strip()
+            entries.append(f"{flag} {path}")
+        return ", ".join(entries)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
 @peasant_app.command("watch", help="Watch peasant progress in real time.")
 def peasant_watch(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
@@ -515,6 +543,7 @@ def peasant_watch(
 
     import kingdom.cli as _cli
     from kingdom.session import get_agent_state
+    from kingdom.worktree import worktree_path_for
 
     ctx = _cli.resolve_peasant_context(ticket_id)
     session_name = peasant_session_name(ctx.full_ticket_id)
@@ -522,8 +551,17 @@ def peasant_watch(
     console = Console()
     console.print(f"[bold]Watching {session_name}[/bold]  (Ctrl+C to stop)\n")
 
+    # Resolve worktree path for activity polling
+    state = get_agent_state(ctx.base, ctx.feature, session_name)
+    worktree = ctx.base if state.hand_mode else worktree_path_for(ctx.base, ctx.full_ticket_id)
+
     # Track what we've already shown
     shown_lines: int = 0
+    last_activity_time: float = time_mod.monotonic()
+    last_worktree_poll: float = 0.0
+    last_heartbeat_time: float = 0.0
+    last_worktree_status: str | None = None
+    worktree_poll_interval = 30.0  # seconds between worktree polls
 
     def get_worklog_lines() -> list[str]:
         """Read current worklog lines from the ticket file."""
@@ -534,20 +572,73 @@ def peasant_watch(
             return []
         return worklog.strip().splitlines()
 
+    def flush_worklog() -> None:
+        """Print any new worklog lines and update tracking."""
+        nonlocal shown_lines, last_activity_time
+        lines = get_worklog_lines()
+        if len(lines) > shown_lines:
+            for line in lines[shown_lines:]:
+                console.print(line, markup=False)
+            shown_lines = len(lines)
+            last_activity_time = time_mod.monotonic()
+
     try:
         while True:
-            # Print new worklog lines
-            lines = get_worklog_lines()
-            if len(lines) > shown_lines:
-                for line in lines[shown_lines:]:
-                    console.print(line, markup=False)
-                shown_lines = len(lines)
+            now = time_mod.monotonic()
+            flush_worklog()
 
             # Check if peasant is still running
             state = get_agent_state(ctx.base, ctx.feature, session_name)
-            if state.status in TERMINAL_STATUSES:
-                console.print(f"\n[bold]Peasant finished: {state.status}[/bold]")
+            if state.status in WATCH_TERMINAL_STATUSES:
+                flush_worklog()
+
+                # Map status to action command and display label
+                status_actions = {
+                    "needs_king_review": f"kd peasant review {ctx.full_ticket_id}",
+                    "blocked": f"kd peasant logs {ctx.full_ticket_id}",
+                    "failed": f"kd peasant logs {ctx.full_ticket_id}",
+                    "done": None,
+                    "stopped": None,
+                }
+                action = status_actions.get(state.status)
+                label = state.status.upper().replace("_", " ")
+
+                console.print()
+                console.print("=" * 40, markup=False)
+                console.print(f"{label}: {ctx.full_ticket_id}", markup=False)
+                if action:
+                    console.print(f"  {action}", markup=False)
+                console.print("=" * 40, markup=False)
                 break
+
+            # Worktree activity polling between worklog entries
+            if now - last_worktree_poll >= worktree_poll_interval:
+                last_worktree_poll = now
+                wt_status = poll_worktree(worktree)
+                if wt_status and wt_status != last_worktree_status:
+                    elapsed_mins = int((now - last_activity_time) / 60)
+                    ts = time_mod.strftime("%H:%M")
+                    if elapsed_mins >= 1:
+                        console.print(
+                            f"  [{ts}] worktree: {wt_status}  ({elapsed_mins}m since last entry)", markup=False
+                        )
+                    else:
+                        console.print(f"  [{ts}] worktree: {wt_status}", markup=False)
+                    last_worktree_status = wt_status
+                    last_activity_time = now
+                elif not wt_status and last_worktree_status:
+                    # Files were committed
+                    ts = time_mod.strftime("%H:%M")
+                    console.print(f"  [{ts}] worktree: (committed)", markup=False)
+                    last_worktree_status = None
+                    last_activity_time = now
+
+            # Heartbeat: if no activity for 60s, show a "still working" line
+            silence = now - last_activity_time
+            if silence >= 60 and now - last_heartbeat_time >= 60:
+                last_heartbeat_time = now
+                elapsed_mins = int(silence / 60)
+                console.print(f"  [dim]Still working... {elapsed_mins}m since last activity[/dim]")
 
             time_mod.sleep(1)
     except KeyboardInterrupt:
