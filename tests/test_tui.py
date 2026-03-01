@@ -2023,8 +2023,8 @@ class TestAutoTurns:
             len(member_msgs) == 0
         ), f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
 
-    def test_natural_mode_parallel_then_shuffled(self, project: Path) -> None:
-        """natural mode: parallel broadcast first, then shuffled auto-turns."""
+    def test_natural_mode_follow_up_shuffled_sequential(self, project: Path) -> None:
+        """natural mode follow-up: shuffled sequential only, no broadcast."""
         import asyncio
 
         from kingdom.thread import thread_dir
@@ -2038,9 +2038,9 @@ class TestAutoTurns:
         app_instance.generation = 1
         asyncio.run(app_instance.run_chat_round(["claude", "codex"], 1, tdir, is_first_exchange=False))
 
-        # Parallel broadcast (1 each) + 1 shuffled round (1 each) = 2 per member
+        # Follow-up: shuffled sequential only (1 each), no broadcast
         for m in members:
-            assert m.call_count == 2, f"{m.name} expected 2 (broadcast + 1 auto-turn), got {m.call_count}"
+            assert m.call_count == 1, f"{m.name} expected 1 (sequential only), got {m.call_count}"
 
     def test_natural_mode_first_exchange_broadcast_only(self, project: Path) -> None:
         """natural mode first exchange: broadcast only, no auto-turns."""
@@ -2272,12 +2272,11 @@ class TestMentionBumpAutoTurns:
         with patch("random.shuffle"):
             asyncio.run(app_instance.run_chat_round(["claude", "codex", "extra"], 1, tdir, is_first_exchange=False))
 
-        # Broadcast: all 3 (parallel, order varies)
+        # No broadcast on follow-up — sequential only
         # Auto-turn round (deterministic due to shuffle patch): claude, then...
         # claude mentions @extra, so queue becomes [extra, codex]
         # Final auto-turn order: claude, extra, codex
-        auto_order = call_order[3:]  # skip broadcast (first 3)
-        assert auto_order == ["claude", "extra", "codex"]
+        assert call_order == ["claude", "extra", "codex"]
 
 
 class TestChatSessionIsolation:

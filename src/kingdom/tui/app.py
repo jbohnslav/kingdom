@@ -833,16 +833,12 @@ class ChatApp(App):
 
     async def run_mode_natural(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
         """Natural mode: parallel broadcast first turn, then shuffled round-robin."""
-        # First turn: parallel broadcast (WaitingPanels mounted by send_message)
-        await self.parallel_query(targets, generation, tdir)
-        if self.generation != generation:
-            return
-
-        # First exchange in thread: broadcast only, no auto-turns
         if is_first_exchange:
+            # First exchange: parallel broadcast, no auto-turns
+            await self.parallel_query(targets, generation, tdir)
             return
 
-        # Follow-up: shuffled round-robin auto-turns
+        # Follow-up: shuffled sequential only — each member responds once
         await self.sequential_auto_turns(generation, tdir, shuffle=True)
 
     async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
