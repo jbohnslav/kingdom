@@ -1376,6 +1376,38 @@ class TestTicketListTable:
             assert "cccc ✓" not in result.output
             assert "cccc" in result.output
 
+    def test_table_shows_dep_status_include_done(self) -> None:
+        """Deps in done branches should still show ✓ with --all --include-done."""
+        from kingdom.state import write_json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            # Create a done branch with a closed dep ticket
+            done_branch = ensure_branch_layout(base, "done-branch")
+            write_json(done_branch / "state.json", {"status": "done"})
+            done_tickets = done_branch / "tickets"
+            closed_dep = Ticket(id="dddd", status="closed", title="Done dep", body="", created=datetime.now(UTC))
+            write_ticket(closed_dep, done_tickets / "dddd.md")
+
+            # Create a ticket on the active branch that depends on the done-branch ticket
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            ticket = Ticket(
+                id="eeee",
+                status="open",
+                title="Depends on done",
+                body="",
+                deps=["dddd"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "eeee.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--all", "--include-done", "--closed"])
+
+            assert result.exit_code == 0
+            assert "dddd ✓" in result.output
+
     def test_table_all_shows_location_column(self) -> None:
         """With --all flag, the Location column should be present."""
         with runner.isolated_filesystem():

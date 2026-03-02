@@ -499,8 +499,9 @@ def ticket_list(
 
     base = require_project_root()
 
-    # Build a global status lookup for dep-based filtering and dep annotations
-    all_known_tickets = collect_all_tickets(base)
+    # Build a global status lookup for dep-based filtering and dep annotations.
+    # Always include done branches so deps in done branches get correct ✓ marks.
+    all_known_tickets = collect_all_tickets(base, include_done=True)
     status_by_id = {t.id: t.status for t in all_known_tickets}
 
     if backlog:
