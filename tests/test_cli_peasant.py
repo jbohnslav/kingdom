@@ -1969,8 +1969,8 @@ class TestFilterAgentLogLines:
         result = filter_agent_log_lines(lines)
         assert result == ["{not valid json}"]
 
-    def test_extracts_claude_stream_text(self) -> None:
-        """With backend set, NDJSON text deltas are extracted instead of discarded."""
+    def test_skips_ndjson_even_with_backend(self) -> None:
+        """filter_agent_log_lines skips all JSON — NDJSON is handled by reassemble_stream_text."""
         import json
 
         from kingdom.cli.peasant import filter_agent_log_lines
@@ -1982,7 +1982,7 @@ class TestFilterAgentLogLines:
         }
         lines = [json.dumps(event)]
         result = filter_agent_log_lines(lines, backend="claude_code")
-        assert result == ["Hello from agent"]
+        assert result == []
 
     def test_skips_non_text_ndjson_events(self) -> None:
         """Non-text NDJSON events (like result metadata) are still skipped."""
@@ -2008,3 +2008,141 @@ class TestFilterAgentLogLines:
         lines = [json.dumps(event)]
         result = filter_agent_log_lines(lines, backend="")
         assert result == []
+
+
+class TestReassembleStreamText:
+    """Tests for reassemble_stream_text — NDJSON delta accumulation."""
+
+    def _make_claude_delta(self, text: str) -> str:
+        import json
+
+        return json.dumps(
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}},
+                "session_id": "s1",
+            }
+        )
+
+    def test_fragments_reassembled_into_sentence(self) -> None:
+        """Multiple small deltas become one coherent sentence."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        lines = [
+            self._make_claude_delta("I'm reading "),
+            self._make_claude_delta("the file to "),
+            self._make_claude_delta("understand the function. "),
+            self._make_claude_delta("Let me check the tests next.\n"),
+        ]
+        display, remaining = reassemble_stream_text("", lines, "claude_code")
+        assert len(display) == 2
+        assert "reading the file to understand the function" in display[0]
+        assert "check the tests next" in display[1]
+        assert remaining == ""
+
+    def test_newline_boundaries_split_lines(self) -> None:
+        """Newlines in stream text produce separate display lines."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        lines = [
+            self._make_claude_delta("First line of output.\n"),
+            self._make_claude_delta("Second line of output.\n"),
+        ]
+        display, _remaining = reassemble_stream_text("", lines, "claude_code")
+        assert len(display) == 2
+        assert "First line" in display[0]
+        assert "Second line" in display[1]
+
+    def test_short_fragments_buffered(self) -> None:
+        """Fragments shorter than min_display_len are not shown."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        lines = [self._make_claude_delta("Let me")]
+        display, remaining = reassemble_stream_text("", lines, "claude_code")
+        assert display == []
+        assert remaining == "Let me"
+
+    def test_buffer_carries_across_calls(self) -> None:
+        """Remaining buffer from one call feeds into the next."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        # First poll: incomplete sentence
+        lines1 = [self._make_claude_delta("I'm reading the ")]
+        display1, buf = reassemble_stream_text("", lines1, "claude_code")
+        assert display1 == []
+        assert "reading" in buf
+
+        # Second poll: sentence completes
+        lines2 = [self._make_claude_delta("harness code to understand the flow.\n")]
+        display2, buf = reassemble_stream_text(buf, lines2, "claude_code")
+        assert len(display2) == 1
+        assert "reading the harness code" in display2[0]
+        assert buf == ""
+
+    def test_flush_emits_remaining(self) -> None:
+        """flush=True emits whatever is in the buffer regardless of length."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        lines = [self._make_claude_delta("Almost done")]
+        display, remaining = reassemble_stream_text("", lines, "claude_code", flush=True)
+        assert display == ["Almost done"]
+        assert remaining == ""
+
+    def test_no_backend_returns_empty(self) -> None:
+        """Without a backend, no text is extracted."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        lines = [self._make_claude_delta("Hello")]
+        display, remaining = reassemble_stream_text("", lines, "")
+        assert display == []
+        assert remaining == ""
+
+    def test_non_text_events_ignored(self) -> None:
+        """Non-text NDJSON events don't contribute to the buffer."""
+        import json
+
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        event = json.dumps({"type": "result", "session_id": "s1"})
+        display, remaining = reassemble_stream_text("", [event], "claude_code")
+        assert display == []
+        assert remaining == ""
+
+    def test_mixed_ndjson_and_plain_text(self) -> None:
+        """Plain text lines are ignored by reassemble (handled by filter_agent_log_lines)."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        lines = [
+            "Some plain text output",
+            self._make_claude_delta("Reading the source code now.\n"),
+        ]
+        display, _remaining = reassemble_stream_text("", lines, "claude_code")
+        # Only the NDJSON text should appear
+        assert len(display) == 1
+        assert "Reading the source code" in display[0]
+
+    def test_sentence_boundaries_within_line(self) -> None:
+        """Sentence-ending punctuation splits long text within a single line."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        lines = [
+            self._make_claude_delta(
+                "I found the bug in the parser. It was missing a null check. Let me fix it now and commit.\n"
+            ),
+        ]
+        display, _remaining = reassemble_stream_text("", lines, "claude_code")
+        assert len(display) == 3
+        assert "bug in the parser" in display[0]
+        assert "null check" in display[1]
+        assert "fix it now and commit" in display[2]
+
+    def test_truncates_long_lines(self) -> None:
+        """Lines exceeding max_chars are truncated with ellipsis."""
+        from kingdom.cli.peasant import reassemble_stream_text
+
+        long_text = "A" * 300 + ".\n"
+        lines = [self._make_claude_delta(long_text)]
+        display, _remaining = reassemble_stream_text("", lines, "claude_code", max_chars=50)
+        assert len(display) == 1
+        assert display[0].endswith("...")
+        assert len(display[0]) == 53

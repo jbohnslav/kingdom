@@ -515,43 +515,28 @@ FLAG_VERBS: dict[str, str] = {
 
 
 def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int = 200, backend: str = "") -> list[str]:
-    """Filter raw agent log lines to human-readable content.
+    """Filter raw agent log lines to human-readable non-NDJSON content.
 
-    Strips ANSI escapes, extracts text from NDJSON via backend stream
-    extractors, skips pure metadata, and returns the last *max_lines*
-    readable lines each truncated to *max_chars*.
+    Strips ANSI escapes, skips JSON and metadata noise, and returns the last
+    *max_lines* readable plain-text lines each truncated to *max_chars*.
 
-    When *backend* is set (e.g. ``"claude_code"``), JSON lines are decoded
-    with :func:`~kingdom.agent.extract_stream_text` instead of discarded.
+    NDJSON stream text is **not** handled here — use :func:`reassemble_stream_text`
+    for that. This function still skips JSON lines so they don't leak as noise.
     """
     import json as _json
 
-    from kingdom.agent import extract_stream_text
-
     ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-    readable = []
+    readable: list[str] = []
     for raw_line in lines:
         line = raw_line.rstrip()
         if not line:
             continue
-        # Strip ANSI escapes
         cleaned = ansi_re.sub("", line)
         if not cleaned.strip():
             continue
         stripped = cleaned.strip()
-        # Try to extract text from NDJSON via backend stream extractors
+        # Skip any JSON lines — NDJSON is handled by reassemble_stream_text
         if stripped.startswith("{") or stripped.startswith("["):
-            if backend:
-                text = extract_stream_text(stripped, backend)
-                if text:
-                    # Accumulated stream text — split into lines and add each
-                    for fragment in text.splitlines():
-                        fragment = fragment.strip()
-                        if fragment and len(fragment) >= 3:
-                            truncated = fragment[:max_chars] + "..." if len(fragment) > max_chars else fragment
-                            readable.append(truncated)
-                    continue
-            # No backend or non-text event — skip valid JSON
             try:
                 _json.loads(stripped)
                 continue
@@ -565,6 +550,115 @@ def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int 
         truncated = stripped[:max_chars] + "..." if len(stripped) > max_chars else stripped
         readable.append(truncated)
     return readable[-max_lines:]
+
+
+# Sentence-ending punctuation followed by whitespace — used to split reassembled
+# stream text into display-ready lines.
+SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def reassemble_stream_text(
+    buffer: str,
+    new_lines: list[str],
+    backend: str,
+    max_lines: int = 3,
+    max_chars: int = 200,
+    min_display_len: int = 20,
+    flush: bool = False,
+) -> tuple[list[str], str]:
+    """Accumulate NDJSON stream deltas into coherent display lines.
+
+    Pure function. Takes the carry-over *buffer* from the previous poll,
+    a batch of raw log *new_lines*, and the *backend* name. Extracts text
+    from NDJSON events, appends to the buffer, splits on real boundaries
+    (newlines, then sentence-ending punctuation), and returns
+    ``(display_lines, remaining_buffer)``.
+
+    Set *flush=True* when the agent has finished to emit any remaining
+    buffer content regardless of length.
+    """
+    import json as _json
+
+    from kingdom.agent import extract_stream_text
+
+    ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+    # Extract text from NDJSON lines and append to buffer
+    for raw_line in new_lines:
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        cleaned = ansi_re.sub("", line).strip()
+        if not cleaned:
+            continue
+        if not (cleaned.startswith("{") or cleaned.startswith("[")):
+            continue
+        # Only process valid JSON
+        try:
+            _json.loads(cleaned)
+        except (ValueError, _json.JSONDecodeError):
+            continue
+        if not backend:
+            continue
+        text = extract_stream_text(cleaned, backend)
+        if text:
+            buffer += text
+
+    if not buffer:
+        return [], ""
+
+    # Split buffer on newlines first — these are authoritative boundaries
+    raw_segments: list[str] = buffer.splitlines(keepends=True)
+
+    display: list[str] = []
+    remaining = ""
+
+    for segment in raw_segments:
+        has_newline = segment.endswith("\n")
+        stripped = segment.strip()
+        if not stripped:
+            continue
+
+        if has_newline:
+            # Complete line — split further on sentence boundaries
+            sentences = SENTENCE_BOUNDARY_RE.split(stripped)
+            for s in sentences:
+                s = s.strip()
+                if s:
+                    display.append(s)
+        else:
+            # No trailing newline — this is the tail of the buffer.
+            # Try to extract complete sentences from it.
+            sentences = SENTENCE_BOUNDARY_RE.split(stripped)
+            if len(sentences) > 1:
+                # All but last are complete sentences
+                for s in sentences[:-1]:
+                    s = s.strip()
+                    if s:
+                        display.append(s)
+                # Preserve trailing whitespace from original segment so
+                # concatenation with next poll's text doesn't lose spaces.
+                last = sentences[-1]
+                trailing = segment[segment.rindex(last) + len(last) :]
+                remaining = last + trailing.rstrip("\n")
+            else:
+                # Keep original trailing whitespace for buffer carry-over
+                remaining = segment.rstrip("\n")
+
+    # On flush, emit whatever remains regardless of length
+    if flush and remaining:
+        display.append(remaining)
+        remaining = ""
+
+    # Filter out short fragments and truncate
+    result: list[str] = []
+    for line in display:
+        if len(line) < min_display_len and not flush:
+            continue
+        truncated = line[:max_chars] + "..." if len(line) > max_chars else line
+        result.append(truncated)
+
+    return result[-max_lines:], remaining
 
 
 def poll_worktree(worktree: Path) -> list[str] | None:
@@ -664,6 +758,7 @@ def peasant_watch(
     worktree_poll_interval = 30.0  # seconds between worktree polls
     log_poll_interval = 15.0  # seconds between agent log polls
     agent_log_offset: int = 0  # byte offset into agent-live.log
+    stream_buffer: str = ""  # carry-over buffer for reassemble_stream_text
 
     # Resolve agent live log path
     agent_live_log = logs_root(ctx.base, ctx.feature) / session_name / "agent-live.log"
@@ -700,6 +795,14 @@ def peasant_watch(
             state = get_agent_state(ctx.base, ctx.feature, session_name)
             if state.status in WATCH_TERMINAL_STATUSES:
                 flush_worklog()
+
+                # Flush any remaining stream buffer
+                if stream_buffer.strip():
+                    final_lines, stream_buffer = reassemble_stream_text(stream_buffer, [], agent_backend, flush=True)
+                    if final_lines:
+                        ts = time_mod.strftime("%H:%M")
+                        for line in final_lines:
+                            console.print(f"  [{ts}] {line}", markup=False)
 
                 # Map status to action command and display label
                 status_actions = {
@@ -756,7 +859,11 @@ def peasant_watch(
                             new_content = f.read()
                         agent_log_offset = file_size
                         new_lines = new_content.splitlines()
-                        readable = filter_agent_log_lines(new_lines, backend=agent_backend)
+                        # Reassemble NDJSON stream deltas into coherent lines
+                        stream_lines, stream_buffer = reassemble_stream_text(stream_buffer, new_lines, agent_backend)
+                        # Also pick up any non-NDJSON readable lines
+                        plain_lines = filter_agent_log_lines(new_lines)
+                        readable = plain_lines + stream_lines
                         if readable:
                             ts = time_mod.strftime("%H:%M")
                             for line in readable:
