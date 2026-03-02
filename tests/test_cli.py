@@ -294,13 +294,8 @@ class TestNoColor:
 class TestVerboseFlag:
     """Test --verbose / -v global flag."""
 
-    def test_verbose_flag_accessible(self) -> None:
-        """VERBOSE module-level flag exists and defaults to False."""
-        assert hasattr(cli, "VERBOSE")
-        assert cli.VERBOSE is False
-
     def test_verbose_flag_parsed(self) -> None:
-        """--verbose sets the module flag and shows debug output on config show."""
+        """--verbose stores flag in Typer context and shows debug output on config show."""
         result = runner.invoke(cli.app, ["-v", "config", "show"])
         assert result.exit_code == 0
         assert "base:" in result.output
@@ -313,27 +308,10 @@ class TestVerboseFlag:
         assert "base:" not in result.output
         assert "config path:" not in result.output
 
-    def test_verbose_echo_helper(self) -> None:
-        """verbose_echo only prints when VERBOSE is True."""
-        from io import StringIO
-
-        from rich.console import Console
-
-        buf = StringIO()
-        cli.VERBOSE = False
-        # verbose_echo writes to error_console; patch it
-        original = cli.error_console
-        cli.error_console = Console(file=buf, no_color=True)
-        try:
-            cli.verbose_echo("should not appear")
-            assert buf.getvalue() == ""
-
-            cli.VERBOSE = True
-            cli.verbose_echo("should appear")
-            assert "should appear" in buf.getvalue()
-        finally:
-            cli.VERBOSE = False
-            cli.error_console = original
+    def test_verbose_echo_silent_outside_context(self) -> None:
+        """verbose_echo is a no-op when called outside a Typer context."""
+        # Should not crash — just silently does nothing
+        cli.verbose_echo("should not crash")
 
 
 class TestPeasantWatch:

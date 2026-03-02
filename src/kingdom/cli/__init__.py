@@ -39,7 +39,7 @@ from .config import check_cli, check_config, config_app, get_doctor_checks
 from .council import council_app
 from .design import design_app, get_branch_paths, get_doc_status  # noqa: F401 (re-export)
 from .display import error_console, print_error, styled_echo
-from .helpers import VERBOSE, install_skill, is_git_repo, require_project_root, verbose_echo  # noqa: F401
+from .helpers import install_skill, is_git_repo, require_project_root, verbose_echo  # noqa: F401
 from .peasant import (  # noqa: F401
     PeasantContext,
     launch_work_background,
@@ -64,14 +64,10 @@ app = typer.Typer(
 
 @app.callback()
 def app_callback(
+    ctx: typer.Context,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Print debug output.")] = False,
 ) -> None:
-    global VERBOSE
-    VERBOSE = verbose
-    # Also update the VERBOSE flag in helpers module for direct callers
-    import kingdom.cli.helpers as _helpers
-
-    _helpers.VERBOSE = verbose
+    ctx.ensure_object(dict)["verbose"] = verbose
 
 
 # ---------------------------------------------------------------------------

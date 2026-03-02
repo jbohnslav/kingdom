@@ -13,16 +13,17 @@ from kingdom.ticket import AmbiguousTicketMatch, Ticket, find_ticket
 
 from .display import print_error
 
-VERBOSE: bool = False
-
 
 def verbose_echo(message: str) -> None:
     """Print a debug message to stderr when --verbose is set."""
-    import kingdom.cli as _cli
+    import click
 
-    if not _cli.VERBOSE:
+    ctx = click.get_current_context(silent=True)
+    if ctx is None or not ctx.ensure_object(dict).get("verbose"):
         return
-    _cli.error_console.print(f"[dim]{message}[/dim]")
+    from .display import error_console
+
+    error_console.print(f"[dim]{message}[/dim]")
 
 
 def resolve_ticket_or_exit(
