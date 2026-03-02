@@ -1343,6 +1343,39 @@ class TestTicketListTable:
             assert "bbbb" in result.output
             assert "cccc" in result.output
 
+    def test_table_shows_dep_status(self) -> None:
+        """Closed deps should show ✓, open deps should not."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            # Create a closed dep and an open dep
+            closed_dep = Ticket(id="bbbb", status="closed", title="Done dep", body="", created=datetime.now(UTC))
+            write_ticket(closed_dep, tickets_dir / "bbbb.md")
+
+            open_dep = Ticket(id="cccc", status="open", title="Open dep", body="", created=datetime.now(UTC))
+            write_ticket(open_dep, tickets_dir / "cccc.md")
+
+            ticket = Ticket(
+                id="aaaa",
+                status="open",
+                title="Has deps",
+                body="",
+                deps=["bbbb", "cccc"],
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "aaaa.md")
+
+            result = runner.invoke(cli.app, ["tk", "list", "--closed"])
+
+            assert result.exit_code == 0
+            # Closed dep should have checkmark
+            assert "bbbb ✓" in result.output
+            # Open dep should NOT have checkmark
+            assert "cccc ✓" not in result.output
+            assert "cccc" in result.output
+
     def test_table_all_shows_location_column(self) -> None:
         """With --all flag, the Location column should be present."""
         with runner.isolated_filesystem():

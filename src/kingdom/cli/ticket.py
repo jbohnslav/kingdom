@@ -117,11 +117,22 @@ def format_ticket_line(ticket: Ticket, location: str | None = None) -> str:
     return f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}{location_str}{dep_str}"
 
 
+def format_dep(dep_id: str, status_by_id: dict[str, str]) -> str:
+    """Format a single dependency ID with a status indicator.
+
+    Closed deps get a checkmark (e.g. ``5afc ✓``), open/unknown deps are plain.
+    """
+    if status_by_id.get(dep_id) == "closed":
+        return f"{dep_id} ✓"
+    return dep_id
+
+
 def render_ticket_table(
     tickets: list[Ticket],
     *,
     show_location: bool = False,
     locations: dict[str, str] | None = None,
+    status_by_id: dict[str, str] | None = None,
 ) -> None:
     """Render a list of tickets as a Rich table.
 
@@ -132,9 +143,11 @@ def render_ticket_table(
         tickets: Tickets to display.
         show_location: Whether to include a Location column.
         locations: Mapping of ticket id -> location label (used with show_location).
+        status_by_id: Mapping of ticket id -> status string for dep annotation.
     """
     has_assignee = any(t.assignee for t in tickets)
     has_deps = any(t.deps for t in tickets)
+    dep_statuses = status_by_id or {}
 
     console = Console(width=max(console_width(), 120))
     table = Table(show_header=True, header_style="bold", padding=(0, 1))
@@ -152,7 +165,7 @@ def render_ticket_table(
 
     for ticket in tickets:
         status_style = STATUS_STYLES.get(ticket.status, "")
-        dep_str = ", ".join(ticket.deps) if ticket.deps else ""
+        dep_str = ", ".join(format_dep(d, dep_statuses) for d in ticket.deps) if ticket.deps else ""
         assignee_str = f"@{ticket.assignee}" if ticket.assignee else ""
 
         row: list[str] = [
@@ -486,8 +499,8 @@ def ticket_list(
 
     base = require_project_root()
 
-    # Build a global status lookup for dep-based filtering
-    all_known_tickets = collect_all_tickets(base) if (ready or blocked) else []
+    # Build a global status lookup for dep-based filtering and dep annotations
+    all_known_tickets = collect_all_tickets(base)
     status_by_id = {t.id: t.status for t in all_known_tickets}
 
     if backlog:
@@ -505,7 +518,7 @@ def ticket_list(
                 else:
                     typer.echo('No backlog tickets. Create one with `kd tk create --backlog "title"`.')
                 return
-            render_ticket_table(tickets)
+            render_ticket_table(tickets, status_by_id=status_by_id)
             typer.echo(format_ticket_summary(tickets))
         return
 
@@ -531,7 +544,7 @@ def ticket_list(
                 else:
                     typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
                 return
-            render_ticket_table(all_filtered, show_location=True, locations=location_map)
+            render_ticket_table(all_filtered, show_location=True, locations=location_map, status_by_id=status_by_id)
             typer.echo(format_ticket_summary(all_filtered))
     else:
         # List tickets for current branch only
@@ -549,7 +562,7 @@ def ticket_list(
                 else:
                     typer.echo('No tickets found. Create one with `kd tk create "title"`.')
                 return
-            render_ticket_table(tickets)
+            render_ticket_table(tickets, status_by_id=status_by_id)
             typer.echo(format_ticket_summary(tickets))
 
 
