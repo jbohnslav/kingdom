@@ -1276,7 +1276,8 @@ class TestRunQuery:
         assert "[Previous conversation]" in prompt
         assert "king: What changed?" in prompt
         assert "codex: I updated the parser." in prompt
-        assert prompt.rstrip().endswith("You are claude. Continue the discussion.")
+        assert "You are claude." in prompt
+        assert "Read the full conversation" in prompt
 
 
 class TestChatAppSessionIsolation:

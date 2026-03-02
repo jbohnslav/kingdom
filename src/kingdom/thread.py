@@ -533,7 +533,18 @@ def format_thread_history(tdir: Path, target_member: str, suffix: str | None = N
             continue
     messages.sort(key=lambda m: m.sequence)
 
-    tail = suffix or f"You are {target_member}. Continue the discussion."
+    default_suffix = (
+        f"You are {target_member}. Read the full conversation above before responding.\n"
+        "\n"
+        "This is a group discussion, not a survey. Engage with what others have said — "
+        "agree, disagree, extend, or synthesize. Reference specific points rather than "
+        "restating the question from scratch. If someone raised a concern you think is "
+        "wrong, say so and explain why. If they made a point you hadn't considered, "
+        "acknowledge it and build on it.\n"
+        "\n"
+        "Be direct and concise. The King is reading these — make your contribution count."
+    )
+    tail = suffix or default_suffix
 
     if not messages:
         return f"---\n{tail}"
