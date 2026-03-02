@@ -20,13 +20,6 @@ runner = CliRunner()
 BRANCH = "feature/test-chat"
 
 
-@pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Create a minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, BRANCH)
-    return tmp_path
-
-
 class TestChatCommand:
     def test_help(self) -> None:
         result = runner.invoke(app, ["council", "chat", "--help"])

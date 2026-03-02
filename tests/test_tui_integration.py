@@ -21,7 +21,6 @@ import pytest
 from kingdom.agent import AgentConfig
 from kingdom.council import Council
 from kingdom.council.base import AgentResponse
-from kingdom.state import ensure_branch_layout
 from kingdom.thread import add_message, create_thread, thread_dir
 from kingdom.tui.app import ChatApp, InputArea, MessageLog
 from kingdom.tui.poll import StreamDelta, StreamFinished, StreamStarted, ThinkingDelta
@@ -128,13 +127,6 @@ def make_fake_council(member_names: list[str], **member_kwargs) -> Council:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, BRANCH)
-    return tmp_path
 
 
 @pytest.fixture()
