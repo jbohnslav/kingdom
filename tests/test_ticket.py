@@ -1109,15 +1109,14 @@ class TestAppendWorklogEntry:
         write_ticket(ticket, path)
 
         ts = datetime(2026, 2, 10, 14, 30, 0, tzinfo=UTC)
-        local_ts = ts.astimezone()
-        expected_text = local_ts.strftime("%Y-%m-%d %H:%M")
+        local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
         entry = append_worklog_entry(path, "Started implementation", timestamp=ts)
 
-        assert entry == f"- {expected_text} — Started implementation"
+        assert entry == f"- {local_ts} — Started implementation"
 
         content = path.read_text()
         assert "## Worklog" in content
-        assert f"- {expected_text} — Started implementation" in content
+        assert f"- {local_ts} — Started implementation" in content
 
     def test_appends_to_existing_worklog_section(self, tmp_path: Path) -> None:
         """Appends entry to an existing ## Worklog section."""
