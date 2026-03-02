@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from kingdom import cli
 from kingdom.cli import resolve_peasant_context
-from kingdom.session import AgentState, get_agent_state, set_agent_state
+from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
 from kingdom.state import backlog_root, ensure_branch_layout, logs_root, set_current_run
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
@@ -268,6 +268,71 @@ class TestPeasantStart:
             assert result.exit_code == 0, result.output
             assert "Running in hand mode" in result.output
             mock_watch.assert_called_once_with("kin-test")
+
+    def test_start_hand_mode_seeds_state_before_launch(self) -> None:
+        """Worker must see hand_mode=True on first read (race fix for 4658)."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            observed_state_during_launch: list[AgentState] = []
+
+            def spy_launch(*args: object, **kwargs: object) -> int:
+                # Simulate the worker reading session state immediately on launch
+                state = get_agent_state(base, BRANCH, "peasant-kin-test")
+                observed_state_during_launch.append(state)
+                return 42  # fake pid
+
+            with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            assert len(observed_state_during_launch) == 1
+            state = observed_state_during_launch[0]
+            assert state.hand_mode is True
+            assert state.status == "working"
+            assert state.ticket == "kin-test"
+            assert state.agent_backend is not None
+
+    def test_start_fast_worker_failure_not_clobbered(self) -> None:
+        """If worker writes status=failed before parent records pid, status stays failed."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            def failing_launch(*args: object, **kwargs: object) -> int:
+                # Simulate a worker that fails immediately and writes failed status
+                update_agent_state(base, BRANCH, "peasant-kin-test", status="failed")
+                return 99
+
+            with patch("kingdom.cli.launch_work_background", side_effect=failing_launch):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            # The parent's post-launch update should only set pid, not clobber status
+            state = get_agent_state(base, BRANCH, "peasant-kin-test")
+            assert state.status == "failed"
+            assert state.pid == 99
+
+    def test_start_launch_exception_sets_failed(self) -> None:
+        """If launch itself throws, session should be marked failed, not stuck working."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            with patch(
+                "kingdom.cli.launch_work_background",
+                side_effect=RuntimeError("tmux not found"),
+            ):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test", "--hand"])
+
+            assert result.exit_code == 1
+            assert "Failed to launch" in result.output
+            state = get_agent_state(base, BRANCH, "peasant-kin-test")
+            assert state.status == "failed"
 
 
 class TestPeasantStatus:

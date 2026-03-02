@@ -444,6 +444,38 @@ def has_code_changes(worktree: Path, start_sha: str | None) -> bool:
     return False
 
 
+def check_worktree_branch(worktree: Path, expected_branch: str) -> bool:
+    """Verify the worktree HEAD is on the expected branch.
+
+    Returns True if the branch matches (or if git fails — don't block on
+    infra errors). Returns False if the branch has changed, meaning the
+    agent escaped.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            logger.warning("Could not check worktree branch (git returned %d)", result.returncode)
+            return True  # Don't block on git failures
+        actual = result.stdout.strip()
+        if actual != expected_branch:
+            logger.error(
+                "BRANCH ESCAPE: worktree HEAD is on '%s', expected '%s'",
+                actual,
+                expected_branch,
+            )
+            return False
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        logger.warning("Could not check worktree branch (timeout/not found)")
+        return True  # Don't block on infra errors
+
+
 def get_changed_files(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
     """Get the list of changed files (--stat format) for review context.
 
@@ -791,7 +823,21 @@ def run_agent_loop(
     except FileNotFoundError:
         pass
 
+    # Determine expected branch for escape detection
+    expected_branch = branch if agent_state.hand_mode else f"ticket/{ticket_id}"
+
+    # Pre-loop sanity check: bail early if worktree is already on the wrong branch
+    if not check_worktree_branch(worktree, expected_branch):
+        append_worklog(
+            ticket_path,
+            f"BRANCH ESCAPE: worktree is not on expected branch '{expected_branch}' — aborting",
+        )
+        now = datetime.now(UTC).isoformat()
+        update_agent_state(base, branch, session_name, status="failed", last_activity=now)
+        return "failed"
+
     # Record start_sha on first run (for diff scoping in council review).
+    # Must come after branch check so we don't record a SHA from the wrong branch.
     if not agent_state.start_sha:
         try:
             sha_result = subprocess.run(
@@ -910,6 +956,16 @@ def run_agent_loop(
         if stop_requested:
             final_status = "stopped"
             logger.info("Stopping after backend call (signal received)")
+            break
+
+        # Post-iteration branch escape check
+        if not check_worktree_branch(worktree, expected_branch):
+            append_worklog(
+                ticket_path,
+                f"BRANCH ESCAPE detected after iteration {iteration}: "
+                f"worktree is not on expected branch '{expected_branch}' — aborting",
+            )
+            final_status = "failed"
             break
 
         # Log raw agent output so it appears in `kd peasant logs --follow`

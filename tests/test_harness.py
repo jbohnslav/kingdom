@@ -13,6 +13,7 @@ from kingdom.harness import (
     append_worklog,
     build_prompt,
     build_review_prompt,
+    check_worktree_branch,
     extract_worklog,
     extract_worklog_entry,
     format_worklog_timestamp,
@@ -760,7 +761,10 @@ class TestRunAgentLoop:
         def mock_git(cmd, **kwargs):
             result = MagicMock()
             if cmd and "rev-parse" in cmd:
-                result.stdout = "abc123def456\n"
+                if "--abbrev-ref" in cmd:
+                    result.stdout = "ticket/kin-test\n"
+                else:
+                    result.stdout = "abc123def456\n"
                 result.returncode = 0
             else:
                 result.stdout = ""
@@ -1824,3 +1828,116 @@ class TestRunStreamingSubprocess:
         assert result.returncode == 0
         for i in range(5):
             assert f"line {i}" in result.stdout
+
+
+class TestCheckWorktreeBranch:
+    """Tests for check_worktree_branch — the branch escape tripwire."""
+
+    def test_matching_branch_returns_true(self) -> None:
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "ticket/kin-042\n"
+        with patch("kingdom.harness.subprocess.run", return_value=mock_result):
+            assert check_worktree_branch(Path("/fake"), "ticket/kin-042") is True
+
+    def test_wrong_branch_returns_false(self) -> None:
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "code-cleanup\n"
+        with patch("kingdom.harness.subprocess.run", return_value=mock_result):
+            assert check_worktree_branch(Path("/fake"), "ticket/kin-042") is False
+
+    def test_git_failure_returns_true(self) -> None:
+        """Git errors should not block the agent — return True (pass)."""
+        mock_result = MagicMock()
+        mock_result.returncode = 128
+        mock_result.stdout = ""
+        with patch("kingdom.harness.subprocess.run", return_value=mock_result):
+            assert check_worktree_branch(Path("/fake"), "ticket/kin-042") is True
+
+    def test_git_timeout_returns_true(self) -> None:
+        """Timeouts should not block the agent — return True (pass)."""
+        import subprocess
+
+        with patch("kingdom.harness.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)):
+            assert check_worktree_branch(Path("/fake"), "ticket/kin-042") is True
+
+    def test_hand_mode_feature_branch(self) -> None:
+        """In hand mode, expected branch is the feature branch, not ticket/."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "feature/my-feature\n"
+        with patch("kingdom.harness.subprocess.run", return_value=mock_result):
+            assert check_worktree_branch(Path("/fake"), "feature/my-feature") is True
+
+
+class TestBranchEscapeInLoop:
+    """Integration tests: branch escape detection in run_agent_loop."""
+
+    def setup_for_loop(self, project: Path, ticket_path: Path) -> tuple[str, str]:
+        """Set up thread and session for a loop test. Returns (thread_id, session_name)."""
+        thread_id = "kin-test-work"
+        session_name = "peasant-kin-test"
+        create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
+        add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
+        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        return thread_id, session_name
+
+    def test_pre_loop_escape_aborts(self, project: Path, ticket_path: Path) -> None:
+        """If worktree is already on the wrong branch, abort before calling the agent."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        with patch("kingdom.harness.check_worktree_branch", return_value=False):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "failed"
+        ticket = read_ticket(ticket_path)
+        assert "BRANCH ESCAPE" in ticket.body
+
+        # Verify session state is updated to "failed" (not stuck in "working")
+        from kingdom.session import get_agent_state
+
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.status == "failed"
+
+    def test_post_iteration_escape_aborts(self, project: Path, ticket_path: Path) -> None:
+        """If worktree branch changes after agent call, abort."""
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+
+        call_count = 0
+
+        def branch_check_side_effect(worktree, expected):
+            nonlocal call_count
+            call_count += 1
+            return call_count == 1  # Pre-loop passes, post-iteration fails
+
+        mock_result = MagicMock()
+        mock_result.stdout = '{"result": "Working on it.\\n\\nSTATUS: WORKING", "session_id": "s1"}'
+        mock_result.stderr = ""
+        mock_result.returncode = 0
+
+        with (
+            patch("kingdom.harness.check_worktree_branch", side_effect=branch_check_side_effect),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "failed"
+        ticket = read_ticket(ticket_path)
+        assert "BRANCH ESCAPE detected after iteration" in ticket.body

@@ -316,20 +316,15 @@ def peasant_start(
         seed_body += ticket.body
         add_message(base, feature, thread_id, from_="king", to=session_name, body=seed_body)
 
-    # 4. Launch harness
-    if tmux:
-        pid = launch_work_tmux(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
-    else:
-        pid = _cli.launch_work_background(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
-
-    # 5. Update session with pid and status
+    # 4. Seed session state BEFORE launching the worker process.
+    # The worker reads session state immediately on startup (e.g. hand_mode for
+    # branch validation), so it must be initialized before the process exists.
     now = datetime.now(UTC).isoformat()
     update_agent_state(
         base,
         feature,
         session_name,
         status="working",
-        pid=pid,
         ticket=full_ticket_id,
         thread=thread_id,
         agent_backend=agent,
@@ -337,6 +332,23 @@ def peasant_start(
         last_activity=now,
         hand_mode=hand,
     )
+
+    # 5. Launch harness
+    try:
+        if tmux:
+            pid = launch_work_tmux(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
+        else:
+            pid = _cli.launch_work_background(
+                base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name
+            )
+    except Exception as exc:
+        # Launch failed — don't leave a phantom "working" session behind
+        update_agent_state(base, feature, session_name, status="failed", last_activity=datetime.now(UTC).isoformat())
+        print_error(f"Failed to launch worker: {exc}")
+        raise typer.Exit(code=1) from None
+
+    # 6. Record pid only — don't re-write status, so a fast worker failure isn't clobbered
+    update_agent_state(base, feature, session_name, pid=pid)
 
     peasant_logs_dir = logs_root(base, feature) / session_name
     mode = "tmux" if tmux else "background"
