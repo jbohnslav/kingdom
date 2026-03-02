@@ -28,3 +28,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "textual_integration" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def clear_kd_base(monkeypatch):
+    """Prevent KD_BASE from the developer's environment leaking into tests."""
+    monkeypatch.delenv("KD_BASE", raising=False)
