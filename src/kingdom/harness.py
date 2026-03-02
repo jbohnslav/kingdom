@@ -18,12 +18,14 @@ import logging
 import re
 import signal
 import subprocess
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
+from kingdom.state import logs_root
 from kingdom.thread import add_message, list_messages
 from kingdom.ticket import append_worklog_entry, find_ticket, read_ticket, write_ticket
 
@@ -37,11 +39,16 @@ def build_prompt(
     iteration: int,
     max_iterations: int,
     phase_prompt: str = "",
+    *,
+    worktree: Path | None = None,
+    repo_root: Path | None = None,
+    ticket_id: str = "",
+    ticket_title: str = "",
 ) -> str:
     """Build the prompt sent to the backend agent.
 
     References the ticket file by path (so the agent can read it directly)
-    and includes existing worklog and any new directives from the work thread.
+    and includes existing worklog plus new directives and environment anchors.
     """
     parts = []
 
@@ -49,39 +56,94 @@ def build_prompt(
         parts.append(phase_prompt)
         parts.append("")
 
-    parts.append("You are a peasant agent working on a ticket. Work autonomously to complete it.")
+    # --- Identity and context ---
+    parts.append(
+        "You are a peasant — an autonomous coding agent in Kingdom (kd). "
+        "Kingdom is a ticket-driven development workflow: the King assigns tickets, "
+        "peasants implement them, and the council reviews the result. "
+        "If the council blocks your work, you'll get their feedback and another chance to fix it."
+    )
+
+    # --- Where you are ---
+    if worktree:
+        parts.append("")
+        parts.append(
+            f"You are working in an isolated git worktree at {worktree} "
+            f"on branch ticket/{ticket_id}. All your edits, commits, and commands "
+            f"should happen here — don't cd to {repo_root or 'the parent repo'} "
+            f"or work outside this directory."
+        )
+
+    # --- The ticket ---
     parts.append("")
-    parts.append("## Ticket")
-    parts.append(f"Read the ticket file at: {ticket_path}")
+    parts.append(f"Your ticket is at {ticket_path}.")
+    if ticket_title:
+        parts.append(f'It\'s called "{ticket_title}."')
+    parts.append(
+        "Read it carefully before you start, especially the acceptance criteria — "
+        "those are what the council will judge your work against."
+    )
 
     if worklog:
         parts.append("")
-        parts.append("## Current Worklog")
+        parts.append("Here's the worklog so far:")
         parts.append(worklog)
 
     if directives:
         parts.append("")
-        parts.append("## Directives from Lead")
+        parts.append("The King has given you these directives:")
         for d in directives:
             parts.append(f"- {d}")
 
+    # --- How to work ---
     parts.append("")
-    parts.append("## Instructions")
     parts.append(f"This is iteration {iteration} of {max_iterations}.")
-    parts.append("Work on the ticket. Commit your changes as you go with descriptive commit messages.")
-    parts.append(
-        "Before reporting DONE, run the project's tests, linter, and pre-commit hooks to make sure everything passes."
-    )
-    parts.append("When you respond, structure your output as:")
-    parts.append("1. What you did this iteration")
-    parts.append("2. Your status: DONE, BLOCKED, or CONTINUE")
-    parts.append("3. If BLOCKED, explain what you need help with")
-    parts.append("4. If DONE, confirm all acceptance criteria are met and tests/lint pass")
+    if iteration > 1:
+        parts.append(
+            "You've been bounced back — the council had feedback on your last attempt. "
+            "Focus on what they flagged before doing anything else."
+        )
     parts.append("")
-    parts.append("End your response with exactly one of these status lines:")
-    parts.append("STATUS: DONE")
-    parts.append("STATUS: BLOCKED")
-    parts.append("STATUS: CONTINUE")
+    parts.append(
+        "Read the relevant source code before changing it. Make minimal, correct changes. "
+        "Commit as you go with descriptive messages."
+    )
+    parts.append("")
+    if ticket_id:
+        parts.append(
+            "Keep the ticket worklog updated as you work. Log important decisions, "
+            "tradeoffs, things you noticed, or King input using "
+            f'`kd tk log {ticket_id} "message"` or by editing the ticket file directly. '
+            "The worklog is how the King stays informed about what you're doing and why."
+        )
+    else:
+        parts.append(
+            "Keep the ticket worklog updated as you work. Log important decisions, "
+            "tradeoffs, and things you noticed. The worklog is how the King stays "
+            "informed about what you're doing and why."
+        )
+    parts.append("")
+    parts.append(
+        "Before reporting DONE, run the project's tests, linter, "
+        "and pre-commit hooks. Everything must pass. If you haven't actually changed any code "
+        "or made any commits, you're not done — don't claim DONE with nothing to show."
+    )
+    parts.append("")
+    parts.append(
+        "If you're stuck or need a decision from the King, report BLOCKED with a clear "
+        "explanation of what you need. Don't spin — it's better to ask than to waste iterations."
+    )
+
+    # --- Response format ---
+    parts.append("")
+    parts.append(
+        "When you respond, start with a plain prose paragraph summarizing what you changed. "
+        "Be concrete — name the files, describe the behavior change, explain what you fixed. "
+        'No headings, no numbered list, no labels like "What I did this iteration." '
+        "This paragraph shows up directly in `kd peasant watch`, so make it useful."
+    )
+    parts.append("")
+    parts.append("End your response with exactly one status line:\nSTATUS: DONE\nSTATUS: BLOCKED\nSTATUS: CONTINUE")
 
     return "\n".join(parts)
 
@@ -263,6 +325,69 @@ def extract_worklog(ticket_path: Path) -> str:
     return "\n".join(result).strip()
 
 
+def run_streaming_subprocess(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+    live_log_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess with real-time stdout/stderr streaming.
+
+    Pipes stdout and stderr, writing each line to *live_log_path* in real time
+    while accumulating full buffers for the returned ``CompletedProcess``.
+    This gives ``parse_response()`` the same interface as ``subprocess.run()``
+    while making output visible to ``peasant watch`` during execution.
+    """
+    live_log_path.parent.mkdir(parents=True, exist_ok=True) if live_log_path else None
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        cwd=cwd,
+        env=env,
+        text=True,
+    )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def drain(stream, buf: list[str], label: str) -> None:
+        for line in stream:
+            buf.append(line)
+            if live_log_path:
+                try:
+                    with live_log_path.open("a", encoding="utf-8") as f:
+                        f.write(line)
+                except OSError:
+                    pass
+
+    stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_lines, "stdout"), daemon=True)
+    stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_lines, "stderr"), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+
+    stdout_thread.join(timeout=5)
+    stderr_thread.join(timeout=5)
+
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=proc.returncode,
+        stdout="".join(stdout_lines),
+        stderr="".join(stderr_lines),
+    )
+
+
 def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: int) -> tuple[list[str], int]:
     """Get new directive messages from the work thread since last_seen_seq.
 
@@ -316,30 +441,24 @@ def has_code_changes(worktree: Path, start_sha: str | None) -> bool:
     return False
 
 
-def get_diff(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
-    """Get the diff of changes for council review.
+def get_changed_files(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
+    """Get the list of changed files (--stat format) for review context.
 
-    For worktree mode (feature_branch set): uses feature_branch...HEAD (three-dot
-    merge-base diff) so only the peasant's own changes appear, not other peasants'
-    work that was merged into the feature branch.
-
-    For hand mode (feature_branch=None): uses start_sha..HEAD (two-dot).
-    Falls back to showing all uncommitted + recent committed changes.
+    Uses the same ref resolution logic as the old get_diff — three-dot for
+    worktree mode, two-dot for hand mode, HEAD fallback otherwise.
     """
     try:
         if feature_branch:
-            # Worktree mode: three-dot merge-base diff against feature branch
             result = subprocess.run(
-                ["git", "diff", f"{feature_branch}...HEAD"],
+                ["git", "diff", "--stat", f"{feature_branch}...HEAD"],
                 capture_output=True,
                 text=True,
                 cwd=worktree,
                 timeout=30,
             )
-            # Fall back to two-dot if three-dot fails (e.g. detached HEAD, missing ref)
             if result.returncode != 0 and start_sha:
                 result = subprocess.run(
-                    ["git", "diff", f"{start_sha}..HEAD"],
+                    ["git", "diff", "--stat", f"{start_sha}..HEAD"],
                     capture_output=True,
                     text=True,
                     cwd=worktree,
@@ -347,66 +466,121 @@ def get_diff(worktree: Path, start_sha: str | None, feature_branch: str | None =
                 )
         elif start_sha:
             result = subprocess.run(
-                ["git", "diff", f"{start_sha}..HEAD"],
+                ["git", "diff", "--stat", f"{start_sha}..HEAD"],
                 capture_output=True,
                 text=True,
                 cwd=worktree,
                 timeout=30,
             )
         else:
-            # No start_sha — show diff of staged + unstaged changes
             result = subprocess.run(
-                ["git", "diff", "HEAD"],
+                ["git", "diff", "--stat", "HEAD"],
                 capture_output=True,
                 text=True,
                 cwd=worktree,
                 timeout=30,
             )
         if result.returncode == 0 and result.stdout.strip():
-            diff = result.stdout.strip()
-            # Truncate very large diffs to avoid overwhelming the council
-            if len(diff) > 50000:
-                diff = diff[:50000] + "\n\n... (diff truncated at 50k chars)"
-            return diff
+            return result.stdout.strip()
         return "(no changes detected)"
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        return "(could not generate diff)"
+        return "(could not generate file list)"
 
 
-def build_review_prompt(ticket_title: str, ticket_body: str, diff: str, worklog: str) -> str:
-    """Build the prompt sent to council members for review."""
-    parts = [
-        "## Code Review Request",
-        "",
-        f"**Ticket:** {ticket_title}",
-        "",
-        "### Ticket Description",
-        ticket_body.split("## Worklog")[0].strip() if "## Worklog" in ticket_body else ticket_body.strip(),
-        "",
-        "### Changes (diff)",
-        "```diff",
-        diff,
-        "```",
-    ]
+def get_commit_log(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
+    """Get the oneline commit log for review context."""
+    try:
+        if feature_branch:
+            ref_range = f"{feature_branch}..HEAD"
+        elif start_sha:
+            ref_range = f"{start_sha}..HEAD"
+        else:
+            ref_range = "HEAD~10..HEAD"
+        result = subprocess.run(
+            ["git", "log", "--oneline", ref_range],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return ""
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+
+def build_review_prompt(
+    *,
+    changed_files: str,
+    base_branch: str = "",
+    branch: str = "",
+    commits: str = "",
+    ticket_title: str = "",
+    ticket_body: str = "",
+    ticket_path: str = "",
+    worklog: str = "",
+) -> str:
+    """Build the shared agent-facing review prompt.
+
+    Used by both the harness council review and ``kd council review``.
+    Does NOT paste the full diff — points reviewers at the code and lets
+    them investigate with git commands.
+
+    Per-agent and global ``prompts.review`` config is handled by the
+    ``CouncilMember.phase_prompt`` mechanism — it gets prepended
+    automatically when the member builds its command.
+    """
+    parts = ["## Code Review Request", ""]
+
+    if ticket_title:
+        parts.append(f"**Ticket:** {ticket_title}")
+        if ticket_path:
+            parts.append(f"**Ticket path:** {ticket_path}")
+        parts.append("")
+        body = ticket_body.split("## Worklog")[0].strip() if "## Worklog" in ticket_body else ticket_body.strip()
+        if body:
+            parts.extend(["### Ticket Description", body, ""])
 
     if worklog:
-        parts.extend(
-            [
-                "",
-                "### Worklog",
-                worklog,
-            ]
-        )
+        parts.extend(["### Worklog", worklog, ""])
+
+    if branch:
+        parts.append(f"**Branch:** {branch}")
+    if base_branch:
+        parts.append(f"**Base:** {base_branch}")
+    if branch or base_branch:
+        parts.append("")
+
+    if commits:
+        parts.extend(["### Commits", f"```\n{commits}\n```", ""])
+
+    parts.extend(["### Changed Files", f"```\n{changed_files}\n```", ""])
 
     parts.extend(
         [
-            "",
-            "### Instructions",
-            "Review this code change. Consider:",
+            "### How to Review",
+            "You are a coding agent — inspect the code yourself. Suggested commands:",
+        ]
+    )
+    if base_branch:
+        parts.append(f"- `git diff {base_branch}...HEAD` — full diff")
+        parts.append(f"- `git log --oneline {base_branch}..HEAD` — commit history")
+    else:
+        parts.append("- `git diff HEAD~N` or `git log --oneline` — inspect recent changes")
+    if ticket_path:
+        parts.append(f"- `cat {ticket_path}` — read the full ticket")
+    parts.append("- Read individual changed files to understand context")
+    parts.append("")
+
+    parts.extend(
+        [
+            "### Review Standard",
             "- Correctness: does it do what the ticket asks?",
             "- Edge cases: are there unhandled scenarios?",
             "- Code quality: is it readable, maintainable, and well-structured?",
-            "- Tests: are the changes adequately tested? Run the project's test suite and linter to verify.",
+            "- Tests: are changes adequately tested? Run the project's test suite and linter to verify.",
+            "- Regressions: could this break existing behavior?",
             "",
             "End your review with exactly one of these verdict lines:",
             "VERDICT: APPROVED",
@@ -458,20 +632,30 @@ def run_council_review(
     """
     from kingdom.council.council import Council
 
-    # Create council from config
-    council = Council.create(base=base)
+    # Create council with review phase — resolves per-agent prompts.review
+    council = Council.create(base=base, phase="review")
     if not council.members:
         logger.warning("No council members configured — skipping council review")
         return "no_council", []
 
     council.load_sessions(base, branch)
 
-    # Build review prompt — worktree mode uses three-dot diff against feature branch
+    # Build review prompt — point reviewers at code, don't paste full diff
     ticket = read_ticket(ticket_path)
     feature_branch = None if hand_mode else branch
-    diff = get_diff(worktree, start_sha, feature_branch=feature_branch)
+    changed_files = get_changed_files(worktree, start_sha, feature_branch=feature_branch)
+    commits = get_commit_log(worktree, start_sha, feature_branch=feature_branch)
     worklog = extract_worklog(ticket_path)
-    prompt = build_review_prompt(ticket.title, ticket.body, diff, worklog)
+    prompt = build_review_prompt(
+        changed_files=changed_files,
+        base_branch=feature_branch or "",
+        branch=branch,
+        commits=commits,
+        ticket_title=ticket.title,
+        ticket_body=ticket.body,
+        ticket_path=str(ticket_path),
+        worklog=worklog,
+    )
 
     # Write king's review request to thread
     add_message(base, branch, thread_id, from_="king", to="council", body=prompt)
@@ -663,7 +847,18 @@ def run_agent_loop(
         directives, last_seen_seq = get_new_directives(base, branch, thread_id, last_seen_seq)
 
         # Build prompt
-        prompt = build_prompt(ticket_path, worklog, directives, iteration, max_iterations, phase_prompt)
+        prompt = build_prompt(
+            ticket_path,
+            worklog,
+            directives,
+            iteration,
+            max_iterations,
+            phase_prompt,
+            worktree=worktree,
+            repo_root=base,
+            ticket_id=ticket_id,
+            ticket_title=ticket_title,
+        )
 
         # Capture HEAD before agent call so we can diff committed changes after
         pre_iteration_sha = None
@@ -680,19 +875,21 @@ def run_agent_loop(
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 
-        # Call backend
-        cmd = build_command(agent_config, prompt, resume_id)
+        # Call backend — streaming=True enables incremental NDJSON output
+        # so agent-live.log gets data in real time for peasant watch to tail.
+        cmd = build_command(agent_config, prompt, resume_id, streaming=True)
         logger.info("Calling backend: %s", " ".join(cmd[:3]) + "...")
 
+        # Live agent log for `peasant watch` to tail during execution
+        agent_live_log = logs_root(base, branch) / session_name / "agent-live.log"
+
         try:
-            proc = subprocess.run(
+            proc = run_streaming_subprocess(
                 cmd,
-                capture_output=True,
-                text=True,
-                timeout=agent_timeout,
                 cwd=worktree,
-                stdin=subprocess.DEVNULL,
-                env=clean_agent_env(role="peasant", agent_name=session_name),
+                env=clean_agent_env(role="peasant", agent_name=session_name, kd_base=str(base)),
+                timeout=agent_timeout,
+                live_log_path=agent_live_log,
             )
         except subprocess.TimeoutExpired:
             logger.error("Backend timed out after %ds", agent_timeout)

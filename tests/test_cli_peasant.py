@@ -1908,3 +1908,103 @@ class TestWatchRichRendering:
         output = buf.getvalue()
         assert "[09:54]" in output
         assert "a1b2c3d" in output
+
+
+class TestFilterAgentLogLines:
+    """Tests for filter_agent_log_lines in peasant watch."""
+
+    def test_filters_json_lines(self) -> None:
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        lines = ['{"type": "result", "session_id": "abc"}', "Human readable text"]
+        result = filter_agent_log_lines(lines)
+        assert result == ["Human readable text"]
+
+    def test_filters_ansi_escapes(self) -> None:
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        lines = ["\x1b[32mColored text\x1b[0m"]
+        result = filter_agent_log_lines(lines)
+        assert result == ["Colored text"]
+
+    def test_filters_box_drawing(self) -> None:
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        lines = ["╭── header ──╮", "│ content │", "╰── footer ──╯", "Actual output"]
+        result = filter_agent_log_lines(lines)
+        assert result == ["Actual output"]
+
+    def test_truncates_long_lines(self) -> None:
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        lines = ["A" * 300]
+        result = filter_agent_log_lines(lines, max_chars=50)
+        assert len(result) == 1
+        assert len(result[0]) == 53  # 50 + "..."
+        assert result[0].endswith("...")
+
+    def test_returns_last_n_lines(self) -> None:
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        lines = [f"line {i}" for i in range(10)]
+        result = filter_agent_log_lines(lines, max_lines=3)
+        assert result == ["line 7", "line 8", "line 9"]
+
+    def test_empty_input(self) -> None:
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        assert filter_agent_log_lines([]) == []
+
+    def test_skips_short_lines(self) -> None:
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        lines = ["ab", "Good content here"]
+        result = filter_agent_log_lines(lines)
+        assert result == ["Good content here"]
+
+    def test_invalid_json_not_filtered(self) -> None:
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        lines = ["{not valid json}"]
+        result = filter_agent_log_lines(lines)
+        assert result == ["{not valid json}"]
+
+    def test_extracts_claude_stream_text(self) -> None:
+        """With backend set, NDJSON text deltas are extracted instead of discarded."""
+        import json
+
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        event = {
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello from agent"}},
+            "session_id": "s1",
+        }
+        lines = [json.dumps(event)]
+        result = filter_agent_log_lines(lines, backend="claude_code")
+        assert result == ["Hello from agent"]
+
+    def test_skips_non_text_ndjson_events(self) -> None:
+        """Non-text NDJSON events (like result metadata) are still skipped."""
+        import json
+
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        event = {"type": "result", "session_id": "s1"}
+        lines = [json.dumps(event)]
+        result = filter_agent_log_lines(lines, backend="claude_code")
+        assert result == []
+
+    def test_no_backend_skips_all_json(self) -> None:
+        """Without backend, JSON lines are skipped even if they contain text."""
+        import json
+
+        from kingdom.cli.peasant import filter_agent_log_lines
+
+        event = {
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello"}},
+        }
+        lines = [json.dumps(event)]
+        result = filter_agent_log_lines(lines, backend="")
+        assert result == []

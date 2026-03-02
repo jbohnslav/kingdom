@@ -435,13 +435,19 @@ COMMAND_BUILDERS: dict[str, CommandBuilder] = {
 }
 
 
-def clean_agent_env(role: str | None = None, agent_name: str | None = None) -> dict[str, str]:
+def clean_agent_env(
+    role: str | None = None,
+    agent_name: str | None = None,
+    kd_base: str | None = None,
+) -> dict[str, str]:
     """Return an env dict safe for spawning agent CLI subprocesses.
 
     Strips ``CLAUDECODE`` so child ``claude`` processes don't refuse to start
     with a "nested session" error when ``kd`` is invoked from inside Claude Code.
 
-    Optionally injects ``KD_ROLE`` and ``KD_AGENT_NAME`` for ``kd whoami``.
+    Optionally injects ``KD_ROLE``, ``KD_AGENT_NAME``, and ``KD_BASE``.
+    ``KD_BASE`` ensures worktree agents resolve the project root against the
+    main repo, not the worktree's copy of ``.kd/``.
     """
     import os
 
@@ -450,6 +456,8 @@ def clean_agent_env(role: str | None = None, agent_name: str | None = None) -> d
         env["KD_ROLE"] = role
     if agent_name:
         env["KD_AGENT_NAME"] = agent_name
+    if kd_base:
+        env["KD_BASE"] = kd_base
     return env
 
 

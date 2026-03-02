@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -513,6 +514,59 @@ FLAG_VERBS: dict[str, str] = {
 }
 
 
+def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int = 200, backend: str = "") -> list[str]:
+    """Filter raw agent log lines to human-readable content.
+
+    Strips ANSI escapes, extracts text from NDJSON via backend stream
+    extractors, skips pure metadata, and returns the last *max_lines*
+    readable lines each truncated to *max_chars*.
+
+    When *backend* is set (e.g. ``"claude_code"``), JSON lines are decoded
+    with :func:`~kingdom.agent.extract_stream_text` instead of discarded.
+    """
+    import json as _json
+
+    from kingdom.agent import extract_stream_text
+
+    ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+    readable = []
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        # Strip ANSI escapes
+        cleaned = ansi_re.sub("", line)
+        if not cleaned.strip():
+            continue
+        stripped = cleaned.strip()
+        # Try to extract text from NDJSON via backend stream extractors
+        if stripped.startswith("{") or stripped.startswith("["):
+            if backend:
+                text = extract_stream_text(stripped, backend)
+                if text:
+                    # Accumulated stream text — split into lines and add each
+                    for fragment in text.splitlines():
+                        fragment = fragment.strip()
+                        if fragment and len(fragment) >= 3:
+                            truncated = fragment[:max_chars] + "..." if len(fragment) > max_chars else fragment
+                            readable.append(truncated)
+                    continue
+            # No backend or non-text event — skip valid JSON
+            try:
+                _json.loads(stripped)
+                continue
+            except (ValueError, _json.JSONDecodeError):
+                pass
+        # Skip common tool/metadata noise
+        if stripped.startswith("╭") or stripped.startswith("╰") or stripped.startswith("│"):
+            continue
+        if len(stripped) < 3:
+            continue
+        truncated = stripped[:max_chars] + "..." if len(stripped) > max_chars else stripped
+        readable.append(truncated)
+    return readable[-max_lines:]
+
+
 def poll_worktree(worktree: Path) -> list[str] | None:
     """Poll git status in a worktree, returning human-readable entries or None."""
     import subprocess
@@ -587,13 +641,32 @@ def peasant_watch(
     state = get_agent_state(ctx.base, ctx.feature, session_name)
     worktree = ctx.base if state.hand_mode else worktree_path_for(ctx.base, ctx.full_ticket_id)
 
+    # Resolve agent backend for NDJSON stream decoding
+    agent_backend = ""
+    try:
+        from kingdom.config import load_config
+
+        cfg = load_config(ctx.base)
+        agent_name = state.agent_backend or "claude"
+        agent_def = cfg.agents.get(agent_name)
+        if agent_def:
+            agent_backend = agent_def.backend
+    except Exception:
+        pass
+
     # Track what we've already shown
     shown_lines: int = 0
     last_activity_time: float = time_mod.monotonic()
     last_worktree_poll: float = 0.0
     last_heartbeat_time: float = 0.0
+    last_log_poll: float = 0.0
     last_worktree_status: list[str] | None = None
     worktree_poll_interval = 30.0  # seconds between worktree polls
+    log_poll_interval = 15.0  # seconds between agent log polls
+    agent_log_offset: int = 0  # byte offset into agent-live.log
+
+    # Resolve agent live log path
+    agent_live_log = logs_root(ctx.base, ctx.feature) / session_name / "agent-live.log"
 
     # Seed HEAD SHA so we can detect commits
     head = poll_head_commit(worktree)
@@ -671,6 +744,26 @@ def peasant_watch(
                         console.print(f"  [{ts}] Changes cleared", markup=False)
                     last_worktree_status = None
                     last_activity_time = now
+
+            # Agent live log tailing — shows what the agent is doing between worklogs
+            if now - last_log_poll >= log_poll_interval and agent_live_log.exists():
+                last_log_poll = now
+                try:
+                    file_size = agent_live_log.stat().st_size
+                    if file_size > agent_log_offset:
+                        with agent_live_log.open("r", encoding="utf-8", errors="replace") as f:
+                            f.seek(agent_log_offset)
+                            new_content = f.read()
+                        agent_log_offset = file_size
+                        new_lines = new_content.splitlines()
+                        readable = filter_agent_log_lines(new_lines, backend=agent_backend)
+                        if readable:
+                            ts = time_mod.strftime("%H:%M")
+                            for line in readable:
+                                console.print(f"  [{ts}] {line}", markup=False)
+                            last_activity_time = now
+                except OSError:
+                    pass
 
             # Heartbeat: if no activity for 60s, show a "still working" line
             silence = now - last_activity_time

@@ -16,7 +16,8 @@ from kingdom.harness import (
     extract_worklog,
     extract_worklog_entry,
     format_worklog_timestamp,
-    get_diff,
+    get_changed_files,
+    get_commit_log,
     get_diff_stat,
     get_new_directives,
     has_code_changes,
@@ -66,12 +67,31 @@ def ticket_path(project: Path) -> Path:
 class TestBuildPrompt:
     def test_basic_prompt(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
-        prompt = build_prompt(ticket_path, "", [], 1, 50)
+        prompt = build_prompt(
+            ticket_path,
+            "",
+            [],
+            1,
+            50,
+            worktree=Path("/project/.kd/worktrees/kin-001"),
+            repo_root=Path("/project"),
+            ticket_id="kin-001",
+            ticket_title="Fix the thing",
+        )
         assert str(ticket_path) in prompt
+        assert "/project/.kd/worktrees/kin-001" in prompt
+        assert "ticket/kin-001" in prompt
+        assert "Fix the thing" in prompt
         assert "iteration 1 of 50" in prompt
         assert "STATUS: DONE" in prompt
         assert "STATUS: BLOCKED" in prompt
         assert "STATUS: CONTINUE" in prompt
+        assert "kd tk log kin-001" in prompt
+        assert "No headings, no numbered list" in prompt
+        # Kingdom context
+        assert "Kingdom" in prompt
+        assert "council" in prompt
+        assert "peasant" in prompt
 
     def test_prompt_does_not_contain_ticket_body(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
@@ -82,34 +102,46 @@ class TestBuildPrompt:
     def test_prompt_with_worklog(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
         prompt = build_prompt(ticket_path, "- Did step 1", [], 2, 50)
-        assert "Current Worklog" in prompt
+        assert "worklog" in prompt.lower()
         assert "Did step 1" in prompt
 
     def test_prompt_with_directives(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
         prompt = build_prompt(ticket_path, "", ["Focus on tests", "Use pytest"], 3, 50)
-        assert "Directives from Lead" in prompt
+        assert "directive" in prompt.lower()
         assert "Focus on tests" in prompt
         assert "Use pytest" in prompt
 
     def test_prompt_with_all(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
-        prompt = build_prompt(ticket_path, "- Done A", ["Do B"], 5, 50)
+        prompt = build_prompt(
+            ticket_path,
+            "- Done A",
+            ["Do B"],
+            5,
+            50,
+            worktree=Path("/project/.kd/worktrees/kin-001"),
+            repo_root=Path("/project"),
+            ticket_id="kin-001",
+            ticket_title="Fix the thing",
+        )
         assert str(ticket_path) in prompt
         assert "Done A" in prompt
         assert "Do B" in prompt
         assert "iteration 5 of 50" in prompt
+        assert "/project" in prompt
+        assert "bounced back" in prompt
 
     def test_prompt_with_phase_prompt(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
         prompt = build_prompt(ticket_path, "", [], 1, 50, phase_prompt="Always write tests first.")
         assert prompt.startswith("Always write tests first.")
-        assert "peasant agent" in prompt
+        assert "peasant" in prompt
 
     def test_prompt_without_phase_prompt(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
         prompt = build_prompt(ticket_path, "", [], 1, 50)
-        assert prompt.startswith("You are a peasant agent")
+        assert prompt.startswith("You are a peasant")
 
     def test_prompt_custom_max_iterations(self) -> None:
         ticket_path = Path("/project/tickets/kin-001.md")
@@ -339,7 +371,7 @@ class TestRunAgentLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             run_agent_loop(
@@ -365,7 +397,7 @@ class TestRunAgentLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -388,20 +420,11 @@ class TestRunAgentLoop:
 
         agent_call_count = 0
 
-        def mock_run(cmd, **kwargs):
+        def mock_agent(cmd, **kwargs):
             nonlocal agent_call_count
-            if cmd and cmd[0] == "git":
-                result = MagicMock()
-                result.stdout = "fake-sha\n"
-                result.returncode = 0
-                return result
             agent_call_count += 1
             result = MagicMock()
-            if agent_call_count >= 2:
-                result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
-            else:
-                # First call: DONE with no changes — will be rejected
-                result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            result.stdout = '{"result": "All done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
             result.stderr = ""
             result.returncode = 0
             return result
@@ -415,7 +438,7 @@ class TestRunAgentLoop:
             return changes_call_count >= 2
 
         with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_streaming_subprocess", side_effect=mock_agent),
             patch("kingdom.harness.has_code_changes", side_effect=mock_has_changes),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
@@ -437,7 +460,7 @@ class TestRunAgentLoop:
         assert "no code changes detected" in ticket.body.lower()
 
     def test_loop_passes_peasant_identity_env(self, project: Path, ticket_path: Path, monkeypatch) -> None:
-        """Backend subprocess should receive peasant identity env vars."""
+        """Backend subprocess should receive peasant identity and KD_BASE env vars."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
         monkeypatch.setenv("CLAUDECODE", "1")
 
@@ -447,7 +470,7 @@ class TestRunAgentLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result) as mock_run,
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result) as mock_stream,
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -461,11 +484,10 @@ class TestRunAgentLoop:
             )
 
         assert status == "needs_king_review"
-        # Find the backend call (the one with env= kwarg)
-        backend_call = next(c for c in mock_run.call_args_list if "env" in c.kwargs)
-        env = backend_call.kwargs["env"]
+        env = mock_stream.call_args.kwargs["env"]
         assert env["KD_ROLE"] == "peasant"
         assert env["KD_AGENT_NAME"] == session_name
+        assert env["KD_BASE"] == str(project)
         assert "CLAUDECODE" not in env
 
     def test_loop_blocked(self, project: Path, ticket_path: Path) -> None:
@@ -476,7 +498,7 @@ class TestRunAgentLoop:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result):
+        with patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result):
             status = run_agent_loop(
                 base=project,
                 branch=BRANCH,
@@ -499,7 +521,7 @@ class TestRunAgentLoop:
         mock_result.stderr = "Connection refused"
         mock_result.returncode = 1
 
-        with patch("kingdom.harness.subprocess.run", return_value=mock_result):
+        with patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result):
             status = run_agent_loop(
                 base=project,
                 branch=BRANCH,
@@ -523,7 +545,7 @@ class TestRunAgentLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             run_agent_loop(
@@ -550,7 +572,7 @@ class TestRunAgentLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             run_agent_loop(
@@ -576,7 +598,7 @@ class TestRunAgentLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             run_agent_loop(
@@ -597,18 +619,8 @@ class TestRunAgentLoop:
 
         agent_call_count = 0
 
-        def mock_run(cmd, **kwargs):
+        def mock_agent(cmd, **kwargs):
             nonlocal agent_call_count
-            if cmd and "rev-parse" in cmd:
-                result = MagicMock()
-                result.stdout = "fake-sha\n"
-                result.returncode = 0
-                return result
-            if cmd and "--stat" in cmd:
-                result = MagicMock()
-                result.stdout = ""
-                result.returncode = 0
-                return result
             agent_call_count += 1
             result = MagicMock()
             if agent_call_count >= 3:
@@ -620,7 +632,7 @@ class TestRunAgentLoop:
             return result
 
         with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_streaming_subprocess", side_effect=mock_agent),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
             patch("kingdom.harness.has_code_changes", return_value=True),
         ):
@@ -675,7 +687,7 @@ class TestRunAgentLoop:
 
         import subprocess as sp
 
-        with patch("kingdom.harness.subprocess.run", side_effect=sp.TimeoutExpired(cmd="test", timeout=300)):
+        with patch("kingdom.harness.run_streaming_subprocess", side_effect=sp.TimeoutExpired(cmd="test", timeout=300)):
             status = run_agent_loop(
                 base=project,
                 branch=BRANCH,
@@ -698,7 +710,7 @@ class TestRunAgentLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
             patch("kingdom.harness.logger") as mock_logger,
         ):
@@ -734,7 +746,7 @@ class TestRunAgentLoop:
             result.returncode = 0
             return result
 
-        with patch("kingdom.harness.subprocess.run", side_effect=mock_run_with_signal):
+        with patch("kingdom.harness.run_streaming_subprocess", side_effect=mock_run_with_signal):
             status = run_agent_loop(
                 base=project,
                 branch=BRANCH,
@@ -753,23 +765,27 @@ class TestRunAgentLoop:
         """Harness should record start_sha on first run."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
-        def mock_run(cmd, **kwargs):
+        def mock_git(cmd, **kwargs):
             result = MagicMock()
-            # Handle git rev-parse HEAD for start_sha
             if cmd and "rev-parse" in cmd:
                 result.stdout = "abc123def456\n"
-                result.stderr = ""
                 result.returncode = 0
-                return result
-            # Handle agent backend call
-            result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+            else:
+                result.stdout = ""
+                result.returncode = 0
             result.stderr = ""
-            result.returncode = 0
             return result
 
+        mock_agent_result = MagicMock()
+        mock_agent_result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_agent_result.stderr = ""
+        mock_agent_result.returncode = 0
+
         with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.subprocess.run", side_effect=mock_git),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_agent_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.has_code_changes", return_value=True),
         ):
             status = run_agent_loop(
                 base=project,
@@ -799,8 +815,9 @@ class TestRunAgentLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.has_code_changes", return_value=True),
         ):
             status = run_agent_loop(
                 base=project,
@@ -824,23 +841,13 @@ class TestRunAgentLoop:
         add_message(project, BRANCH, thread_id, from_=session_name, to="king", body="Previous work")
         add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Please also fix the tests")
 
-        captured_prompts: list[str] = []
-
-        def mock_run(*args, **kwargs):
-            # Capture the prompt to verify directives were included
-            cmd = args[0] if args else kwargs.get("args", [])
-            # The prompt is passed as the last argument
-            for item in cmd:
-                if "Please also fix the tests" in str(item):
-                    captured_prompts.append(str(item))
-            result = MagicMock()
-            result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
-            result.stderr = ""
-            result.returncode = 0
-            return result
+        mock_agent_result = MagicMock()
+        mock_agent_result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_agent_result.stderr = ""
+        mock_agent_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_agent_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
             patch("kingdom.harness.build_prompt", wraps=build_prompt) as mock_build_prompt,
         ):
@@ -903,31 +910,75 @@ class TestParseVerdict:
 
 class TestBuildReviewPrompt:
     def test_includes_ticket_info(self) -> None:
-        prompt = build_review_prompt("Fix bug", "A bug in module X.", "diff --git ...", "")
+        prompt = build_review_prompt(
+            changed_files="foo.py | 2 +-",
+            ticket_title="Fix bug",
+            ticket_body="A bug in module X.",
+        )
         assert "Fix bug" in prompt
         assert "A bug in module X" in prompt
-        assert "diff --git" in prompt
+        assert "foo.py" in prompt
 
-    def test_includes_diff(self) -> None:
-        prompt = build_review_prompt("Title", "Body", "+new line\n-old line", "")
-        assert "+new line" in prompt
-        assert "-old line" in prompt
+    def test_includes_changed_files_not_full_diff(self) -> None:
+        prompt = build_review_prompt(changed_files="foo.py | 2 +-\nbar.py | 1 +")
+        assert "foo.py" in prompt
+        assert "bar.py" in prompt
+        # Should NOT contain a diff code block — we point reviewers at the code
+        assert "```diff" not in prompt
 
     def test_includes_worklog(self) -> None:
-        prompt = build_review_prompt("Title", "Body", "diff", "- Fixed the tests\n- Added validation")
+        prompt = build_review_prompt(
+            changed_files="foo.py | 1 +",
+            ticket_title="Title",
+            ticket_body="Body",
+            worklog="- Fixed the tests\n- Added validation",
+        )
         assert "Fixed the tests" in prompt
         assert "Added validation" in prompt
 
     def test_excludes_worklog_from_body(self) -> None:
         body = "Description here.\n\n## Worklog\n\n- [12:00] Did stuff"
-        prompt = build_review_prompt("Title", body, "diff", "")
+        prompt = build_review_prompt(
+            changed_files="foo.py | 1 +",
+            ticket_title="Title",
+            ticket_body=body,
+        )
         # The ticket description section should NOT include the worklog
-        assert "Did stuff" not in prompt.split("### Changes")[0]
+        assert "Did stuff" not in prompt.split("### Changed Files")[0]
 
     def test_verdict_instructions(self) -> None:
-        prompt = build_review_prompt("Title", "Body", "diff", "")
+        prompt = build_review_prompt(changed_files="foo.py | 1 +")
         assert "VERDICT: APPROVED" in prompt
         assert "VERDICT: BLOCKING" in prompt
+
+    def test_includes_review_commands(self) -> None:
+        prompt = build_review_prompt(
+            changed_files="foo.py | 1 +",
+            base_branch="origin/master",
+        )
+        assert "git diff origin/master...HEAD" in prompt
+        assert "git log" in prompt
+
+    def test_works_without_ticket(self) -> None:
+        prompt = build_review_prompt(
+            changed_files="foo.py | 1 +",
+            base_branch="origin/master",
+            branch="feature/x",
+            commits="abc123 Fix bug",
+        )
+        assert "foo.py" in prompt
+        assert "feature/x" in prompt
+        assert "Fix bug" in prompt
+        assert "VERDICT:" in prompt
+
+    def test_includes_ticket_path(self) -> None:
+        prompt = build_review_prompt(
+            changed_files="foo.py | 1 +",
+            ticket_title="Fix bug",
+            ticket_body="Body",
+            ticket_path=".kd/branches/main/tickets/1234.md",
+        )
+        assert ".kd/branches/main/tickets/1234.md" in prompt
 
 
 class TestHasCodeChanges:
@@ -975,41 +1026,64 @@ class TestHasCodeChanges:
             assert has_code_changes(tmp_path, "abc123") is True
 
 
-class TestGetDiff:
+class TestGetChangedFiles:
     def test_with_start_sha(self, tmp_path: Path) -> None:
         with patch("kingdom.harness.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="diff --git a/foo.py b/foo.py\n+added line")
-            diff = get_diff(tmp_path, "abc123")
+            mock_run.return_value = MagicMock(returncode=0, stdout=" foo.py | 2 +-\n 1 file changed")
+            result = get_changed_files(tmp_path, "abc123")
             mock_run.assert_called_once()
+            assert "--stat" in mock_run.call_args[0][0]
             assert "abc123..HEAD" in mock_run.call_args[0][0]
-            assert "added line" in diff
+            assert "foo.py" in result
 
     def test_without_start_sha(self, tmp_path: Path) -> None:
         with patch("kingdom.harness.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="diff --git a/bar.py b/bar.py\n-removed")
-            diff = get_diff(tmp_path, None)
+            mock_run.return_value = MagicMock(returncode=0, stdout=" bar.py | 1 -\n 1 file changed")
+            result = get_changed_files(tmp_path, None)
+            assert "--stat" in mock_run.call_args[0][0]
             assert "HEAD" in mock_run.call_args[0][0]
-            assert "removed" in diff
+            assert "bar.py" in result
 
-    def test_empty_diff(self, tmp_path: Path) -> None:
+    def test_empty_output(self, tmp_path: Path) -> None:
         with patch("kingdom.harness.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="")
-            diff = get_diff(tmp_path, "abc123")
-            assert diff == "(no changes detected)"
-
-    def test_truncates_large_diff(self, tmp_path: Path) -> None:
-        with patch("kingdom.harness.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="x" * 60000)
-            diff = get_diff(tmp_path, "abc123")
-            assert len(diff) < 55000
-            assert "truncated" in diff
+            result = get_changed_files(tmp_path, "abc123")
+            assert result == "(no changes detected)"
 
     def test_handles_timeout(self, tmp_path: Path) -> None:
         import subprocess as sp
 
         with patch("kingdom.harness.subprocess.run", side_effect=sp.TimeoutExpired("git", 30)):
-            diff = get_diff(tmp_path, "abc123")
-            assert diff == "(could not generate diff)"
+            result = get_changed_files(tmp_path, "abc123")
+            assert result == "(could not generate file list)"
+
+    def test_feature_branch_uses_three_dot(self, tmp_path: Path) -> None:
+        with patch("kingdom.harness.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=" foo.py | 2 +-")
+            get_changed_files(tmp_path, None, feature_branch="feature/x")
+            assert "feature/x...HEAD" in mock_run.call_args[0][0]
+
+
+class TestGetCommitLog:
+    def test_with_feature_branch(self, tmp_path: Path) -> None:
+        with patch("kingdom.harness.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="abc123 Fix bug\ndef456 Add feature")
+            result = get_commit_log(tmp_path, None, feature_branch="main")
+            assert "main..HEAD" in mock_run.call_args[0][0]
+            assert "Fix bug" in result
+
+    def test_with_start_sha(self, tmp_path: Path) -> None:
+        with patch("kingdom.harness.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="abc123 Fix bug")
+            result = get_commit_log(tmp_path, "abc123")
+            assert "abc123..HEAD" in mock_run.call_args[0][0]
+            assert "Fix bug" in result
+
+    def test_empty_log(self, tmp_path: Path) -> None:
+        with patch("kingdom.harness.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            result = get_commit_log(tmp_path, "abc123")
+            assert result == ""
 
 
 class TestRunCouncilReview:
@@ -1222,7 +1296,7 @@ class TestCouncilReviewInLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -1249,18 +1323,8 @@ class TestCouncilReviewInLoop:
 
         agent_call_count = 0
 
-        def mock_run(cmd, **kwargs):
+        def mock_agent(cmd, **kwargs):
             nonlocal agent_call_count
-            if cmd and "rev-parse" in cmd:
-                result = MagicMock()
-                result.stdout = "fake-sha\n"
-                result.returncode = 0
-                return result
-            if cmd and "--stat" in cmd:
-                result = MagicMock()
-                result.stdout = ""
-                result.returncode = 0
-                return result
             agent_call_count += 1
             result = MagicMock()
             result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
@@ -1278,7 +1342,7 @@ class TestCouncilReviewInLoop:
             return ("approved", [])
 
         with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_streaming_subprocess", side_effect=mock_agent),
             patch("kingdom.harness.run_council_review", side_effect=mock_review),
             patch("kingdom.harness.add_message", wraps=add_message) as mock_add_message,
             patch("kingdom.harness.has_code_changes", return_value=True),
@@ -1311,20 +1375,13 @@ class TestCouncilReviewInLoop:
         """After 3 bounces, should escalate to king even if still blocking."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
-        def mock_run(cmd, **kwargs):
-            if cmd and "rev-parse" in cmd:
-                result = MagicMock()
-                result.stdout = "fake-sha\n"
-                result.returncode = 0
-                return result
-            result = MagicMock()
-            result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
-            result.stderr = ""
-            result.returncode = 0
-            return result
+        mock_agent_result = MagicMock()
+        mock_agent_result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_agent_result.stderr = ""
+        mock_agent_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_agent_result),
             patch(
                 "kingdom.harness.run_council_review",
                 return_value=("blocking", ["[codex] Still failing.\n\nVERDICT: BLOCKING"]),
@@ -1368,20 +1425,13 @@ class TestCouncilReviewInLoop:
                 return ("blocking", ["[codex] Bug found.\n\nVERDICT: BLOCKING"])
             return ("approved", [])
 
-        def mock_run(cmd, **kwargs):
-            if cmd and "rev-parse" in cmd:
-                result = MagicMock()
-                result.stdout = "fake-sha\n"
-                result.returncode = 0
-                return result
-            result = MagicMock()
-            result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
-            result.stderr = ""
-            result.returncode = 0
-            return result
+        mock_agent_result = MagicMock()
+        mock_agent_result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_agent_result.stderr = ""
+        mock_agent_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_agent_result),
             patch("kingdom.harness.run_council_review", side_effect=mock_review),
             patch("kingdom.harness.add_message", side_effect=FileNotFoundError("thread gone")),
         ):
@@ -1409,7 +1459,7 @@ class TestCouncilReviewInLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_NO_COUNCIL),
         ):
             status = run_agent_loop(
@@ -1436,7 +1486,7 @@ class TestCouncilReviewInLoop:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=("timeout", [])),
         ):
             status = run_agent_loop(
@@ -1476,7 +1526,7 @@ class TestCouncilReviewInLoop:
             return ("approved", [])
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", side_effect=mock_review),
         ):
             run_agent_loop(
@@ -1596,7 +1646,7 @@ class TestFirstIterationContext:
         mock_result.returncode = 0
 
         with (
-            patch("kingdom.harness.subprocess.run", return_value=mock_result),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             run_agent_loop(
@@ -1633,13 +1683,8 @@ class TestAgentResultFallbackSummary:
         backend_result.stderr = ""
         backend_result.returncode = 0
 
-        def mock_run(cmd, **kwargs):
-            if cmd[:3] == ["git", "rev-parse", "HEAD"]:
-                return MagicMock(returncode=0, stdout="fake-sha\n")
-            return backend_result
-
         with (
-            patch("kingdom.harness.subprocess.run", side_effect=mock_run),
+            patch("kingdom.harness.run_streaming_subprocess", return_value=backend_result),
             patch(
                 "kingdom.harness.get_diff_stat",
                 return_value=" src/kingdom/harness.py | 2 +-\n 1 file changed",
@@ -1698,3 +1743,92 @@ class TestBlockingReviewAllFeedback:
         names_in_feedback = [f.split("]")[0] for f in feedback]
         assert any("claude" in n for n in names_in_feedback)
         assert any("codex" in n for n in names_in_feedback)
+
+
+class TestCleanAgentEnvKdBase:
+    """Tests for KD_BASE injection in clean_agent_env."""
+
+    def test_kd_base_injected(self, monkeypatch) -> None:
+        from kingdom.agent import clean_agent_env
+
+        monkeypatch.delenv("KD_BASE", raising=False)
+        env = clean_agent_env(kd_base="/tmp/project")
+        assert env["KD_BASE"] == "/tmp/project"
+
+    def test_kd_base_not_set_when_none(self, monkeypatch) -> None:
+        from kingdom.agent import clean_agent_env
+
+        monkeypatch.delenv("KD_BASE", raising=False)
+        env = clean_agent_env()
+        assert "KD_BASE" not in env
+
+    def test_all_env_vars_together(self, monkeypatch) -> None:
+        from kingdom.agent import clean_agent_env
+
+        monkeypatch.setenv("CLAUDECODE", "1")
+        env = clean_agent_env(role="peasant", agent_name="test-agent", kd_base="/project")
+        assert env["KD_ROLE"] == "peasant"
+        assert env["KD_AGENT_NAME"] == "test-agent"
+        assert env["KD_BASE"] == "/project"
+        assert "CLAUDECODE" not in env
+
+
+class TestRunStreamingSubprocess:
+    """Tests for run_streaming_subprocess."""
+
+    def test_captures_stdout_and_stderr(self, tmp_path: Path) -> None:
+        from kingdom.harness import run_streaming_subprocess
+
+        result = run_streaming_subprocess(
+            ["echo", "hello world"],
+            cwd=tmp_path,
+            env={},
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert "hello world" in result.stdout
+
+    def test_writes_to_live_log(self, tmp_path: Path) -> None:
+        from kingdom.harness import run_streaming_subprocess
+
+        log_path = tmp_path / "logs" / "live.log"
+        result = run_streaming_subprocess(
+            ["echo", "streamed output"],
+            cwd=tmp_path,
+            env={},
+            timeout=10,
+            live_log_path=log_path,
+        )
+        assert result.returncode == 0
+        assert log_path.exists()
+        log_content = log_path.read_text()
+        assert "streamed output" in log_content
+
+    def test_timeout_raises(self, tmp_path: Path) -> None:
+        import subprocess as sp
+
+        from kingdom.harness import run_streaming_subprocess
+
+        with pytest.raises(sp.TimeoutExpired):
+            run_streaming_subprocess(
+                ["sleep", "60"],
+                cwd=tmp_path,
+                env={},
+                timeout=1,
+            )
+
+    def test_accumulates_full_output(self, tmp_path: Path) -> None:
+        """Full stdout must be accumulated for parse_response compatibility."""
+        import sys
+
+        from kingdom.harness import run_streaming_subprocess
+
+        result = run_streaming_subprocess(
+            [sys.executable, "-c", "for i in range(5): print(f'line {i}')"],
+            cwd=tmp_path,
+            env={},
+            timeout=10,
+        )
+        assert result.returncode == 0
+        for i in range(5):
+            assert f"line {i}" in result.stdout
