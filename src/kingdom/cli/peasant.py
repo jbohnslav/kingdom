@@ -231,6 +231,7 @@ def peasant_start(
     agent: Annotated[str | None, typer.Option("--agent", help="Agent to use (default: from config).")] = None,
     hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
     tmux: Annotated[bool, typer.Option("--tmux", help="Open agent in a new tmux window.")] = False,
+    watch: Annotated[bool, typer.Option("--watch", "-w", help="Watch peasant progress after starting.")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
     import kingdom.cli as _cli
@@ -348,6 +349,10 @@ def peasant_start(
     verbose_echo(f"ticket path: {ctx.ticket_path}")
     verbose_echo(f"thread dir: {tdir}")
     verbose_echo(f"hand mode: {hand}")
+
+    if watch:
+        typer.echo()
+        peasant_watch(ticket_id)
 
 
 TERMINAL_STATUSES = {"done", "failed", "stopped"}

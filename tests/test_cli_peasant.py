@@ -205,6 +205,70 @@ class TestPeasantStart:
             ticket = read_ticket(ticket_path)
             assert ticket.status == "in_progress"
 
+    def test_start_with_watch_calls_peasant_watch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
+            ):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test", "--watch"])
+
+            assert result.exit_code == 0, result.output
+            assert "Started peasant-kin-test" in result.output
+            mock_watch.assert_called_once_with("kin-test")
+
+    def test_start_without_watch_does_not_call_peasant_watch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
+            ):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            mock_watch.assert_not_called()
+
+    def test_start_hand_with_watch_calls_peasant_watch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
+            ):
+                result = runner.invoke(cli.app, ["peasant", "start", "kin-test", "--hand", "-w"])
+
+            assert result.exit_code == 0, result.output
+            assert "Running in hand mode" in result.output
+            mock_watch.assert_called_once_with("kin-test")
+
 
 class TestPeasantStatus:
     def test_status_no_peasants(self) -> None:
