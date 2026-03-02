@@ -1229,7 +1229,7 @@ class TestCouncilReview:
             assert result.exit_code == 0, result.output
             assert len(captured_prompt) == 1
             assert "file.py" in captured_prompt[0]
-            assert "Changed files" in captured_prompt[0]
+            assert "Changed Files" in captured_prompt[0]
             # Should not contain raw diff hunks
             assert "```diff" not in captured_prompt[0]
 

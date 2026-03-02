@@ -145,6 +145,7 @@ def council_ask(
     writable: Annotated[
         bool, typer.Option("--writable", "-w", help="Grant council members full write permissions.")
     ] = False,
+    phase: Annotated[str, typer.Option(hidden=True)] = "council",
 ) -> None:
     """Query council members via threaded conversations.
 
@@ -162,7 +163,7 @@ def council_ask(
 
     console = Console()
 
-    c = create_council(base, feature, writable=writable, timeout=timeout)
+    c = create_council(base, feature, writable=writable, timeout=timeout, phase=phase)
     timeout = c.timeout
 
     verbose_echo(f"base: {base}")
@@ -372,7 +373,7 @@ def council_review(
 ) -> None:
     """Generate a changed-files summary and ask the council to review it."""
     base = require_project_root()
-    resolve_current_run(base)  # Validate active session
+    feature = resolve_current_run(base)  # Validate active session
 
     if base_branch is None:
         base_branch = detect_base_branch()
@@ -392,7 +393,7 @@ def council_review(
         typer.echo(f"No changes between {base_branch} and HEAD.")
         raise typer.Exit(code=0)
 
-    # Get commit log for context
+    # Get commit log and current branch for context
     log_result = subprocess.run(
         ["git", "log", "--oneline", f"{base_branch}..HEAD"],
         capture_output=True,
@@ -400,18 +401,50 @@ def council_review(
     )
     commits = log_result.stdout.strip()
 
-    # Build the review prompt — agents read files themselves
-    prompt_parts = [
-        f"Review the code changes on this branch vs {base_branch}.",
-        "Read the changed files listed below. Focus on: correctness, edge cases, readability, and potential bugs.",
-        "Be specific — reference file names and line numbers.",
-    ]
-    if commits:
-        prompt_parts.append(f"\n## Commits\n\n```\n{commits}\n```")
-    prompt_parts.append(f"\n## Changed files\n\n```\n{stat_output}\n```")
-    review_prompt = "\n".join(prompt_parts)
+    branch_result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+    )
+    current_branch = branch_result.stdout.strip()
 
-    # Delegate to council_ask with --new-thread
+    # Look up current ticket for context (optional — works without one)
+    ticket_title = ""
+    ticket_body = ""
+    ticket_path_str = ""
+    worklog = ""
+    try:
+        from kingdom.harness import extract_worklog
+        from kingdom.state import tickets_root
+        from kingdom.ticket import list_tickets, read_ticket
+
+        tdir = tickets_root(base, feature)
+        in_progress = [t for t in list_tickets(tdir) if t.status == "in_progress"]
+        if in_progress:
+            tp = tdir / f"{in_progress[0].id}.md"
+            ticket = read_ticket(tp)
+            ticket_title = ticket.title
+            ticket_body = ticket.body
+            ticket_path_str = str(tp)
+            worklog = extract_worklog(tp)
+    except Exception:
+        pass  # No ticket context — that's fine
+
+    # Build the review prompt — shared with harness council review
+    from kingdom.harness import build_review_prompt
+
+    review_prompt = build_review_prompt(
+        changed_files=stat_output,
+        base_branch=base_branch,
+        branch=current_branch,
+        commits=commits,
+        ticket_title=ticket_title,
+        ticket_body=ticket_body,
+        ticket_path=ticket_path_str,
+        worklog=worklog,
+    )
+
+    # Delegate to council_ask with --new-thread and review phase
     council_ask(
         prompt=review_prompt,
         to=to,
@@ -420,6 +453,7 @@ def council_review(
         async_mode=async_mode,
         no_watch=no_watch,
         writable=writable,
+        phase="review",
     )
 
 

@@ -24,16 +24,22 @@ class Council:
     mode: str = "broadcast"
 
     @classmethod
-    def create(cls, logs_dir: Path | None = None, base: Path | None = None) -> Council:
+    def create(cls, logs_dir: Path | None = None, base: Path | None = None, phase: str = "council") -> Council:
         """Create a council with configured or default members.
 
         Loads agent definitions from config and resolves them into runtime
         AgentConfigs.  Falls back to built-in defaults when no config exists.
+
+        The *phase* parameter controls which phase prompt is resolved for
+        each member (e.g. ``"council"`` or ``"review"``).
         """
         from kingdom.config import load_config
 
         cfg = load_config(base) if base is not None else default_config()
         agent_configs = resolve_all_agents(cfg.agents)
+
+        # Resolve global phase prompt
+        global_phase_prompt = getattr(cfg.prompts, phase, "")
 
         # Only include agents listed in council.members
         members: list[CouncilMember] = []
@@ -43,7 +49,7 @@ class Council:
                 continue
             agent_def = cfg.agents[name]
             # Resolve phase prompt: agent-specific overrides global
-            phase_prompt = agent_def.prompts.get("council", "") or cfg.prompts.council
+            phase_prompt = agent_def.prompts.get(phase, "") or global_phase_prompt
             members.append(
                 CouncilMember(
                     config=ac,

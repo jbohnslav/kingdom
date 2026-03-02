@@ -15,18 +15,20 @@ def create_council(
     *,
     writable: bool = False,
     timeout: int | None = None,
+    phase: str = "council",
 ) -> Council:
     """Create a Council with logs dir, sessions loaded, and optional overrides.
 
     This is the standard way to get a ready-to-use Council in CLI commands
-    and the async worker.
+    and the async worker.  The *phase* parameter controls which phase prompt
+    is resolved for each member (e.g. ``"council"`` or ``"review"``).
     """
     from kingdom.state import logs_root
 
     logs_dir = logs_root(base, feature)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    c = Council.create(logs_dir=logs_dir, base=base)
+    c = Council.create(logs_dir=logs_dir, base=base, phase=phase)
     if writable:
         for m in c.members:
             m.writable = True

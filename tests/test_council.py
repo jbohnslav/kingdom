@@ -483,6 +483,72 @@ class TestCouncilCreateValidation:
         council = Council.create(base=tmp_path)
         assert council.members[0].phase_prompt == "Focus on architecture."
 
+    def test_create_review_phase_uses_review_prompt(self, tmp_path: Path) -> None:
+        """Council.create(phase='review') resolves prompts.review instead of prompts.council."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "prompts": {"council": "Council prompt.", "review": "Review prompt."},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path, phase="review")
+        assert council.members[0].phase_prompt == "Review prompt."
+
+    def test_create_review_phase_agent_override(self, tmp_path: Path) -> None:
+        """Agent-specific prompts.review overrides global prompts.review."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "agents": {
+                "claude": {
+                    "backend": "claude_code",
+                    "prompts": {"review": "Agent review prompt."},
+                }
+            },
+            "prompts": {"review": "Global review prompt."},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path, phase="review")
+        assert council.members[0].phase_prompt == "Agent review prompt."
+
+    def test_create_review_phase_falls_back_to_global(self, tmp_path: Path) -> None:
+        """Without agent-specific review prompt, falls back to global prompts.review."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "prompts": {"review": "Global review instructions."},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path, phase="review")
+        assert council.members[0].phase_prompt == "Global review instructions."
+
+    def test_create_default_phase_is_council(self, tmp_path: Path) -> None:
+        """Without phase parameter, Council.create uses 'council' phase."""
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {
+            "prompts": {"council": "Council only.", "review": "Review only."},
+            "council": {"members": ["claude"]},
+        }
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path)
+        assert council.members[0].phase_prompt == "Council only."
+
     def test_create_passes_council_preamble(self, tmp_path: Path) -> None:
         """council.preamble from config should be set on all members."""
         import json
