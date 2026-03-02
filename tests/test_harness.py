@@ -414,8 +414,8 @@ class TestRunAgentLoop:
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "needs_king_review"
 
-    def test_loop_rejects_done_without_changes(self, project: Path, ticket_path: Path) -> None:
-        """Agent says DONE but no code changes — should reject and continue."""
+    def test_loop_allows_done_without_changes(self, project: Path, ticket_path: Path) -> None:
+        """Agent says DONE with no code changes — should proceed to council review."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
         agent_call_count = 0
@@ -429,17 +429,9 @@ class TestRunAgentLoop:
             result.returncode = 0
             return result
 
-        changes_call_count = 0
-
-        def mock_has_changes(worktree, start_sha):
-            nonlocal changes_call_count
-            changes_call_count += 1
-            # First check: no changes. Second check: changes present.
-            return changes_call_count >= 2
-
         with (
             patch("kingdom.harness.run_streaming_subprocess", side_effect=mock_agent),
-            patch("kingdom.harness.has_code_changes", side_effect=mock_has_changes),
+            patch("kingdom.harness.has_code_changes", return_value=False),
             patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
         ):
             status = run_agent_loop(
@@ -453,11 +445,11 @@ class TestRunAgentLoop:
             )
 
         assert status == "needs_king_review"
-        assert agent_call_count == 2  # First DONE rejected, second accepted
+        assert agent_call_count == 1  # DONE accepted on first try
 
-        # Worklog should mention the rejection
+        # Worklog should note the no-changes situation
         ticket = read_ticket(ticket_path)
-        assert "no code changes detected" in ticket.body.lower()
+        assert "no code changes" in ticket.body.lower()
 
     def test_loop_passes_peasant_identity_env(self, project: Path, ticket_path: Path, monkeypatch) -> None:
         """Backend subprocess should receive peasant identity and KD_BASE env vars."""

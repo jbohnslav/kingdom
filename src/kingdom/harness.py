@@ -126,7 +126,10 @@ def build_prompt(
     parts.append(
         "Before reporting DONE, run the project's tests, linter, "
         "and pre-commit hooks. Everything must pass. If you haven't actually changed any code "
-        "or made any commits, you're not done — don't claim DONE with nothing to show."
+        "or made any commits, you're not done — don't claim DONE with nothing to show. "
+        "Exception: if the work is genuinely complete without code changes "
+        "(e.g., the fix was already applied, or the ticket only required verification), "
+        "you may report DONE and explain why no changes were needed."
     )
     parts.append("")
     parts.append(
@@ -960,15 +963,12 @@ def run_agent_loop(
 
         # Check stop conditions
         if status == "done":
-            # Guard: reject DONE if the agent hasn't made any actual changes
+            # Note if no code changes detected, but let it proceed — some
+            # tickets are genuinely complete without code changes.
             agent_state = get_agent_state(base, branch, session_name)
             if not has_code_changes(worktree, agent_state.start_sha):
-                logger.warning("Agent reports DONE but no code changes detected — rejecting")
-                append_worklog(
-                    ticket_path,
-                    "DONE rejected — no code changes detected. Actually implement the changes before reporting DONE.",
-                )
-                continue
+                logger.info("Agent reports DONE with no code changes — proceeding to review")
+                append_worklog(ticket_path, "DONE with no code changes — proceeding to council review.")
 
             # --- Council review phase ---
             # Transition ticket to in_review, session to awaiting_council
