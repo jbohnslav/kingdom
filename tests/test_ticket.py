@@ -349,8 +349,8 @@ priority: 2
         assert ticket.title == "Test Title"
         assert ticket.body == ""
 
-    def test_priority_clamped_high(self) -> None:
-        """Priority above 3 is clamped to 3."""
+    def test_priority_out_of_range_defaults(self) -> None:
+        """Priority outside 0-3 defaults to 2 when parsing ticket files."""
         content = """---
 id: kin-test
 status: open
@@ -365,7 +365,7 @@ priority: 10
 Body
 """
         ticket = parse_ticket(content)
-        assert ticket.priority == 3
+        assert ticket.priority == 2
 
     def test_priority_zero_allowed(self) -> None:
         """Priority 0 is valid and preserved."""
@@ -385,8 +385,8 @@ Body
         ticket = parse_ticket(content)
         assert ticket.priority == 0
 
-    def test_priority_clamped_negative(self) -> None:
-        """Negative priority is clamped to 0."""
+    def test_priority_negative_defaults(self) -> None:
+        """Negative priority defaults to 2 when parsing ticket files."""
         content = """---
 id: kin-test
 status: open
@@ -401,7 +401,7 @@ priority: -5
 Body
 """
         ticket = parse_ticket(content)
-        assert ticket.priority == 0
+        assert ticket.priority == 2
 
 
 class TestSerializeTicket:
@@ -1472,8 +1472,16 @@ class TestPriorityZero:
         from kingdom.ticket import clamp_priority
 
         assert clamp_priority(0) == 0
-        assert clamp_priority(-1) == 0
-        assert clamp_priority(4) == 3
+
+    def test_clamp_priority_rejects_out_of_range(self) -> None:
+        import pytest
+
+        from kingdom.ticket import clamp_priority
+
+        with pytest.raises(ValueError):
+            clamp_priority(-1)
+        with pytest.raises(ValueError):
+            clamp_priority(4)
 
     def test_clamp_priority_accepts_p_prefix(self) -> None:
         from kingdom.ticket import clamp_priority
@@ -1482,8 +1490,18 @@ class TestPriorityZero:
         assert clamp_priority("P2") == 2
         assert clamp_priority("p0") == 0
         assert clamp_priority("P3") == 3
-        assert clamp_priority("p5") == 3  # clamped
-        assert clamp_priority("pX") == 2  # non-numeric after p, falls back to default
+
+    def test_clamp_priority_rejects_invalid_strings(self) -> None:
+        import pytest
+
+        from kingdom.ticket import clamp_priority
+
+        with pytest.raises(ValueError):
+            clamp_priority("p5")  # out of range
+        with pytest.raises(ValueError):
+            clamp_priority("pX")  # non-numeric
+        with pytest.raises(ValueError):
+            clamp_priority("foo")  # garbage
 
 
 class TestFindTicketDedup:

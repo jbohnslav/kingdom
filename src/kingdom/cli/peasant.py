@@ -492,6 +492,7 @@ def peasant_show(
     ctx = resolve_peasant_context(ticket_id)
     session_name = peasant_session_name(ctx.full_ticket_id)
     console = Console()
+    state = get_agent_state(ctx.base, ctx.feature, session_name)
 
     # --- Worklog ---
     worklog = extract_worklog(ctx.ticket_path)
@@ -505,7 +506,6 @@ def peasant_show(
     if agent_live_log.exists() and agent_live_log.stat().st_size > 0:
         # Resolve backend for NDJSON decoding
         agent_backend = ""
-        state = get_agent_state(ctx.base, ctx.feature, session_name)
         try:
             from kingdom.config import load_config
 
@@ -531,6 +531,10 @@ def peasant_show(
         # Also pick up non-NDJSON readable lines
         plain_lines = filter_agent_log_lines(raw_lines, max_lines=500, max_chars=300)
 
+        # Plain lines are non-JSON human-readable output; stream lines are
+        # reassembled NDJSON text fragments.  We concatenate them (plain first)
+        # because they come from the same log file but are extracted by
+        # different parsers — ordering within each group is chronological.
         activity = plain_lines + stream_lines
         if activity:
             console.print(Markdown("## Agent Activity"))
@@ -541,12 +545,11 @@ def peasant_show(
 
     # --- Commits on the peasant's branch ---
     branch_name = f"ticket/{ctx.full_ticket_id}"
-    state = get_agent_state(ctx.base, ctx.feature, session_name)
     if state.hand_mode:
         start_sha = state.start_sha
         log_spec = [f"{start_sha}..HEAD"] if start_sha else ["HEAD"]
     else:
-        log_spec = [f"HEAD..{branch_name}"]
+        log_spec = [f"{ctx.feature}..{branch_name}"]
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", *log_spec],
@@ -573,7 +576,7 @@ FLAG_VERBS: dict[str, str] = {
 }
 
 
-def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int = 200, backend: str = "") -> list[str]:
+def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int = 200) -> list[str]:
     """Filter raw agent log lines to human-readable non-NDJSON content.
 
     Strips ANSI escapes, skips JSON and metadata noise, and returns the last

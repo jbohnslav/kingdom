@@ -533,7 +533,7 @@ class TestUpdate:
             patch("pathlib.Path.is_symlink", return_value=False),
         ):
             result = runner.invoke(app, ["update"])
-            assert result.exit_code == 0
+            assert result.exit_code == 1
             assert "Skill refresh failed" in result.output
             assert "failed" in result.output
 

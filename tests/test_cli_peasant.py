@@ -476,6 +476,9 @@ class TestPeasantShow:
             subprocess.run(["git", "add", "."], cwd=str(base), capture_output=True)
             subprocess.run(["git", "commit", "-m", "initial"], cwd=str(base), capture_output=True)
 
+            # Create the feature branch (used as base for commit range)
+            subprocess.run(["git", "checkout", "-b", BRANCH], cwd=str(base), capture_output=True)
+
             # Create peasant branch with a commit
             subprocess.run(["git", "checkout", "-b", "ticket/kin-test"], cwd=str(base), capture_output=True)
             (base / "fix.py").write_text("# fix\n", encoding="utf-8")
@@ -508,14 +511,17 @@ class TestPeasantShow:
             subprocess.run(["git", "add", "."], cwd=str(base), capture_output=True)
             subprocess.run(["git", "commit", "-m", "initial"], cwd=str(base), capture_output=True)
 
+            # Create the feature branch (used as base for commit range)
+            subprocess.run(["git", "checkout", "-b", BRANCH], cwd=str(base), capture_output=True)
+
             # Create peasant branch with a commit
             subprocess.run(["git", "checkout", "-b", "ticket/kin-test"], cwd=str(base), capture_output=True)
             (base / "fix.py").write_text("# fix\n", encoding="utf-8")
             subprocess.run(["git", "add", "fix.py"], cwd=str(base), capture_output=True)
             subprocess.run(["git", "commit", "-m", "fix: peasant work"], cwd=str(base), capture_output=True)
 
-            # Switch back to main and add a parent-only commit
-            subprocess.run(["git", "checkout", "main"], cwd=str(base), capture_output=True)
+            # Switch to feature branch and add a commit not on the ticket branch
+            subprocess.run(["git", "checkout", BRANCH], cwd=str(base), capture_output=True)
             (base / "unrelated.py").write_text("# unrelated\n", encoding="utf-8")
             subprocess.run(["git", "add", "unrelated.py"], cwd=str(base), capture_output=True)
             subprocess.run(
@@ -2201,7 +2207,7 @@ class TestFilterAgentLogLines:
             "session_id": "s1",
         }
         lines = [json.dumps(event)]
-        result = filter_agent_log_lines(lines, backend="claude_code")
+        result = filter_agent_log_lines(lines)
         assert result == []
 
     def test_skips_non_text_ndjson_events(self) -> None:
@@ -2212,11 +2218,11 @@ class TestFilterAgentLogLines:
 
         event = {"type": "result", "session_id": "s1"}
         lines = [json.dumps(event)]
-        result = filter_agent_log_lines(lines, backend="claude_code")
+        result = filter_agent_log_lines(lines)
         assert result == []
 
     def test_no_backend_skips_all_json(self) -> None:
-        """Without backend, JSON lines are skipped even if they contain text."""
+        """JSON lines are always skipped (NDJSON is handled by reassemble_stream_text)."""
         import json
 
         from kingdom.cli.peasant import filter_agent_log_lines
@@ -2226,7 +2232,7 @@ class TestFilterAgentLogLines:
             "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello"}},
         }
         lines = [json.dumps(event)]
-        result = filter_agent_log_lines(lines, backend="")
+        result = filter_agent_log_lines(lines)
         assert result == []
 
 

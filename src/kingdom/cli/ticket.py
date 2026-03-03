@@ -358,7 +358,11 @@ def ticket_create(
     # Parse and validate priority (accepts 0-3, p0-p3, P0-P3)
     from kingdom.ticket import clamp_priority
 
-    priority_int = clamp_priority(priority)
+    try:
+        priority_int = clamp_priority(priority)
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from None
 
     # Ensure base layout exists
     ensure_base_layout(base)

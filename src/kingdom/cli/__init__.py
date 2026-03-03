@@ -441,7 +441,7 @@ def update() -> None:
         )
     )
 
-    if not upgrade_ok:
+    if not upgrade_ok or skill_status == "failed":
         raise typer.Exit(code=1)
 
 
