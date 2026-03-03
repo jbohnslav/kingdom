@@ -1475,6 +1475,16 @@ class TestPriorityZero:
         assert clamp_priority(-1) == 0
         assert clamp_priority(4) == 3
 
+    def test_clamp_priority_accepts_p_prefix(self) -> None:
+        from kingdom.ticket import clamp_priority
+
+        assert clamp_priority("p1") == 1
+        assert clamp_priority("P2") == 2
+        assert clamp_priority("p0") == 0
+        assert clamp_priority("P3") == 3
+        assert clamp_priority("p5") == 3  # clamped
+        assert clamp_priority("pX") == 2  # non-numeric after p, falls back to default
+
 
 class TestFindTicketDedup:
     """find_ticket should deduplicate by ID and prefer branch copies."""

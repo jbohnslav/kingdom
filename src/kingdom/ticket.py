@@ -61,6 +61,10 @@ class Ticket:
 def clamp_priority(value: int | str | None) -> int:
     if value is None:
         return 2
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower().startswith("p") and value[1:].isdigit():
+            value = value[1:]
     try:
         p = int(value)
     except (ValueError, TypeError):
