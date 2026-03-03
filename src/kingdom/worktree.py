@@ -65,6 +65,7 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
         ["git", "rev-parse", "--verify", branch_name],
         capture_output=True,
         text=True,
+        cwd=base,
     )
     branch_exists = result.returncode == 0
 
@@ -74,6 +75,7 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
             ["git", "worktree", "add", str(worktree_path), branch_name],
             capture_output=True,
             text=True,
+            cwd=base,
         )
     else:
         log(f"Creating worktree with new branch {branch_name}...")
@@ -81,6 +83,7 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
             ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
             capture_output=True,
             text=True,
+            cwd=base,
         )
 
     if result.returncode != 0:
@@ -113,6 +116,7 @@ def remove_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
         ["git", "worktree", "remove", "--force", str(worktree_path)],
         capture_output=True,
         text=True,
+        cwd=base,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Error removing worktree: {result.stderr.strip()}")

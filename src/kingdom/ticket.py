@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -220,8 +221,6 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False, include_do
             if branch_dir.is_dir():
                 state_path = branch_dir / "state.json"
                 if not include_done and state_path.exists():
-                    import json
-
                     try:
                         state = json.loads(state_path.read_text())
                         if state.get("status") == "done":

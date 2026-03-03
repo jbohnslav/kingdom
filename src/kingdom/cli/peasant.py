@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shlex
@@ -540,7 +541,6 @@ def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int 
     NDJSON stream text is **not** handled here — use :func:`reassemble_stream_text`
     for that. This function still skips JSON lines so they don't leak as noise.
     """
-    import json as _json
 
     ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
     readable: list[str] = []
@@ -555,9 +555,9 @@ def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int 
         # Skip any JSON lines — NDJSON is handled by reassemble_stream_text
         if stripped.startswith("{") or stripped.startswith("["):
             try:
-                _json.loads(stripped)
+                json.loads(stripped)
                 continue
-            except (ValueError, _json.JSONDecodeError):
+            except json.JSONDecodeError:
                 pass
         # Skip common tool/metadata noise
         if stripped.startswith("╭") or stripped.startswith("╰") or stripped.startswith("│"):
@@ -594,7 +594,6 @@ def reassemble_stream_text(
     Set *flush=True* when the agent has finished to emit any remaining
     buffer content regardless of length.
     """
-    import json as _json
 
     from kingdom.agent import extract_stream_text
 
@@ -612,8 +611,8 @@ def reassemble_stream_text(
             continue
         # Only process valid JSON
         try:
-            _json.loads(cleaned)
-        except (ValueError, _json.JSONDecodeError):
+            json.loads(cleaned)
+        except (ValueError, json.JSONDecodeError):
             continue
         if not backend:
             continue
@@ -763,7 +762,7 @@ def peasant_watch(
         if agent_def:
             agent_backend = agent_def.backend
     except Exception:
-        pass
+        console.print("[dim]Warning: could not detect agent backend, streaming output may be limited[/dim]")
 
     # Track what we've already shown
     shown_lines: int = 0

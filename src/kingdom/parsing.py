@@ -31,7 +31,8 @@ def parse_yaml_value(value: str) -> str | int | list[str] | None:
         inner = value[1:-1].strip()
         if not inner:
             return []
-        # Split by comma, strip whitespace and quotes
+        # Naive comma split — does not handle commas inside quoted values.
+        # Fine for current uses (ticket IDs, simple strings).
         items = []
         for item in inner.split(","):
             item = item.strip().strip("'\"")

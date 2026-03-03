@@ -357,7 +357,7 @@ def run_streaming_subprocess(
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
 
-    def drain(stream, buf: list[str], label: str) -> None:
+    def drain(stream, buf: list[str]) -> None:
         for line in stream:
             buf.append(line)
             if live_log_path:
@@ -367,8 +367,8 @@ def run_streaming_subprocess(
                 except OSError:
                     pass
 
-    stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_lines, "stdout"), daemon=True)
-    stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_lines, "stderr"), daemon=True)
+    stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_lines), daemon=True)
+    stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_lines), daemon=True)
     stdout_thread.start()
     stderr_thread.start()
 
