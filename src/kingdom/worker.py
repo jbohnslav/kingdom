@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         session_name=args.session,
     )
 
-    return 0 if status == "done" else 1
+    return 0 if status in ("done", "needs_king_review") else 1
 
 
 if __name__ == "__main__":

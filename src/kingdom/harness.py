@@ -816,8 +816,20 @@ def run_agent_loop(
     except FileNotFoundError:
         pass
 
-    # Determine expected branch for escape detection
-    expected_branch = branch if agent_state.hand_mode else f"ticket/{ticket_id}"
+    # Determine expected branch for escape detection.
+    # In hand mode the worktree is the main repo — use the raw git branch name
+    # (e.g. "feature/foo"), not the normalized kingdom name ("feature-foo").
+    if agent_state.hand_mode:
+        git_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=10,
+        )
+        expected_branch = git_result.stdout.strip() if git_result.returncode == 0 else branch
+    else:
+        expected_branch = f"ticket/{ticket_id}"
 
     # Pre-loop sanity check: bail early if worktree is already on the wrong branch
     if not check_worktree_branch(worktree, expected_branch):

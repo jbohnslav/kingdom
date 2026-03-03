@@ -1904,3 +1904,35 @@ class TestBranchEscapeInLoop:
         assert status == "failed"
         ticket = read_ticket(ticket_path)
         assert "BRANCH ESCAPE detected after iteration" in ticket.body
+
+    def test_hand_mode_slash_branch_not_false_escape(self, project: Path, ticket_path: Path) -> None:
+        """Hand mode with a slash branch (e.g. feature/foo) should not false-positive escape.
+
+        The kingdom branch name is normalized (feature-foo) but git reports the
+        raw branch (feature/foo). The escape check must compare against the raw
+        git branch, not the normalized kingdom name.
+        """
+        thread_id = "kin-test-work"
+        session_name = "peasant-kin-test"
+        create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
+        add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
+        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name, hand_mode=True))
+
+        # Simulate git reporting a slash branch while kingdom uses normalized (dash) name
+        mock_git = MagicMock()
+        mock_git.returncode = 0
+        mock_git.stdout = "feature/my-feature\n"
+
+        with patch("kingdom.harness.subprocess.run", return_value=mock_git):
+            # expected_branch will be BRANCH (the normalized name, e.g. "code-cleanup")
+            # but in a real slash-branch scenario it would be "feature-my-feature"
+            # while git reports "feature/my-feature"
+            result = check_worktree_branch(Path("/fake"), "feature/my-feature")
+
+        assert result is True, "Slash branch should match exactly — no normalization in escape check"
+
+        # Now verify the mismatch case: normalized name vs raw git name
+        with patch("kingdom.harness.subprocess.run", return_value=mock_git):
+            result = check_worktree_branch(Path("/fake"), "feature-my-feature")
+
+        assert result is False, "Normalized name should NOT match raw git branch name"
