@@ -200,7 +200,7 @@ When a command fails, diagnose before retrying. Never silently drop a failed ope
 - **`kd tk close` fails — deps not met.** Inspect with `kd tk deps tree <id>`, figure out what's blocking, work the blocker or tell the King.
 - **No obvious active ticket.** Run `kd tk current` to check. Don't guess.
 - **`kd council ask` times out or errors.** Run `kd council retry` to re-query failed members. Don't re-run the same ask from scratch.
-- **`kd peasant start` fails — ticket not started.** Run `kd tk start <id>` first, then retry.
+- **`kd peasant start` fails — ticket is in_review or closed.** The ticket needs to be reopened or the review resolved before a peasant can work it. Check ticket status with `kd tk show <id>` and tell the King.
 - **Peasant seems stuck.** Check `kd peasant status` and `kd peasant logs <id>` before escalating to the King.
 
 ## Council
@@ -228,7 +228,7 @@ kd peasant msg / read                                   # communicate with peasa
 # ticket creation — use only the flags the King provides
 kd tk create "title"                                    # minimal
 kd tk create -t bug -d "details" "title"                # bug with description
-kd tk create -t bug -p 2 -d "details" "title"           # bug with priority and description
+kd tk create -t bug -p 2 -d "details" "title"           # with priority (only if King specified it)
 kd tk create --backlog "title"                           # backlog ticket
 kd tk create --backlog --ac "criterion" "title"          # backlog with acceptance criteria
 
