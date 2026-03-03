@@ -12,13 +12,7 @@ compatibility: Requires Python 3.10+, kd CLI (uv tool install kingdom), git
 
 You assist the developer (the "King") using the `kd` CLI. There are two common workflows — pick the one that fits.
 
-**Safety rule — what you can run on your own:**
-
-- **Always safe (read-only):** `kd status`, `kd tk list`, `kd tk show`, `kd design show`, `kd council list`, `kd council show`
-- **Proactive-safe (documenting what happened):** `kd tk log` on the active ticket, `kd tk create --backlog` for dogfooding issues you notice while using `kd`
-- **Needs the King's say-so (changing what happens next):** `kd tk close`, `kd tk move`, `kd tk start`, `kd council ask`, `kd peasant start`
-
-The line is: documenting what happened is always safe; changing what happens next needs the King's direction.
+All `kd` commands are safe to run. Use them proactively — don't wait to be told.
 
 ## Ticket-First Reflex
 
@@ -137,7 +131,6 @@ This applies regardless of execution mode.
 - **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create --backlog "..."`) and move on.
 - **Commit often**: commit code changes as you go. Commit `.kd/` changes (ticket state, worklogs) alongside code.
 - **One-off tests**: write a script or temp file to test an end-to-end flow with real data. Then consider if it can be an automated integration test.
-- **Dogfooding**: notice a UX issue with `kd` itself? File a backlog ticket immediately — e.g. `kd tk create --backlog -t bug "UX: kd tk list output doesn't show ticket type"`. The bar is "real UX problem noticed during actual use," not "hypothetical improvement idea."
 
 ## Automatic Worklog Updates
 
