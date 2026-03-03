@@ -1,24 +1,53 @@
 import json
 import os
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from kingdom import cli
+import kingdom.cli as cli_mod
+from kingdom.cli import app
+from kingdom.cli.helpers import verbose_echo
+from kingdom.cli.peasant import launch_work_tmux
 from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
 
 runner = CliRunner()
 
 
+# ---------------------------------------------------------------------------
+# Smoke tests — verify kingdom.cli.__init__ wiring
+# ---------------------------------------------------------------------------
+
+
+class TestCliWiring:
+    """Verify sub-apps are mounted on the top-level Typer app."""
+
+    def test_subcommands_registered(self) -> None:
+        """All expected sub-apps are reachable from the top-level app."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        for cmd in ("council", "design", "peasant", "config", "ticket"):
+            assert cmd in result.output, f"{cmd} not in --help output"
+        # tk is a hidden alias — verify it's mounted by invoking it
+        tk_result = runner.invoke(app, ["tk", "--help"])
+        assert tk_result.exit_code == 0
+
+    def test_top_level_re_exports(self) -> None:
+        """kingdom.cli re-exports key symbols from submodules."""
+        assert hasattr(cli_mod, "app")
+        assert hasattr(cli_mod, "Council")
+        assert hasattr(cli_mod, "install_skill")
+        assert hasattr(cli_mod, "format_ticket_line")
+        assert hasattr(cli_mod, "resolve_peasant_context")
+
+
 def test_doctor_all_installed() -> None:
     """Test doctor command when all CLIs are installed."""
     with (
-        patch.object(cli, "check_cli", return_value=(True, None)),
-        patch.object(cli, "check_config", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", return_value=(True, None)),
+        patch("kingdom.cli.check_config", return_value=(True, None)),
     ):
-        result = runner.invoke(cli.app, ["doctor"])
+        result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "✓" in result.output
         assert "claude" in result.output
@@ -34,10 +63,10 @@ def test_doctor_missing_cli() -> None:
         return (True, None)
 
     with (
-        patch.object(cli, "check_cli", side_effect=mock_check),
-        patch.object(cli, "check_config", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", side_effect=mock_check),
+        patch("kingdom.cli.check_config", return_value=(True, None)),
     ):
-        result = runner.invoke(cli.app, ["doctor"])
+        result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 1
         assert "✗" in result.output
         assert "Issues found:" in result.output
@@ -47,10 +76,10 @@ def test_doctor_missing_cli() -> None:
 def test_doctor_json_output() -> None:
     """Test doctor command with --json flag."""
     with (
-        patch.object(cli, "check_cli", return_value=(True, None)),
-        patch.object(cli, "check_config", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", return_value=(True, None)),
+        patch("kingdom.cli.check_config", return_value=(True, None)),
     ):
-        result = runner.invoke(cli.app, ["doctor", "--json"])
+        result = runner.invoke(app, ["doctor", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["agents"]["claude"]["installed"] is True
@@ -67,10 +96,10 @@ def test_doctor_json_with_missing() -> None:
         return (True, None)
 
     with (
-        patch.object(cli, "check_cli", side_effect=mock_check),
-        patch.object(cli, "check_config", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", side_effect=mock_check),
+        patch("kingdom.cli.check_config", return_value=(True, None)),
     ):
-        result = runner.invoke(cli.app, ["doctor", "--json"])
+        result = runner.invoke(app, ["doctor", "--json"])
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert data["agents"]["codex"]["installed"] is False
@@ -84,11 +113,11 @@ def test_doctor_invalid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"council": {"timout": 123}}')
 
     with (
-        patch.object(cli, "check_cli", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
-        result = runner.invoke(cli.app, ["doctor"])
+        result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 1
         assert "✗" in result.output
         assert "timout" in result.output
@@ -102,11 +131,11 @@ def test_doctor_no_config_shows_defaults(tmp_path) -> None:
     kd_dir.mkdir()
 
     with (
-        patch.object(cli, "check_cli", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
-        result = runner.invoke(cli.app, ["doctor"])
+        result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "using defaults" in result.output
 
@@ -118,11 +147,11 @@ def test_doctor_valid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text("{}")
 
     with (
-        patch.object(cli, "check_cli", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
-        result = runner.invoke(cli.app, ["doctor"])
+        result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "config.json valid" in result.output
 
@@ -134,11 +163,11 @@ def test_doctor_json_invalid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"peasant": {"agent": "nonexistent"}}')
 
     with (
-        patch.object(cli, "check_cli", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
-        result = runner.invoke(cli.app, ["doctor", "--json"])
+        result = runner.invoke(app, ["doctor", "--json"])
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert data["config"]["valid"] is False
@@ -154,11 +183,11 @@ def test_doctor_unknown_backend(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"agents": {"test": {"backend": "foo"}}}')
 
     with (
-        patch.object(cli, "check_cli", return_value=(True, None)),
+        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
-        result = runner.invoke(cli.app, ["doctor"])
+        result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 1
         assert "✗" in result.output
         assert "foo" in result.output
@@ -173,7 +202,7 @@ def test_config_show_defaults(tmp_path) -> None:
     kd_dir.mkdir()
     # No config.json — everything should be "default"
     with patch("kingdom.config.state_root", return_value=kd_dir):
-        result = runner.invoke(cli.app, ["config", "show"])
+        result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0
         lines = [ln for ln in result.output.splitlines() if ln.strip()]
         assert len(lines) > 0
@@ -195,7 +224,7 @@ def test_config_show_with_overrides(tmp_path) -> None:
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.cli.state_root", return_value=kd_dir),
     ):
-        result = runner.invoke(cli.app, ["config", "show"])
+        result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0
         assert "council.timeout" in result.output
         assert "300" in result.output
@@ -210,7 +239,7 @@ def test_config_show_indicates_sources(tmp_path) -> None:
     (kd_dir / "config.json").write_text(json.dumps(config))
 
     with patch("kingdom.config.state_root", return_value=kd_dir):
-        result = runner.invoke(cli.app, ["config", "show"])
+        result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0
         # Overridden value shows "config" source
         for line in result.output.splitlines():
@@ -238,7 +267,7 @@ def test_config_show_dotted_agent_name(tmp_path) -> None:
     (kd_dir / "config.json").write_text(json.dumps(config))
 
     with patch("kingdom.config.state_root", return_value=kd_dir):
-        result = runner.invoke(cli.app, ["config", "show"])
+        result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0
         for line in result.output.splitlines():
             if "gpt.4o" in line and "backend" in line:
@@ -255,146 +284,17 @@ def test_config_show_invalid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"council": {"timout": 123}}')
 
     with patch("kingdom.config.state_root", return_value=kd_dir):
-        result = runner.invoke(cli.app, ["config", "show"])
+        result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 1
         assert "invalid config" in result.output
         assert "timout" in result.output
 
 
-class TestSetupSkill:
-    def test_creates_symlink(self, tmp_path) -> None:
-        # Create skills directory in fake project
-        skill_dir = tmp_path / "skills" / "kingdom"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Skill")
-
-        claude_skills = tmp_path / ".claude_skills"
-
-        with (
-            patch("kingdom.cli.Path.cwd", return_value=tmp_path),
-            patch("kingdom.cli.Path.home", return_value=tmp_path),
-        ):
-            # Patch the home directory to use tmp_path
-            claude_skills / "kingdom"
-            with patch.object(cli, "Path"):
-                # This is complex to mock; use runner with isolated fs instead
-                pass
-
-        # Simpler: test via runner.isolated_filesystem
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            base = P.cwd()
-            (base / "skills" / "kingdom").mkdir(parents=True)
-            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
-
-            fake_home = base / "fakehome"
-            fake_home.mkdir()
-
-            with (
-                patch("kingdom.cli.Path.home", return_value=fake_home),
-            ):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 0, result.output
-            assert "Linked" in result.output
-
-            link = fake_home / ".claude" / "skills" / "kingdom"
-            assert link.is_symlink()
-            assert link.resolve() == (base / "skills" / "kingdom").resolve()
-
-    def test_already_linked(self) -> None:
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            base = P.cwd()
-            (base / "skills" / "kingdom").mkdir(parents=True)
-            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
-
-            fake_home = base / "fakehome"
-            target = fake_home / ".claude" / "skills" / "kingdom"
-            target.parent.mkdir(parents=True)
-            target.symlink_to(base / "skills" / "kingdom")
-
-            with patch("kingdom.cli.Path.home", return_value=fake_home):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 0, result.output
-            assert "Already linked" in result.output
-
-    def test_no_skill_dir(self) -> None:
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            fake_home = P.cwd() / "fakehome"
-            fake_home.mkdir()
-
-            with patch("kingdom.cli.Path.home", return_value=fake_home):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 1
-            assert "not found" in result.output
-
-    def test_updates_stale_symlink(self) -> None:
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            base = P.cwd()
-            (base / "skills" / "kingdom").mkdir(parents=True)
-            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
-
-            fake_home = base / "fakehome"
-            target = fake_home / ".claude" / "skills" / "kingdom"
-            target.parent.mkdir(parents=True)
-            target.symlink_to("/nonexistent/old/path")
-
-            with patch("kingdom.cli.Path.home", return_value=fake_home):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 0, result.output
-            assert "Updating" in result.output
-            assert target.resolve() == (base / "skills" / "kingdom").resolve()
-
-    def test_works_from_subdirectory(self) -> None:
-        """setup-skill should resolve repo root via git, not cwd."""
-        with runner.isolated_filesystem():
-            from pathlib import Path as P
-
-            base = P.cwd()
-            (base / "skills" / "kingdom").mkdir(parents=True)
-            (base / "skills" / "kingdom" / "SKILL.md").write_text("# Skill")
-            subdir = base / "src" / "deep"
-            subdir.mkdir(parents=True)
-
-            fake_home = base / "fakehome"
-            fake_home.mkdir()
-
-            original_run = subprocess.run
-
-            def mock_run(cmd, **kwargs):
-                if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
-                    return MagicMock(returncode=0, stdout=str(base) + "\n")
-                return original_run(cmd, **kwargs)
-
-            with (
-                patch("kingdom.cli.Path.home", return_value=fake_home),
-                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
-                patch("kingdom.cli.Path.cwd", return_value=subdir),
-            ):
-                result = runner.invoke(cli.app, ["setup-skill"])
-
-            assert result.exit_code == 0, result.output
-            assert "Linked" in result.output
-            link = fake_home / ".claude" / "skills" / "kingdom"
-            assert link.is_symlink()
-            assert link.resolve() == (base / "skills" / "kingdom").resolve()
-
-
 class TestNoColor:
     def test_styled_echo_strips_color_when_no_color(self) -> None:
         """styled_echo should not pass fg when NO_COLOR is set."""
-        with patch.object(cli, "NO_COLOR", True):
-            result = runner.invoke(cli.app, ["doctor"])
+        with patch.object(cli_mod, "NO_COLOR", True):
+            result = runner.invoke(app, ["doctor"])
             # Output should not contain ANSI escape codes
             assert "\x1b[" not in result.output
 
@@ -403,8 +303,8 @@ class TestNoColor:
         import importlib
 
         with patch.dict("os.environ", {"NO_COLOR": "1"}):
-            importlib.reload(cli)
-            assert cli.NO_COLOR is True
+            importlib.reload(cli_mod)
+            assert cli_mod.NO_COLOR is True
 
         with patch.dict("os.environ", {"TERM": "dumb"}, clear=False):
             # Remove NO_COLOR if present
@@ -414,56 +314,34 @@ class TestNoColor:
             env.pop("NO_COLOR", None)
             env["TERM"] = "dumb"
             with patch.dict("os.environ", env, clear=True):
-                importlib.reload(cli)
-                assert cli.NO_COLOR is True
+                importlib.reload(cli_mod)
+                assert cli_mod.NO_COLOR is True
 
         # Restore normal state
-        importlib.reload(cli)
+        importlib.reload(cli_mod)
 
 
 class TestVerboseFlag:
     """Test --verbose / -v global flag."""
 
-    def test_verbose_flag_accessible(self) -> None:
-        """VERBOSE module-level flag exists and defaults to False."""
-        assert hasattr(cli, "VERBOSE")
-        assert cli.VERBOSE is False
-
     def test_verbose_flag_parsed(self) -> None:
-        """--verbose sets the module flag and shows debug output on config show."""
-        result = runner.invoke(cli.app, ["-v", "config", "show"])
+        """--verbose stores flag in Typer context and shows debug output on config show."""
+        result = runner.invoke(app, ["-v", "config", "show"])
         assert result.exit_code == 0
         assert "base:" in result.output
         assert "config path:" in result.output
 
     def test_no_verbose_is_silent(self) -> None:
         """Without --verbose, no debug output appears."""
-        result = runner.invoke(cli.app, ["config", "show"])
+        result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0
         assert "base:" not in result.output
         assert "config path:" not in result.output
 
-    def test_verbose_echo_helper(self) -> None:
-        """verbose_echo only prints when VERBOSE is True."""
-        from io import StringIO
-
-        from rich.console import Console
-
-        buf = StringIO()
-        cli.VERBOSE = False
-        # verbose_echo writes to error_console; patch it
-        original = cli.error_console
-        cli.error_console = Console(file=buf, no_color=True)
-        try:
-            cli.verbose_echo("should not appear")
-            assert buf.getvalue() == ""
-
-            cli.VERBOSE = True
-            cli.verbose_echo("should appear")
-            assert "should appear" in buf.getvalue()
-        finally:
-            cli.VERBOSE = False
-            cli.error_console = original
+    def test_verbose_echo_silent_outside_context(self) -> None:
+        """verbose_echo is a no-op when called outside a Typer context."""
+        # Should not crash — just silently does nothing
+        verbose_echo("should not crash")
 
 
 class TestPeasantWatch:
@@ -489,15 +367,16 @@ class TestPeasantWatch:
         mock_state = AgentState(name="peasant-t1", status="done")
 
         with (
-            patch.object(cli, "resolve_peasant_context", return_value=mock_ctx),
+            patch("kingdom.cli.resolve_peasant_context", return_value=mock_ctx),
             patch("kingdom.session.get_agent_state", return_value=mock_state),
             patch("kingdom.harness.extract_worklog", return_value="- [12:00] — Started"),
         ):
-            result = runner.invoke(cli.app, ["peasant", "watch", "t1"])
+            result = runner.invoke(app, ["peasant", "watch", "t1"])
 
         assert result.exit_code == 0
         assert "Started" in result.output
-        assert "finished: done" in result.output
+        assert "DONE: t1" in result.output
+        assert "=" * 40 in result.output
 
 
 class TestPeasantTmux:
@@ -513,10 +392,10 @@ class TestPeasantTmux:
         mock_result.stderr = "no server running"
 
         with (
-            patch("kingdom.cli.subprocess.run", return_value=mock_result),
+            patch("kingdom.cli.peasant.subprocess.run", return_value=mock_result),
             pytest.raises(ClickExit),
         ):
-            cli.launch_work_tmux(
+            launch_work_tmux(
                 base=tmp_path,
                 feature="test",
                 ticket_id="t1",
@@ -538,7 +417,7 @@ class TestProjectRootDiscovery:
         subdir = tmp_path / "src" / "deep"
         subdir.mkdir(parents=True)
         with patch("kingdom.state.Path.cwd", return_value=subdir):
-            result = runner.invoke(cli.app, ["tk", "list"])
+            result = runner.invoke(app, ["tk", "list"])
         assert result.exit_code == 0
 
     def test_kd_base_env_overrides_discovery(self, tmp_path: Path) -> None:
@@ -549,7 +428,7 @@ class TestProjectRootDiscovery:
         ensure_branch_layout(override, "env-branch")
         set_current_run(override, "env-branch")
         with patch.dict(os.environ, {"KD_BASE": str(override)}):
-            result = runner.invoke(cli.app, ["tk", "list"])
+            result = runner.invoke(app, ["tk", "list"])
         assert result.exit_code == 0
 
     def test_kd_base_invalid_path_shows_error(self, tmp_path: Path) -> None:
@@ -557,29 +436,15 @@ class TestProjectRootDiscovery:
         bad = tmp_path / "bad-path"
         bad.mkdir()
         with patch.dict(os.environ, {"KD_BASE": str(bad)}):
-            result = runner.invoke(cli.app, ["tk", "list"])
+            result = runner.invoke(app, ["tk", "list"])
         assert result.exit_code == 1
         assert "KD_BASE=" in result.output
         assert "bad-path" in result.output
         assert ".kd/" in result.output
 
-    def test_init_ignores_discovery_uses_cwd(self, tmp_path: Path) -> None:
-        """kd init uses cwd, not project root discovery."""
-        # Parent has .kd/, but init should create in cwd
-        parent = tmp_path / "parent"
-        parent.mkdir()
-        (parent / ".kd").mkdir()
-        child = parent / "child"
-        child.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=child, check=True)
-        with patch("kingdom.state.Path.cwd", return_value=child):
-            result = runner.invoke(cli.app, ["init"])
-        assert result.exit_code == 0
-        assert (child / ".kd").is_dir()
-
     def test_no_kd_anywhere_shows_clear_error(self) -> None:
         """Missing .kd/ everywhere produces clear error message."""
         with runner.isolated_filesystem():
-            result = runner.invoke(cli.app, ["tk", "list"])
+            result = runner.invoke(app, ["tk", "list"])
         assert result.exit_code == 1
-        assert "kd init" in result.output
+        assert "kd start" in result.output or ".kd/" in result.output

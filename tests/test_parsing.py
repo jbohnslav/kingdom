@@ -5,11 +5,45 @@ from __future__ import annotations
 import pytest
 
 try:
-    from kingdom.parsing import parse_frontmatter, parse_yaml_value, serialize_yaml_value
+    from kingdom.parsing import (
+        parse_frontmatter,
+        parse_iso_datetime,
+        parse_yaml_value,
+        serialize_frontmatter,
+        serialize_yaml_value,
+    )
 except ImportError:
     # When run from the parent worktree's venv, kingdom.parsing may not
     # exist yet.  Skip the entire module in that case.
     pytest.skip("kingdom.parsing not available in this environment", allow_module_level=True)
+
+
+class TestParseIsoDatetime:
+    """Tests for parse_iso_datetime."""
+
+    def test_trailing_z(self) -> None:
+        dt = parse_iso_datetime("2026-02-04T16:00:00Z")
+        assert dt.year == 2026
+        assert dt.month == 2
+        assert dt.day == 4
+        assert dt.hour == 16
+        assert dt.tzinfo is not None
+
+    def test_explicit_offset(self) -> None:
+        dt = parse_iso_datetime("2026-02-04T16:00:00+00:00")
+        assert dt.year == 2026
+
+    def test_non_utc_offset(self) -> None:
+        dt = parse_iso_datetime("2026-02-04T16:00:00-05:00")
+        assert dt.hour == 16
+
+    def test_no_timezone(self) -> None:
+        dt = parse_iso_datetime("2026-02-04T16:00:00")
+        assert dt.tzinfo is None
+
+    def test_invalid_raises(self) -> None:
+        with pytest.raises(ValueError):
+            parse_iso_datetime("not-a-date")
 
 
 class TestParseYamlValue:
@@ -61,6 +95,37 @@ class TestParseYamlValue:
 
     def test_string_that_looks_numeric_but_isnt(self) -> None:
         assert parse_yaml_value("12abc") == "12abc"
+
+
+class TestSerializeFrontmatter:
+    """Tests for serialize_frontmatter."""
+
+    def test_basic(self) -> None:
+        result = serialize_frontmatter([("status", "open"), ("priority", 2)])
+        assert result == "---\nstatus: open\npriority: 2\n---"
+
+    def test_skips_none(self) -> None:
+        result = serialize_frontmatter([("status", "open"), ("assignee", None), ("type", "task")])
+        assert "assignee" not in result
+        assert "status: open" in result
+        assert "type: task" in result
+
+    def test_empty_fields(self) -> None:
+        result = serialize_frontmatter([])
+        assert result == "---\n---"
+
+    def test_list_value(self) -> None:
+        result = serialize_frontmatter([("deps", ["a", "b"])])
+        assert "deps: [a, b]" in result
+
+    def test_roundtrip(self) -> None:
+        """Frontmatter produced by serialize_frontmatter can be parsed back."""
+        fm_str = serialize_frontmatter([("id", '"abc"'), ("status", "open"), ("priority", 2)])
+        fm, body = parse_frontmatter(fm_str + "\nBody")
+        assert fm["id"] == "abc"
+        assert fm["status"] == "open"
+        assert fm["priority"] == 2
+        assert body == "Body"
 
 
 class TestSerializeYamlValue:

@@ -31,10 +31,12 @@ Design with the council, break into tickets, dispatch peasants, review, and merg
 
 ```bash
 kd start                   # initialize branch session
-kd chat --new              # discuss design with the council TUI
+kd council chat --new      # discuss design with the council TUI
 kd design approve          # lock in the design
-kd breakdown               # generate tickets from the design
+# create tickets from the design (via the kingdom skill or manually)
 kd peasant start <id>      # dispatch parallel workers
+kd peasant review <id>     # review completed work
+kd peasant accept <id>     # accept and close, or reject with feedback
 kd done                    # archive and clean up
 ```
 
@@ -68,7 +70,6 @@ Design docs, council sessions, and peasant workers are all optional. A branch wi
 ## Getting Started
 
 ```bash
-kd init                    # one-time: create .kd/ directory
 kd start                   # start a session on the current branch
 ```
 
@@ -76,7 +77,7 @@ Configure council agent CLIs in `.kd/config.json` (check effective config with `
 
 ## Chat Modes
 
-The council chat TUI (`kd chat`) supports four modes, configured via `council.chat.mode`:
+The council chat TUI (`kd council chat`) supports four modes, configured via `council.chat.mode`:
 
 | Mode | First turn | Auto-turns | Default |
 |------|-----------|------------|---------|
@@ -108,6 +109,20 @@ All state lives in `.kd/` as plain Markdown and JSON files, tracked in git along
 ```
 
 No database. No server. Just files on disk.
+
+## Commands
+
+| Group | Description |
+|-------|-------------|
+| `kd start` / `kd done` / `kd status` | Branch lifecycle — initialize, finish, and inspect sessions |
+| `kd design` | Manage design documents (`show`, `approve`) |
+| `kd council` | Multi-model council — `ask`, `chat`, `review`, `show`, `list`, `watch`, `reset`, `retry` |
+| `kd ticket` (alias `kd tk`) | Ticket management — `create`, `list`, `show`, `start`, `close`, `deps`, and more |
+| `kd peasant` | Worker agents — `start`, `stop`, `review`, `accept`, `reject`, `msg`, `read`, `watch` |
+| `kd config` | View and manage configuration |
+| `kd doctor` | Check config and agent CLIs |
+
+Run `kd <command> --help` for full flags and options.
 
 ## Development
 

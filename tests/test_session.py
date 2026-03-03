@@ -26,13 +26,6 @@ from kingdom.state import ensure_branch_layout, sessions_root
 BRANCH = "feature/test-branch"
 
 
-@pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Create a minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, BRANCH)
-    return tmp_path
-
-
 class TestPathHelpers:
     def test_session_path(self, project: Path) -> None:
         p = session_path(project, BRANCH, "claude")

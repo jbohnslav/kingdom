@@ -1,4 +1,4 @@
-"""ChatApp — main Textual application for kd chat."""
+"""ChatApp — main Textual application for kd council chat."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from textual.app import App, ComposeResult, ScreenStackError
-from textual.binding import BindingType
+from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.css.query import QueryError
 from textual.message import Message
@@ -201,6 +201,13 @@ class InputArea(TextArea):
     Tab after @partial completes member names.
     """
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("alt+left", "cursor_word_left", "Cursor word left", show=False),
+        Binding("alt+right", "cursor_word_right", "Cursor word right", show=False),
+        Binding("alt+shift+left", "cursor_word_left(True)", "Cursor word left select", show=False),
+        Binding("alt+shift+right", "cursor_word_right(True)", "Cursor word right select", show=False),
+    ]
+
     class Submit(Message):
         """Posted when the user presses Enter to send."""
 
@@ -333,7 +340,7 @@ class ChatScreen(Screen):
 class ChatApp(App):
     """Council chat TUI."""
 
-    TITLE = "kd chat"
+    TITLE = "kd council chat"
     CSS_PATH = "chat.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -383,7 +390,7 @@ class ChatApp(App):
 
         members_str = " ".join(self.member_names) if self.member_names else "no members"
         yield Static(
-            f"kd chat · {self.thread_id} · {members_str}",
+            f"kd council chat · {self.thread_id} · {members_str}",
             id="header-bar",
         )
         yield MessageLog(id="message-log")
@@ -826,16 +833,12 @@ class ChatApp(App):
 
     async def run_mode_natural(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
         """Natural mode: parallel broadcast first turn, then shuffled round-robin."""
-        # First turn: parallel broadcast (WaitingPanels mounted by send_message)
-        await self.parallel_query(targets, generation, tdir)
-        if self.generation != generation:
-            return
-
-        # First exchange in thread: broadcast only, no auto-turns
         if is_first_exchange:
+            # First exchange: parallel broadcast, no auto-turns
+            await self.parallel_query(targets, generation, tdir)
             return
 
-        # Follow-up: shuffled round-robin auto-turns
+        # Follow-up: shuffled sequential only — each member responds once
         await self.sequential_auto_turns(generation, tdir, shuffle=True)
 
     async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
@@ -1093,7 +1096,7 @@ class ChatApp(App):
             "/writable        — toggle writable mode (file edits, commands)\n"
             "/mute            — show currently muted members\n"
             "/help            — show this help\n"
-            "/quit or /exit   — quit kd chat\n"
+            "/quit or /exit   — quit kd council chat\n"
             "\n"
             "Esc: interrupt running queries / quit\n"
             "Enter: send message\n"

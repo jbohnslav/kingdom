@@ -7,11 +7,10 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from kingdom import cli
+from kingdom.cli import app
 from kingdom.state import (
     branch_root,
     ensure_branch_layout,
-    ensure_run_layout,
     read_json,
     set_current_run,
     state_root,
@@ -38,7 +37,7 @@ def test_done_shows_summary_with_ticket_count() -> None:
                 tickets_dir / f"t{i:03d}.md",
             )
 
-        result = runner.invoke(cli.app, ["done"])
+        result = runner.invoke(app, ["done"])
 
         assert result.exit_code == 0
         assert "3 tickets closed" in result.output
@@ -59,7 +58,7 @@ def test_done_shows_push_reminder_when_unpushed() -> None:
         set_current_run(base, "test-feature")
 
         # No remote set up, so commits are "unpushed"
-        result = runner.invoke(cli.app, ["done"])
+        result = runner.invoke(app, ["done"])
 
         assert result.exit_code == 0
         assert "push" in result.output.lower()
@@ -75,7 +74,7 @@ def test_done_marks_state_and_clears_current() -> None:
         ensure_branch_layout(base, "test-feature")
         set_current_run(base, "test-feature")
 
-        result = runner.invoke(cli.app, ["done"])
+        result = runner.invoke(app, ["done"])
 
         assert result.exit_code == 0
         assert "Done:" in result.output
@@ -103,7 +102,7 @@ def test_done_errors_without_active_run() -> None:
 
         state_root(base).mkdir(parents=True)
 
-        result = runner.invoke(cli.app, ["done"])
+        result = runner.invoke(app, ["done"])
 
         assert result.exit_code == 1
         assert "No active session" in result.output
@@ -119,7 +118,7 @@ def test_done_with_explicit_feature() -> None:
 
         ensure_branch_layout(base, "explicit-feature")
 
-        result = runner.invoke(cli.app, ["done", "explicit-feature"])
+        result = runner.invoke(app, ["done", "explicit-feature"])
 
         assert result.exit_code == 0
         assert "Done:" in result.output
@@ -144,7 +143,7 @@ def test_done_preserves_existing_state() -> None:
         existing_state = {"tickets": {"T-001": "kin-abc123"}, "peasant": {"ticket": "T-001"}}
         state_path.write_text(json.dumps(existing_state, indent=2) + "\n")
 
-        result = runner.invoke(cli.app, ["done"])
+        result = runner.invoke(app, ["done"])
 
         assert result.exit_code == 0
 
@@ -165,7 +164,7 @@ def test_done_timestamp_format() -> None:
         set_current_run(base, "test-feature")
 
         before = datetime.now(UTC)
-        result = runner.invoke(cli.app, ["done"])
+        result = runner.invoke(app, ["done"])
         after = datetime.now(UTC)
 
         assert result.exit_code == 0
@@ -188,7 +187,7 @@ def test_done_explicit_feature_does_not_clear_different_current() -> None:
         ensure_branch_layout(base, "other-feature")
         set_current_run(base, "current-feature")
 
-        result = runner.invoke(cli.app, ["done", "other-feature"])
+        result = runner.invoke(app, ["done", "other-feature"])
 
         assert result.exit_code == 0
 
@@ -207,36 +206,14 @@ def test_done_idempotent() -> None:
         ensure_branch_layout(base, "test-feature")
 
         # First done
-        result = runner.invoke(cli.app, ["done", "test-feature"])
+        result = runner.invoke(app, ["done", "test-feature"])
         assert result.exit_code == 0
 
         # Second done (idempotent)
-        result = runner.invoke(cli.app, ["done", "test-feature"])
+        result = runner.invoke(app, ["done", "test-feature"])
         assert result.exit_code == 0
 
         state = read_json(branch_root(base, "test-feature") / "state.json")
-        assert state["status"] == "done"
-
-
-def test_done_with_legacy_runs_structure() -> None:
-    """kd done works with legacy .kd/runs/ structure for backwards compatibility."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        subprocess.run(["git", "init", "-q"], check=True)
-
-        ensure_run_layout(base, "legacy-feature")
-        set_current_run(base, "legacy-feature")
-
-        result = runner.invoke(cli.app, ["done"])
-
-        assert result.exit_code == 0
-        assert "Done:" in result.output
-        assert "legacy-feature" in result.output
-
-        # state.json updated in the legacy location
-        legacy_dir = state_root(base) / "runs" / "legacy-feature"
-        state = read_json(legacy_dir / "state.json")
         assert state["status"] == "done"
 
 
@@ -260,7 +237,7 @@ def test_done_blocks_when_branch_has_open_tickets() -> None:
             tickets_dir / "kin-prog1.md",
         )
 
-        result = runner.invoke(cli.app, ["done"])
+        result = runner.invoke(app, ["done"])
 
         assert result.exit_code == 1
         assert "Error: 2 open ticket(s) on 'test-feature':" in result.output
@@ -290,7 +267,7 @@ def test_done_force_overrides_open_ticket_check() -> None:
             tickets_dir / "kin-open1.md",
         )
 
-        result = runner.invoke(cli.app, ["done", "--force"])
+        result = runner.invoke(app, ["done", "--force"])
 
         assert result.exit_code == 0
         assert "Done: test-feature" in result.output
@@ -318,7 +295,7 @@ def test_done_renders_rich_panel() -> None:
                 tickets_dir / f"t{i:03d}.md",
             )
 
-        result = runner.invoke(cli.app, ["done"])
+        result = runner.invoke(app, ["done"])
 
         assert result.exit_code == 0
         # Panel box-drawing characters present (top-left corner of rounded box)
@@ -375,7 +352,7 @@ def test_done_cleans_up_worktrees_from_state() -> None:
         import unittest.mock
 
         with unittest.mock.patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-            result = runner.invoke(cli.app, ["done", "--force"])
+            result = runner.invoke(app, ["done", "--force"])
 
         assert result.exit_code == 0
         # Worktree directories should be removed

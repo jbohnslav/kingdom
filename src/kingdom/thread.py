@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kingdom.parsing import parse_frontmatter, serialize_yaml_value
+from kingdom.parsing import parse_frontmatter, parse_iso_datetime, serialize_frontmatter
 from kingdom.state import branch_root, ensure_dir, normalize_branch_name, read_json, write_json
 
 
@@ -156,9 +156,7 @@ def read_thread_meta(tdir: Path) -> ThreadMeta:
 
     created_str = data.get("created_at", "")
     if isinstance(created_str, str) and created_str:
-        if created_str.endswith("Z"):
-            created_str = created_str[:-1] + "+00:00"
-        created_at = datetime.fromisoformat(created_str)
+        created_at = parse_iso_datetime(created_str)
     else:
         created_at = datetime.now(UTC)
 
@@ -333,18 +331,16 @@ def add_message(
     )
 
     # Build frontmatter
-    lines = ["---"]
-    lines.append(f"from: {from_}")
-    lines.append(f"to: {to}")
-    lines.append(f"timestamp: {now.strftime('%Y-%m-%dT%H:%M:%SZ')}")
-    if refs:
-        lines.append(f"refs: {serialize_yaml_value(refs)}")
-    if status:
-        lines.append(f"status: {status}")
-    lines.append("---")
-    lines.append("")
-    lines.append(body)
-    lines.append("")
+    fm = serialize_frontmatter(
+        [
+            ("from", from_),
+            ("to", to),
+            ("timestamp", now.strftime("%Y-%m-%dT%H:%M:%SZ")),
+            ("refs", refs or None),
+            ("status", status),
+        ]
+    )
+    lines = [fm, "", body, ""]
 
     # Sanitize sender name for filename — use exclusive create ('x') to avoid race
     safe_from = normalize_branch_name(from_)
@@ -375,9 +371,7 @@ def parse_message(path: Path) -> Message:
     # Parse timestamp
     ts_str = fm.get("timestamp", "")
     if isinstance(ts_str, str) and ts_str:
-        if ts_str.endswith("Z"):
-            ts_str = ts_str[:-1] + "+00:00"
-        timestamp = datetime.fromisoformat(ts_str)
+        timestamp = parse_iso_datetime(ts_str)
     else:
         timestamp = datetime.now(UTC)
 
@@ -539,7 +533,18 @@ def format_thread_history(tdir: Path, target_member: str, suffix: str | None = N
             continue
     messages.sort(key=lambda m: m.sequence)
 
-    tail = suffix or f"You are {target_member}. Continue the discussion."
+    default_suffix = (
+        f"You are {target_member}. Read the full conversation above before responding.\n"
+        "\n"
+        "This is a group discussion, not a survey. Engage with what others have said — "
+        "agree, disagree, extend, or synthesize. Reference specific points rather than "
+        "restating the question from scratch. If someone raised a concern you think is "
+        "wrong, say so and explain why. If they made a point you hadn't considered, "
+        "acknowledge it and build on it.\n"
+        "\n"
+        "Be direct and concise. The King is reading these — make your contribution count."
+    )
+    tail = suffix or default_suffix
 
     if not messages:
         return f"---\n{tail}"

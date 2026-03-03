@@ -9,7 +9,7 @@ The harness runs an autonomous loop:
   6. Write response as message to work thread
   7. Check stop conditions: done, blocked, stopped, failed
 
-Called in-process by ``kd work <ticket>``.
+Called by ``python -m kingdom.worker`` (spawned by peasant start).
 """
 
 from __future__ import annotations
@@ -18,12 +18,14 @@ import logging
 import re
 import signal
 import subprocess
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
+from kingdom.state import logs_root
 from kingdom.thread import add_message, list_messages
 from kingdom.ticket import append_worklog_entry, find_ticket, read_ticket, write_ticket
 
@@ -37,11 +39,16 @@ def build_prompt(
     iteration: int,
     max_iterations: int,
     phase_prompt: str = "",
+    *,
+    worktree: Path | None = None,
+    repo_root: Path | None = None,
+    ticket_id: str = "",
+    ticket_title: str = "",
 ) -> str:
     """Build the prompt sent to the backend agent.
 
     References the ticket file by path (so the agent can read it directly)
-    and includes existing worklog and any new directives from the work thread.
+    and includes existing worklog plus new directives and environment anchors.
     """
     parts = []
 
@@ -49,39 +56,97 @@ def build_prompt(
         parts.append(phase_prompt)
         parts.append("")
 
-    parts.append("You are a peasant agent working on a ticket. Work autonomously to complete it.")
+    # --- Identity and context ---
+    parts.append(
+        "You are a peasant — an autonomous coding agent in Kingdom (kd). "
+        "Kingdom is a ticket-driven development workflow: the King assigns tickets, "
+        "peasants implement them, and the council reviews the result. "
+        "If the council blocks your work, you'll get their feedback and another chance to fix it."
+    )
+
+    # --- Where you are ---
+    if worktree:
+        parts.append("")
+        parts.append(
+            f"You are working in an isolated git worktree at {worktree} "
+            f"on branch ticket/{ticket_id}. All your edits, commits, and commands "
+            f"should happen here — don't cd to {repo_root or 'the parent repo'} "
+            f"or work outside this directory."
+        )
+
+    # --- The ticket ---
     parts.append("")
-    parts.append("## Ticket")
-    parts.append(f"Read the ticket file at: {ticket_path}")
+    parts.append(f"Your ticket is at {ticket_path}.")
+    if ticket_title:
+        parts.append(f'It\'s called "{ticket_title}."')
+    parts.append(
+        "Read it carefully before you start, especially the acceptance criteria — "
+        "those are what the council will judge your work against."
+    )
 
     if worklog:
         parts.append("")
-        parts.append("## Current Worklog")
+        parts.append("Here's the worklog so far:")
         parts.append(worklog)
 
     if directives:
         parts.append("")
-        parts.append("## Directives from Lead")
+        parts.append("The King has given you these directives:")
         for d in directives:
             parts.append(f"- {d}")
 
+    # --- How to work ---
     parts.append("")
-    parts.append("## Instructions")
     parts.append(f"This is iteration {iteration} of {max_iterations}.")
-    parts.append("Work on the ticket. Commit your changes as you go with descriptive commit messages.")
-    parts.append(
-        "Before reporting DONE, run the project's tests, linter, and pre-commit hooks to make sure everything passes."
-    )
-    parts.append("When you respond, structure your output as:")
-    parts.append("1. What you did this iteration")
-    parts.append("2. Your status: DONE, BLOCKED, or CONTINUE")
-    parts.append("3. If BLOCKED, explain what you need help with")
-    parts.append("4. If DONE, confirm all acceptance criteria are met and tests/lint pass")
+    if iteration > 1:
+        parts.append(
+            "You've been bounced back — the council had feedback on your last attempt. "
+            "Focus on what they flagged before doing anything else."
+        )
     parts.append("")
-    parts.append("End your response with exactly one of these status lines:")
-    parts.append("STATUS: DONE")
-    parts.append("STATUS: BLOCKED")
-    parts.append("STATUS: CONTINUE")
+    parts.append(
+        "Read the relevant source code before changing it. Make minimal, correct changes. "
+        "Commit as you go with descriptive messages."
+    )
+    parts.append("")
+    if ticket_id:
+        parts.append(
+            "Keep the ticket worklog updated as you work. Log important decisions, "
+            "tradeoffs, things you noticed, or King input using "
+            f'`kd tk log {ticket_id} "message"` or by editing the ticket file directly. '
+            "The worklog is how the King stays informed about what you're doing and why."
+        )
+    else:
+        parts.append(
+            "Keep the ticket worklog updated as you work. Log important decisions, "
+            "tradeoffs, and things you noticed. The worklog is how the King stays "
+            "informed about what you're doing and why."
+        )
+    parts.append("")
+    parts.append(
+        "Before reporting DONE, run the project's tests, linter, "
+        "and pre-commit hooks. Everything must pass. If you haven't actually changed any code "
+        "or made any commits, you're not done — don't claim DONE with nothing to show. "
+        "Exception: if the work is genuinely complete without code changes "
+        "(e.g., the fix was already applied, or the ticket only required verification), "
+        "you may report DONE and explain why no changes were needed."
+    )
+    parts.append("")
+    parts.append(
+        "If you're stuck or need a decision from the King, report BLOCKED with a clear "
+        "explanation of what you need. Don't spin — it's better to ask than to waste iterations."
+    )
+
+    # --- Response format ---
+    parts.append("")
+    parts.append(
+        "When you respond, start with a plain prose paragraph summarizing what you changed. "
+        "Be concrete — name the files, describe the behavior change, explain what you fixed. "
+        'No headings, no numbered list, no labels like "What I did this iteration." '
+        "This paragraph shows up directly in `kd peasant watch`, so make it useful."
+    )
+    parts.append("")
+    parts.append("End your response with exactly one status line:\nSTATUS: DONE\nSTATUS: BLOCKED\nSTATUS: CONTINUE")
 
     return "\n".join(parts)
 
@@ -103,7 +168,8 @@ def parse_status(response_text: str) -> str:
 def extract_worklog_entry(response_text: str) -> str:
     """Extract a concise worklog entry from the agent's response.
 
-    Takes the first substantive paragraph before the STATUS line.
+    Takes the first substantive paragraph before the STATUS line,
+    skipping bare markdown headings (``## …``) that contain no content.
     """
     lines = []
     for line in response_text.strip().splitlines():
@@ -112,28 +178,137 @@ def extract_worklog_entry(response_text: str) -> str:
         lines.append(line)
 
     text = "\n".join(lines).strip()
-    # Take first paragraph or first 200 chars
+    # Take first substantive paragraph, skipping bare headings
     paragraphs = text.split("\n\n")
-    entry = paragraphs[0].strip() if paragraphs else text
+    entry = ""
+    for para in paragraphs:
+        stripped = para.strip()
+        if not stripped:
+            continue
+        # Skip standalone markdown headings (e.g. "## What I did this iteration")
+        if re.match(r"^#{1,6}\s+\S", stripped) and "\n" not in stripped:
+            continue
+        if is_placeholder_worklog_paragraph(stripped):
+            continue
+        entry = stripped
+        break
     if len(entry) > 300:
         entry = entry[:297] + "..."
     return entry
 
 
 def format_worklog_timestamp(dt: datetime) -> str:
-    """Format a worklog timestamp, including date when the entry is not from today.
+    """Format a worklog timestamp in local time.
 
     Returns "[HH:MM]" for today's entries, "[YYYY-MM-DD HH:MM]" for older ones.
+    All times are converted to local timezone so they align with worktree
+    poll timestamps in ``kd peasant watch``.
     """
-    today = datetime.now(UTC).date()
-    if dt.date() == today:
-        return f"[{dt.strftime('%H:%M')}]"
-    return f"[{dt.strftime('%Y-%m-%d %H:%M')}]"
+    local_dt = dt.astimezone()
+    today = datetime.now().astimezone().date()
+    if local_dt.date() == today:
+        return f"[{local_dt.strftime('%H:%M')}]"
+    return f"[{local_dt.strftime('%Y-%m-%d %H:%M')}]"
 
 
 def append_worklog(ticket_path: Path, entry: str) -> None:
     now = datetime.now(UTC)
     append_worklog_entry(ticket_path, entry, timestamp=now, timestamp_text=format_worklog_timestamp(now))
+
+
+def is_placeholder_worklog_paragraph(paragraph: str) -> bool:
+    """Return True when *paragraph* is just a section label with no content."""
+    if "\n" in paragraph:
+        return False
+
+    normalized = strip_markdown_decoration(paragraph)
+    normalized = re.sub(r"^\d+[.)]\s*", "", normalized)
+    normalized = normalized.rstrip(":").strip().lower()
+    return normalized in {
+        "what i did this iteration",
+        "what you did this iteration",
+        "summary",
+        "details",
+    }
+
+
+def summarize_feedback(feedback: list[str], max_chars: int = 500) -> str:
+    """Summarize council feedback for worklog entries.
+
+    Takes each "[name] response_text" entry, extracts the name and truncates
+    the response to the first line / max_chars for a compact worklog summary.
+    """
+    lines = []
+    for entry in feedback:
+        # Extract [name] prefix
+        if entry.startswith("["):
+            bracket_end = entry.index("]") + 1
+            name_part = entry[:bracket_end]
+            text = entry[bracket_end:].strip()
+        else:
+            name_part = ""
+            text = entry.strip()
+
+        verdict = parse_verdict(text).upper()
+        summary = ""
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if re.match(r"^VERDICT:\s*(APPROVED|BLOCKING)$", strip_markdown_decoration(stripped), re.IGNORECASE):
+                continue
+            summary = stripped
+            break
+
+        if summary:
+            prefix = f"{verdict}: "
+            if len(prefix) + len(summary) > max_chars:
+                available = max_chars - len(prefix) - 3
+                if available > 0:
+                    summary = summary[:available] + "..."
+                else:
+                    summary = verdict[: max_chars - 3] + "..."
+                    lines.append(f"{name_part} {summary}" if name_part else summary)
+                    continue
+            summary = f"{prefix}{summary}"
+        else:
+            summary = verdict
+        lines.append(f"{name_part} {summary}" if name_part else summary)
+    return "\n".join(lines)
+
+
+def get_diff_stat(worktree: Path, since: str | None = None) -> str | None:
+    """Run git diff --stat in the worktree and return the output.
+
+    When *since* is given, diffs committed changes ``since..HEAD``.
+    Otherwise falls back to uncommitted changes (HEAD then index).
+
+    Returns None if there are no changes or on error.
+    """
+    try:
+        if since:
+            result = subprocess.run(
+                ["git", "diff", "--stat", f"{since}..HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        # Uncommitted changes (staged + unstaged vs HEAD)
+        result = subprocess.run(
+            ["git", "diff", "--stat", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
 
 
 def extract_worklog(ticket_path: Path) -> str:
@@ -151,6 +326,63 @@ def extract_worklog(ticket_path: Path) -> str:
             break
         result.append(line)
     return "\n".join(result).strip()
+
+
+def run_streaming_subprocess(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    live_log_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess with real-time stdout/stderr streaming.
+
+    Pipes stdout and stderr, writing each line to *live_log_path* in real time
+    while accumulating full buffers for the returned ``CompletedProcess``.
+    This gives ``parse_response()`` the same interface as ``subprocess.run()``
+    while making output visible to ``peasant watch`` during execution.
+    """
+    live_log_path.parent.mkdir(parents=True, exist_ok=True) if live_log_path else None
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        cwd=cwd,
+        env=env,
+        text=True,
+    )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def drain(stream, buf: list[str]) -> None:
+        for line in stream:
+            buf.append(line)
+            if live_log_path:
+                try:
+                    with live_log_path.open("a", encoding="utf-8") as f:
+                        f.write(line)
+                except OSError:
+                    pass
+
+    stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_lines), daemon=True)
+    stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_lines), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+
+    proc.wait()
+
+    stdout_thread.join(timeout=5)
+    stderr_thread.join(timeout=5)
+
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=proc.returncode,
+        stdout="".join(stdout_lines),
+        stderr="".join(stderr_lines),
+    )
 
 
 def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: int) -> tuple[list[str], int]:
@@ -206,30 +438,56 @@ def has_code_changes(worktree: Path, start_sha: str | None) -> bool:
     return False
 
 
-def get_diff(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
-    """Get the diff of changes for council review.
+def check_worktree_branch(worktree: Path, expected_branch: str) -> bool:
+    """Verify the worktree HEAD is on the expected branch.
 
-    For worktree mode (feature_branch set): uses feature_branch...HEAD (three-dot
-    merge-base diff) so only the peasant's own changes appear, not other peasants'
-    work that was merged into the feature branch.
+    Returns True if the branch matches (or if git fails — don't block on
+    infra errors). Returns False if the branch has changed, meaning the
+    agent escaped.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            logger.warning("Could not check worktree branch (git returned %d)", result.returncode)
+            return True  # Don't block on git failures
+        actual = result.stdout.strip()
+        if actual != expected_branch:
+            logger.error(
+                "BRANCH ESCAPE: worktree HEAD is on '%s', expected '%s'",
+                actual,
+                expected_branch,
+            )
+            return False
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        logger.warning("Could not check worktree branch (timeout/not found)")
+        return True  # Don't block on infra errors
 
-    For hand mode (feature_branch=None): uses start_sha..HEAD (two-dot).
-    Falls back to showing all uncommitted + recent committed changes.
+
+def get_changed_files(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
+    """Get the list of changed files (--stat format) for review context.
+
+    Uses the same ref resolution logic as the old get_diff — three-dot for
+    worktree mode, two-dot for hand mode, HEAD fallback otherwise.
     """
     try:
         if feature_branch:
-            # Worktree mode: three-dot merge-base diff against feature branch
             result = subprocess.run(
-                ["git", "diff", f"{feature_branch}...HEAD"],
+                ["git", "diff", "--stat", f"{feature_branch}...HEAD"],
                 capture_output=True,
                 text=True,
                 cwd=worktree,
                 timeout=30,
             )
-            # Fall back to two-dot if three-dot fails (e.g. detached HEAD, missing ref)
             if result.returncode != 0 and start_sha:
                 result = subprocess.run(
-                    ["git", "diff", f"{start_sha}..HEAD"],
+                    ["git", "diff", "--stat", f"{start_sha}..HEAD"],
                     capture_output=True,
                     text=True,
                     cwd=worktree,
@@ -237,66 +495,121 @@ def get_diff(worktree: Path, start_sha: str | None, feature_branch: str | None =
                 )
         elif start_sha:
             result = subprocess.run(
-                ["git", "diff", f"{start_sha}..HEAD"],
+                ["git", "diff", "--stat", f"{start_sha}..HEAD"],
                 capture_output=True,
                 text=True,
                 cwd=worktree,
                 timeout=30,
             )
         else:
-            # No start_sha — show diff of staged + unstaged changes
             result = subprocess.run(
-                ["git", "diff", "HEAD"],
+                ["git", "diff", "--stat", "HEAD"],
                 capture_output=True,
                 text=True,
                 cwd=worktree,
                 timeout=30,
             )
         if result.returncode == 0 and result.stdout.strip():
-            diff = result.stdout.strip()
-            # Truncate very large diffs to avoid overwhelming the council
-            if len(diff) > 50000:
-                diff = diff[:50000] + "\n\n... (diff truncated at 50k chars)"
-            return diff
+            return result.stdout.strip()
         return "(no changes detected)"
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        return "(could not generate diff)"
+        return "(could not generate file list)"
 
 
-def build_review_prompt(ticket_title: str, ticket_body: str, diff: str, worklog: str) -> str:
-    """Build the prompt sent to council members for review."""
-    parts = [
-        "## Code Review Request",
-        "",
-        f"**Ticket:** {ticket_title}",
-        "",
-        "### Ticket Description",
-        ticket_body.split("## Worklog")[0].strip() if "## Worklog" in ticket_body else ticket_body.strip(),
-        "",
-        "### Changes (diff)",
-        "```diff",
-        diff,
-        "```",
-    ]
+def get_commit_log(worktree: Path, start_sha: str | None, feature_branch: str | None = None) -> str:
+    """Get the oneline commit log for review context."""
+    try:
+        if feature_branch:
+            ref_range = f"{feature_branch}..HEAD"
+        elif start_sha:
+            ref_range = f"{start_sha}..HEAD"
+        else:
+            ref_range = "HEAD~10..HEAD"
+        result = subprocess.run(
+            ["git", "log", "--oneline", ref_range],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return ""
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+
+def build_review_prompt(
+    *,
+    changed_files: str,
+    base_branch: str = "",
+    branch: str = "",
+    commits: str = "",
+    ticket_title: str = "",
+    ticket_body: str = "",
+    ticket_path: str = "",
+    worklog: str = "",
+) -> str:
+    """Build the shared agent-facing review prompt.
+
+    Used by both the harness council review and ``kd council review``.
+    Does NOT paste the full diff — points reviewers at the code and lets
+    them investigate with git commands.
+
+    Per-agent and global ``prompts.review`` config is handled by the
+    ``CouncilMember.phase_prompt`` mechanism — it gets prepended
+    automatically when the member builds its command.
+    """
+    parts = ["## Code Review Request", ""]
+
+    if ticket_title:
+        parts.append(f"**Ticket:** {ticket_title}")
+        if ticket_path:
+            parts.append(f"**Ticket path:** {ticket_path}")
+        parts.append("")
+        body = ticket_body.split("## Worklog")[0].strip() if "## Worklog" in ticket_body else ticket_body.strip()
+        if body:
+            parts.extend(["### Ticket Description", body, ""])
 
     if worklog:
-        parts.extend(
-            [
-                "",
-                "### Worklog",
-                worklog,
-            ]
-        )
+        parts.extend(["### Worklog", worklog, ""])
+
+    if branch:
+        parts.append(f"**Branch:** {branch}")
+    if base_branch:
+        parts.append(f"**Base:** {base_branch}")
+    if branch or base_branch:
+        parts.append("")
+
+    if commits:
+        parts.extend(["### Commits", f"```\n{commits}\n```", ""])
+
+    parts.extend(["### Changed Files", f"```\n{changed_files}\n```", ""])
 
     parts.extend(
         [
-            "",
-            "### Instructions",
-            "Review this code change. Consider:",
+            "### How to Review",
+            "You are a coding agent — inspect the code yourself. Suggested commands:",
+        ]
+    )
+    if base_branch:
+        parts.append(f"- `git diff {base_branch}...HEAD` — full diff")
+        parts.append(f"- `git log --oneline {base_branch}..HEAD` — commit history")
+    else:
+        parts.append("- `git diff HEAD~N` or `git log --oneline` — inspect recent changes")
+    if ticket_path:
+        parts.append(f"- `cat {ticket_path}` — read the full ticket")
+    parts.append("- Read individual changed files to understand context")
+    parts.append("")
+
+    parts.extend(
+        [
+            "### Review Standard",
             "- Correctness: does it do what the ticket asks?",
             "- Edge cases: are there unhandled scenarios?",
             "- Code quality: is it readable, maintainable, and well-structured?",
-            "- Tests: are the changes adequately tested? Run the project's test suite and linter to verify.",
+            "- Tests: are changes adequately tested? Run the project's test suite and linter to verify.",
+            "- Regressions: could this break existing behavior?",
             "",
             "End your review with exactly one of these verdict lines:",
             "VERDICT: APPROVED",
@@ -320,15 +633,14 @@ def strip_markdown_decoration(line: str) -> str:
 def parse_verdict(response_text: str) -> str:
     """Extract VERDICT: APPROVED|BLOCKING from a council response.
 
-    Returns 'approved', 'blocking', or 'approved' (default if missing, with warning).
+    Returns 'approved', 'blocking', or 'unknown' (if no VERDICT line found).
     """
     for line in reversed(response_text.strip().splitlines()):
         cleaned = strip_markdown_decoration(line)
         match = re.match(r"^VERDICT:\s*(APPROVED|BLOCKING)$", cleaned, re.IGNORECASE)
         if match:
             return match.group(1).lower()
-    # Missing verdict — treat as approved per design doc (log warning)
-    return "approved"
+    return "unknown"
 
 
 def run_council_review(
@@ -349,20 +661,30 @@ def run_council_review(
     """
     from kingdom.council.council import Council
 
-    # Create council from config
-    council = Council.create(base=base)
+    # Create council with review phase — resolves per-agent prompts.review
+    council = Council.create(base=base, phase="review")
     if not council.members:
         logger.warning("No council members configured — skipping council review")
         return "no_council", []
 
     council.load_sessions(base, branch)
 
-    # Build review prompt — worktree mode uses three-dot diff against feature branch
+    # Build review prompt — point reviewers at code, don't paste full diff
     ticket = read_ticket(ticket_path)
     feature_branch = None if hand_mode else branch
-    diff = get_diff(worktree, start_sha, feature_branch=feature_branch)
+    changed_files = get_changed_files(worktree, start_sha, feature_branch=feature_branch)
+    commits = get_commit_log(worktree, start_sha, feature_branch=feature_branch)
     worklog = extract_worklog(ticket_path)
-    prompt = build_review_prompt(ticket.title, ticket.body, diff, worklog)
+    prompt = build_review_prompt(
+        changed_files=changed_files,
+        base_branch=feature_branch or "",
+        branch=branch,
+        commits=commits,
+        ticket_title=ticket.title,
+        ticket_body=ticket.body,
+        ticket_path=str(ticket_path),
+        worklog=worklog,
+    )
 
     # Write king's review request to thread
     add_message(base, branch, thread_id, from_="king", to="council", body=prompt)
@@ -387,8 +709,9 @@ def run_council_review(
         logger.warning("Council review timed out after %.0fs", elapsed)
         return "timeout", []
 
-    # Parse verdicts
+    # Parse verdicts — collect feedback from ALL members, not just blocking ones
     blocking_feedback = []
+    all_feedback = []
     for name, response in responses.items():
         if response.error:
             logger.warning("Council member %s errored: %s", name, response.error)
@@ -404,6 +727,7 @@ def run_council_review(
         if not has_verdict_line:
             logger.warning("Council member %s did not include a VERDICT line — treating as APPROVED", name)
 
+        all_feedback.append(f"[{name}] {response.text}")
         if verdict == "blocking":
             logger.info("Council member %s: BLOCKING", name)
             blocking_feedback.append(f"[{name}] {response.text}")
@@ -411,8 +735,8 @@ def run_council_review(
             logger.info("Council member %s: APPROVED", name)
 
     if blocking_feedback:
-        return "blocking", blocking_feedback
-    return "approved", []
+        return "blocking", all_feedback
+    return "approved", all_feedback
 
 
 def run_agent_loop(
@@ -453,7 +777,6 @@ def run_agent_loop(
 
     # Read peasant settings from config
     max_iterations = cfg.peasant.max_iterations
-    agent_timeout = cfg.peasant.timeout
 
     # Resolve peasant phase prompt: agent-specific overrides global
     phase_prompt = agent_def.prompts.get("peasant", "") or cfg.prompts.peasant
@@ -464,6 +787,7 @@ def run_agent_loop(
         logger.error("Ticket not found: %s", ticket_id)
         return "failed"
     _, ticket_path = result
+    ticket_title = read_ticket(ticket_path).title
 
     # Track whether we should stop
     stop_requested = False
@@ -492,7 +816,33 @@ def run_agent_loop(
     except FileNotFoundError:
         pass
 
+    # Determine expected branch for escape detection.
+    # In hand mode the worktree is the main repo — use the raw git branch name
+    # (e.g. "feature/foo"), not the normalized kingdom name ("feature-foo").
+    if agent_state.hand_mode:
+        git_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=worktree,
+            timeout=10,
+        )
+        expected_branch = git_result.stdout.strip() if git_result.returncode == 0 else branch
+    else:
+        expected_branch = f"ticket/{ticket_id}"
+
+    # Pre-loop sanity check: bail early if worktree is already on the wrong branch
+    if not check_worktree_branch(worktree, expected_branch):
+        append_worklog(
+            ticket_path,
+            f"BRANCH ESCAPE: worktree is not on expected branch '{expected_branch}' — aborting",
+        )
+        now = datetime.now(UTC).isoformat()
+        update_agent_state(base, branch, session_name, status="failed", last_activity=now)
+        return "failed"
+
     # Record start_sha on first run (for diff scoping in council review).
+    # Must come after branch check so we don't record a SHA from the wrong branch.
     if not agent_state.start_sha:
         try:
             sha_result = subprocess.run(
@@ -510,6 +860,7 @@ def run_agent_loop(
             logger.warning("Could not record start_sha")
 
     final_status = "failed"
+    last_bounce_feedback: list[str] = []  # Council feedback from last bounce (for worklog context)
 
     for iteration in range(1, max_iterations + 1):
         if stop_requested:
@@ -527,7 +878,22 @@ def run_agent_loop(
             last_activity=now,
         )
 
-        append_worklog(ticket_path, f"Iteration {iteration}/{max_iterations} — calling agent")
+        # Iteration start entry with context about what the agent will work on
+        if iteration == 1:
+            append_worklog(
+                ticket_path, f"Iteration {iteration}/{max_iterations} — calling agent\nTicket: {ticket_title}"
+            )
+        elif last_bounce_feedback:
+            n_blocking = sum(1 for f in last_bounce_feedback if parse_verdict(f) == "blocking")
+            n_total = len(last_bounce_feedback)
+            append_worklog(
+                ticket_path,
+                f"Iteration {iteration}/{max_iterations} — calling agent\n"
+                f"Bouncing on council feedback ({n_blocking} blocking, {n_total - n_blocking} approved) — see review above",
+            )
+            last_bounce_feedback = []
+        else:
+            append_worklog(ticket_path, f"Iteration {iteration}/{max_iterations} — calling agent")
 
         worklog = extract_worklog(ticket_path)
 
@@ -535,27 +901,49 @@ def run_agent_loop(
         directives, last_seen_seq = get_new_directives(base, branch, thread_id, last_seen_seq)
 
         # Build prompt
-        prompt = build_prompt(ticket_path, worklog, directives, iteration, max_iterations, phase_prompt)
+        prompt = build_prompt(
+            ticket_path,
+            worklog,
+            directives,
+            iteration,
+            max_iterations,
+            phase_prompt,
+            worktree=worktree,
+            repo_root=base,
+            ticket_id=ticket_id,
+            ticket_title=ticket_title,
+        )
 
-        # Call backend
-        cmd = build_command(agent_config, prompt, resume_id)
-        logger.info("Calling backend: %s", " ".join(cmd[:3]) + "...")
-
+        # Capture HEAD before agent call so we can diff committed changes after
+        pre_iteration_sha = None
         try:
-            proc = subprocess.run(
-                cmd,
+            sha_proc = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
                 capture_output=True,
                 text=True,
-                timeout=agent_timeout,
                 cwd=worktree,
-                stdin=subprocess.DEVNULL,
-                env=clean_agent_env(role="peasant", agent_name=session_name),
+                timeout=10,
             )
-        except subprocess.TimeoutExpired:
-            logger.error("Backend timed out after %ds", agent_timeout)
-            append_worklog(ticket_path, "Backend call timed out")
-            final_status = "failed"
-            break
+            if sha_proc.returncode == 0:
+                pre_iteration_sha = sha_proc.stdout.strip()
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Call backend — streaming=True enables incremental NDJSON output
+        # so agent-live.log gets data in real time for peasant watch to tail.
+        cmd = build_command(agent_config, prompt, resume_id, streaming=True)
+        logger.info("Calling backend: %s", " ".join(cmd[:3]) + "...")
+
+        # Live agent log for `peasant watch` to tail during execution
+        agent_live_log = logs_root(base, branch) / session_name / "agent-live.log"
+
+        try:
+            proc = run_streaming_subprocess(
+                cmd,
+                cwd=worktree,
+                env=clean_agent_env(role="peasant", agent_name=session_name, kd_base=str(base)),
+                live_log_path=agent_live_log,
+            )
         except FileNotFoundError:
             cmd_name = agent_config.cli.split()[0]
             logger.error("Backend command not found: %s", cmd_name)
@@ -567,6 +955,16 @@ def run_agent_loop(
         if stop_requested:
             final_status = "stopped"
             logger.info("Stopping after backend call (signal received)")
+            break
+
+        # Post-iteration branch escape check
+        if not check_worktree_branch(worktree, expected_branch):
+            append_worklog(
+                ticket_path,
+                f"BRANCH ESCAPE detected after iteration {iteration}: "
+                f"worktree is not on expected branch '{expected_branch}' — aborting",
+            )
+            final_status = "failed"
             break
 
         # Log raw agent output so it appears in `kd peasant logs --follow`
@@ -592,10 +990,14 @@ def run_agent_loop(
         status = parse_status(text)
         logger.info("Agent status: %s", status)
 
-        # Append to worklog
+        diff_stat = get_diff_stat(worktree, since=pre_iteration_sha)
         worklog_entry = extract_worklog_entry(text)
         if worklog_entry:
             append_worklog(ticket_path, worklog_entry)
+
+        # Append file change summary from git diff --stat
+        if diff_stat:
+            append_worklog(ticket_path, f"Files changed:\n{diff_stat}")
 
         # Write response to work thread
         try:
@@ -616,15 +1018,12 @@ def run_agent_loop(
 
         # Check stop conditions
         if status == "done":
-            # Guard: reject DONE if the agent hasn't made any actual changes
+            # Note if no code changes detected, but let it proceed — some
+            # tickets are genuinely complete without code changes.
             agent_state = get_agent_state(base, branch, session_name)
             if not has_code_changes(worktree, agent_state.start_sha):
-                logger.warning("Agent reports DONE but no code changes detected — rejecting")
-                append_worklog(
-                    ticket_path,
-                    "DONE rejected — no code changes detected. Actually implement the changes before reporting DONE.",
-                )
-                continue
+                logger.info("Agent reports DONE with no code changes — proceeding to review")
+                append_worklog(ticket_path, "DONE with no code changes — proceeding to council review.")
 
             # --- Council review phase ---
             # Transition ticket to in_review, session to awaiting_council
@@ -642,7 +1041,7 @@ def run_agent_loop(
             )
 
             agent_state = get_agent_state(base, branch, session_name)
-            review_outcome, blocking_feedback = run_council_review(
+            review_outcome, review_feedback = run_council_review(
                 base=base,
                 branch=branch,
                 worktree=worktree,
@@ -668,26 +1067,38 @@ def run_agent_loop(
 
             if review_outcome == "approved":
                 final_status = "needs_king_review"
-                append_worklog(ticket_path, "Council review: APPROVED — awaiting king review")
+                feedback_summary = summarize_feedback(review_feedback)
+                msg = "Council review: APPROVED — awaiting king review"
+                if feedback_summary:
+                    msg += f"\n{feedback_summary}"
+                append_worklog(ticket_path, msg)
                 break
 
             # Blocking feedback — check bounce limit
             bounce_count = agent_state.review_bounce_count + 1
             update_agent_state(base, branch, session_name, review_bounce_count=bounce_count)
 
+            feedback_summary = summarize_feedback(review_feedback)
+
             if bounce_count >= 3:
                 # Escalate after 3 bounces
                 final_status = "needs_king_review"
-                append_worklog(
-                    ticket_path,
-                    f"Council review: BLOCKING (bounce {bounce_count}/3) — escalating to king",
-                )
+                msg = f"Council review: BLOCKING (bounce {bounce_count}/3) — escalating to king"
+                if feedback_summary:
+                    msg += f"\n{feedback_summary}"
+                append_worklog(ticket_path, msg)
                 logger.warning("Review bounce limit reached (%d), escalating to king", bounce_count)
                 break
 
             # Bounce back to working — inject feedback as directives
             logger.info("Council review: BLOCKING (bounce %d/3), returning to working", bounce_count)
-            append_worklog(ticket_path, f"Council review: BLOCKING (bounce {bounce_count}/3) — returning to working")
+            msg = f"Council review: BLOCKING (bounce {bounce_count}/3) — returning to working"
+            if feedback_summary:
+                msg += f"\n{feedback_summary}"
+            append_worklog(ticket_path, msg)
+
+            # Save blocking feedback for next iteration's worklog context
+            last_bounce_feedback = review_feedback
 
             # Revert ticket to in_progress, session to working
             ticket_obj = read_ticket(ticket_path)
@@ -695,7 +1106,11 @@ def run_agent_loop(
             write_ticket(ticket_obj, ticket_path)
 
             # Add blocking feedback as a directive message in the thread
-            feedback_body = "## Council Review Feedback (BLOCKING)\n\n" + "\n\n---\n\n".join(blocking_feedback)
+            # Filter to blocking members only for the peasant directive
+            blocking_only = [f for f in review_feedback if parse_verdict(f) == "blocking"]
+            feedback_body = "## Council Review Feedback (BLOCKING)\n\n" + "\n\n---\n\n".join(
+                blocking_only or review_feedback
+            )
             try:
                 add_message(base, branch, thread_id, from_="king", to=session_name, body=feedback_body)
             except FileNotFoundError:

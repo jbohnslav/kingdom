@@ -127,12 +127,6 @@ Check status anytime with `kd status`.
 |---------|-------------|
 | `kd config show` | Print effective config with source annotations |
 
-### Other
-
-| Command | Description |
-|---------|-------------|
-| `kd work <id>` | Run autonomous agent loop on a ticket |
-
 ## Working Tickets
 
 When the King asks you to work a ticket, the workflow is:

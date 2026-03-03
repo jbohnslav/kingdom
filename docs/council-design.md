@@ -1,6 +1,6 @@
 # Council Architecture Design
 
-> **Status**: Implemented. Council now uses subprocess-based CLI calls. The tmux approach described in the problem statement was abandoned.
+> **Historical** — this document describes an earlier design. See README for current commands.
 
 ## Problem Statement
 

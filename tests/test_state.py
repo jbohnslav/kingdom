@@ -12,6 +12,7 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     branches_root,
+    check_no_legacy_runs,
     ensure_base_layout,
     ensure_branch_layout,
     find_project_root,
@@ -185,11 +186,6 @@ class TestEnsureBaseLayout:
         ensure_base_layout(tmp_path)
         assert (tmp_path / ".kd" / "worktrees").is_dir()
 
-    def test_creates_runs_directory_for_backwards_compat(self, tmp_path: Path) -> None:
-        """ensure_base_layout creates .kd/runs/ for backwards compatibility."""
-        ensure_base_layout(tmp_path)
-        assert (tmp_path / ".kd" / "runs").is_dir()
-
     def test_returns_all_paths(self, tmp_path: Path) -> None:
         """ensure_base_layout returns dict with all created paths."""
         result = ensure_base_layout(tmp_path)
@@ -198,7 +194,6 @@ class TestEnsureBaseLayout:
         assert "backlog_root" in result
         assert "archive_root" in result
         assert "worktrees_root" in result
-        assert "runs_root" in result
         assert "gitignore" in result
 
     def test_idempotent(self, tmp_path: Path) -> None:
@@ -460,3 +455,40 @@ class TestFindProjectRoot:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = str(git_root) + "\n"
             assert find_project_root() == git_root
+
+
+class TestCheckNoLegacyRuns:
+    """Tests for check_no_legacy_runs guard."""
+
+    def test_no_runs_dir_passes(self, tmp_path: Path) -> None:
+        """No .kd/runs/ directory is fine."""
+        ensure_base_layout(tmp_path)
+        check_no_legacy_runs(tmp_path)  # should not raise
+
+    def test_empty_runs_dir_passes(self, tmp_path: Path) -> None:
+        """Empty .kd/runs/ directory is fine (leftover from old init)."""
+        ensure_base_layout(tmp_path)
+        (tmp_path / ".kd" / "runs").mkdir()
+        check_no_legacy_runs(tmp_path)  # should not raise
+
+    def test_non_empty_runs_dir_raises(self, tmp_path: Path) -> None:
+        """Non-empty .kd/runs/ directory raises RuntimeError."""
+        ensure_base_layout(tmp_path)
+        runs_dir = tmp_path / ".kd" / "runs"
+        runs_dir.mkdir()
+        (runs_dir / "old-feature").mkdir()
+        with pytest.raises(ValueError, match=r"Legacy \.kd/runs/ directory found"):
+            check_no_legacy_runs(tmp_path)
+
+    def test_find_project_root_rejects_legacy_runs(self, tmp_path: Path) -> None:
+        """find_project_root raises when .kd/runs/ has content."""
+        ensure_base_layout(tmp_path)
+        runs_dir = tmp_path / ".kd" / "runs"
+        runs_dir.mkdir()
+        (runs_dir / "some-branch").mkdir()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("kingdom.state.Path.cwd", return_value=tmp_path),
+            pytest.raises(ValueError, match=r"Legacy \.kd/runs/ directory found"),
+        ):
+            find_project_root()

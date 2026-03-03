@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from kingdom.state import ensure_branch_layout
 from kingdom.thread import (
     Message,
     ThreadMeta,
@@ -20,14 +19,6 @@ from kingdom.thread import (
     thread_dir,
     threads_root,
 )
-
-
-@pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Create a minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, "feature/test-branch")
-    return tmp_path
-
 
 BRANCH = "feature/test-branch"
 
@@ -293,7 +284,8 @@ class TestFormatThreadHistory:
 
         result = format_thread_history(tdir, "claude")
 
-        assert result == "---\nYou are claude. Continue the discussion."
+        assert "---\nYou are claude." in result
+        assert "Read the full conversation above" in result
 
     def test_single_message(self, project: Path) -> None:
         create_thread(project, BRANCH, "single", ["king", "claude"], "council")
@@ -304,7 +296,8 @@ class TestFormatThreadHistory:
 
         assert "[Previous conversation]" in result
         assert "king: What do you think?" in result
-        assert "---\nYou are claude. Continue the discussion." in result
+        assert "You are claude." in result
+        assert "Engage with what others have said" in result
 
     def test_multi_member_conversation(self, project: Path) -> None:
         create_thread(project, BRANCH, "multi", ["king", "claude", "codex"], "council")
@@ -318,7 +311,8 @@ class TestFormatThreadHistory:
         assert "king: Should we use Redis?" in result
         assert "claude: Yes, for persistence." in result
         assert "codex: No, Memcached is simpler." in result
-        assert "You are codex. Continue the discussion." in result
+        assert "You are codex." in result
+        assert "Engage with what others have said" in result
         # Messages should appear in sequence order
         king_pos = result.index("king:")
         claude_pos = result.index("claude:")
@@ -358,6 +352,24 @@ class TestFormatThreadHistory:
         result = format_thread_history(tdir, "claude", suffix="Respond with a code review.")
 
         assert result.endswith("---\nRespond with a code review.")
+
+    def test_default_suffix_includes_discussion_guidance(self, project: Path) -> None:
+        """Default suffix should guide members to engage with prior discussion."""
+        create_thread(project, BRANCH, "guidance", ["king", "claude", "codex"], "council")
+        add_message(project, BRANCH, "guidance", from_="king", to="all", body="Should we use Redis?")
+        add_message(project, BRANCH, "guidance", from_="claude", to="king", body="Yes, for persistence.")
+        tdir = thread_dir(project, BRANCH, "guidance")
+
+        result = format_thread_history(tdir, "codex")
+
+        # Must identify the target member
+        assert "You are codex." in result
+        # Must instruct to read the full thread
+        assert "Read the full conversation" in result
+        # Must instruct engagement with others
+        assert "Engage with what others have said" in result
+        # Must be concise/direct
+        assert "direct and concise" in result.lower()
 
     def test_multiline_body_preserved(self, project: Path) -> None:
         create_thread(project, BRANCH, "multiline", ["king", "claude"], "council")

@@ -35,7 +35,6 @@ class TestDefaultConfig:
     def test_peasant_defaults(self) -> None:
         cfg = default_config()
         assert cfg.peasant.agent == "claude"
-        assert cfg.peasant.timeout == 900
         assert cfg.peasant.max_iterations == 50
 
     def test_prompts_empty(self) -> None:
@@ -150,10 +149,9 @@ class TestValidateConfig:
         assert set(cfg.council.members) == {"claude", "codex"}
 
     def test_peasant_config(self) -> None:
-        data = {"peasant": {"agent": "codex", "timeout": 1200, "max_iterations": 100}}
+        data = {"peasant": {"agent": "codex", "max_iterations": 100}}
         cfg = validate_config(data)
         assert cfg.peasant.agent == "codex"
-        assert cfg.peasant.timeout == 1200
         assert cfg.peasant.max_iterations == 100
 
     def test_full_config(self) -> None:
@@ -164,7 +162,7 @@ class TestValidateConfig:
             },
             "prompts": {"council": "Analyze only."},
             "council": {"members": ["claude", "codex"], "timeout": 300},
-            "peasant": {"agent": "claude", "timeout": 600},
+            "peasant": {"agent": "claude"},
         }
         cfg = validate_config(data)
         assert cfg.agents["claude"].model == "opus-4-6"
@@ -323,11 +321,11 @@ class TestValidateConfigErrors:
         assert cfg.council.chat.mode == "natural"
 
     def test_bad_chat_mode_type(self) -> None:
-        with pytest.raises(ValueError, match="council.chat.mode must be a string"):
+        with pytest.raises(ValueError, match=r"council\.chat\.mode must be a string"):
             validate_config({"council": {"chat": {"mode": 123}}})
 
     def test_bad_chat_mode_value(self) -> None:
-        with pytest.raises(ValueError, match="council.chat.mode must be one of"):
+        with pytest.raises(ValueError, match=r"council\.chat\.mode must be one of"):
             validate_config({"council": {"chat": {"mode": "invalid"}}})
 
     def test_chat_auto_rounds(self) -> None:
@@ -339,16 +337,12 @@ class TestValidateConfigErrors:
         assert cfg.council.chat.auto_rounds == 0
 
     def test_bad_chat_auto_rounds_type(self) -> None:
-        with pytest.raises(ValueError, match="council.chat.auto_rounds must be an integer"):
+        with pytest.raises(ValueError, match=r"council\.chat\.auto_rounds must be an integer"):
             validate_config({"council": {"chat": {"auto_rounds": "many"}}})
 
     def test_bad_chat_auto_rounds_negative(self) -> None:
-        with pytest.raises(ValueError, match="council.chat.auto_rounds must be non-negative"):
+        with pytest.raises(ValueError, match=r"council\.chat\.auto_rounds must be non-negative"):
             validate_config({"council": {"chat": {"auto_rounds": -1}}})
-
-    def test_peasant_timeout_must_be_positive(self) -> None:
-        with pytest.raises(ValueError, match="must be positive"):
-            validate_config({"peasant": {"timeout": -1}})
 
     def test_peasant_max_iterations_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
@@ -418,5 +412,5 @@ class TestLoadConfig:
         kd.mkdir()
         data = {"council": {"timeout": "slow"}}
         (kd / "config.json").write_text(json.dumps(data))
-        with pytest.raises(ValueError, match="council.timeout must be an integer"):
+        with pytest.raises(ValueError, match=r"council\.timeout must be an integer"):
             load_config(tmp_path)

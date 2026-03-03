@@ -5,20 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
-from kingdom.state import ensure_branch_layout
 from kingdom.thread import create_thread
 from kingdom.tui.widgets import MessagePanel, format_reply_text
 
 BRANCH = "feature/test-chat"
-
-
-@pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Create a minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, BRANCH)
-    return tmp_path
 
 
 # ---------------------------------------------------------------------------
