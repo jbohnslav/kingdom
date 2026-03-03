@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from kingdom.cli import app
-from kingdom.cli.peasant import resolve_peasant_context
+from kingdom.cli.peasant import peasant_app, resolve_peasant_context
+from kingdom.cli.ticket import ticket_app
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
 from kingdom.state import backlog_root, ensure_branch_layout, logs_root, set_current_run
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
@@ -62,7 +62,7 @@ class TestPeasantStart:
                 patch("os.open", return_value=3),
                 patch("os.close"),
             ):
-                result = runner.invoke(app, ["peasant", "start", "kin-test"])
+                result = runner.invoke(peasant_app, ["start", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "Started peasant-kin-test" in result.output
@@ -96,7 +96,7 @@ class TestPeasantStart:
                 patch("os.open", return_value=3),
                 patch("os.close"),
             ):
-                result = runner.invoke(app, ["peasant", "start", "kin-test", "--hand"])
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
             assert "Running in hand mode" in result.output
@@ -133,7 +133,7 @@ class TestPeasantStart:
                 patch("os.open", return_value=3),
                 patch("os.close"),
             ):
-                result = runner.invoke(app, ["peasant", "start", "kin-test", "--hand", "--agent", "claude"])
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand", "--agent", "claude"])
 
             assert result.exit_code == 0, result.output
 
@@ -155,7 +155,7 @@ class TestPeasantStart:
                 AgentState(name="peasant-kin-test", status="working", pid=os.getpid()),
             )
 
-            result = runner.invoke(app, ["peasant", "start", "kin-test"])
+            result = runner.invoke(peasant_app, ["start", "kin-test"])
 
             assert result.exit_code == 1
             assert "already running" in result.output
@@ -165,7 +165,7 @@ class TestPeasantStart:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "start", "kin-nope"])
+            result = runner.invoke(peasant_app, ["start", "kin-nope"])
 
             assert result.exit_code == 1
             assert "not found" in result.output
@@ -186,7 +186,7 @@ class TestPeasantStart:
             path = tickets_dir / "kin-rev1.md"
             write_ticket(ticket, path)
 
-            result = runner.invoke(app, ["peasant", "start", "kin-rev1"])
+            result = runner.invoke(peasant_app, ["start", "kin-rev1"])
 
             assert result.exit_code == 1
             assert "in_review" in result.output
@@ -198,7 +198,7 @@ class TestPeasantStart:
             ticket_path = create_test_ticket(base)  # creates with status="open"
 
             with patch("kingdom.cli.launch_work_background", return_value=12345):
-                result = runner.invoke(app, ["peasant", "start", "kin-test", "--hand"])
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
             # Verify the ticket was transitioned to in_progress
@@ -221,7 +221,7 @@ class TestPeasantStart:
                 patch("os.close"),
                 patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
             ):
-                result = runner.invoke(app, ["peasant", "start", "kin-test", "--watch"])
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--watch"])
 
             assert result.exit_code == 0, result.output
             assert "Started peasant-kin-test" in result.output
@@ -243,7 +243,7 @@ class TestPeasantStart:
                 patch("os.close"),
                 patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
             ):
-                result = runner.invoke(app, ["peasant", "start", "kin-test"])
+                result = runner.invoke(peasant_app, ["start", "kin-test"])
 
             assert result.exit_code == 0, result.output
             mock_watch.assert_not_called()
@@ -263,7 +263,7 @@ class TestPeasantStart:
                 patch("os.close"),
                 patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
             ):
-                result = runner.invoke(app, ["peasant", "start", "kin-test", "--hand", "-w"])
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand", "-w"])
 
             assert result.exit_code == 0, result.output
             assert "Running in hand mode" in result.output
@@ -285,7 +285,7 @@ class TestPeasantStart:
                 return 42  # fake pid
 
             with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
-                result = runner.invoke(app, ["peasant", "start", "kin-test", "--hand"])
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
             assert len(observed_state_during_launch) == 1
@@ -308,7 +308,7 @@ class TestPeasantStart:
                 return 99
 
             with patch("kingdom.cli.launch_work_background", side_effect=failing_launch):
-                result = runner.invoke(app, ["peasant", "start", "kin-test", "--hand"])
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
             # The parent's post-launch update should only set pid, not clobber status
@@ -327,7 +327,7 @@ class TestPeasantStart:
                 "kingdom.cli.launch_work_background",
                 side_effect=RuntimeError("tmux not found"),
             ):
-                result = runner.invoke(app, ["peasant", "start", "kin-test", "--hand"])
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 1
             assert "Failed to launch" in result.output
@@ -341,7 +341,7 @@ class TestPeasantStatus:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
 
             assert result.exit_code == 0
             assert "No active peasants" in result.output
@@ -368,7 +368,7 @@ class TestPeasantStatus:
             )
 
             with patch("os.kill"):  # Mock kill so liveness check doesn't mark as dead
-                result = runner.invoke(app, ["peasant", "status"])
+                result = runner.invoke(peasant_app, ["status"])
 
             assert result.exit_code == 0
             assert "kin-042" in result.output
@@ -388,7 +388,7 @@ class TestPeasantStatus:
                 AgentState(name="claude", status="working"),
             )
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
 
             assert result.exit_code == 0
             assert "No active peasants" in result.output
@@ -401,7 +401,7 @@ class TestPeasantLogs:
             setup_project(base)
             create_test_ticket(base)
 
-            result = runner.invoke(app, ["peasant", "logs", "kin-test"])
+            result = runner.invoke(peasant_app, ["logs", "kin-test"])
 
             assert result.exit_code == 1
             assert "No logs found" in result.output
@@ -418,7 +418,7 @@ class TestPeasantLogs:
             (peasant_logs_dir / "stdout.log").write_text("Hello from peasant\n", encoding="utf-8")
             (peasant_logs_dir / "stderr.log").write_text("", encoding="utf-8")
 
-            result = runner.invoke(app, ["peasant", "logs", "kin-test"])
+            result = runner.invoke(peasant_app, ["logs", "kin-test"])
 
             assert result.exit_code == 0
             assert "Hello from peasant" in result.output
@@ -434,7 +434,7 @@ class TestPeasantLogs:
             (peasant_logs_dir / "stdout.log").write_text("", encoding="utf-8")
             (peasant_logs_dir / "stderr.log").write_text("Error occurred\n", encoding="utf-8")
 
-            result = runner.invoke(app, ["peasant", "logs", "kin-test"])
+            result = runner.invoke(peasant_app, ["logs", "kin-test"])
 
             assert result.exit_code == 0
             assert "Error occurred" in result.output
@@ -444,7 +444,7 @@ class TestPeasantLogs:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "logs", "kin-nope"])
+            result = runner.invoke(peasant_app, ["logs", "kin-nope"])
 
             assert result.exit_code == 1
             assert "not found" in result.output
@@ -468,7 +468,7 @@ class TestPeasantStop:
             # killpg SIGTERM succeeds, then killpg(0) raises OSError (all dead)
             with patch("os.killpg") as mock_killpg:
                 mock_killpg.side_effect = [None, OSError("No such process")]
-                result = runner.invoke(app, ["peasant", "stop", "kin-test"])
+                result = runner.invoke(peasant_app, ["stop", "kin-test"])
 
             assert result.exit_code == 0
             assert "SIGTERM" in result.output
@@ -512,7 +512,7 @@ class TestPeasantStop:
             ):
                 # First call: before deadline check; second: past deadline
                 mock_mono.side_effect = [0, 0, 6]
-                result = runner.invoke(app, ["peasant", "stop", "kin-test"])
+                result = runner.invoke(peasant_app, ["stop", "kin-test"])
 
             assert result.exit_code == 0
             assert "SIGKILL" in result.output
@@ -535,7 +535,7 @@ class TestPeasantStop:
             )
 
             with patch("os.killpg", side_effect=OSError("No such process")):
-                result = runner.invoke(app, ["peasant", "stop", "kin-test"])
+                result = runner.invoke(peasant_app, ["stop", "kin-test"])
 
             assert result.exit_code == 0
             assert "not found" in result.output.lower() or "No such process" in result.output
@@ -555,7 +555,7 @@ class TestPeasantStop:
                 AgentState(name="peasant-kin-test", status="done"),
             )
 
-            result = runner.invoke(app, ["peasant", "stop", "kin-test"])
+            result = runner.invoke(peasant_app, ["stop", "kin-test"])
 
             assert result.exit_code == 1
             assert "not running" in result.output
@@ -565,7 +565,7 @@ class TestPeasantStop:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "stop", "kin-nope"])
+            result = runner.invoke(peasant_app, ["stop", "kin-nope"])
 
             assert result.exit_code == 1
             assert "not found" in result.output
@@ -579,7 +579,7 @@ class TestPeasantClean:
             create_test_ticket(base)
 
             with patch("kingdom.cli.peasant.remove_worktree") as mock_remove:
-                result = runner.invoke(app, ["peasant", "clean", "--force", "kin-test"])
+                result = runner.invoke(peasant_app, ["clean", "--force", "kin-test"])
 
             assert result.exit_code == 0
             assert "worktree removed" in result.output
@@ -592,7 +592,7 @@ class TestPeasantClean:
             create_test_ticket(base)
 
             with patch("kingdom.cli.peasant.remove_worktree") as mock_remove:
-                result = runner.invoke(app, ["peasant", "clean", "kin-test"], input="y\n")
+                result = runner.invoke(peasant_app, ["clean", "kin-test"], input="y\n")
 
             assert result.exit_code == 0
             assert "Remove worktree for kin-test?" in result.output
@@ -605,7 +605,7 @@ class TestPeasantClean:
             create_test_ticket(base)
 
             with patch("kingdom.cli.peasant.remove_worktree") as mock_remove:
-                result = runner.invoke(app, ["peasant", "clean", "kin-test"], input="n\n")
+                result = runner.invoke(peasant_app, ["clean", "kin-test"], input="n\n")
 
             assert result.exit_code != 0
             mock_remove.assert_not_called()
@@ -617,7 +617,7 @@ class TestPeasantClean:
             create_test_ticket(base)
 
             with patch("kingdom.cli.peasant.remove_worktree", side_effect=FileNotFoundError("No worktree")):
-                result = runner.invoke(app, ["peasant", "clean", "--force", "kin-test"])
+                result = runner.invoke(peasant_app, ["clean", "--force", "kin-test"])
 
             assert result.exit_code == 1
             assert "No worktree" in result.output
@@ -642,7 +642,7 @@ class TestPeasantSync:
             merge_result.stderr = ""
 
             with patch("subprocess.run", return_value=merge_result):
-                result = runner.invoke(app, ["peasant", "sync", "kin-test"])
+                result = runner.invoke(peasant_app, ["sync", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "[1/2]" in result.output
@@ -664,7 +664,7 @@ class TestPeasantSync:
                 AgentState(name=session_name, status="working", pid=os.getpid()),
             )
 
-            result = runner.invoke(app, ["peasant", "sync", "kin-test"])
+            result = runner.invoke(peasant_app, ["sync", "kin-test"])
 
             assert result.exit_code == 1
             assert "running" in result.output.lower()
@@ -696,7 +696,7 @@ class TestPeasantSync:
             merge_result.stderr = ""
 
             with patch("subprocess.run", return_value=merge_result):
-                result = runner.invoke(app, ["peasant", "sync", "kin-test"])
+                result = runner.invoke(peasant_app, ["sync", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "sync complete" in result.output
@@ -707,7 +707,7 @@ class TestPeasantSync:
             setup_project(base)
             create_test_ticket(base)
 
-            result = runner.invoke(app, ["peasant", "sync", "kin-test"])
+            result = runner.invoke(peasant_app, ["sync", "kin-test"])
 
             assert result.exit_code == 1
             assert "No worktree" in result.output
@@ -732,7 +732,7 @@ class TestPeasantSync:
             abort_result.returncode = 0
 
             with patch("subprocess.run", side_effect=[merge_result, abort_result]) as mock_run:
-                result = runner.invoke(app, ["peasant", "sync", "kin-test"])
+                result = runner.invoke(peasant_app, ["sync", "kin-test"])
 
             assert result.exit_code == 1
             assert "Merge failed" in result.output
@@ -769,7 +769,7 @@ class TestPeasantSync:
             init_run_result.stderr = ""
 
             with patch("subprocess.run", side_effect=[merge_result, init_run_result]):
-                result = runner.invoke(app, ["peasant", "sync", "kin-test"])
+                result = runner.invoke(peasant_app, ["sync", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "init-worktree.sh" in result.output
@@ -797,7 +797,7 @@ class TestPeasantSync:
             merge_result.stderr = ""
 
             with patch("subprocess.run", return_value=merge_result):
-                result = runner.invoke(app, ["peasant", "sync", "kin-test"])
+                result = runner.invoke(peasant_app, ["sync", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "not executable" in result.output
@@ -807,7 +807,7 @@ class TestPeasantSync:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "sync", "kin-nope"])
+            result = runner.invoke(peasant_app, ["sync", "kin-nope"])
 
             assert result.exit_code == 1
             assert "not found" in result.output
@@ -829,7 +829,7 @@ class TestPeasantMsg:
             create_test_ticket(base)
             thread_id = setup_work_thread(base)
 
-            result = runner.invoke(app, ["peasant", "msg", "kin-test", "focus on tests"])
+            result = runner.invoke(peasant_app, ["msg", "kin-test", "focus on tests"])
 
             assert result.exit_code == 0, result.output
             assert "directive sent" in result.output
@@ -848,8 +848,8 @@ class TestPeasantMsg:
             create_test_ticket(base)
             thread_id = setup_work_thread(base)
 
-            runner.invoke(app, ["peasant", "msg", "kin-test", "first directive"])
-            runner.invoke(app, ["peasant", "msg", "kin-test", "second directive"])
+            runner.invoke(peasant_app, ["msg", "kin-test", "first directive"])
+            runner.invoke(peasant_app, ["msg", "kin-test", "second directive"])
 
             messages = list_messages(base, BRANCH, thread_id)
             assert len(messages) == 2
@@ -863,7 +863,7 @@ class TestPeasantMsg:
             create_test_ticket(base)
             # Don't create the work thread
 
-            result = runner.invoke(app, ["peasant", "msg", "kin-test", "hello"])
+            result = runner.invoke(peasant_app, ["msg", "kin-test", "hello"])
 
             assert result.exit_code == 1
             assert "No work thread" in result.output
@@ -883,7 +883,7 @@ class TestPeasantMsg:
                 AgentState(name=session_name, status="done"),
             )
 
-            result = runner.invoke(app, ["peasant", "msg", "kin-test", "do something"])
+            result = runner.invoke(peasant_app, ["msg", "kin-test", "do something"])
 
             assert result.exit_code == 0, result.output
             assert "directive sent" in result.output
@@ -910,7 +910,7 @@ class TestPeasantMsg:
                 AgentState(name=session_name, status="working", pid=os.getpid()),
             )
 
-            result = runner.invoke(app, ["peasant", "msg", "kin-test", "keep going"])
+            result = runner.invoke(peasant_app, ["msg", "kin-test", "keep going"])
 
             assert result.exit_code == 0, result.output
             assert "directive sent" in result.output
@@ -921,7 +921,7 @@ class TestPeasantMsg:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "msg", "kin-nope", "hello"])
+            result = runner.invoke(peasant_app, ["msg", "kin-nope", "hello"])
 
             assert result.exit_code == 1
             assert "not found" in result.output
@@ -940,7 +940,7 @@ class TestPeasantRead:
             add_message(base, BRANCH, thread_id, from_="peasant-kin-test", to="king", body="Working on it")
             add_message(base, BRANCH, thread_id, from_="peasant-kin-test", to="king", body="STATUS: BLOCKED\nNeed help")
 
-            result = runner.invoke(app, ["peasant", "read", "kin-test"])
+            result = runner.invoke(peasant_app, ["read", "kin-test"])
 
             assert result.exit_code == 0
             assert "Working on it" in result.output
@@ -955,7 +955,7 @@ class TestPeasantRead:
             create_test_ticket(base)
             setup_work_thread(base)
 
-            result = runner.invoke(app, ["peasant", "read", "kin-test"])
+            result = runner.invoke(peasant_app, ["read", "kin-test"])
 
             assert result.exit_code == 0
             assert "No messages" in result.output
@@ -971,7 +971,7 @@ class TestPeasantRead:
             for i in range(5):
                 add_message(base, BRANCH, thread_id, from_="peasant-kin-test", to="king", body=f"Message {i}")
 
-            result = runner.invoke(app, ["peasant", "read", "kin-test", "--last", "2"])
+            result = runner.invoke(peasant_app, ["read", "kin-test", "--last", "2"])
 
             assert result.exit_code == 0
             assert "Message 3" in result.output
@@ -985,7 +985,7 @@ class TestPeasantRead:
             create_test_ticket(base)
             setup_work_thread(base)
 
-            result = runner.invoke(app, ["peasant", "read", "kin-test", "--last", "0"])
+            result = runner.invoke(peasant_app, ["read", "kin-test", "--last", "0"])
 
             assert result.exit_code != 0
 
@@ -996,7 +996,7 @@ class TestPeasantRead:
             create_test_ticket(base)
             setup_work_thread(base)
 
-            result = runner.invoke(app, ["peasant", "read", "kin-test", "--last", "-1"])
+            result = runner.invoke(peasant_app, ["read", "kin-test", "--last", "-1"])
 
             assert result.exit_code != 0
 
@@ -1006,7 +1006,7 @@ class TestPeasantRead:
             setup_project(base)
             create_test_ticket(base)
 
-            result = runner.invoke(app, ["peasant", "read", "kin-test"])
+            result = runner.invoke(peasant_app, ["read", "kin-test"])
 
             assert result.exit_code == 1
             assert "No work thread" in result.output
@@ -1016,7 +1016,7 @@ class TestPeasantRead:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "read", "kin-nope"])
+            result = runner.invoke(peasant_app, ["read", "kin-nope"])
 
             assert result.exit_code == 1
             assert "not found" in result.output
@@ -1050,7 +1050,7 @@ class TestPeasantReview:
 
                 mock_run.return_value = diff_result
 
-                result = runner.invoke(app, ["peasant", "review", "kin-test"])
+                result = runner.invoke(peasant_app, ["review", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "Did some work" in result.output
@@ -1085,7 +1085,7 @@ class TestPeasantReview:
                 return result
 
             with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-                result = runner.invoke(app, ["peasant", "accept", "kin-test"])
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "accepted" in result.output
@@ -1129,7 +1129,7 @@ class TestPeasantReview:
                 return result
 
             with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-                result = runner.invoke(app, ["peasant", "accept", "kin-test"])
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
             assert "Cannot accept" in result.output
@@ -1162,7 +1162,7 @@ class TestPeasantReview:
                 return result
 
             with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-                result = runner.invoke(app, ["peasant", "accept", "kin-test"])
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "Hand mode" in result.output
@@ -1195,7 +1195,7 @@ class TestPeasantReview:
             )
 
             with patch("kingdom.cli.launch_work_background", return_value=77777) as mock_launch:
-                result = runner.invoke(app, ["peasant", "reject", "kin-test", "try again"])
+                result = runner.invoke(peasant_app, ["reject", "kin-test", "try again"])
 
             assert result.exit_code == 0, result.output
             assert "rejected" in result.output
@@ -1231,7 +1231,7 @@ class TestPeasantReview:
             )
 
             with patch("kingdom.cli.launch_work_background", return_value=54321) as mock_launch:
-                result = runner.invoke(app, ["peasant", "reject", "kin-test", "fix the edge case"])
+                result = runner.invoke(peasant_app, ["reject", "kin-test", "fix the edge case"])
 
             assert result.exit_code == 0, result.output
             assert "rejected" in result.output
@@ -1274,7 +1274,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review", pid=os.getpid(), agent_backend="claude"),
             )
 
-            result = runner.invoke(app, ["peasant", "reject", "kin-test", "fix it"])
+            result = runner.invoke(peasant_app, ["reject", "kin-test", "fix it"])
 
             assert result.exit_code == 1
             assert "still alive" in result.output
@@ -1297,8 +1297,8 @@ class TestPeasantReview:
 
             with patch("kingdom.cli.launch_work_background") as mock_launch:
                 result = runner.invoke(
-                    app,
-                    ["peasant", "reject", "kin-test", "try again", "--no-resume"],
+                    peasant_app,
+                    ["reject", "kin-test", "try again", "--no-resume"],
                 )
 
             assert result.exit_code == 0, result.output
@@ -1342,7 +1342,7 @@ class TestPeasantReview:
 
                 mock_run.return_value = diff_result
 
-                result = runner.invoke(app, ["peasant", "review", "kin-test"])
+                result = runner.invoke(peasant_app, ["review", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "diff error" in result.output
@@ -1370,7 +1370,7 @@ class TestPeasantReview:
 
                 mock_run.return_value = diff_result
 
-                result = runner.invoke(app, ["peasant", "review", "kin-test"])
+                result = runner.invoke(peasant_app, ["review", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "No code diff" in result.output
@@ -1380,7 +1380,7 @@ class TestPeasantReview:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "review", "kin-nope"])
+            result = runner.invoke(peasant_app, ["review", "kin-nope"])
 
             assert result.exit_code == 1
             assert "not found" in result.output
@@ -1400,7 +1400,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
-            result = runner.invoke(app, ["peasant", "accept", "kin-test"])
+            result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
             assert "in_progress" in result.output
@@ -1421,7 +1421,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="working"),
             )
 
-            result = runner.invoke(app, ["peasant", "accept", "kin-test"])
+            result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
             assert "working" in result.output
@@ -1442,7 +1442,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
-            result = runner.invoke(app, ["peasant", "reject", "kin-test", "nope"])
+            result = runner.invoke(peasant_app, ["reject", "kin-test", "nope"])
 
             assert result.exit_code == 1
             assert "open" in result.output
@@ -1481,7 +1481,7 @@ class TestPeasantReview:
                 return result
 
             with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
-                result = runner.invoke(app, ["peasant", "accept", "kin-test"])
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
             assert "Integration failed" in result.output
@@ -1526,7 +1526,7 @@ class TestPeasantReview:
 
                 mock_run.return_value = diff_result
 
-                result = runner.invoke(app, ["peasant", "review", "kin-test"])
+                result = runner.invoke(peasant_app, ["review", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "Council Feedback" in result.output
@@ -1560,7 +1560,7 @@ class TestPeasantReview:
 
                 mock_run.return_value = diff_result
 
-                result = runner.invoke(app, ["peasant", "review", "kin-test"])
+                result = runner.invoke(peasant_app, ["review", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "no code diff" in result.output.lower()
@@ -1599,7 +1599,7 @@ class TestBacklogAutoPull:
                 patch("os.open", return_value=3),
                 patch("os.close"),
             ):
-                result = runner.invoke(app, ["peasant", "start", "kin-back"])
+                result = runner.invoke(peasant_app, ["start", "kin-back"])
 
             assert result.exit_code == 0, result.output
 
@@ -1643,10 +1643,10 @@ class TestBacklogAutoPull:
                 patch("os.open", return_value=3),
                 patch("os.close"),
             ):
-                runner.invoke(app, ["peasant", "start", "kin-list"])
+                runner.invoke(peasant_app, ["start", "kin-list"])
 
             # kd tk list should now show the ticket
-            result = runner.invoke(app, ["tk", "list"])
+            result = runner.invoke(ticket_app, ["list"])
             assert result.exit_code == 0, result.output
             assert "kin-list" in result.output
             assert "Listable ticket" in result.output
@@ -1672,7 +1672,7 @@ class TestPeasantStatusNewStatuses:
                 ),
             )
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
             assert result.exit_code == 0
             assert "awaiting_council" in result.output
 
@@ -1693,7 +1693,7 @@ class TestPeasantStatusNewStatuses:
                 ),
             )
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
             assert result.exit_code == 0
             # Must appear in the active table (with ticket ID), not just in hidden summary
             assert "kin-test" in result.output
@@ -1733,7 +1733,7 @@ class TestPeasantStatusFiltering:
                 ),
             )
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
             assert result.exit_code == 0
             assert "kin-active" in result.output
             assert "kin-done" not in result.output
@@ -1767,7 +1767,7 @@ class TestPeasantStatusFiltering:
                 ),
             )
 
-            result = runner.invoke(app, ["peasant", "status", "--all"])
+            result = runner.invoke(peasant_app, ["status", "--all"])
             assert result.exit_code == 0
             assert "kin-active" in result.output
             assert "kin-done" in result.output
@@ -1789,7 +1789,7 @@ class TestPeasantStatusFiltering:
                 ),
             )
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
             assert result.exit_code == 0
             assert "No active peasants" in result.output
             assert "1 done" in result.output
@@ -1817,7 +1817,7 @@ class TestPeasantStatusBreakdown:
                 AgentState(name="peasant-kin-fail", status="failed", ticket="kin-fail", agent_backend="claude_code"),
             )
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
             assert result.exit_code == 0
             assert "failed" in result.output.lower()
 
@@ -1834,7 +1834,7 @@ class TestPeasantStatusBreakdown:
                 AgentState(name="peasant-kin-stop", status="stopped", ticket="kin-stop", agent_backend="claude_code"),
             )
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
             assert result.exit_code == 0
             assert "stopped" in result.output.lower()
 
@@ -1851,7 +1851,7 @@ class TestPeasantStatusBreakdown:
                 AgentState(name="peasant-kin-done", status="done", ticket="kin-done", agent_backend="claude_code"),
             )
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
             assert result.exit_code == 0
             # Should not say "completed" — should say "done"
             assert "1 done" in result.output
@@ -1865,7 +1865,7 @@ class TestPeasantNoResultsMessages:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(app, ["peasant", "status"])
+            result = runner.invoke(peasant_app, ["status"])
 
             assert result.exit_code == 0
             assert "No active peasants" in result.output
@@ -1881,7 +1881,7 @@ class TestPeasantNoResultsMessages:
             create_thread(base, BRANCH, "kin-rd01-work", ["peasant-kin-rd01", "king"], "work")
             add_message(base, BRANCH, "kin-rd01-work", from_="king", to="peasant-kin-rd01", body="Do the thing")
 
-            result = runner.invoke(app, ["peasant", "read", "kin-rd01"])
+            result = runner.invoke(peasant_app, ["read", "kin-rd01"])
 
             assert result.exit_code == 0
             assert "No messages from" in result.output

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from kingdom.cli import app
+from kingdom.cli.ticket import ticket_app
 from kingdom.state import branch_root
 from kingdom.ticket import Ticket, read_ticket, write_ticket
 
@@ -26,7 +26,7 @@ class TestTicketLink:
                 Ticket(id=tid, status="open", title=f"T {tid}", body="", created=datetime.now(UTC)),
                 tickets_dir / f"{tid}.md",
             )
-        result = runner.invoke(app, ["tk", "link", "aaaa", "bbbb"])
+        result = runner.invoke(ticket_app, ["link", "aaaa", "bbbb"])
         assert result.exit_code == 0
         assert "Linked" in result.output
 
@@ -42,7 +42,7 @@ class TestTicketLink:
                 Ticket(id=tid, status="open", title=f"T {tid}", body="", links=links, created=datetime.now(UTC)),
                 tickets_dir / f"{tid}.md",
             )
-        result = runner.invoke(app, ["tk", "unlink", "aaaa", "bbbb"])
+        result = runner.invoke(ticket_app, ["unlink", "aaaa", "bbbb"])
         assert result.exit_code == 0
         assert "Unlinked" in result.output
 
@@ -52,7 +52,7 @@ class TestTicketLink:
         assert "aaaa" not in b.links
 
     def test_link_needs_at_least_two(self, cli_project: Path) -> None:
-        result = runner.invoke(app, ["tk", "link", "aaaa"])
+        result = runner.invoke(ticket_app, ["link", "aaaa"])
         assert result.exit_code == 1
         assert "at least two" in result.output
 
@@ -63,7 +63,7 @@ class TestTicketLink:
             Ticket(id="aaaa", status="open", title="T aaaa", body="", created=datetime.now(UTC)),
             tickets_dir / "aaaa.md",
         )
-        result = runner.invoke(app, ["tk", "link", "aaaa", "aaaa"])
+        result = runner.invoke(ticket_app, ["link", "aaaa", "aaaa"])
         assert result.exit_code == 1
         assert "self-link" in result.output.lower() or "cannot link" in result.output.lower()
 
@@ -75,7 +75,7 @@ class TestTicketLink:
                 Ticket(id=tid, status="open", title=f"T {tid}", body="", created=datetime.now(UTC)),
                 tickets_dir / f"{tid}.md",
             )
-        result = runner.invoke(app, ["tk", "link", "aaaa", "bbbb", "aaaa"])
+        result = runner.invoke(ticket_app, ["link", "aaaa", "bbbb", "aaaa"])
         assert result.exit_code == 0
         a = read_ticket(tickets_dir / "aaaa.md")
         # aaaa should link to bbbb only once, not to itself

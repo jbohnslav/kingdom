@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from kingdom.cli import app
+from kingdom.cli.ticket import ticket_app
 from kingdom.state import branch_root
 from kingdom.ticket import Ticket, find_ticket, write_ticket
 
@@ -38,12 +38,12 @@ class TestTicketDep:
             write_ticket(t, tickets_dir / f"{tid}.md")
 
         # First dep: cf1a depends on 3642
-        result1 = runner.invoke(app, ["tk", "deps", "add", "cf1a", "3642"])
+        result1 = runner.invoke(ticket_app, ["deps", "add", "cf1a", "3642"])
         assert result1.exit_code == 0, result1.output
         assert "now depends on" in result1.output
 
         # Second dep: cf1a depends on d869
-        result2 = runner.invoke(app, ["tk", "deps", "add", "cf1a", "d869"])
+        result2 = runner.invoke(ticket_app, ["deps", "add", "cf1a", "d869"])
         assert result2.exit_code == 0, result2.output
         assert "now depends on" in result2.output
 
@@ -82,7 +82,7 @@ class TestTicketDep:
         assert "3642" in ticket_before.deps, f"Dep lost after roundtrip! deps={ticket_before.deps}"
 
         # Add second dep via CLI
-        result = runner.invoke(app, ["tk", "deps", "add", "cf1a", "d869"])
+        result = runner.invoke(ticket_app, ["deps", "add", "cf1a", "d869"])
         assert result.exit_code == 0, result.output
         assert "now depends on" in result.output
 
@@ -103,11 +103,11 @@ class TestTicketDep:
             write_ticket(t, tickets_dir / f"{tid}.md")
 
         # Add first dep
-        runner.invoke(app, ["tk", "deps", "add", "cf1a", "aaaa"])
+        runner.invoke(ticket_app, ["deps", "add", "cf1a", "aaaa"])
         # Change status (rewrites ticket)
-        runner.invoke(app, ["tk", "start", "cf1a"])
+        runner.invoke(ticket_app, ["start", "cf1a"])
         # Add second dep
-        runner.invoke(app, ["tk", "deps", "add", "cf1a", "bbbb"])
+        runner.invoke(ticket_app, ["deps", "add", "cf1a", "bbbb"])
 
         found = find_ticket(cli_project, "cf1a")
         assert found is not None
@@ -132,8 +132,8 @@ class TestTicketDep:
             write_ticket(t, tickets_dir / f"{tid}.md")
 
         # Add dep twice
-        runner.invoke(app, ["tk", "deps", "add", "cf1a", "aaaa"])
-        result = runner.invoke(app, ["tk", "deps", "add", "cf1a", "aaaa"])
+        runner.invoke(ticket_app, ["deps", "add", "cf1a", "aaaa"])
+        result = runner.invoke(ticket_app, ["deps", "add", "cf1a", "aaaa"])
 
         assert result.exit_code == 0
         assert "already depends on" in result.output
@@ -150,7 +150,7 @@ class TestTicketDep:
         t = Ticket(id="cf1a", status="open", title="Target", body="", created=datetime.now(UTC))
         write_ticket(t, tickets_dir / "cf1a.md")
 
-        result = runner.invoke(app, ["tk", "deps", "add", "cf1a", "zzzz"])
+        result = runner.invoke(ticket_app, ["deps", "add", "cf1a", "zzzz"])
         assert result.exit_code == 1
         assert "not found" in result.output
 
@@ -164,7 +164,7 @@ class TestTicketUndep:
         t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["aaaa"], created=datetime.now(UTC))
         write_ticket(t, tickets_dir / "cf1a.md")
 
-        result = runner.invoke(app, ["tk", "deps", "remove", "cf1a", "aaaa"])
+        result = runner.invoke(ticket_app, ["deps", "remove", "cf1a", "aaaa"])
 
         assert result.exit_code == 0, result.output
         assert "removed dependency" in result.output
@@ -179,7 +179,7 @@ class TestTicketUndep:
         t = Ticket(id="cf1a", status="open", title="Target", body="", created=datetime.now(UTC))
         write_ticket(t, tickets_dir / "cf1a.md")
 
-        result = runner.invoke(app, ["tk", "deps", "remove", "cf1a", "zzzz"])
+        result = runner.invoke(ticket_app, ["deps", "remove", "cf1a", "zzzz"])
 
         assert result.exit_code == 1
         assert "does not depend on" in result.output
@@ -194,7 +194,7 @@ class TestTicketUndep:
         t = Ticket(id="cf1a", status="open", title="Target", body="", deps=["abcd1234"], created=datetime.now(UTC))
         write_ticket(t, tickets_dir / "cf1a.md")
 
-        result = runner.invoke(app, ["tk", "deps", "remove", "cf1a", "abcd"])
+        result = runner.invoke(ticket_app, ["deps", "remove", "cf1a", "abcd"])
 
         assert result.exit_code == 0, result.output
         assert "removed dependency" in result.output
@@ -219,7 +219,7 @@ class TestTicketUndep:
         write_ticket(target, tickets_dir / "cc03.md")
 
         # "ab" is ambiguous — should error, not silently remove both
-        result = runner.invoke(app, ["tk", "deps", "remove", "cc03", "ab"])
+        result = runner.invoke(ticket_app, ["deps", "remove", "cc03", "ab"])
         # With proper resolution, this should fail as ambiguous
         assert result.exit_code == 1, f"Expected failure for ambiguous 'ab' but got: {result.output}"
 
@@ -236,9 +236,9 @@ class TestTicketUndep:
             t = Ticket(id=tid, status="open", title=f"Ticket {tid}", body="", created=datetime.now(UTC))
             write_ticket(t, tickets_dir / f"{tid}.md")
 
-        runner.invoke(app, ["tk", "deps", "add", "aaaa", "bbbb"])
-        runner.invoke(app, ["tk", "deps", "add", "aaaa", "cccc"])
-        runner.invoke(app, ["tk", "deps", "remove", "aaaa", "bbbb"])
+        runner.invoke(ticket_app, ["deps", "add", "aaaa", "bbbb"])
+        runner.invoke(ticket_app, ["deps", "add", "aaaa", "cccc"])
+        runner.invoke(ticket_app, ["deps", "remove", "aaaa", "bbbb"])
 
         found = find_ticket(cli_project, "aaaa")
         assert found is not None
@@ -259,7 +259,7 @@ class TestTicketDepTree:
             Ticket(id="bbbb", status="open", title="Dep", body="", created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(app, ["tk", "deps", "tree", "aaaa"])
+        result = runner.invoke(ticket_app, ["deps", "tree", "aaaa"])
         assert result.exit_code == 0
         assert "Root" in result.output
         assert "bbbb" in result.output
@@ -279,7 +279,7 @@ class TestTicketDepTree:
             Ticket(id="cccc", status="open", title="C", body="", created=datetime.now(UTC)),
             tickets_dir / "cccc.md",
         )
-        result = runner.invoke(app, ["tk", "deps", "tree", "aaaa"])
+        result = runner.invoke(ticket_app, ["deps", "tree", "aaaa"])
         assert result.exit_code == 0
         assert "see above" in result.output
 
@@ -295,7 +295,7 @@ class TestTicketDepTree:
             Ticket(id="bbbb", status="open", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(app, ["tk", "deps", "tree", "--full", "aaaa"])
+        result = runner.invoke(ticket_app, ["deps", "tree", "--full", "aaaa"])
         assert result.exit_code == 0
         assert "cycle" in result.output
 
@@ -313,7 +313,7 @@ class TestTicketDepCycle:
             Ticket(id="bbbb", status="open", title="B", body="", created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(app, ["tk", "deps", "cycle"])
+        result = runner.invoke(ticket_app, ["deps", "cycle"])
         assert result.exit_code == 0
         assert "No dependency cycles" in result.output
 
@@ -327,7 +327,7 @@ class TestTicketDepCycle:
             Ticket(id="bbbb", status="open", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(app, ["tk", "deps", "cycle"])
+        result = runner.invoke(ticket_app, ["deps", "cycle"])
         assert result.exit_code == 1
         assert "cycle" in result.output.lower()
 
@@ -343,7 +343,7 @@ class TestTicketDepCycle:
             Ticket(id="bbbb", status="closed", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(app, ["tk", "deps", "cycle"])
+        result = runner.invoke(ticket_app, ["deps", "cycle"])
         assert result.exit_code == 0
         assert "No dependency cycles" in result.output
 
@@ -361,7 +361,7 @@ class TestTicketBlocked:
             Ticket(id="bbbb", status="open", title="Blocked", body="", deps=["aaaa"], created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(app, ["tk", "list", "--blocked"])
+        result = runner.invoke(ticket_app, ["list", "--blocked"])
         assert result.exit_code == 0
         assert "bbbb" in result.output
         # aaaa shows in deps column but should appear only once (as dep, not as its own row)
@@ -377,6 +377,6 @@ class TestTicketBlocked:
             Ticket(id="bbbb", status="open", title="Ready", body="", deps=["aaaa"], created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(app, ["tk", "list", "--blocked"])
+        result = runner.invoke(ticket_app, ["list", "--blocked"])
         assert result.exit_code == 0
         assert "No tickets found" in result.output
