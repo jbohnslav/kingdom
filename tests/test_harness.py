@@ -675,24 +675,6 @@ class TestRunAgentLoop:
 
         assert status == "failed"
 
-    def test_loop_handles_timeout(self, project: Path, ticket_path: Path) -> None:
-        thread_id, session_name = self.setup_for_loop(project, ticket_path)
-
-        import subprocess as sp
-
-        with patch("kingdom.harness.run_streaming_subprocess", side_effect=sp.TimeoutExpired(cmd="test", timeout=300)):
-            status = run_agent_loop(
-                base=project,
-                branch=BRANCH,
-                agent_name="claude",
-                ticket_id="kin-test",
-                worktree=project,
-                thread_id=thread_id,
-                session_name=session_name,
-            )
-
-        assert status == "failed"
-
     def test_agent_output_logged(self, project: Path, ticket_path: Path) -> None:
         """Agent stdout/stderr must appear in log records."""
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
@@ -1779,7 +1761,6 @@ class TestRunStreamingSubprocess:
             ["echo", "hello world"],
             cwd=tmp_path,
             env={},
-            timeout=10,
         )
         assert result.returncode == 0
         assert "hello world" in result.stdout
@@ -1792,26 +1773,12 @@ class TestRunStreamingSubprocess:
             ["echo", "streamed output"],
             cwd=tmp_path,
             env={},
-            timeout=10,
             live_log_path=log_path,
         )
         assert result.returncode == 0
         assert log_path.exists()
         log_content = log_path.read_text()
         assert "streamed output" in log_content
-
-    def test_timeout_raises(self, tmp_path: Path) -> None:
-        import subprocess as sp
-
-        from kingdom.harness import run_streaming_subprocess
-
-        with pytest.raises(sp.TimeoutExpired):
-            run_streaming_subprocess(
-                ["sleep", "60"],
-                cwd=tmp_path,
-                env={},
-                timeout=1,
-            )
 
     def test_accumulates_full_output(self, tmp_path: Path) -> None:
         """Full stdout must be accumulated for parse_response compatibility."""
@@ -1823,7 +1790,6 @@ class TestRunStreamingSubprocess:
             [sys.executable, "-c", "for i in range(5): print(f'line {i}')"],
             cwd=tmp_path,
             env={},
-            timeout=10,
         )
         assert result.returncode == 0
         for i in range(5):

@@ -76,7 +76,6 @@ class PeasantConfig:
     """Peasant worker settings."""
 
     agent: str = "claude"
-    timeout: int = 900
     max_iterations: int = 50
 
 
@@ -130,7 +129,7 @@ VALID_COUNCIL_KEYS = {
 VALID_ASK_KEYS = {"mode", "auto_messages"}
 VALID_CHAT_KEYS = {"mode", "auto_rounds"}
 DEPRECATED_COUNCIL_KEYS = {"auto_messages", "mode", "chat_mode", "chat_auto_rounds"}
-VALID_PEASANT_KEYS = {"agent", "timeout", "max_iterations"}
+VALID_PEASANT_KEYS = {"agent", "max_iterations"}
 VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant"}
 VALID_AGENT_PROMPT_PHASES = {"council", "design", "review", "peasant"}
 
@@ -327,19 +326,13 @@ def validate_peasant(data: dict) -> PeasantConfig:
     if not isinstance(agent, str):
         raise ValueError(f"peasant.agent must be a string, got {type(agent).__name__}")
 
-    timeout = data.get("timeout", 900)
-    if not isinstance(timeout, int):
-        raise ValueError(f"peasant.timeout must be an integer, got {type(timeout).__name__}")
-    if timeout <= 0:
-        raise ValueError(f"peasant.timeout must be positive, got {timeout}")
-
     max_iterations = data.get("max_iterations", 50)
     if not isinstance(max_iterations, int):
         raise ValueError(f"peasant.max_iterations must be an integer, got {type(max_iterations).__name__}")
     if max_iterations <= 0:
         raise ValueError(f"peasant.max_iterations must be positive, got {max_iterations}")
 
-    return PeasantConfig(agent=agent, timeout=timeout, max_iterations=max_iterations)
+    return PeasantConfig(agent=agent, max_iterations=max_iterations)
 
 
 def validate_config(data: dict) -> KingdomConfig:
