@@ -78,6 +78,7 @@ def design_show() -> None:
 
 
 @design_app.command("approve", help="Mark the design as approved.")
+@design_app.command("accept", hidden=True)
 def design_approve() -> None:
     """Set design_approved=true in state.json."""
     base = require_project_root()

@@ -124,7 +124,9 @@ def start(
             pass  # Fall back to using base as-is
         typer.echo("Auto-initializing .kd/ directory...")
         ensure_base_layout(base)
-        install_skill()
+
+    # Always refresh bundled skill (skips symlinks for dev setups)
+    install_skill()
 
     # Check for existing current run
     current_path = state_root(base) / "current"
