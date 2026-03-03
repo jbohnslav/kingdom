@@ -342,7 +342,7 @@ def render_ticket_panel(
 def ticket_create(
     title: Annotated[str, typer.Argument(help="Ticket title.")],
     description: Annotated[str | None, typer.Option("-d", "--description", help="Ticket description.")] = None,
-    priority: Annotated[int, typer.Option("-p", "--priority", help="Priority (0-3, 0 is highest).")] = 2,
+    priority: Annotated[str, typer.Option("-p", "--priority", help="Priority (0-3 or p0-p3, 0 is highest).")] = "2",
     ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
@@ -355,10 +355,14 @@ def ticket_create(
 
     base = require_project_root()
 
-    # Validate priority range (0-3)
-    if priority < 0 or priority > 3:
-        sys.stderr.write(f"Warning: Priority {priority} outside valid range (0-3), clamping.\n")
-        priority = max(0, min(3, priority))
+    # Parse and validate priority (accepts 0-3, p0-p3, P0-P3)
+    from kingdom.ticket import clamp_priority
+
+    try:
+        priority_int = clamp_priority(priority)
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from None
 
     # Ensure base layout exists
     ensure_base_layout(base)
@@ -402,7 +406,7 @@ def ticket_create(
         links=[],
         created=datetime.now(UTC),
         type=ticket_type,
-        priority=priority,
+        priority=priority_int,
         title=title,
         body=body,
         parent=resolved_parent,

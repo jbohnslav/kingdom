@@ -76,22 +76,21 @@ class TestTicketCreate:
         assert created_ticket.body == "Body from flag\n\n## Acceptance Criteria\n\n- [ ]"
         assert created_ticket.type == "bug"
 
-    def test_create_out_of_range_priority_clamps(self, cli_project: Path) -> None:
+    def test_create_out_of_range_priority_rejects(self, cli_project: Path) -> None:
         result = runner.invoke(ticket_app, ["create", "Bad priority", "-p", "5"])
+        assert result.exit_code == 1
+        assert "out of range" in result.output.lower() or "invalid priority" in result.output.lower()
 
+    def test_create_with_p_prefix_priority(self, cli_project: Path) -> None:
+        result = runner.invoke(ticket_app, ["create", "P-prefix test", "-p", "p1"])
         assert result.exit_code == 0
+
         output = result.output.strip()
-        assert output.startswith("Created ")
-
-        # Warning should be on stderr so stdout stays script-friendly.
-        assert "Warning: Priority 5 outside valid range" in result.stderr
-        assert "Warning: Priority 5 outside valid range" not in result.stdout
-
         ticket_id = output.split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)
         assert found is not None
         created_ticket, _ = found
-        assert created_ticket.priority == 3
+        assert created_ticket.priority == 1
 
     def test_create_no_trailing_whitespace(self, cli_project: Path) -> None:
         result = runner.invoke(ticket_app, ["create", "Whitespace check"])

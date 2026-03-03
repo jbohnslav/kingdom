@@ -46,7 +46,7 @@ class Ticket:
     links: list[str] = field(default_factory=list)
     created: datetime = field(default_factory=lambda: datetime.now(UTC))
     type: str = "task"  # task, bug, feature
-    priority: int = 2  # 1-3, 1 is highest
+    priority: int = 2  # 0-3, 0 is highest
     assignee: str | None = None
     title: str = ""
     body: str = ""
@@ -61,11 +61,29 @@ class Ticket:
 def clamp_priority(value: int | str | None) -> int:
     if value is None:
         return 2
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower().startswith("p") and value[1:].isdigit():
+            value = value[1:]
     try:
         p = int(value)
     except (ValueError, TypeError):
+        raise ValueError(f"Invalid priority: {value!r} (expected 0-3 or p0-p3)") from None
+    if p < 0 or p > 3:
+        raise ValueError(f"Priority out of range: {p} (expected 0-3)")
+    return p
+
+
+def safe_clamp_priority(value: int | str | None) -> int:
+    """Like clamp_priority but defaults to 2 on invalid input.
+
+    Used when parsing existing ticket files where a bad priority
+    shouldn't crash the system.
+    """
+    try:
+        return clamp_priority(value)
+    except ValueError:
         return 2
-    return max(0, min(3, p))
 
 
 def generate_ticket_id(tickets_dir: Path | None = None) -> str:
@@ -132,7 +150,7 @@ def parse_ticket(content: str) -> Ticket:
         links=links,
         created=created,
         type=str(frontmatter_dict.get("type", "task")),
-        priority=clamp_priority(frontmatter_dict.get("priority", 2)),
+        priority=safe_clamp_priority(frontmatter_dict.get("priority", 2)),
         assignee=str(frontmatter_dict.get("assignee")) if frontmatter_dict.get("assignee") else None,
         title=title,
         body=body,

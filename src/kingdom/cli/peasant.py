@@ -481,46 +481,96 @@ def peasant_status(
         console.print(f"[dim]{summary} — use --all to show[/dim]")
 
 
-@peasant_app.command("logs", help="Show peasant logs.")
-def peasant_logs(
+@peasant_app.command("show", help="Show structured peasant history.")
+def peasant_show(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
-    follow: Annotated[bool, typer.Option("--follow", "-f", help="Tail logs continuously.")] = False,
 ) -> None:
-    """Show stdout/stderr logs for a peasant."""
+    """Show worklog, agent activity, and commits for a peasant."""
+    from kingdom.harness import extract_worklog
+    from kingdom.session import get_agent_state
+
     ctx = resolve_peasant_context(ticket_id)
-
     session_name = peasant_session_name(ctx.full_ticket_id)
-    peasant_logs_dir = logs_root(ctx.base, ctx.feature) / session_name
-    stdout_log = peasant_logs_dir / "stdout.log"
-    stderr_log = peasant_logs_dir / "stderr.log"
-
-    if not peasant_logs_dir.exists():
-        print_error(f"No logs found for {ctx.full_ticket_id}. Has the peasant been started?")
-        raise typer.Exit(code=1)
-
-    if follow:
-        # Tail both stdout and stderr
-        with contextlib.suppress(KeyboardInterrupt):
-            files = [str(f) for f in [stdout_log, stderr_log] if f.exists()]
-            if files:
-                subprocess.run(["tail", "-f", *files])
-            else:
-                typer.echo("Log files are empty. The peasant may still be starting up.")
-        return
-
-    # Show both stdout and stderr
     console = Console()
+    state = get_agent_state(ctx.base, ctx.feature, session_name)
 
-    if stdout_log.exists() and stdout_log.stat().st_size > 0:
-        content = stdout_log.read_text(encoding="utf-8")
-        console.print(Markdown(f"## stdout\n\n```\n{content}\n```"))
+    # --- Worklog ---
+    worklog = extract_worklog(ctx.ticket_path)
+    if worklog:
+        console.print(Markdown(f"## Worklog\n\n{worklog}"))
+    else:
+        typer.echo("(no worklog entries)")
 
-    if stderr_log.exists() and stderr_log.stat().st_size > 0:
-        content = stderr_log.read_text(encoding="utf-8")
-        console.print(Markdown(f"## stderr\n\n```\n{content}\n```"))
+    # --- Agent activity from agent-live.log ---
+    agent_live_log = logs_root(ctx.base, ctx.feature) / session_name / "agent-live.log"
+    if agent_live_log.exists() and agent_live_log.stat().st_size > 0:
+        # Resolve backend for NDJSON decoding
+        agent_backend = ""
+        try:
+            from kingdom.config import load_config
 
-    if not (stdout_log.exists() or stderr_log.exists()):
-        typer.echo("Log files are empty. The peasant may still be starting up.")
+            cfg = load_config(ctx.base)
+            agent_name = state.agent_backend or "claude"
+            agent_def = cfg.agents.get(agent_name)
+            if agent_def:
+                agent_backend = agent_def.backend
+        except Exception:
+            pass
+
+        raw_lines = agent_live_log.read_text(encoding="utf-8", errors="replace").splitlines()
+
+        # Reassemble NDJSON stream text (flush=True since we're reading after the fact)
+        stream_lines, _ = reassemble_stream_text(
+            "",
+            raw_lines,
+            agent_backend,
+            max_lines=500,
+            max_chars=300,
+            flush=True,
+        )
+        # Also pick up non-NDJSON readable lines
+        plain_lines = filter_agent_log_lines(raw_lines, max_lines=500, max_chars=300)
+
+        # Plain lines are non-JSON human-readable output; stream lines are
+        # reassembled NDJSON text fragments.  We concatenate them (plain first)
+        # because they come from the same log file but are extracted by
+        # different parsers — ordering within each group is chronological.
+        activity = plain_lines + stream_lines
+        if activity:
+            console.print(Markdown("## Agent Activity"))
+            for line in activity:
+                console.print(f"  {line}", markup=False)
+    else:
+        typer.echo("(no agent activity log)")
+
+    # --- Commits on the peasant's branch ---
+    branch_name = f"ticket/{ctx.full_ticket_id}"
+    if state.hand_mode:
+        start_sha = state.start_sha
+        log_spec = [f"{start_sha}..HEAD"] if start_sha else ["HEAD"]
+    else:
+        # ctx.feature may be normalized (slashes→dashes); resolve the
+        # original git branch name from state.json for a valid ref.
+        from kingdom.state import read_json
+
+        st = read_json(branch_root(ctx.base, ctx.feature) / "state.json")
+        git_ref = st.get("branch", ctx.feature)
+        log_spec = [f"{git_ref}..{branch_name}"]
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", *log_spec],
+            capture_output=True,
+            text=True,
+            cwd=str(ctx.base),
+            timeout=10,
+        )
+        commits = result.stdout.strip()
+        if result.returncode == 0 and commits:
+            console.print(Markdown(f"## Commits\n\n```\n{commits}\n```"))
+        else:
+            typer.echo("(no commits)")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        typer.echo("(could not read commits)")
 
 
 FLAG_VERBS: dict[str, str] = {
@@ -532,7 +582,7 @@ FLAG_VERBS: dict[str, str] = {
 }
 
 
-def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int = 200, backend: str = "") -> list[str]:
+def filter_agent_log_lines(lines: list[str], max_lines: int = 3, max_chars: int = 200) -> list[str]:
     """Filter raw agent log lines to human-readable non-NDJSON content.
 
     Strips ANSI escapes, skips JSON and metadata noise, and returns the last
@@ -823,8 +873,8 @@ def peasant_watch(
                 # Map status to action command and display label
                 status_actions = {
                     "needs_king_review": f"kd peasant review {ctx.full_ticket_id}",
-                    "blocked": f"kd peasant logs {ctx.full_ticket_id}",
-                    "failed": f"kd peasant logs {ctx.full_ticket_id}",
+                    "blocked": f"kd peasant show {ctx.full_ticket_id}",
+                    "failed": f"kd peasant show {ctx.full_ticket_id}",
                     "done": None,
                     "stopped": None,
                 }

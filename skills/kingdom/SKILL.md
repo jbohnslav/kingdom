@@ -20,6 +20,16 @@ You assist the developer (the "King") using the `kd` CLI. There are two common w
 
 The line is: documenting what happened is always safe; changing what happens next needs the King's direction.
 
+## Ticket-First Reflex
+
+Every time the King says something, your first thought should be: **does this need a ticket?**
+
+Bug report, feature idea, UX complaint, missing behavior, scope change — if there's work to be done, capture it in a ticket *immediately*. Don't start exploring, don't start coding, don't ask follow-up questions about the implementation. Get the ticket created first, then proceed. The ticket is how work gets tracked, prioritized, and not forgotten.
+
+This applies even mid-conversation. If the King mentions a problem in passing while you're working on something else, create a backlog ticket on the spot (`kd tk create --backlog "..."`). If it's the main thing they're asking about, create it and start working it. Either way: ticket first, always.
+
+The only exception is when you genuinely don't have enough information to write a meaningful title and description — then ask clarifying questions, but only the minimum needed to create the ticket.
+
 ## When to Reach for `kd`
 
 Recognize these cues in conversation and translate them into the right `kd` action.
@@ -201,7 +211,8 @@ When a command fails, diagnose before retrying. Never silently drop a failed ope
 - **No obvious active ticket.** Run `kd tk current` to check. Don't guess.
 - **`kd council ask` times out or errors.** Run `kd council retry` to re-query failed members. Don't re-run the same ask from scratch.
 - **`kd peasant start` fails — ticket is in_review or closed.** The ticket needs to be reopened or the review resolved before a peasant can work it. Check ticket status with `kd tk show <id>` and tell the King.
-- **Peasant seems stuck.** Check `kd peasant status` and `kd peasant logs <id>` before escalating to the King.
+- **Peasant seems stuck.** Check `kd peasant status` and `kd peasant show <id>` before escalating to the King.
+- **Council query sent — want to check on it.** Run `kd council show` to read the thread and see which members have responded. Don't re-run `kd council ask` with the same prompt.
 
 ## Council
 

@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from kingdom.cli.peasant import peasant_app, resolve_peasant_context
 from kingdom.cli.ticket import ticket_app
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
-from kingdom.state import backlog_root, ensure_branch_layout, logs_root, set_current_run
+from kingdom.state import backlog_root, ensure_branch_layout, logs_root, normalize_branch_name, set_current_run
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
@@ -394,57 +394,206 @@ class TestPeasantStatus:
             assert "No active peasants" in result.output
 
 
-class TestPeasantLogs:
-    def test_logs_no_logs_found(self) -> None:
+class TestPeasantShow:
+    def test_show_worklog(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
-            create_test_ticket(base)
+            ticket_path = create_test_ticket(base)
 
-            result = runner.invoke(peasant_app, ["logs", "kin-test"])
+            # Add a worklog section to the ticket
+            content = ticket_path.read_text(encoding="utf-8")
+            content += "\n\n## Worklog\n\n- [09:00] Started work\n- [09:30] Fixed the bug\n"
+            ticket_path.write_text(content, encoding="utf-8")
 
-            assert result.exit_code == 1
-            assert "No logs found" in result.output
-
-    def test_logs_shows_stdout(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            create_test_ticket(base)
-
-            # Create log files
+            # Create the logs dir so agent-live.log section doesn't error
             peasant_logs_dir = logs_root(base, BRANCH) / "peasant-kin-test"
             peasant_logs_dir.mkdir(parents=True, exist_ok=True)
-            (peasant_logs_dir / "stdout.log").write_text("Hello from peasant\n", encoding="utf-8")
-            (peasant_logs_dir / "stderr.log").write_text("", encoding="utf-8")
 
-            result = runner.invoke(peasant_app, ["logs", "kin-test"])
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
 
             assert result.exit_code == 0
-            assert "Hello from peasant" in result.output
+            assert "Started work" in result.output
+            assert "Fixed the bug" in result.output
 
-    def test_logs_shows_stderr(self) -> None:
+    def test_show_no_worklog(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
             create_test_ticket(base)
 
-            peasant_logs_dir = logs_root(base, BRANCH) / "peasant-kin-test"
-            peasant_logs_dir.mkdir(parents=True, exist_ok=True)
-            (peasant_logs_dir / "stdout.log").write_text("", encoding="utf-8")
-            (peasant_logs_dir / "stderr.log").write_text("Error occurred\n", encoding="utf-8")
-
-            result = runner.invoke(peasant_app, ["logs", "kin-test"])
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
 
             assert result.exit_code == 0
-            assert "Error occurred" in result.output
+            assert "no worklog entries" in result.output
 
-    def test_logs_ticket_not_found(self) -> None:
+    def test_show_agent_activity(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            # Create agent-live.log with some plain-text content
+            peasant_logs_dir = logs_root(base, BRANCH) / "peasant-kin-test"
+            peasant_logs_dir.mkdir(parents=True, exist_ok=True)
+            (peasant_logs_dir / "agent-live.log").write_text(
+                "Reading the source file for context\nApplying the fix to main.py\n",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "Agent Activity" in result.output
+            assert "Reading the source file for context" in result.output
+
+    def test_show_no_agent_log(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "no agent activity log" in result.output
+
+    def test_show_commits(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+
+            # Set up a real git repo so git log works
+            import subprocess
+
+            subprocess.run(["git", "init", "-b", "main"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(base), capture_output=True)
+
+            setup_project(base)
+            create_test_ticket(base)
+
+            # Initial commit on main
+            subprocess.run(["git", "add", "."], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=str(base), capture_output=True)
+
+            # Create the feature branch (used as base for commit range)
+            subprocess.run(["git", "checkout", "-b", BRANCH], cwd=str(base), capture_output=True)
+
+            # Create peasant branch with a commit
+            subprocess.run(["git", "checkout", "-b", "ticket/kin-test"], cwd=str(base), capture_output=True)
+            (base / "fix.py").write_text("# fix\n", encoding="utf-8")
+            subprocess.run(["git", "add", "fix.py"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "fix: the bug"], cwd=str(base), capture_output=True)
+
+            # Switch back to main so HEAD != ticket branch
+            subprocess.run(["git", "checkout", "main"], cwd=str(base), capture_output=True)
+
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "Commits" in result.output
+            assert "fix: the bug" in result.output
+
+    def test_show_commits_excludes_parent_only_commits(self) -> None:
+        """Verify two-dot range: commits only on parent branch are excluded."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            import subprocess
+
+            subprocess.run(["git", "init", "-b", "main"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(base), capture_output=True)
+
+            setup_project(base)
+            create_test_ticket(base)
+
+            # Initial commit on main
+            subprocess.run(["git", "add", "."], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=str(base), capture_output=True)
+
+            # Create the feature branch (used as base for commit range)
+            subprocess.run(["git", "checkout", "-b", BRANCH], cwd=str(base), capture_output=True)
+
+            # Create peasant branch with a commit
+            subprocess.run(["git", "checkout", "-b", "ticket/kin-test"], cwd=str(base), capture_output=True)
+            (base / "fix.py").write_text("# fix\n", encoding="utf-8")
+            subprocess.run(["git", "add", "fix.py"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "fix: peasant work"], cwd=str(base), capture_output=True)
+
+            # Switch to feature branch and add a commit not on the ticket branch
+            subprocess.run(["git", "checkout", BRANCH], cwd=str(base), capture_output=True)
+            (base / "unrelated.py").write_text("# unrelated\n", encoding="utf-8")
+            subprocess.run(["git", "add", "unrelated.py"], cwd=str(base), capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", "feat: unrelated parent work"],
+                cwd=str(base),
+                capture_output=True,
+            )
+
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "fix: peasant work" in result.output
+            assert "unrelated parent work" not in result.output
+
+    def test_show_commits_with_normalized_current_run(self) -> None:
+        """Regression: kd start stores normalized name in .kd/current.
+
+        When the branch has slashes (e.g. feature/peasant-test), kd start
+        writes the normalized form (feature-peasant-test) to .kd/current.
+        peasant show must resolve back to the real git ref for git log.
+        """
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            import subprocess
+
+            subprocess.run(["git", "init", "-b", "main"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(base), capture_output=True)
+
+            # Mimic real kd start: ensure_branch_layout + set_current_run with NORMALIZED name
+            ensure_branch_layout(base, BRANCH)
+            normalized = normalize_branch_name(BRANCH)
+            set_current_run(base, normalized)
+
+            # Store original branch name in state.json (like kd start does)
+            from kingdom.state import branch_root, read_json, write_json
+
+            state_path = branch_root(base, BRANCH) / "state.json"
+            state_data = read_json(state_path)
+            state_data["branch"] = BRANCH
+            write_json(state_path, state_data)
+
+            create_test_ticket(base)
+
+            # Initial commit on main
+            subprocess.run(["git", "add", "."], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=str(base), capture_output=True)
+
+            # Create the feature branch with slashes (the real git ref)
+            subprocess.run(["git", "checkout", "-b", BRANCH], cwd=str(base), capture_output=True)
+
+            # Create peasant branch with a commit
+            subprocess.run(["git", "checkout", "-b", "ticket/kin-test"], cwd=str(base), capture_output=True)
+            (base / "fix.py").write_text("# fix\n", encoding="utf-8")
+            subprocess.run(["git", "add", "fix.py"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "fix: slash branch bug"], cwd=str(base), capture_output=True)
+
+            # Switch back to main so HEAD != ticket branch
+            subprocess.run(["git", "checkout", "main"], cwd=str(base), capture_output=True)
+
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "Commits" in result.output
+            assert "fix: slash branch bug" in result.output
+
+    def test_show_ticket_not_found(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(peasant_app, ["logs", "kin-nope"])
+            result = runner.invoke(peasant_app, ["show", "kin-nope"])
 
             assert result.exit_code == 1
             assert "not found" in result.output
@@ -2110,7 +2259,7 @@ class TestFilterAgentLogLines:
             "session_id": "s1",
         }
         lines = [json.dumps(event)]
-        result = filter_agent_log_lines(lines, backend="claude_code")
+        result = filter_agent_log_lines(lines)
         assert result == []
 
     def test_skips_non_text_ndjson_events(self) -> None:
@@ -2121,11 +2270,11 @@ class TestFilterAgentLogLines:
 
         event = {"type": "result", "session_id": "s1"}
         lines = [json.dumps(event)]
-        result = filter_agent_log_lines(lines, backend="claude_code")
+        result = filter_agent_log_lines(lines)
         assert result == []
 
     def test_no_backend_skips_all_json(self) -> None:
-        """Without backend, JSON lines are skipped even if they contain text."""
+        """JSON lines are always skipped (NDJSON is handled by reassemble_stream_text)."""
         import json
 
         from kingdom.cli.peasant import filter_agent_log_lines
@@ -2135,7 +2284,7 @@ class TestFilterAgentLogLines:
             "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello"}},
         }
         lines = [json.dumps(event)]
-        result = filter_agent_log_lines(lines, backend="")
+        result = filter_agent_log_lines(lines)
         assert result == []
 
 
