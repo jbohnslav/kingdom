@@ -467,7 +467,7 @@ class TestUpdate:
 
         with (
             patch("kingdom.cli.subprocess.run", return_value=mock_result),
-            patch("kingdom.cli.install_skill") as mock_skill,
+            patch("kingdom.cli.install_skill", return_value=True) as mock_skill,
             patch("pathlib.Path.is_symlink", return_value=False),
         ):
             result = runner.invoke(app, ["update"])
@@ -485,7 +485,7 @@ class TestUpdate:
 
         with (
             patch("kingdom.cli.subprocess.run", return_value=mock_result),
-            patch("kingdom.cli.install_skill"),
+            patch("kingdom.cli.install_skill", return_value=True),
             patch("pathlib.Path.is_symlink", return_value=False),
         ):
             result = runner.invoke(app, ["update"])
@@ -496,7 +496,7 @@ class TestUpdate:
         """kd update handles missing uv gracefully."""
         with (
             patch("kingdom.cli.subprocess.run", side_effect=FileNotFoundError),
-            patch("kingdom.cli.install_skill"),
+            patch("kingdom.cli.install_skill", return_value=True),
             patch("pathlib.Path.is_symlink", return_value=False),
         ):
             result = runner.invoke(app, ["update"])
@@ -519,6 +519,23 @@ class TestUpdate:
             assert result.exit_code == 0
             assert "dev symlink" in result.output
             mock_skill.assert_not_called()
+
+    def test_update_skill_refresh_failure(self) -> None:
+        """kd update reports failure when install_skill() fails."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Nothing to upgrade"
+        mock_result.stderr = ""
+
+        with (
+            patch("kingdom.cli.subprocess.run", return_value=mock_result),
+            patch("kingdom.cli.install_skill", return_value=False),
+            patch("pathlib.Path.is_symlink", return_value=False),
+        ):
+            result = runner.invoke(app, ["update"])
+            assert result.exit_code == 0
+            assert "Skill refresh failed" in result.output
+            assert "failed" in result.output
 
     def test_update_appears_in_help(self) -> None:
         """kd update is visible in --help output."""

@@ -421,9 +421,12 @@ def update() -> None:
         styled_echo("  ○ Skipped (dev symlink)", fg=typer.colors.YELLOW)
         skill_status = "skipped (dev symlink)"
     else:
-        install_skill()
-        styled_echo("  ✓ Skill files refreshed", fg=typer.colors.GREEN)
-        skill_status = "refreshed"
+        if install_skill():
+            styled_echo("  ✓ Skill files refreshed", fg=typer.colors.GREEN)
+            skill_status = "refreshed"
+        else:
+            styled_echo("  ✗ Skill refresh failed (see warning above)", fg=typer.colors.RED)
+            skill_status = "failed"
 
     # Summary
     typer.echo()

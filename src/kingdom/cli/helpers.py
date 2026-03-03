@@ -116,12 +116,14 @@ def ensure_feature_branch(feature: str) -> None:
     typer.echo(f"Warning: current branch '{current}' does not match feature '{feature}'.")
 
 
-def install_skill() -> None:
+def install_skill() -> bool:
     """Install the bundled kingdom skill to ~/.claude/skills/kingdom/.
 
     Copies SKILL.md and reference files from the package into the Claude
     skills directory.  Skips if the target is a symlink (dev setup).
     Warns and continues on permission or filesystem errors.
+
+    Returns True on success (including symlink skip), False on error.
     """
     from importlib.resources import as_file, files
 
@@ -130,7 +132,7 @@ def install_skill() -> None:
 
         # Don't overwrite a dev symlink
         if target.is_symlink():
-            return
+            return True
 
         skill_pkg = files("kingdom.skill")
 
@@ -147,3 +149,5 @@ def install_skill() -> None:
                     (refs_target / item.name).write_bytes(src.read_bytes())
     except (OSError, RuntimeError) as exc:
         typer.echo(f"Warning: could not install skill ({exc})")
+        return False
+    return True
