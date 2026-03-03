@@ -88,7 +88,7 @@ The Council provides perspectives. The King decides. The Hand executes.
 │  │                                                              │
 │  │  kd council ask "prompt"     → multi-model + synthesis (+logs)│
 │  │  kd design show|approve      → manages design.md             │
-│  │  kd breakdown show|apply     → manages breakdown + tickets   │
+│  │  kd tk create / list / ...   → manages tickets               │
 │  │  kd peasant start <ticket>   → spawns worker                 │
 │  │  kd status                   → current state                 │
 │  └─────────────────────────────────────────────────────────────┘
@@ -218,7 +218,7 @@ King: kd council ask "Break this design into tickets with dependencies: [design.
 King (to Hand): "Create the breakdown using Gemini's structure but add
                  the dependency GPT identified between auth and storage"
 
-Hand: Runs kd breakdown, uses output to create tickets with kd tk create
+Hand: Creates tickets with kd tk create based on council feedback
 ```
 
 The King sees multiple perspectives on how to structure the work, then directs the Hand.
@@ -249,9 +249,7 @@ description: Multi-model design and development workflow
 
 ## Commands
 - `kd council ask "prompt"` — Get perspectives from multiple models (you read and decide)
-- `kd council <member> "prompt"` — Follow up with specific council member
 - `kd design show` — View current design
-- `kd breakdown` — Print agent prompt to create tickets from design
 - `kd status` — See current phase, tickets, state
 
 ## Design Mode
@@ -352,30 +350,6 @@ Output (JSON mode):
 
 Note: No `synthesis` field. King synthesizes by reading and deciding.
 
-### `kd council <member> "prompt"`
-
-Follow up with a specific council member within the session.
-
-```bash
-kd council gemini "What about offline scenarios?"
-kd council gpt "Show me how to use that backoff library"
-```
-
-Useful for iterating with one advisor before deciding. Each follow-up appends to that member's response file.
-
-### `kd council last`
-
-Print the most recent council `run_id` and paths to response files.
-
-```bash
-$ kd council last
-run-4f3a (2026-02-04 18:12:09)
-  .kd/runs/oauth/council/run-4f3a/
-  ├── claude.md
-  ├── gemini.md
-  └── gpt.md
-```
-
 ### `kd council show <run_id>`
 
 Re-render a saved council run in Rich panels. Useful for re-reading previous consultations.
@@ -392,9 +366,6 @@ Print current design.md contents.
 
 Mark design as approved, transition to breakdown phase.
 
-### `kd breakdown`
-
-Print agent prompt to create tickets from the design doc.
 
 ### `kd status [--json]`
 
@@ -430,9 +401,7 @@ Show active peasant status.
 
 3. **Implement `kd council ask` with Rich output + run bundles** — Core multi-model primitive with Rich panels for terminal display, Markdown files for persistence.
 
-4. **Add `kd council <member>` for follow-ups** — Individual member iteration within session.
-
-5. **Write the Kingdom skill** — SKILL.md teaching agents the workflow (including when to suggest council consultation).
+4. **Write the Kingdom skill** — SKILL.md teaching agents the workflow (including when to suggest council consultation).
 
 7. **Test with Claude Code** — Install skill, run through workflow, identify gaps.
 

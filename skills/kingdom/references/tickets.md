@@ -37,7 +37,7 @@ kd tk reopen <id>        # reopen if needed
 
 ## Dependencies
 
-Tickets can depend on other tickets. A ticket with unresolved dependencies won't show in `kd tk ready`.
+Tickets can depend on other tickets. A ticket with unresolved dependencies won't show in `kd tk list --ready`.
 
 ```bash
 kd tk deps add <id> <dep-id>      # id depends on dep-id
