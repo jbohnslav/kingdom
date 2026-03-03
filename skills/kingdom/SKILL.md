@@ -207,7 +207,7 @@ When a command fails, diagnose before retrying. Never silently drop a failed ope
 
 - `kd council ask "prompt"` queries all members for independent perspectives.
 - Use it proactively at decision points, not just when stuck.
-- Present each member's perspective distinctly — don't flatten disagreements. Summarize if the King asks, but preserve the tensions.
+- Present each member's perspective distinctly — don't flatten disagreements. Summarize the key perspectives and disagreements for the King, and preserve the tensions. Link or reference the thread for full detail.
 - See [council reference](references/council.md) for threading, async flags, and session management.
 
 ## Command Quick-Ref

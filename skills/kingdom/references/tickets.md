@@ -58,7 +58,7 @@ kd tk unassign <id>          # clear assignment
 ```bash
 kd tk list                   # list all tickets on current branch
 kd tk show <id>              # show ticket details
-kd tk move <id> <branch>     # move to another branch
+kd tk move <id> --to <branch|backlog>  # move to another branch or backlog
 kd tk pull <id>...            # pull backlog tickets into current branch
 ```
 

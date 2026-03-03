@@ -48,9 +48,7 @@ kd council watch <thread-id>      # watch for incoming responses
 
 ## Reading Responses
 
-**Do not synthesize or summarize council responses for the King.** Point them to the thread and let them read directly. The council provides perspectives — the King decides.
-
-If the King asks for a summary, you can highlight key points of agreement and disagreement, but always reference the original responses.
+Summarize council responses for the King when they inform the active decision. Present the main agreements, disagreements, and any recommendation, then point to the thread for full context. Preserve the tensions — don't flatten dissent into false consensus.
 
 ## Async and Streaming
 
