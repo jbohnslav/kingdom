@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from kingdom import cli
-from kingdom.cli import install_skill
+from kingdom.cli import app
+from kingdom.cli.helpers import install_skill
 from kingdom.state import branch_root, ensure_base_layout
 
 
@@ -50,7 +50,7 @@ def test_cli_start_kd_base_invalid_hard_fails(tmp_path: Path) -> None:
     bad_path = tmp_path / "nonsense"
     bad_path.mkdir()
     with patch.dict("os.environ", {"KD_BASE": str(bad_path)}):
-        result = runner.invoke(cli.app, ["start", "test-branch"])
+        result = runner.invoke(app, ["start", "test-branch"])
     assert result.exit_code == 1
     assert "KD_BASE=" in result.output
     assert "does not contain a .kd/" in result.output
@@ -61,7 +61,7 @@ def test_cli_start_kd_base_unset_keeps_auto_init() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         subprocess.run(["git", "init", "-q"], check=True)
-        result = runner.invoke(cli.app, ["start", "test-feature"])
+        result = runner.invoke(app, ["start", "test-feature"])
     assert result.exit_code == 0
     assert "Auto-initializing" in result.output
 
@@ -75,7 +75,7 @@ def test_cli_start_auto_init_from_subdirectory_uses_git_root() -> None:
         subdir = git_root / "src" / "deep"
         subdir.mkdir(parents=True)
         with patch("kingdom.state.Path.cwd", return_value=subdir):
-            result = runner.invoke(cli.app, ["start", "test-feature"])
+            result = runner.invoke(app, ["start", "test-feature"])
         assert result.exit_code == 0
         assert "Auto-initializing" in result.output
         # .kd/ should be at git root, not in the subdirectory
@@ -93,7 +93,7 @@ def test_cli_start_from_subdirectory_with_existing_kd() -> None:
         subdir = git_root / "src" / "deep"
         subdir.mkdir(parents=True)
         with patch("kingdom.state.Path.cwd", return_value=subdir):
-            result = runner.invoke(cli.app, ["start", "test-feature"])
+            result = runner.invoke(app, ["start", "test-feature"])
         assert result.exit_code == 0
         # Should NOT have created a second .kd/ in the subdirectory
         assert not (subdir / ".kd").exists()
@@ -112,7 +112,7 @@ def test_cli_start_auto_init_handles_git_timeout() -> None:
     with runner.isolated_filesystem():
         subprocess.run(["git", "init", "-q"], check=True)
         with patch("kingdom.cli.subprocess.run", side_effect=fake_run):
-            result = runner.invoke(cli.app, ["start", "test-feature"])
+            result = runner.invoke(app, ["start", "test-feature"])
     assert result.exit_code == 0
     assert "Auto-initializing" in result.output
 
@@ -121,7 +121,7 @@ def test_cli_start_auto_init_requires_git_repo() -> None:
     """kd start fails when auto-initializing in a non-git directory."""
     runner = CliRunner()
     with runner.isolated_filesystem():
-        result = runner.invoke(cli.app, ["start", "test-feature"])
+        result = runner.invoke(app, ["start", "test-feature"])
 
         assert result.exit_code == 1
         assert "Not a git repository" in result.output
@@ -135,8 +135,8 @@ def test_cli_start_auto_init_installs_skill(tmp_path: Path) -> None:
 
     with runner.isolated_filesystem():
         subprocess.run(["git", "init", "-q"], check=True)
-        with patch("kingdom.cli.Path.home", return_value=fake_home):
-            result = runner.invoke(cli.app, ["start", "test-feature"])
+        with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+            result = runner.invoke(app, ["start", "test-feature"])
 
     assert result.exit_code == 0
     skill_dir = fake_home / ".claude" / "skills" / "kingdom"
@@ -151,7 +151,7 @@ def test_cli_start_initializes_design_and_prints_path() -> None:
         subprocess.run(["git", "init", "-q"], check=True)
 
         branch = "feature/test-start"
-        result = runner.invoke(cli.app, ["start", branch])
+        result = runner.invoke(app, ["start", branch])
 
         assert result.exit_code == 0
         assert f"Started session for branch {branch}" in result.output
@@ -170,13 +170,13 @@ def test_cli_design_prints_path_after_start() -> None:
         subprocess.run(["git", "init", "-q"], check=True)
 
         branch = "feature/test-start"
-        start_result = runner.invoke(cli.app, ["start", branch])
+        start_result = runner.invoke(app, ["start", branch])
         assert start_result.exit_code == 0
 
         design_path = branch_root(base, branch) / "design.md"
         before = design_path.read_text(encoding="utf-8")
 
-        design_result = runner.invoke(cli.app, ["design"])
+        design_result = runner.invoke(app, ["design"])
         assert design_result.exit_code == 0
         assert design_result.output.strip().endswith("design.md")
         assert design_path.read_text(encoding="utf-8") == before
@@ -187,7 +187,7 @@ def test_install_skill_copies_files(tmp_path: Path) -> None:
     fake_home = tmp_path / "home"
     fake_home.mkdir()
 
-    with patch("kingdom.cli.Path.home", return_value=fake_home):
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
         install_skill()
 
     skill_dir = fake_home / ".claude" / "skills" / "kingdom"
@@ -212,7 +212,7 @@ def test_install_skill_skips_symlink(tmp_path: Path) -> None:
     skill_dir.rmdir()
     skill_dir.symlink_to(real_target)
 
-    with patch("kingdom.cli.Path.home", return_value=fake_home):
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
         install_skill()
 
     # Should still be a symlink, not overwritten
@@ -225,7 +225,7 @@ def test_install_skill_idempotent(tmp_path: Path) -> None:
     fake_home = tmp_path / "home"
     fake_home.mkdir()
 
-    with patch("kingdom.cli.Path.home", return_value=fake_home):
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
         install_skill()
         install_skill()
 
@@ -242,9 +242,9 @@ def test_install_skill_permission_error_warns(tmp_path: Path) -> None:
     claude_dir.mkdir()
     claude_dir.chmod(0o444)
 
-    with patch("kingdom.cli.Path.home", return_value=fake_home):
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
         # Should not raise — just warn
-        cli.install_skill()
+        install_skill()
 
     # Restore permissions for cleanup
     claude_dir.chmod(0o755)
@@ -252,8 +252,8 @@ def test_install_skill_permission_error_warns(tmp_path: Path) -> None:
 
 def test_install_skill_runtime_error_warns() -> None:
     """install_skill should warn and continue when Path.home() raises RuntimeError."""
-    with patch("kingdom.cli.Path.home", side_effect=RuntimeError("no home")):
-        cli.install_skill()  # should not raise
+    with patch("kingdom.cli.helpers.Path.home", side_effect=RuntimeError("no home")):
+        install_skill()  # should not raise
 
 
 def test_legacy_runs_guard_shows_clean_cli_error() -> None:
@@ -267,7 +267,7 @@ def test_legacy_runs_guard_shows_clean_cli_error() -> None:
         runs_dir.mkdir()
         (runs_dir / "old-branch").mkdir()
 
-        result = runner.invoke(cli.app, ["status"])
+        result = runner.invoke(app, ["status"])
         assert result.exit_code == 1
         assert "Legacy .kd/runs/ directory found" in result.output
         assert "Traceback" not in result.output

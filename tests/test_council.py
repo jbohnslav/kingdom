@@ -658,13 +658,6 @@ class TestPromptMerging:
 BRANCH = "feature/test-council"
 
 
-@pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Create a minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, BRANCH)
-    return tmp_path
-
-
 class TestCouncilSessions:
     """Tests for council load/save sessions using agent state."""
 

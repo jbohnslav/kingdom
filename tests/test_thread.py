@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from kingdom.state import ensure_branch_layout
 from kingdom.thread import (
     Message,
     ThreadMeta,
@@ -20,14 +19,6 @@ from kingdom.thread import (
     thread_dir,
     threads_root,
 )
-
-
-@pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Create a minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, "feature/test-branch")
-    return tmp_path
-
 
 BRANCH = "feature/test-branch"
 

@@ -29,7 +29,6 @@ from kingdom.harness import (
     summarize_feedback,
 )
 from kingdom.session import AgentState, get_agent_state, set_agent_state
-from kingdom.state import ensure_branch_layout, set_current_run
 from kingdom.thread import add_message, create_thread, list_messages
 from kingdom.ticket import Ticket, read_ticket, write_ticket
 
@@ -41,11 +40,9 @@ COUNCIL_NO_COUNCIL = ("no_council", [])
 
 
 @pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Create a minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, BRANCH)
-    set_current_run(tmp_path, BRANCH)
-    return tmp_path
+def project(project_with_run: Path) -> Path:
+    """Harness tests need a current run set."""
+    return project_with_run
 
 
 @pytest.fixture()

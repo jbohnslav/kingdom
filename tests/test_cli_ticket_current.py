@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from kingdom import cli
+from kingdom.cli.ticket import ticket_app
 from kingdom.state import (
     branch_root,
     ensure_branch_layout,
@@ -41,7 +41,7 @@ class TestTicketCurrent:
             )
             write_ticket(ticket, tickets_dir / "curr.md")
 
-            result = runner.invoke(cli.app, ["tk", "current"])
+            result = runner.invoke(ticket_app, ["current"])
 
             assert result.exit_code == 0, result.output
             assert "curr" in result.output
@@ -63,7 +63,7 @@ class TestTicketCurrent:
             )
             write_ticket(ticket, tickets_dir / "open1.md")
 
-            result = runner.invoke(cli.app, ["tk", "current"])
+            result = runner.invoke(ticket_app, ["current"])
 
             assert result.exit_code == 1
             assert "No in-progress ticket" in result.output
@@ -73,14 +73,14 @@ class TestTicketCurrent:
             base = Path.cwd()
             setup_project(base)
 
-            result = runner.invoke(cli.app, ["tk", "current"])
+            result = runner.invoke(ticket_app, ["current"])
 
             assert result.exit_code == 1
             assert "No in-progress ticket" in result.output
 
     def test_current_no_project_root_exits_1(self) -> None:
         with runner.isolated_filesystem():
-            result = runner.invoke(cli.app, ["tk", "current"])
+            result = runner.invoke(ticket_app, ["current"])
 
             assert result.exit_code == 1
             assert "No .kd/ directory found" in result.output
@@ -104,7 +104,7 @@ class TestTicketCurrent:
             )
             write_ticket(ticket, tickets_dir / "json1.md")
 
-            result = runner.invoke(cli.app, ["tk", "current", "--json"])
+            result = runner.invoke(ticket_app, ["current", "--json"])
 
             assert result.exit_code == 0, result.output
             data = json.loads(result.output)
@@ -139,7 +139,7 @@ class TestTicketCurrent:
             write_ticket(low, tickets_dir / "low1.md")
             write_ticket(high, tickets_dir / "high.md")
 
-            result = runner.invoke(cli.app, ["tk", "current"])
+            result = runner.invoke(ticket_app, ["current"])
 
             assert result.exit_code == 0, result.output
             assert "high" in result.output
@@ -160,7 +160,7 @@ class TestTicketCurrent:
             write_ticket(review_ticket, tickets_dir / "rev1.md")
             write_ticket(ip_ticket, tickets_dir / "ip01.md")
 
-            result = runner.invoke(cli.app, ["tk", "current"])
+            result = runner.invoke(ticket_app, ["current"])
 
             assert result.exit_code == 0, result.output
             assert "ip01" in result.output
@@ -179,7 +179,7 @@ class TestTicketCurrent:
             )
             write_ticket(review_ticket, tickets_dir / "rev1.md")
 
-            result = runner.invoke(cli.app, ["tk", "current"])
+            result = runner.invoke(ticket_app, ["current"])
 
             assert result.exit_code == 1
             assert "No in-progress ticket" in result.output
@@ -199,7 +199,7 @@ class TestTicketCurrent:
             write_ticket(closed_ticket, tickets_dir / "cl01.md")
             write_ticket(ip_ticket, tickets_dir / "ip01.md")
 
-            result = runner.invoke(cli.app, ["tk", "current"])
+            result = runner.invoke(ticket_app, ["current"])
 
             assert result.exit_code == 0, result.output
             assert "ip01" in result.output

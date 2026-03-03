@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from kingdom.cli import app
+from kingdom.cli.council import council_app
 from kingdom.session import get_current_thread, set_current_thread
 from kingdom.state import ensure_branch_layout
 from kingdom.thread import create_thread
@@ -20,16 +20,9 @@ runner = CliRunner()
 BRANCH = "feature/test-chat"
 
 
-@pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """Create a minimal project with branch layout."""
-    ensure_branch_layout(tmp_path, BRANCH)
-    return tmp_path
-
-
 class TestChatCommand:
     def test_help(self) -> None:
-        result = runner.invoke(app, ["council", "chat", "--help"])
+        result = runner.invoke(council_app, ["chat", "--help"])
         assert result.exit_code == 0
         assert "Thread ID to open" in result.output
 
@@ -38,7 +31,7 @@ class TestChatCommand:
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
         ):
-            result = runner.invoke(app, ["council", "chat", "nonexistent"])
+            result = runner.invoke(council_app, ["chat", "nonexistent"])
         assert result.exit_code == 1
         assert "Thread not found" in result.output
 
@@ -49,7 +42,7 @@ class TestChatCommand:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
-            result = runner.invoke(app, ["council", "chat"])
+            result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
         assert "Created new thread:" in result.output
         mock_run.assert_called_once()
@@ -67,7 +60,7 @@ class TestChatCommand:
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
         ):
-            result = runner.invoke(app, ["council", "chat"])
+            result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
         assert "council-abc1" in result.output
         assert "council-abc2" in result.output
@@ -78,7 +71,7 @@ class TestChatCommand:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
-            result = runner.invoke(app, ["council", "chat", "--new"])
+            result = runner.invoke(council_app, ["chat", "--new"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
@@ -95,7 +88,7 @@ class TestChatCommand:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
-            result = runner.invoke(app, ["council", "chat", "council-test"])
+            result = runner.invoke(council_app, ["chat", "council-test"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
@@ -107,7 +100,7 @@ class TestChatCommand:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp") as mock_chat_app,
         ):
-            result = runner.invoke(app, ["council", "chat", "council-debug", "--debug"])
+            result = runner.invoke(council_app, ["chat", "council-debug", "--debug"])
         assert result.exit_code == 0
         mock_chat_app.assert_called_once_with(
             base=project,
@@ -128,7 +121,7 @@ class TestChatCommand:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
-            result = runner.invoke(app, ["council", "chat"])
+            result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
@@ -140,7 +133,7 @@ class TestChatCommand:
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
         ):
-            result = runner.invoke(app, ["council", "chat"])
+            result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
         assert "council-other" in result.output
 
@@ -153,7 +146,7 @@ class TestChatCommand:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
         ):
-            result = runner.invoke(app, ["council", "chat", "council-xyz1"])
+            result = runner.invoke(council_app, ["chat", "council-xyz1"])
         assert result.exit_code == 0
         assert get_current_thread(project, BRANCH) == "council-xyz1"
 
@@ -166,7 +159,7 @@ class TestChatCommand:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
-            result = runner.invoke(app, ["council", "chat", "council-ab"])
+            result = runner.invoke(council_app, ["chat", "council-ab"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
@@ -179,7 +172,7 @@ class TestChatCommand:
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
         ):
-            result = runner.invoke(app, ["council", "chat", "council-aa"])
+            result = runner.invoke(council_app, ["chat", "council-aa"])
         assert result.exit_code == 1
         assert "council-aa11" in result.output
         assert "council-aa22" in result.output
@@ -192,7 +185,7 @@ class TestChatCommand:
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
         ):
-            result = runner.invoke(app, ["council", "chat", "council-nope"])
+            result = runner.invoke(council_app, ["chat", "council-nope"])
         assert result.exit_code == 1
         assert "council-exist" in result.output
 
@@ -893,7 +886,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
-            result = runner.invoke(app, ["council", "chat", "--new"])
+            result = runner.invoke(council_app, ["chat", "--new"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
@@ -924,7 +917,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
         ):
-            result = runner.invoke(app, ["council", "chat"])
+            result = runner.invoke(council_app, ["chat"])
 
         assert result.exit_code == 0
         assert "Recent threads:" in result.output
@@ -942,7 +935,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=True),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
-            result = runner.invoke(app, ["council", "chat", "--new"])
+            result = runner.invoke(council_app, ["chat", "--new"])
         assert result.exit_code == 0
         assert "tmux control mode" in result.output
         assert mock_init.call_args.kwargs["ansi_color"] is True
@@ -956,7 +949,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
-            result = runner.invoke(app, ["council", "chat", "--new"])
+            result = runner.invoke(council_app, ["chat", "--new"])
         assert result.exit_code == 0
         assert mock_init.call_args.kwargs["ansi_color"] is False
 
@@ -968,7 +961,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.app.ChatApp.run"),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
-            result = runner.invoke(app, ["council", "chat", "--new", "--color", "ansi"])
+            result = runner.invoke(council_app, ["chat", "--new", "--color", "ansi"])
         assert result.exit_code == 0
         assert mock_init.call_args.kwargs["ansi_color"] is True
 
@@ -986,14 +979,14 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.app.ChatApp.run", side_effect=check_no_color),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
-            result = runner.invoke(app, ["council", "chat", "--new", "--color", "none"])
+            result = runner.invoke(council_app, ["chat", "--new", "--color", "none"])
         assert result.exit_code == 0
         assert mock_init.call_args.kwargs["ansi_color"] is True
         assert no_color_was_set, "NO_COLOR should be set in environment when app runs"
 
     def test_chat_color_invalid_exits(self, project: Path) -> None:
         """--color with invalid value is rejected by click.Choice before function body runs."""
-        result = runner.invoke(app, ["council", "chat", "--new", "--color", "bogus"])
+        result = runner.invoke(council_app, ["chat", "--new", "--color", "bogus"])
         assert result.exit_code != 0
         assert "Invalid value" in result.output or "bogus" in result.output
 
@@ -1014,7 +1007,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.app.ChatApp.run", side_effect=run_side_effect),
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
         ):
-            result = runner.invoke(app, ["council", "chat", "--new"])
+            result = runner.invoke(council_app, ["chat", "--new"])
         assert result.exit_code == 0
         assert "color rendering error" in result.output
         assert call_count == 2
@@ -1030,7 +1023,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run", side_effect=crash),
         ):
-            result = runner.invoke(app, ["council", "chat", "--new", "--color", "truecolor"])
+            result = runner.invoke(council_app, ["chat", "--new", "--color", "truecolor"])
         # Should re-raise, not silently retry
         assert result.exit_code != 0
 
