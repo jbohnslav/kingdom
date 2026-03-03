@@ -1,8 +1,9 @@
 # Kingdom Multi-Agent Redesign (Synthesis)
 
 Date: 2026-02-07
-Status: Proposed
 Audience: Kingdom maintainers
+
+> **Historical** — this document describes an earlier design. See README for current commands.
 
 ## Summary
 

@@ -1,6 +1,6 @@
 # Design: Kingdom as CLI + Agent Skill
 
-> **Status**: Implemented. The hand.py REPL and tmux orchestration have been removed. Kingdom is now a CLI toolkit that works alongside your coding agent.
+> **Historical** — this document describes an earlier design. See README for current commands.
 
 ## Problem Statement
 
@@ -250,7 +250,6 @@ description: Multi-model design and development workflow
 ## Commands
 - `kd council ask "prompt"` — Get perspectives from multiple models (you read and decide)
 - `kd council <member> "prompt"` — Follow up with specific council member
-- `kd council critique` — Have members evaluate each other's responses
 - `kd design show` — View current design
 - `kd breakdown` — Print agent prompt to create tickets from design
 - `kd status` — See current phase, tickets, state
@@ -284,7 +283,6 @@ Every council call writes a bundle to disk keyed by `run_id`. These live under `
 - `claude.md` / `gemini.md` / `gpt.md` — Full responses in Markdown (readable, Hand can reference)
 - `metadata.json` — Timing, model versions, token counts
 - `errors.json` — If any member failed
-- `critiques/` — If `kd council critique` was run
 
 No `summary.md` or synthesis file—the King reads responses directly and synthesizes mentally.
 
@@ -323,7 +321,7 @@ The incident where "write this to markdown" got routed to council is an interact
 Query all council members. **No auto-synthesis**—King reads responses directly.
 
 ```bash
-kd council ask "prompt" [--json] [--timeout SECONDS] [--open]
+kd council ask "prompt" [--json] [--timeout SECONDS]
 ```
 
 **Default output:** Rich panels to terminal (see above) + files saved to disk.
@@ -331,7 +329,6 @@ kd council ask "prompt" [--json] [--timeout SECONDS] [--open]
 **Flags:**
 - `--json` — Machine-readable output for scripting
 - `--timeout SECONDS` — Per-model timeout (default: 120)
-- `--open` — After saving, open response directory in `$EDITOR`
 
 Output (JSON mode):
 ```json
@@ -366,18 +363,6 @@ kd council gpt "Show me how to use that backoff library"
 
 Useful for iterating with one advisor before deciding. Each follow-up appends to that member's response file.
 
-### `kd council critique`
-
-Have council members anonymously evaluate each other's responses (inspired by LLM Council's Stage 2).
-
-```bash
-kd council critique [--run-id <id>]
-```
-
-Each member receives all responses anonymized ("Response A", "Response B") and identifies strengths/weaknesses. Useful for high-stakes decisions where you want models to check each other.
-
-Output: Rich panels showing each member's critique, saved to `<run_id>/critiques/`.
-
 ### `kd council last`
 
 Print the most recent council `run_id` and paths to response files.
@@ -398,10 +383,6 @@ Re-render a saved council run in Rich panels. Useful for re-reading previous con
 ### `kd council reset`
 
 Clear all council sessions to start fresh conversation (new context for all members).
-
-### `kd doctor` (or `kd council doctor`)
-
-Quick preflight: verify required CLIs are installed and runnable (claude/codex/cursor agent), and print actionable guidance if not.
 
 ### `kd design show`
 
@@ -451,9 +432,7 @@ Show active peasant status.
 
 4. **Add `kd council <member>` for follow-ups** — Individual member iteration within session.
 
-5. **Add `kd council critique`** — Optional peer evaluation command.
-
-6. **Write the Kingdom skill** — SKILL.md teaching agents the workflow (including when to suggest council consultation).
+5. **Write the Kingdom skill** — SKILL.md teaching agents the workflow (including when to suggest council consultation).
 
 7. **Test with Claude Code** — Install skill, run through workflow, identify gaps.
 
@@ -468,8 +447,6 @@ Show active peasant status.
 3. **Should `kd council ask` include design/breakdown context automatically?** Or require explicit `--context` flag? (Leaning toward: include current phase context by default, with `--no-context` to disable.)
 
 4. **How do we handle agents that don't support skills?** Fall back to CLAUDE.md instructions?
-
-5. **Should `kd council critique` be automatic or opt-in?** Current design: opt-in via explicit command. Auto-critique would add latency and cost for every council call.
 
 ## Relationship to Existing Docs
 
@@ -518,11 +495,7 @@ This keeps the repo clean while preserving an audit trail of what was decided an
         │           ├── gemini.md      # Full response (Markdown)
         │           ├── gpt.md         # Full response (Markdown)
         │           ├── metadata.json  # Timing, model versions
-        │           ├── errors.json    # If any member failed
-        │           └── critiques/     # If critique was run
-        │               ├── claude.md
-        │               ├── gemini.md
-        │               └── gpt.md
+        │           └── errors.json    # If any member failed
         │
         └── tickets/
             └── tickets/
