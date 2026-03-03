@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from kingdom import cli
+from kingdom.cli import app
 from kingdom.state import (
     archive_root,
     backlog_root,
@@ -37,7 +37,7 @@ def create_ticket_in(directory: Path, ticket_id: str = "kin-t001") -> Path:
 
 class TestTicketCreate:
     def test_create_echoes_id_and_title(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "create", "My new ticket"])
+        result = runner.invoke(app, ["tk", "create", "My new ticket"])
 
         assert result.exit_code == 0, result.output
         output = result.output.strip()
@@ -45,7 +45,7 @@ class TestTicketCreate:
         assert "My new ticket" in output
 
     def test_create_backlog_echoes_id_and_title(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "create", "Backlog ticket", "--backlog"])
+        result = runner.invoke(app, ["tk", "create", "Backlog ticket", "--backlog"])
 
         assert result.exit_code == 0, result.output
         output = result.output.strip()
@@ -54,7 +54,7 @@ class TestTicketCreate:
         assert "Backlog ticket" in output
 
     def test_create_non_backlog_omits_backlog_label(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "create", "Branch ticket"])
+        result = runner.invoke(app, ["tk", "create", "Branch ticket"])
 
         assert result.exit_code == 0, result.output
         output = result.output.strip()
@@ -63,7 +63,7 @@ class TestTicketCreate:
 
     def test_create_accepts_description_and_type_flags(self, cli_project: Path) -> None:
         result = runner.invoke(
-            cli.app,
+            app,
             ["tk", "create", "Typed ticket", "-d", "Body from flag", "-t", "bug"],
         )
 
@@ -77,7 +77,7 @@ class TestTicketCreate:
         assert created_ticket.type == "bug"
 
     def test_create_out_of_range_priority_clamps(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "create", "Bad priority", "-p", "5"])
+        result = runner.invoke(app, ["tk", "create", "Bad priority", "-p", "5"])
 
         assert result.exit_code == 0
         output = result.output.strip()
@@ -94,7 +94,7 @@ class TestTicketCreate:
         assert created_ticket.priority == 3
 
     def test_create_no_trailing_whitespace(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "create", "Whitespace check"])
+        result = runner.invoke(app, ["tk", "create", "Whitespace check"])
 
         assert result.exit_code == 0
         ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
@@ -106,7 +106,7 @@ class TestTicketCreate:
             assert line == line.rstrip(), f"Line {i} has trailing whitespace: {line!r}"
 
     def test_create_prints_file_path(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "create", "Path ticket"])
+        result = runner.invoke(app, ["tk", "create", "Path ticket"])
 
         assert result.exit_code == 0, result.output
         lines = result.output.strip().splitlines()
@@ -118,7 +118,7 @@ class TestTicketCreate:
         assert Path(lines[1]).exists()
 
     def test_create_backlog_prints_file_path(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "create", "Backlog path ticket", "--backlog"])
+        result = runner.invoke(app, ["tk", "create", "Backlog path ticket", "--backlog"])
 
         assert result.exit_code == 0, result.output
         lines = result.output.strip().splitlines()
@@ -137,7 +137,7 @@ class TestTicketCreateOptions:
             Ticket(id="aaaa", status="open", title="Parent", body="", created=datetime.now(UTC)),
             tickets_dir / "aaaa.md",
         )
-        result = runner.invoke(cli.app, ["tk", "create", "Child ticket", "--parent", "aaaa"])
+        result = runner.invoke(app, ["tk", "create", "Child ticket", "--parent", "aaaa"])
         assert result.exit_code == 0
 
         # Find the created ticket
@@ -147,7 +147,7 @@ class TestTicketCreateOptions:
         assert child.parent == "aaaa"
 
     def test_create_with_tags(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "create", "Tagged ticket", "--tags", "frontend,polish"])
+        result = runner.invoke(app, ["tk", "create", "Tagged ticket", "--tags", "frontend,polish"])
         assert result.exit_code == 0
 
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -159,7 +159,7 @@ class TestTicketCreateOptions:
 
     def test_create_with_ac_flags(self, cli_project: Path) -> None:
         result = runner.invoke(
-            cli.app,
+            app,
             ["tk", "create", "AC ticket", "--ac", "Tests pass", "--ac", "No regressions"],
         )
         assert result.exit_code == 0, result.output
@@ -174,7 +174,7 @@ class TestTicketCreateOptions:
 
     def test_create_with_description_and_ac(self, cli_project: Path) -> None:
         result = runner.invoke(
-            cli.app,
+            app,
             [
                 "tk",
                 "create",
@@ -200,7 +200,7 @@ class TestTicketCreateOptions:
     def test_create_description_without_ac_still_has_ac_section(self, cli_project: Path) -> None:
         """When -d is provided without --ac, the AC section should still be present."""
         result = runner.invoke(
-            cli.app,
+            app,
             ["tk", "create", "Desc only", "-d", "Some description"],
         )
         assert result.exit_code == 0, result.output
@@ -219,7 +219,7 @@ class TestTicketCloseArchive:
         backlog_dir = backlog_root(cli_project) / "tickets"
         path = create_ticket_in(backlog_dir, "kin-arch")
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-arch"])
+        result = runner.invoke(app, ["tk", "close", "kin-arch"])
 
         assert result.exit_code == 0, result.output
         assert "closed" in result.output
@@ -232,7 +232,7 @@ class TestTicketCloseArchive:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         path = create_ticket_in(branch_dir, "kin-stay")
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-stay"])
+        result = runner.invoke(app, ["tk", "close", "kin-stay"])
 
         assert result.exit_code == 0, result.output
         # Should still be in the branch
@@ -252,7 +252,7 @@ class TestTicketCloseArchive:
         archived_path = archive_dir / "kin-rest.md"
         write_ticket(ticket, archived_path)
 
-        result = runner.invoke(cli.app, ["tk", "reopen", "kin-rest"])
+        result = runner.invoke(app, ["tk", "reopen", "kin-rest"])
 
         assert result.exit_code == 0, result.output
         # Should have moved back to backlog
@@ -274,7 +274,7 @@ class TestTicketCloseArchive:
         archived_path = archive_dir / "kin-strt.md"
         write_ticket(ticket, archived_path)
 
-        result = runner.invoke(cli.app, ["tk", "start", "kin-strt"])
+        result = runner.invoke(app, ["tk", "start", "kin-strt"])
 
         assert result.exit_code == 0, result.output
         assert not archived_path.exists()
@@ -298,7 +298,7 @@ class TestTicketCloseIdempotent:
         archived_path = archive_dir / "kin-idem.md"
         write_ticket(ticket, archived_path)
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-idem"])
+        result = runner.invoke(app, ["tk", "close", "kin-idem"])
 
         assert result.exit_code == 0, result.output
         # Should still be in archive, not moved elsewhere
@@ -313,7 +313,7 @@ class TestTicketCloseReason:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         path = create_ticket_in(branch_dir, "kin-reas")
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-reas", "-m", "No longer needed"])
+        result = runner.invoke(app, ["tk", "close", "kin-reas", "-m", "No longer needed"])
 
         assert result.exit_code == 0, result.output
         assert "closed" in result.output
@@ -326,7 +326,7 @@ class TestTicketCloseReason:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         path = create_ticket_in(branch_dir, "kin-rsnl")
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-rsnl", "--reason", "Duplicate of kin-xyz"])
+        result = runner.invoke(app, ["tk", "close", "kin-rsnl", "--reason", "Duplicate of kin-xyz"])
 
         assert result.exit_code == 0, result.output
         content = path.read_text()
@@ -337,7 +337,7 @@ class TestTicketCloseReason:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         path = create_ticket_in(branch_dir, "kin-nors")
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-nors"])
+        result = runner.invoke(app, ["tk", "close", "kin-nors"])
 
         assert result.exit_code == 0, result.output
         content = path.read_text()
@@ -350,7 +350,7 @@ class TestTicketCloseDuplicate:
         create_ticket_in(branch_dir, "kin-dup1")
         create_ticket_in(branch_dir, "kin-orig")
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-dup1", "--duplicate-of", "kin-orig"])
+        result = runner.invoke(app, ["tk", "close", "kin-dup1", "--duplicate-of", "kin-orig"])
 
         assert result.exit_code == 0, result.output
         assert "closed" in result.output
@@ -363,7 +363,7 @@ class TestTicketCloseDuplicate:
         path = create_ticket_in(branch_dir, "kin-dup2")
         create_ticket_in(branch_dir, "kin-xyz")
 
-        runner.invoke(cli.app, ["tk", "close", "kin-dup2", "--duplicate-of", "kin-xyz"])
+        runner.invoke(app, ["tk", "close", "kin-dup2", "--duplicate-of", "kin-xyz"])
 
         content = path.read_text()
         assert "Closed: Duplicate of kin-xyz" in content
@@ -373,7 +373,7 @@ class TestTicketCloseDuplicate:
         path = create_ticket_in(branch_dir, "kin-dup3")
         create_ticket_in(branch_dir, "kin-xyz")
 
-        runner.invoke(cli.app, ["tk", "close", "kin-dup3", "--duplicate-of", "kin-xyz", "-m", "Merged into kin-xyz"])
+        runner.invoke(app, ["tk", "close", "kin-dup3", "--duplicate-of", "kin-xyz", "-m", "Merged into kin-xyz"])
 
         content = path.read_text()
         assert "Closed: Merged into kin-xyz" in content
@@ -383,7 +383,7 @@ class TestTicketCloseDuplicate:
         create_ticket_in(branch_dir, "kin-dup4")
         create_ticket_in(branch_dir, "kin-orig")
 
-        runner.invoke(cli.app, ["tk", "close", "kin-dup4", "--duplicate-of", "kin-orig"])
+        runner.invoke(app, ["tk", "close", "kin-dup4", "--duplicate-of", "kin-orig"])
 
         content = (branch_dir / "kin-dup4.md").read_text()
         assert "duplicate-of: kin-orig" in content
@@ -395,7 +395,7 @@ class TestTicketCloseDuplicateValidation:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(branch_dir, "kin-dup1")
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-dup1", "--duplicate-of", "nonexistent"])
+        result = runner.invoke(app, ["tk", "close", "kin-dup1", "--duplicate-of", "nonexistent"])
 
         assert result.exit_code == 1
         assert "not found" in result.output.lower() or "nonexistent" in result.output.lower()
@@ -408,7 +408,7 @@ class TestTicketCloseDuplicateValidation:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(branch_dir, "kin-self")
 
-        result = runner.invoke(cli.app, ["tk", "close", "kin-self", "--duplicate-of", "kin-self"])
+        result = runner.invoke(app, ["tk", "close", "kin-self", "--duplicate-of", "kin-self"])
 
         assert result.exit_code == 1
         assert "itself" in result.output.lower() or "self" in result.output.lower()
@@ -422,7 +422,7 @@ class TestTicketCloseDuplicateValidation:
         create_ticket_in(branch_dir, "kin-target")
 
         # Use partial ID
-        result = runner.invoke(cli.app, ["tk", "close", "kin-dup5", "--duplicate-of", "kin-target"])
+        result = runner.invoke(app, ["tk", "close", "kin-dup5", "--duplicate-of", "kin-target"])
 
         assert result.exit_code == 0, result.output
         ticket = read_ticket(branch_dir / "kin-dup5.md")
@@ -449,7 +449,7 @@ class TestTicketCloseUnblocked:
         )
         write_ticket(blocked, tickets_dir / "dep1.md")
 
-        result = runner.invoke(cli.app, ["tk", "close", "blk1"])
+        result = runner.invoke(app, ["tk", "close", "blk1"])
 
         assert result.exit_code == 0, result.output
         assert "Unblocked 1 ticket(s):" in result.output
@@ -475,7 +475,7 @@ class TestTicketCloseUnblocked:
         write_ticket(blocked, tickets_dir / "dep2.md")
 
         # Close only the first blocker
-        result = runner.invoke(cli.app, ["tk", "close", "bk01"])
+        result = runner.invoke(app, ["tk", "close", "bk01"])
 
         assert result.exit_code == 0, result.output
         assert "Unblocked" not in result.output
@@ -499,7 +499,7 @@ class TestTicketCloseUnblocked:
         write_ticket(blocked, tickets_dir / "dep3.md")
 
         # Close the last blocker
-        result = runner.invoke(cli.app, ["tk", "close", "bk12"])
+        result = runner.invoke(app, ["tk", "close", "bk12"])
 
         assert result.exit_code == 0, result.output
         assert "Unblocked 1 ticket(s):" in result.output
@@ -513,7 +513,7 @@ class TestTicketCloseUnblocked:
         standalone = Ticket(id="solo", status="open", title="Standalone", body="", created=datetime.now(UTC))
         write_ticket(standalone, tickets_dir / "solo.md")
 
-        result = runner.invoke(cli.app, ["tk", "close", "solo"])
+        result = runner.invoke(app, ["tk", "close", "solo"])
 
         assert result.exit_code == 0, result.output
         assert "Unblocked" not in result.output
@@ -543,7 +543,7 @@ class TestTicketCloseUnblocked:
         write_ticket(dep_a, tickets_dir / "da01.md")
         write_ticket(dep_b, tickets_dir / "db01.md")
 
-        result = runner.invoke(cli.app, ["tk", "close", "bk21"])
+        result = runner.invoke(app, ["tk", "close", "bk21"])
 
         assert result.exit_code == 0, result.output
         assert "Unblocked 2 ticket(s):" in result.output
@@ -566,7 +566,7 @@ class TestTicketCloseUnblocked:
         write_ticket(blocker, tickets_dir / "bk31.md")
         write_ticket(already_closed, tickets_dir / "ac01.md")
 
-        result = runner.invoke(cli.app, ["tk", "close", "bk31"])
+        result = runner.invoke(app, ["tk", "close", "bk31"])
 
         assert result.exit_code == 0, result.output
         assert "Unblocked" not in result.output
@@ -581,7 +581,7 @@ class TestTicketClosed:
             Ticket(id="aaaa", status="closed", title="Done ticket", body="", created=datetime.now(UTC)),
             tickets_dir / "aaaa.md",
         )
-        result = runner.invoke(cli.app, ["tk", "list", "--closed"])
+        result = runner.invoke(app, ["tk", "list", "--closed"])
         assert result.exit_code == 0
         assert "aaaa" in result.output
 
@@ -595,7 +595,7 @@ class TestTicketClosed:
             Ticket(id="bbbb", status="open", title="Open", body="", created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(cli.app, ["tk", "list", "--closed"])
+        result = runner.invoke(app, ["tk", "list", "--closed"])
         assert result.exit_code == 0
         assert "aaaa" in result.output
         assert "bbbb" in result.output
@@ -611,7 +611,7 @@ class TestTicketClosed:
         )
 
         before = datetime.now(UTC)
-        runner.invoke(cli.app, ["tk", "close", "aaaa"])
+        runner.invoke(app, ["tk", "close", "aaaa"])
         after = datetime.now(UTC)
 
         ticket = read_ticket(tickets_dir / "aaaa.md")
@@ -630,7 +630,7 @@ class TestTicketClosed:
             Ticket(id="bbbb", status="open", title="Open", body="", created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(cli.app, ["tk", "list", "--status", "closed"])
+        result = runner.invoke(app, ["tk", "list", "--status", "closed"])
         assert result.exit_code == 0
         assert "aaaa" in result.output
         assert "bbbb" not in result.output
@@ -641,7 +641,7 @@ class TestTicketDelete:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         path = create_ticket_in(branch_dir, "kin-del1")
 
-        result = runner.invoke(cli.app, ["tk", "delete", "kin-del1", "--force"])
+        result = runner.invoke(app, ["tk", "delete", "kin-del1", "--force"])
 
         assert result.exit_code == 0, result.output
         assert "Deleted" in result.output
@@ -649,7 +649,7 @@ class TestTicketDelete:
         assert not path.exists()
 
     def test_delete_not_found(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "delete", "nope", "--force"])
+        result = runner.invoke(app, ["tk", "delete", "nope", "--force"])
 
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
@@ -658,7 +658,7 @@ class TestTicketDelete:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         path = create_ticket_in(branch_dir, "kin-del2")
 
-        result = runner.invoke(cli.app, ["tk", "delete", "kin-del2"], input="n\n")
+        result = runner.invoke(app, ["tk", "delete", "kin-del2"], input="n\n")
 
         assert result.exit_code == 0
         assert "Cancelled" in result.output
@@ -668,7 +668,7 @@ class TestTicketDelete:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         path = create_ticket_in(branch_dir, "kin-del3")
 
-        result = runner.invoke(cli.app, ["tk", "delete", "kin-del3"], input="y\n")
+        result = runner.invoke(app, ["tk", "delete", "kin-del3"], input="y\n")
 
         assert result.exit_code == 0, result.output
         assert "Deleted" in result.output
@@ -687,7 +687,7 @@ class TestTicketDelete:
             AgentState(name="peasant-kin-del4", status="working", pid=99999),
         )
 
-        result = runner.invoke(cli.app, ["tk", "delete", "kin-del4", "--force"])
+        result = runner.invoke(app, ["tk", "delete", "kin-del4", "--force"])
 
         assert result.exit_code == 1
         assert "active peasant" in result.output.lower() or "peasant" in result.output.lower()
@@ -699,7 +699,7 @@ class TestTicketMove:
         backlog_dir = backlog_root(cli_project) / "tickets"
         create_ticket_in(backlog_dir, "kin-mv01")
 
-        result = runner.invoke(cli.app, ["tk", "move", "kin-mv01"])
+        result = runner.invoke(app, ["tk", "move", "kin-mv01"])
 
         assert result.exit_code == 0, result.output
         assert "Moved" in result.output
@@ -713,7 +713,7 @@ class TestTicketMove:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(tickets_dir, "kin-mv04")
 
-        result = runner.invoke(cli.app, ["tk", "move", "kin-mv04", "--to", "backlog"])
+        result = runner.invoke(app, ["tk", "move", "kin-mv04", "--to", "backlog"])
 
         assert result.exit_code == 0, result.output
         assert "Moved kin-mv04 to backlog" in result.output
@@ -725,7 +725,7 @@ class TestTicketMove:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(tickets_dir, "kin-mv02")
 
-        result = runner.invoke(cli.app, ["tk", "move", "kin-mv02"])
+        result = runner.invoke(app, ["tk", "move", "kin-mv02"])
 
         assert result.exit_code == 0, result.output
         assert "already in branch 'feature-ticket-test'" in result.output
@@ -739,7 +739,7 @@ class TestTicketMove:
             backlog_dir = backlog_root(base) / "tickets"
             create_ticket_in(backlog_dir, "kin-mv03")
 
-            result = runner.invoke(cli.app, ["tk", "move", "kin-mv03"])
+            result = runner.invoke(app, ["tk", "move", "kin-mv03"])
 
             assert result.exit_code == 1
             assert "No current branch active" in result.output
@@ -750,7 +750,7 @@ class TestTicketMove:
         backlog_dir = backlog_root(cli_project) / "tickets"
         create_ticket_in(backlog_dir, "kin-mv05")
 
-        result = runner.invoke(cli.app, ["tk", "move", "kin-mv05", "--to", "branch"])
+        result = runner.invoke(app, ["tk", "move", "kin-mv05", "--to", "branch"])
 
         assert result.exit_code == 0, result.output
         assert "Moved" in result.output
@@ -765,7 +765,7 @@ class TestTicketPull:
         backlog_dir = backlog_root(cli_project) / "tickets"
         create_ticket_in(backlog_dir, "kin-pull")
 
-        result = runner.invoke(cli.app, ["tk", "pull", "kin-pull"])
+        result = runner.invoke(app, ["tk", "pull", "kin-pull"])
 
         assert result.exit_code == 0, result.output
         assert "Pulled kin-pull" in result.output
@@ -781,7 +781,7 @@ class TestTicketPull:
         create_ticket_in(backlog_dir, "kin-aa01")
         create_ticket_in(backlog_dir, "kin-bb02")
 
-        result = runner.invoke(cli.app, ["tk", "pull", "kin-aa01", "kin-bb02"])
+        result = runner.invoke(app, ["tk", "pull", "kin-aa01", "kin-bb02"])
 
         assert result.exit_code == 0, result.output
         lines = result.output.strip().split("\n")
@@ -795,20 +795,20 @@ class TestTicketPull:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(branch_dir, "kin-brnc")
 
-        result = runner.invoke(cli.app, ["tk", "pull", "kin-brnc"])
+        result = runner.invoke(app, ["tk", "pull", "kin-brnc"])
 
         assert result.exit_code == 1
         assert "not found in backlog" in result.output
 
     def test_pull_not_found_errors(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "pull", "kin-nope"])
+        result = runner.invoke(app, ["tk", "pull", "kin-nope"])
 
         assert result.exit_code == 1
         assert "not found" in result.output
 
     def test_pull_no_ids_errors(self, cli_project: Path) -> None:
         """Invoking `kd tk pull` with no IDs must fail, not silently succeed."""
-        result = runner.invoke(cli.app, ["tk", "pull"])
+        result = runner.invoke(app, ["tk", "pull"])
 
         assert result.exit_code != 0
         assert "TICKET_IDS" in result.output or "at least one ticket ID" in result.output
@@ -822,13 +822,13 @@ class TestTicketPull:
             backlog_dir = backlog_root(base) / "tickets"
             create_ticket_in(backlog_dir, "kin-norun")
 
-            result = runner.invoke(cli.app, ["tk", "pull", "kin-norun"])
+            result = runner.invoke(app, ["tk", "pull", "kin-norun"])
 
             assert result.exit_code == 1
             assert "No active session." in result.output
 
     def test_pull_all_flag_is_not_supported(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "pull", "--all"])
+        result = runner.invoke(app, ["tk", "pull", "--all"])
 
         assert result.exit_code != 0
         assert "No such option" in result.output
@@ -839,7 +839,7 @@ class TestTicketPull:
         create_ticket_in(backlog_dir, "kin-good")
         # kin-bad doesn't exist — will fail on second ID
 
-        result = runner.invoke(cli.app, ["tk", "pull", "kin-good", "kin-bad"])
+        result = runner.invoke(app, ["tk", "pull", "kin-good", "kin-bad"])
 
         assert result.exit_code == 1
         # kin-good should NOT have been moved (two-pass validation)
@@ -850,7 +850,7 @@ class TestTicketPull:
         backlog_dir = backlog_root(cli_project) / "tickets"
         create_ticket_in(backlog_dir, "kin-dupe")
 
-        result = runner.invoke(cli.app, ["tk", "pull", "kin-dupe", "kin-dupe"])
+        result = runner.invoke(app, ["tk", "pull", "kin-dupe", "kin-dupe"])
 
         assert result.exit_code == 0, result.output
         lines = [line for line in result.stdout.strip().split("\n") if line]
@@ -865,7 +865,7 @@ class TestTicketPull:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(branch_dir, "kin-here")
 
-        result = runner.invoke(cli.app, ["tk", "pull", "kin-here"])
+        result = runner.invoke(app, ["tk", "pull", "kin-here"])
 
         assert result.exit_code == 1
         assert "not found in backlog" in result.output
@@ -878,11 +878,11 @@ class TestTicketPull:
         create_ticket_in(backlog_dir, "kin-rdy1")
 
         # Pull it
-        result = runner.invoke(cli.app, ["tk", "pull", "kin-rdy1"])
+        result = runner.invoke(app, ["tk", "pull", "kin-rdy1"])
         assert result.exit_code == 0, result.output
 
         # Now check tk ready
-        result = runner.invoke(cli.app, ["tk", "list", "--ready", "--json"])
+        result = runner.invoke(app, ["tk", "list", "--ready", "--json"])
         assert result.exit_code == 0, result.output
         assert "kin-rdy1" in result.output
 
@@ -896,7 +896,7 @@ class TestTicketAddNote:
             Ticket(id="aaaa", status="open", title="Test", body="Body.", created=datetime.now(UTC)),
             tickets_dir / "aaaa.md",
         )
-        result = runner.invoke(cli.app, ["tk", "add-note", "aaaa", "This is a note"])
+        result = runner.invoke(app, ["tk", "add-note", "aaaa", "This is a note"])
         assert result.exit_code == 0
         assert "note added" in result.output
 

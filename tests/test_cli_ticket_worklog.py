@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from kingdom import cli
+from kingdom.cli import app
 from kingdom.state import branch_root
 from kingdom.ticket import Ticket, write_ticket
 
@@ -35,7 +35,7 @@ class TestTicketLog:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(tickets_dir, "kin-lg01")
 
-        result = runner.invoke(cli.app, ["tk", "log", "kin-lg01", "Started working on this"])
+        result = runner.invoke(app, ["tk", "log", "kin-lg01", "Started working on this"])
 
         assert result.exit_code == 0, result.output
         assert "kin-lg01" in result.output
@@ -50,8 +50,8 @@ class TestTicketLog:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(tickets_dir, "kin-lg02")
 
-        runner.invoke(cli.app, ["tk", "log", "kin-lg02", "First entry"])
-        result = runner.invoke(cli.app, ["tk", "log", "kin-lg02", "Second entry"])
+        runner.invoke(app, ["tk", "log", "kin-lg02", "First entry"])
+        result = runner.invoke(app, ["tk", "log", "kin-lg02", "Second entry"])
 
         assert result.exit_code == 0, result.output
 
@@ -65,7 +65,7 @@ class TestTicketLog:
         assert first_pos < second_pos
 
     def test_log_not_found(self, cli_project: Path) -> None:
-        result = runner.invoke(cli.app, ["tk", "log", "kin-nope", "message"])
+        result = runner.invoke(app, ["tk", "log", "kin-nope", "message"])
 
         assert result.exit_code == 1
         assert "not found" in result.output
@@ -82,7 +82,7 @@ class TestTicketLog:
         )
         write_ticket(ticket, tickets_dir / "kin-lg03.md")
 
-        result = runner.invoke(cli.app, ["tk", "log", "kin-lg03", "Did some work"])
+        result = runner.invoke(app, ["tk", "log", "kin-lg03", "Did some work"])
 
         assert result.exit_code == 0, result.output
 
@@ -97,6 +97,6 @@ class TestTicketLog:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(tickets_dir, "kin-lg04")
 
-        result = runner.invoke(cli.app, ["tk", "log", "kin-lg04"])
+        result = runner.invoke(app, ["tk", "log", "kin-lg04"])
 
         assert result.exit_code != 0

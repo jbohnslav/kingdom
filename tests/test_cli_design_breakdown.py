@@ -4,7 +4,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from kingdom import cli
+from kingdom.cli import app
 from kingdom.state import branch_root, ensure_branch_layout, set_current_run
 
 
@@ -20,7 +20,7 @@ def test_cli_design_prints_path() -> None:
         design_path = branch_root(base, feature) / "design.md"
         design_path.write_text("# Design: example-feature\n", encoding="utf-8")
 
-        result = runner.invoke(cli.app, ["design"])
+        result = runner.invoke(app, ["design"])
         assert result.exit_code == 0
         assert "design.md" in result.output
 
@@ -34,7 +34,7 @@ def test_cli_design_fails_when_no_design() -> None:
         ensure_branch_layout(base, feature)
         set_current_run(base, feature)
 
-        result = runner.invoke(cli.app, ["design"])
+        result = runner.invoke(app, ["design"])
         assert result.exit_code == 1
         assert "No design document found" in result.output
 
@@ -51,7 +51,7 @@ def test_cli_design_show_renders_markdown() -> None:
         design_path = branch_root(base, feature) / "design.md"
         design_path.write_text("# Design: example-feature\n\nThis is the design.\n", encoding="utf-8")
 
-        result = runner.invoke(cli.app, ["design", "show"])
+        result = runner.invoke(app, ["design", "show"])
         assert result.exit_code == 0
         assert "Design: example-feature" in result.output
 
@@ -70,7 +70,7 @@ def test_cli_design_approve_sets_flag() -> None:
         design_path = branch_root(base, feature) / "design.md"
         design_path.write_text("# Design: example-feature\n", encoding="utf-8")
 
-        result = runner.invoke(cli.app, ["design", "approve"])
+        result = runner.invoke(app, ["design", "approve"])
         assert result.exit_code == 0
 
         state_path = branch_root(base, feature) / "state.json"
