@@ -7,8 +7,10 @@ from pathlib import Path
 
 import yaml
 
-SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "kingdom"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SKILL_DIR = REPO_ROOT / "skills" / "kingdom"
 SKILL_MD = SKILL_DIR / "SKILL.md"
+PKG_SKILL_DIR = REPO_ROOT / "src" / "kingdom" / "skill"
 
 
 def parse_frontmatter(path: Path) -> dict:
@@ -93,3 +95,51 @@ class TestReferences:
         for ref_file in sorted(refs_dir.glob("*.md")):
             rel = f"references/{ref_file.name}"
             assert rel in text, f"Orphan reference file not linked from SKILL.md: {rel}"
+
+
+class TestPackagedSkillMirrorsCanonical:
+    """Ensure src/kingdom/skill/ mirrors skills/kingdom/ (symlink or identical content)."""
+
+    def test_skill_md_mirrors_canonical(self) -> None:
+        """Packaged SKILL.md must be a symlink to, or match content of, canonical copy."""
+        pkg = PKG_SKILL_DIR / "SKILL.md"
+        canonical = SKILL_DIR / "SKILL.md"
+        assert pkg.exists(), f"Packaged SKILL.md not found: {pkg}"
+        if pkg.is_symlink():
+            assert (
+                pkg.resolve() == canonical.resolve()
+            ), f"SKILL.md symlink points to {pkg.resolve()}, expected {canonical.resolve()}"
+        else:
+            assert (
+                pkg.read_text() == canonical.read_text()
+            ), "Packaged SKILL.md content differs from canonical skills/kingdom/SKILL.md"
+
+    def test_reference_files_mirror_canonical(self) -> None:
+        """Every .md in packaged references/ must mirror its canonical counterpart."""
+        canonical_refs = SKILL_DIR / "references"
+        pkg_refs = PKG_SKILL_DIR / "references"
+        canonical_files = sorted(canonical_refs.glob("*.md"))
+        assert canonical_files, "No canonical reference .md files found"
+
+        for canonical_file in canonical_files:
+            pkg_file = pkg_refs / canonical_file.name
+            assert pkg_file.exists(), f"Packaged reference {canonical_file.name} missing from {pkg_refs}"
+            if pkg_file.is_symlink():
+                assert pkg_file.resolve() == canonical_file.resolve(), (
+                    f"{canonical_file.name} symlink points to {pkg_file.resolve()}, "
+                    f"expected {canonical_file.resolve()}"
+                )
+            else:
+                assert (
+                    pkg_file.read_text() == canonical_file.read_text()
+                ), f"Packaged {canonical_file.name} content differs from canonical copy"
+
+    def test_no_extra_packaged_references(self) -> None:
+        """Packaged references/ should not have .md files absent from canonical."""
+        canonical_refs = SKILL_DIR / "references"
+        pkg_refs = PKG_SKILL_DIR / "references"
+        canonical_names = {f.name for f in canonical_refs.glob("*.md")}
+        for pkg_file in pkg_refs.glob("*.md"):
+            assert (
+                pkg_file.name in canonical_names
+            ), f"Extra packaged reference {pkg_file.name} not in canonical skills/kingdom/references/"
