@@ -458,6 +458,78 @@ class TestPeasantShow:
             assert result.exit_code == 0
             assert "no agent activity log" in result.output
 
+    def test_show_commits(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+
+            # Set up a real git repo so git log works
+            import subprocess
+
+            subprocess.run(["git", "init", "-b", "main"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(base), capture_output=True)
+
+            setup_project(base)
+            create_test_ticket(base)
+
+            # Initial commit on main
+            subprocess.run(["git", "add", "."], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=str(base), capture_output=True)
+
+            # Create peasant branch with a commit
+            subprocess.run(["git", "checkout", "-b", "ticket/kin-test"], cwd=str(base), capture_output=True)
+            (base / "fix.py").write_text("# fix\n", encoding="utf-8")
+            subprocess.run(["git", "add", "fix.py"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "fix: the bug"], cwd=str(base), capture_output=True)
+
+            # Switch back to main so HEAD != ticket branch
+            subprocess.run(["git", "checkout", "main"], cwd=str(base), capture_output=True)
+
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "Commits" in result.output
+            assert "fix: the bug" in result.output
+
+    def test_show_commits_excludes_parent_only_commits(self) -> None:
+        """Verify two-dot range: commits only on parent branch are excluded."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            import subprocess
+
+            subprocess.run(["git", "init", "-b", "main"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(base), capture_output=True)
+
+            setup_project(base)
+            create_test_ticket(base)
+
+            # Initial commit on main
+            subprocess.run(["git", "add", "."], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=str(base), capture_output=True)
+
+            # Create peasant branch with a commit
+            subprocess.run(["git", "checkout", "-b", "ticket/kin-test"], cwd=str(base), capture_output=True)
+            (base / "fix.py").write_text("# fix\n", encoding="utf-8")
+            subprocess.run(["git", "add", "fix.py"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "fix: peasant work"], cwd=str(base), capture_output=True)
+
+            # Switch back to main and add a parent-only commit
+            subprocess.run(["git", "checkout", "main"], cwd=str(base), capture_output=True)
+            (base / "unrelated.py").write_text("# unrelated\n", encoding="utf-8")
+            subprocess.run(["git", "add", "unrelated.py"], cwd=str(base), capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", "feat: unrelated parent work"],
+                cwd=str(base),
+                capture_output=True,
+            )
+
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "fix: peasant work" in result.output
+            assert "unrelated parent work" not in result.output
+
     def test_show_ticket_not_found(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

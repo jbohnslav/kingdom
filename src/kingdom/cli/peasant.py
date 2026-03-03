@@ -546,7 +546,7 @@ def peasant_show(
         start_sha = state.start_sha
         log_spec = [f"{start_sha}..HEAD"] if start_sha else ["HEAD"]
     else:
-        log_spec = [f"HEAD...{branch_name}"]
+        log_spec = [f"HEAD..{branch_name}"]
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", *log_spec],
