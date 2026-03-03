@@ -202,6 +202,7 @@ When a command fails, diagnose before retrying. Never silently drop a failed ope
 - **`kd council ask` times out or errors.** Run `kd council retry` to re-query failed members. Don't re-run the same ask from scratch.
 - **`kd peasant start` fails — ticket is in_review or closed.** The ticket needs to be reopened or the review resolved before a peasant can work it. Check ticket status with `kd tk show <id>` and tell the King.
 - **Peasant seems stuck.** Check `kd peasant status` and `kd peasant logs <id>` before escalating to the King.
+- **Council query sent — want to check on it.** Run `kd council show` to read the thread and see which members have responded. Don't re-run `kd council ask` with the same prompt.
 
 ## Council
 
