@@ -26,7 +26,7 @@ class TestCliWiring:
         """All expected sub-apps are reachable from the top-level app."""
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("council", "design", "peasant", "config", "ticket"):
+        for cmd in ("council", "design", "peasant", "config", "ticket", "update"):
             assert cmd in result.output, f"{cmd} not in --help output"
         # tk is a hidden alias — verify it's mounted by invoking it
         tk_result = runner.invoke(app, ["tk", "--help"])
@@ -448,3 +448,80 @@ class TestProjectRootDiscovery:
             result = runner.invoke(app, ["tk", "list"])
         assert result.exit_code == 1
         assert "kd start" in result.output or ".kd/" in result.output
+
+
+# ---------------------------------------------------------------------------
+# kd update
+# ---------------------------------------------------------------------------
+
+
+class TestUpdate:
+    """Tests for the kd update command."""
+
+    def test_update_success(self) -> None:
+        """kd update upgrades CLI and refreshes skill files."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Updated kingdom-cli v0.1.0 -> v0.2.0"
+        mock_result.stderr = ""
+
+        with (
+            patch("kingdom.cli.subprocess.run", return_value=mock_result),
+            patch("kingdom.cli.install_skill") as mock_skill,
+            patch("pathlib.Path.is_symlink", return_value=False),
+        ):
+            result = runner.invoke(app, ["update"])
+            assert result.exit_code == 0
+            assert "Updated kingdom-cli" in result.output
+            assert "Skill files refreshed" in result.output
+            mock_skill.assert_called_once()
+
+    def test_update_upgrade_failure(self) -> None:
+        """kd update reports failure when uv upgrade fails."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "error: package not found"
+
+        with (
+            patch("kingdom.cli.subprocess.run", return_value=mock_result),
+            patch("kingdom.cli.install_skill"),
+            patch("pathlib.Path.is_symlink", return_value=False),
+        ):
+            result = runner.invoke(app, ["update"])
+            assert result.exit_code == 1
+            assert "error: package not found" in result.output
+
+    def test_update_uv_not_found(self) -> None:
+        """kd update handles missing uv gracefully."""
+        with (
+            patch("kingdom.cli.subprocess.run", side_effect=FileNotFoundError),
+            patch("kingdom.cli.install_skill"),
+            patch("pathlib.Path.is_symlink", return_value=False),
+        ):
+            result = runner.invoke(app, ["update"])
+            assert result.exit_code == 1
+            assert "uv not found" in result.output
+
+    def test_update_skips_skill_on_dev_symlink(self) -> None:
+        """kd update skips skill refresh when target is a dev symlink."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Nothing to upgrade"
+        mock_result.stderr = ""
+
+        with (
+            patch("kingdom.cli.subprocess.run", return_value=mock_result),
+            patch("kingdom.cli.install_skill") as mock_skill,
+            patch("pathlib.Path.is_symlink", return_value=True),
+        ):
+            result = runner.invoke(app, ["update"])
+            assert result.exit_code == 0
+            assert "dev symlink" in result.output
+            mock_skill.assert_not_called()
+
+    def test_update_appears_in_help(self) -> None:
+        """kd update is visible in --help output."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "update" in result.output

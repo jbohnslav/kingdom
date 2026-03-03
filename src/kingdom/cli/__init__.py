@@ -386,6 +386,60 @@ def status(
                     typer.echo(f"  {assignee}: {t.id} [{t.status}] {t.title}")
 
 
+@app.command(help="Upgrade the CLI and refresh skill files.")
+def update() -> None:
+    """Run ``uv tool upgrade kingdom-cli`` then refresh Claude skill files."""
+    console = Console()
+
+    # Step 1: uv tool upgrade kingdom-cli
+    typer.echo("Upgrading kingdom-cli...")
+    try:
+        result = subprocess.run(
+            ["uv", "tool", "upgrade", "kingdom-cli"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        upgrade_ok = result.returncode == 0
+        upgrade_output = result.stdout.strip() or result.stderr.strip()
+    except FileNotFoundError:
+        upgrade_ok = False
+        upgrade_output = "uv not found — install it first (https://docs.astral.sh/uv/)"
+    except subprocess.TimeoutExpired:
+        upgrade_ok = False
+        upgrade_output = "uv tool upgrade timed out"
+
+    if upgrade_ok:
+        styled_echo(f"  ✓ {upgrade_output or 'already up to date'}", fg=typer.colors.GREEN)
+    else:
+        styled_echo(f"  ✗ {upgrade_output}", fg=typer.colors.RED)
+
+    # Step 2: refresh skill files
+    typer.echo("Refreshing skill files...")
+    skill_target = Path.home() / ".claude" / "skills" / "kingdom"
+    if skill_target.is_symlink():
+        styled_echo("  ○ Skipped (dev symlink)", fg=typer.colors.YELLOW)
+        skill_status = "skipped (dev symlink)"
+    else:
+        install_skill()
+        styled_echo("  ✓ Skill files refreshed", fg=typer.colors.GREEN)
+        skill_status = "refreshed"
+
+    # Summary
+    typer.echo()
+    upgrade_summary = "upgraded" if upgrade_ok else "failed"
+    console.print(
+        Panel(
+            f"CLI: {upgrade_summary}  |  Skills: {skill_status}",
+            title="[bold]kd update[/bold]",
+            border_style="green" if upgrade_ok else "yellow",
+        )
+    )
+
+    if not upgrade_ok:
+        raise typer.Exit(code=1)
+
+
 @app.command(help="Check config and agent CLIs.")
 def doctor(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
