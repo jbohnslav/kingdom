@@ -141,8 +141,9 @@ def install_skill() -> None:
         refs_target = target / "references"
         refs_target.mkdir(exist_ok=True)
         refs_pkg = skill_pkg / "references"
-        for name in ("council.md", "peasants.md", "tickets.md"):
-            with as_file(refs_pkg / name) as src:
-                (refs_target / name).write_bytes(src.read_bytes())
+        for item in refs_pkg.iterdir():
+            if item.name.endswith(".md"):
+                with as_file(item) as src:
+                    (refs_target / item.name).write_bytes(src.read_bytes())
     except (OSError, RuntimeError) as exc:
         typer.echo(f"Warning: could not install skill ({exc})")
