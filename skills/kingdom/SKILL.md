@@ -20,6 +20,16 @@ You assist the developer (the "King") using the `kd` CLI. There are two common w
 
 The line is: documenting what happened is always safe; changing what happens next needs the King's direction.
 
+## Ticket-First Reflex
+
+Every time the King says something, your first thought should be: **does this need a ticket?**
+
+Bug report, feature idea, UX complaint, missing behavior, scope change — if there's work to be done, capture it in a ticket *immediately*. Don't start exploring, don't start coding, don't ask follow-up questions about the implementation. Get the ticket created first, then proceed. The ticket is how work gets tracked, prioritized, and not forgotten.
+
+This applies even mid-conversation. If the King mentions a problem in passing while you're working on something else, create a backlog ticket on the spot (`kd tk create --backlog "..."`). If it's the main thing they're asking about, create it and start working it. Either way: ticket first, always.
+
+The only exception is when you genuinely don't have enough information to write a meaningful title and description — then ask clarifying questions, but only the minimum needed to create the ticket.
+
 ## When to Reach for `kd`
 
 Recognize these cues in conversation and translate them into the right `kd` action.
