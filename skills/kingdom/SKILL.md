@@ -19,10 +19,10 @@ You assist the developer (the "King") using the `kd` CLI. There are two common w
 ```
 git checkout -b <branch>
 kd start                        # init branch
-kd design                       # create design doc
+kd design show                  # view/iterate on design doc
 # iterate with council, co-author the design with the King
 kd design approve
-kd breakdown                    # split design into tickets
+# create tickets from the design (via skill or manually with kd tk create)
 # execute tickets (see below)
 kd done                         # archive branch before merging PR
 ```
@@ -77,15 +77,18 @@ This applies regardless of execution mode.
 
 ```bash
 kd start / status / done              # branch lifecycle
-kd design / design approve            # design doc
-kd breakdown                          # design → tickets
-kd tk list / show / ready             # inspect tickets
+kd design show / design approve       # design doc
+kd tk list / show / list --ready      # inspect tickets
 kd tk start <id> / close <id>         # work a ticket
 kd tk create "title"                  # new ticket (--backlog for backlog)
 kd tk pull <id>...                    # pull from backlog
+kd tk deps add/remove/tree/cycle      # manage dependencies
 kd council ask "prompt"               # consult council
+kd council chat                       # council chat TUI
 kd peasant start <id>                 # launch background worker
 kd peasant status / watch <id>        # monitor peasants
+kd peasant review / accept / reject   # review cycle
+kd peasant msg / read                 # communicate with peasants
 ```
 
 Run `kd <command> --help` for flags and options not listed here.

@@ -23,12 +23,12 @@ kd tk create -t feature -d "Description here" "Title"  # with description
 kd tk create --backlog "Future improvement"             # create in backlog, not current branch
 ```
 
-Types: `task`, `bug`, `feature`. Priorities: 1 (highest) to 3.
+Types: `task`, `bug`, `feature`. Priorities: 0 (highest) to 3.
 
 ## Working Tickets
 
 ```bash
-kd tk ready              # show unblocked tickets
+kd tk list --ready       # show unblocked tickets
 kd tk start <id>         # mark in_progress
 # ... do the work ...
 kd tk close <id>         # mark closed
@@ -40,8 +40,10 @@ kd tk reopen <id>        # reopen if needed
 Tickets can depend on other tickets. A ticket with unresolved dependencies won't show in `kd tk ready`.
 
 ```bash
-kd tk dep <id> <dep-id>      # id depends on dep-id
-kd tk undep <id> <dep-id>    # remove dependency
+kd tk deps add <id> <dep-id>      # id depends on dep-id
+kd tk deps remove <id> <dep-id>   # remove dependency
+kd tk deps tree <id>               # show dependency tree
+kd tk deps cycle                   # detect dependency cycles
 ```
 
 ## Assignment
@@ -69,4 +71,4 @@ The backlog at `.kd/backlog/tickets/` holds tickets not assigned to any branch. 
 - **Commit `.kd/` changes as you go** — ticket state changes, closures, and moves are tracked in git
 - **Use dependencies** to enforce ordering when tickets have prerequisites
 - **Append a work log** to the ticket body when closing — record key decisions and what was done
-- **Use `kd tk ready`** to find the next unblocked ticket rather than picking arbitrarily
+- **Use `kd tk list --ready`** to find the next unblocked ticket rather than picking arbitrarily

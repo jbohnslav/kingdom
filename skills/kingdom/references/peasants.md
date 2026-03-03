@@ -45,10 +45,12 @@ kd peasant clean <id>        # remove worktree when done
 - **Hand mode** for sequential work that needs the full repo context
 - **Multiple peasants** can run simultaneously on different tickets in worktree mode
 
-## Autonomous Work
+## Reviewing Peasant Work
 
-For running an agent loop on a ticket without the peasant/worktree setup:
+When a peasant finishes its ticket, review and accept or reject:
 
 ```bash
-kd work <id>                 # run autonomous agent loop on a ticket
+kd peasant review <id>       # review completed work (shows diff + worklog)
+kd peasant accept <id>       # accept work and close the ticket
+kd peasant reject <id>       # reject with feedback — peasant iterates
 ```
