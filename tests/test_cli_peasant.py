@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from kingdom.cli.peasant import peasant_app, resolve_peasant_context
 from kingdom.cli.ticket import ticket_app
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
-from kingdom.state import backlog_root, ensure_branch_layout, logs_root, set_current_run
+from kingdom.state import backlog_root, ensure_branch_layout, logs_root, normalize_branch_name, set_current_run
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
@@ -535,6 +535,58 @@ class TestPeasantShow:
             assert result.exit_code == 0
             assert "fix: peasant work" in result.output
             assert "unrelated parent work" not in result.output
+
+    def test_show_commits_with_normalized_current_run(self) -> None:
+        """Regression: kd start stores normalized name in .kd/current.
+
+        When the branch has slashes (e.g. feature/peasant-test), kd start
+        writes the normalized form (feature-peasant-test) to .kd/current.
+        peasant show must resolve back to the real git ref for git log.
+        """
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            import subprocess
+
+            subprocess.run(["git", "init", "-b", "main"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(base), capture_output=True)
+
+            # Mimic real kd start: ensure_branch_layout + set_current_run with NORMALIZED name
+            ensure_branch_layout(base, BRANCH)
+            normalized = normalize_branch_name(BRANCH)
+            set_current_run(base, normalized)
+
+            # Store original branch name in state.json (like kd start does)
+            from kingdom.state import branch_root, read_json, write_json
+
+            state_path = branch_root(base, BRANCH) / "state.json"
+            state_data = read_json(state_path)
+            state_data["branch"] = BRANCH
+            write_json(state_path, state_data)
+
+            create_test_ticket(base)
+
+            # Initial commit on main
+            subprocess.run(["git", "add", "."], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=str(base), capture_output=True)
+
+            # Create the feature branch with slashes (the real git ref)
+            subprocess.run(["git", "checkout", "-b", BRANCH], cwd=str(base), capture_output=True)
+
+            # Create peasant branch with a commit
+            subprocess.run(["git", "checkout", "-b", "ticket/kin-test"], cwd=str(base), capture_output=True)
+            (base / "fix.py").write_text("# fix\n", encoding="utf-8")
+            subprocess.run(["git", "add", "fix.py"], cwd=str(base), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "fix: slash branch bug"], cwd=str(base), capture_output=True)
+
+            # Switch back to main so HEAD != ticket branch
+            subprocess.run(["git", "checkout", "main"], cwd=str(base), capture_output=True)
+
+            result = runner.invoke(peasant_app, ["show", "kin-test"])
+
+            assert result.exit_code == 0
+            assert "Commits" in result.output
+            assert "fix: slash branch bug" in result.output
 
     def test_show_ticket_not_found(self) -> None:
         with runner.isolated_filesystem():

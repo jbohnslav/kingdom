@@ -549,7 +549,13 @@ def peasant_show(
         start_sha = state.start_sha
         log_spec = [f"{start_sha}..HEAD"] if start_sha else ["HEAD"]
     else:
-        log_spec = [f"{ctx.feature}..{branch_name}"]
+        # ctx.feature may be normalized (slashes→dashes); resolve the
+        # original git branch name from state.json for a valid ref.
+        from kingdom.state import read_json
+
+        st = read_json(branch_root(ctx.base, ctx.feature) / "state.json")
+        git_ref = st.get("branch", ctx.feature)
+        log_spec = [f"{git_ref}..{branch_name}"]
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", *log_spec],
