@@ -333,7 +333,6 @@ def run_streaming_subprocess(
     *,
     cwd: Path,
     env: dict[str, str],
-    timeout: int,
     live_log_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess with real-time stdout/stderr streaming.
@@ -373,12 +372,7 @@ def run_streaming_subprocess(
     stdout_thread.start()
     stderr_thread.start()
 
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        raise
+    proc.wait()
 
     stdout_thread.join(timeout=5)
     stderr_thread.join(timeout=5)
@@ -783,7 +777,6 @@ def run_agent_loop(
 
     # Read peasant settings from config
     max_iterations = cfg.peasant.max_iterations
-    agent_timeout = cfg.peasant.timeout
 
     # Resolve peasant phase prompt: agent-specific overrides global
     phase_prompt = agent_def.prompts.get("peasant", "") or cfg.prompts.peasant
@@ -937,14 +930,8 @@ def run_agent_loop(
                 cmd,
                 cwd=worktree,
                 env=clean_agent_env(role="peasant", agent_name=session_name, kd_base=str(base)),
-                timeout=agent_timeout,
                 live_log_path=agent_live_log,
             )
-        except subprocess.TimeoutExpired:
-            logger.error("Backend timed out after %ds", agent_timeout)
-            append_worklog(ticket_path, "Backend call timed out")
-            final_status = "failed"
-            break
         except FileNotFoundError:
             cmd_name = agent_config.cli.split()[0]
             logger.error("Backend command not found: %s", cmd_name)

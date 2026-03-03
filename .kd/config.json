@@ -13,7 +13,6 @@
   },
   "peasant": {
     "agent": "claude",
-    "timeout": 900,
     "max_iterations": 50
   }
 }
