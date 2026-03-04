@@ -135,7 +135,9 @@ def topic_for_thread(base: Path, feature: str, thread_id: str) -> str:
 def council_ask(
     prompt: Annotated[str, typer.Argument(help="Prompt to send to council members.")],
     to: Annotated[str | None, typer.Option("--to", help="Send to a specific member only.")] = None,
-    new_thread: Annotated[bool, typer.Option("--new-thread", help="Start a fresh thread.")] = False,
+    continue_thread: Annotated[
+        bool, typer.Option("--continue", "-c", help="Continue the current council thread.")
+    ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Output JSON format.")] = False,
     async_mode: Annotated[
         bool, typer.Option("--async", help="Dispatch in background, then watch for responses.")
@@ -203,16 +205,19 @@ def council_ask(
             print_error(f"Available: {', '.join(sorted(available_names))}")
             raise typer.Exit(code=1)
 
-    # Determine thread: continue current, or create new
+    # Determine thread: new by default, or continue current
     current = get_current_thread(base, feature)
-    start_new = new_thread or current is None
 
-    # Recover from stale pointer: current_thread set but directory missing
-    if not start_new and not thread_dir(base, feature, current).exists():
-        set_current_thread(base, feature, None)
+    if continue_thread:
+        # --continue: reuse existing thread, error if none exists
+        if current is None or not thread_dir(base, feature, current).exists():
+            print_error("No active council thread on this branch. Drop --continue to start a new one.")
+            raise typer.Exit(code=1)
+        thread_id = current
+        start_new = False
+    else:
+        # Default: always start a new thread
         start_new = True
-
-    if start_new:
         thread_id = f"council-{secrets.token_hex(2)}"
         if to:
             member_names = [to]
@@ -220,8 +225,6 @@ def council_ask(
             member_names = [m.name for m in c.members]
         create_thread(base, feature, thread_id, ["king", *member_names], "council")
         set_current_thread(base, feature, thread_id)
-    else:
-        thread_id = current
 
     tdir = thread_dir(base, feature, thread_id)
     verbose_echo(f"thread: {thread_id} ({'new' if start_new else 'continuing'})")
@@ -444,11 +447,10 @@ def council_review(
         worklog=worklog,
     )
 
-    # Delegate to council_ask with --new-thread and review phase
+    # Delegate to council_ask — new thread by default now
     council_ask(
         prompt=review_prompt,
         to=to,
-        new_thread=True,
         json_output=False,
         async_mode=async_mode,
         no_watch=no_watch,
@@ -1114,7 +1116,6 @@ def display_rich_panels(responses, thread_id, console):
 @council_app.command("chat", help="Open council chat TUI.")
 def council_chat(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID to open.")] = None,
-    new: Annotated[bool, typer.Option("--new", help="Create a new thread.")] = False,
     debug: Annotated[
         bool,
         typer.Option(
@@ -1136,53 +1137,25 @@ def council_chat(
 ) -> None:
     """Open the council chat TUI.
 
-    Opens an existing thread, creates a new one, or lists recent threads.
+    Creates a new thread by default, or opens an existing one by ID.
     """
     import kingdom.cli as _cli
     from kingdom.config import load_config
-    from kingdom.thread import create_thread, list_threads
+    from kingdom.thread import create_thread
 
     base = require_project_root()
     feature = _cli.resolve_current_run(base)
     cfg = load_config(base)
 
-    if new:
+    if thread_id:
+        tid = resolve_council_thread_id(base, feature, thread_id, command="chat")
+        set_current_thread(base, feature, tid)
+    else:
+        # Default: new thread (same as ask)
         tid = f"council-{secrets.token_hex(2)}"
         member_names = cfg.council.members or list(cfg.agents)
         create_thread(base, feature, tid, ["king", *member_names], "council")
         set_current_thread(base, feature, tid)
-    elif thread_id:
-        tid = resolve_council_thread_id(base, feature, thread_id, command="chat")
-        set_current_thread(base, feature, tid)
-    else:
-        current = get_current_thread(base, feature)
-        if current:
-            from kingdom.thread import thread_dir
-
-            if thread_dir(base, feature, current).exists():
-                tid = current
-            else:
-                set_current_thread(base, feature, None)
-                current = None
-
-        if not current:
-            threads = list_threads(base, feature)
-            if threads:
-                typer.echo("Recent threads:")
-                for t in reversed(threads[-5:]):
-                    created = t.created_at.strftime("%Y-%m-%d %H:%M")
-                    members = ", ".join(m for m in t.members if m != "king")
-                    typer.echo(f"  {t.id}  {created}  [{members}]")
-                typer.echo()
-                typer.echo("Usage: kd council chat <thread-id>  or  kd council chat --new")
-                raise typer.Exit(code=0)
-            else:
-                # Auto-create a thread when none exist
-                tid = f"council-{secrets.token_hex(2)}"
-                member_names = cfg.council.members or list(cfg.agents)
-                create_thread(base, feature, tid, ["king", *member_names], "council")
-                set_current_thread(base, feature, tid)
-                typer.echo(f"Created new thread: {tid}")
 
     from kingdom.tui.app import ChatApp
     from kingdom.tui.terminal import in_tmux_control_mode

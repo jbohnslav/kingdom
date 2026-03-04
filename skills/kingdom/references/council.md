@@ -20,11 +20,12 @@ The council is a group of AI models (typically claude, cursor, codex) that provi
 ## Querying
 
 ```bash
-# Query all members (default: appends to existing thread)
+# Query all members (default: creates a new thread)
 kd council ask "How should we handle authentication?"
 
-# Start a fresh thread (use when changing topics)
-kd council ask --new-thread "New question on a different topic"
+# Continue the current thread (for follow-up questions)
+kd council ask --continue "What about the edge case with expired tokens?"
+kd council ask -c "Short form works too"
 
 # Query a specific member
 kd council ask --to claude "Review this approach"
@@ -38,7 +39,7 @@ kd council ask --async --no-watch "Fire and forget"
 
 Council conversations are stored in `.kd/branches/<branch>/threads/<thread-id>/`. Each message is a numbered markdown file (`0001-king.md`, `0002-claude.md`, etc.).
 
-Without `--new-thread`, queries append to the existing thread on the branch. This is useful for multi-round discussions on the same topic but can pollute context if the topic changes. **Use `--new-thread` when switching topics.**
+Every `kd council ask` creates a new thread by default. Use `--continue` / `-c` to append to the current thread for multi-round discussions on the same topic.
 
 ```bash
 kd council list                    # see all threads
