@@ -133,7 +133,10 @@ def start(
     if current_path.exists() and not force:
         existing = current_path.read_text(encoding="utf-8").strip()
         print_error(f"A session is already active: {existing}")
-        error_console.print("  Use --force to override, or run `kd done` first.")
+        error_console.print(
+            "  If that branch is finished, run `kd done` to clean it up before starting a new session.\n"
+            "  If you need to switch mid-work, use `kd start --force` to override."
+        )
         raise typer.Exit(code=1)
 
     # Determine branch name
