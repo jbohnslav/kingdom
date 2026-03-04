@@ -1076,7 +1076,7 @@ def ticket_move(
     Validates --to target exists in .kd/branches/. Blocks moves on tickets
     with active peasant sessions.
     """
-    from kingdom.session import find_peasant_branch
+    from kingdom.session import find_active_peasant_branch
 
     base = require_project_root()
 
@@ -1137,7 +1137,7 @@ def ticket_move(
 
         # Block moves on tickets with active peasant sessions
         session_name = peasant_session_name(ticket.id)
-        owning_branch = find_peasant_branch(base, session_name)
+        owning_branch = find_active_peasant_branch(base, session_name)
         if owning_branch:
             print_error(
                 f"Ticket {ticket.id} has an active peasant session on branch '{owning_branch}'.\n"

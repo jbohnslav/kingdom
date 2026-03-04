@@ -819,6 +819,34 @@ class TestTicketMove:
             assert result.exit_code == 1
             assert "active peasant" in result.output
 
+    def test_move_allowed_after_done_peasant(self) -> None:
+        """Moving a ticket whose peasant is done/failed/stopped should succeed."""
+        from kingdom.session import AgentState, set_agent_state
+        from kingdom.state import set_current_run
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            ensure_branch_layout(base, "feature/other")
+            set_current_run(base, BRANCH)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv09")
+
+            # Peasant finished — terminal status should not block the move
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-mv09",
+                AgentState(name="peasant-kin-mv09", status="done", ticket="kin-mv09"),
+            )
+
+            result = runner.invoke(ticket_app, ["move", "kin-mv09", "--to", "feature/other"])
+
+            assert result.exit_code == 0, result.output
+            assert "Moved" in result.output
+            assert not (tickets_dir / "kin-mv09.md").exists()
+            assert (branch_root(base, "feature/other") / "tickets" / "kin-mv09.md").exists()
+
 
 class TestTicketPull:
     def test_pull_single_ticket(self, cli_project: Path) -> None:

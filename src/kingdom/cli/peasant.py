@@ -77,12 +77,14 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
 
     base = base or require_project_root()
 
-    # For non-start commands, try to find the peasant's owning branch first
+    # For non-start commands, try to find the peasant's owning branch first.
+    # Resolve the full ticket ID before building the session name — the user
+    # may pass a prefix (e.g. "0e") but session files use the full ID.
     if not auto_pull:
-        session_name = f"peasant-{ticket_id}"
+        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        session_name = f"peasant-{ticket.id}"
         owning_branch = find_peasant_branch(base, session_name)
         if owning_branch:
-            ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
             return PeasantContext(
                 base=base,
                 ticket=ticket,
@@ -1287,9 +1289,9 @@ def peasant_accept(
 
     # Gate: must be on the feature branch for merge safety
     # Resolve the original git branch name from state.json (feature may be normalized)
-    from kingdom.state import read_json as _read_json
+    from kingdom.state import read_json
 
-    state_json = _read_json(branch_root(base, feature) / "state.json")
+    state_json = read_json(branch_root(base, feature) / "state.json")
     git_branch_name = state_json.get("branch", feature)
 
     current_branch = subprocess.run(

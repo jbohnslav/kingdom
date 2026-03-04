@@ -2539,3 +2539,115 @@ class TestFindPeasantBranch:
             ensure_branch_layout(base, BRANCH_A)
             result = find_peasant_branch(base, "peasant-nonexistent")
             assert result is None
+
+
+class TestCrossBranchPrefixId:
+    """Test that prefix ticket IDs work with cross-branch resolution."""
+
+    def test_prefix_id_resolves_cross_branch(self) -> None:
+        """A prefix like 'ab' should resolve to the full ID before session lookup."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            ensure_branch_layout(base, BRANCH_B)
+
+            # Create ticket with full ID "abcd" on branch A
+            tickets_dir_a = base / ".kd" / "branches" / normalize_branch_name(BRANCH_A) / "tickets"
+            ticket = Ticket(id="abcd", status="in_review", title="Prefix test", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir_a / "abcd.md")
+
+            # Create peasant session on branch A with the full ID
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-abcd",
+                AgentState(name="peasant-abcd", status="needs_king_review", ticket="abcd"),
+            )
+
+            # Switch active session to branch B
+            set_current_run(base, normalize_branch_name(BRANCH_B))
+
+            # Use a PREFIX — this is the bug that was reported
+            ctx = resolve_peasant_context("ab", base=base)
+            assert ctx.feature == normalize_branch_name(BRANCH_A)
+            assert ctx.full_ticket_id == "abcd"
+
+
+class TestFindActivePeasantBranch:
+    """Test the find_active_peasant_branch helper in session.py."""
+
+    def test_finds_working_session(self) -> None:
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="working", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result == normalize_branch_name(BRANCH_A)
+
+    def test_ignores_done_sessions(self) -> None:
+        """Done peasants should not block operations."""
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="done", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result is None
+
+    def test_ignores_failed_sessions(self) -> None:
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="failed", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result is None
+
+    def test_ignores_stopped_sessions(self) -> None:
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="stopped", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result is None
+
+    def test_finds_needs_king_review(self) -> None:
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="needs_king_review", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result == normalize_branch_name(BRANCH_A)
