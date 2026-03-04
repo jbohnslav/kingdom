@@ -967,7 +967,7 @@ def run_agent_loop(
             final_status = "failed"
             break
 
-        # Log raw agent output so it appears in `kd peasant logs --follow`
+        # Log raw agent output so it appears in `kd peasant show`
         if proc.stdout.strip():
             logger.info("--- Agent stdout ---\n%s\n--- End agent stdout ---", proc.stdout.strip())
         if proc.stderr.strip():

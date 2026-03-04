@@ -264,7 +264,7 @@ The current `kd council ask` / `kd council followup` / `kd council critique` col
 kd peasant start KIN-042 [--agent claude]  # create worktree + launch agent
 kd peasant status                           # table of active peasants
 kd peasant manage                           # what needs attention (Hand's main loop)
-kd peasant logs KIN-042 [--follow]          # tail logs
+kd peasant show KIN-042                     # show peasant output
 kd peasant msg KIN-042 "Focus on tests"     # send directive
 kd peasant read KIN-042                     # read escalations
 kd peasant review KIN-042                   # review work + run quality gates
@@ -405,7 +405,7 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
 ### T5: Peasant execution
 - Priority: 2
 - Depends on: T1, T2, T3
-- Description: Agent harness (`kd agent run`) that runs an autonomous loop: build prompt from ticket + worklog + directives, call backend, apply changes, commit, run tests, append to worklog, update session, write to thread. Loop continues until done (acceptance criteria met, tests pass), blocked (needs help), or stopped. `kd peasant start <ticket>` creates worktree + branch, creates session file, creates work thread, seeds with ticket_start message, launches harness as background process. `kd peasant status` shows table of active peasants. `kd peasant logs <ticket> [--follow]` tails subprocess logs. `kd peasant stop <ticket>` kills process. Ticket file has a pre-formatted worklog section that the peasant appends to as it works.
+- Description: Agent harness (`kd agent run`) that runs an autonomous loop: build prompt from ticket + worklog + directives, call backend, apply changes, commit, run tests, append to worklog, update session, write to thread. Loop continues until done (acceptance criteria met, tests pass), blocked (needs help), or stopped. `kd peasant start <ticket>` creates worktree + branch, creates session file, creates work thread, seeds with ticket_start message, launches harness as background process. `kd peasant status` shows table of active peasants. `kd peasant show <ticket>` shows peasant output. `kd peasant stop <ticket>` kills process. Ticket file has a pre-formatted worklog section that the peasant appends to as it works.
 - Acceptance:
   - [ ] `kd agent run --agent <name> --ticket <id> --worktree <path>` runs autonomous loop
   - [ ] Loop: prompt → backend → commit → worklog → repeat
@@ -414,8 +414,7 @@ If the Hand rejects, the peasant gets a feedback message and status goes back to
   - [ ] Peasant appends decisions, bugs, difficulties to worklog section in ticket
   - [ ] `kd peasant start KIN-042` creates worktree, session, thread, launches harness in background
   - [ ] `kd peasant status` shows table: ticket, agent, status, elapsed, last activity
-  - [ ] `kd peasant logs KIN-042` shows stdout/stderr
-  - [ ] `kd peasant logs KIN-042 --follow` tails logs
+  - [ ] `kd peasant show KIN-042` shows peasant output
   - [ ] `kd peasant stop KIN-042` sends SIGTERM, updates status to `stopped`
   - [ ] Peasant output written as messages to work thread
   - [ ] Session file updated with pid, status, timestamps
