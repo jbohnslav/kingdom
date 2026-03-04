@@ -1071,7 +1071,13 @@ def ticket_move(
 
     Single ticket: `kd tk move <id> --to <branch>` or `kd tk move <id>` (to current branch).
     Multiple tickets: `kd tk move <id1> <id2> --to <branch>`.
+
+    Searches all branches for the source ticket (IDs are globally unique).
+    Validates --to target exists in .kd/branches/. Blocks moves on tickets
+    with active peasant sessions.
     """
+    from kingdom.session import find_peasant_branch
+
     base = require_project_root()
 
     target = to_target
@@ -1110,18 +1116,35 @@ def ticket_move(
         dest_label = f"branch '{resolved}'"
     else:
         normalized = normalize_branch_name(target)
-        dest_dir = branches_root(base) / normalized / "tickets"
+        branch_dir = branches_root(base) / normalized
+        # Validate target branch exists — no silent directory creation
+        if not branch_dir.exists():
+            print_error(f"Target branch '{target}' not found in .kd/branches/.")
+            error_console.print("Use `kd start <branch>` to create it first.")
+            raise typer.Exit(code=1)
+        dest_dir = branch_dir / "tickets"
         dest_label = f"branch '{normalized}'"
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pass 1: validate all tickets
+    # Pass 1: validate all tickets (search globally, not scoped to current branch)
     validated: list[tuple[Ticket, Path]] = []
     for tid in ticket_ids:
         ticket, ticket_path = resolve_ticket_or_exit(base, tid)
         if ticket_path.parent.resolve() == dest_dir.resolve():
             typer.echo(f"Ticket {ticket.id} is already in {dest_label}")
             continue
+
+        # Block moves on tickets with active peasant sessions
+        session_name = peasant_session_name(ticket.id)
+        owning_branch = find_peasant_branch(base, session_name)
+        if owning_branch:
+            print_error(
+                f"Ticket {ticket.id} has an active peasant session on branch '{owning_branch}'.\n"
+                f"Stop the peasant first: `kd peasant stop {ticket.id}`"
+            )
+            raise typer.Exit(code=1)
+
         validated.append((ticket, ticket_path))
 
     # Pass 2: move all validated tickets

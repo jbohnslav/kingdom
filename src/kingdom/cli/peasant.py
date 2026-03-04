@@ -62,15 +62,36 @@ class PeasantContext(NamedTuple):
 def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull: bool = False) -> PeasantContext:
     """Resolve ticket and feature branch, or exit with an error message.
 
-    Handles the repeated preamble shared by peasant_* commands:
-    find_ticket + AmbiguousTicketMatch handling + resolve_current_run.
+    For post-start commands (auto_pull=False), searches all branches for
+    the peasant's session so that cross-branch operations work regardless
+    of which session is currently active.
+
+    For mutating commands (auto_pull=True, i.e. peasant start), uses the
+    current session as before.
 
     Args:
         auto_pull: If True, move backlog tickets into the current branch.
             Only set for mutating commands (peasant start).
     """
+    from kingdom.session import find_peasant_branch
+
     base = base or require_project_root()
 
+    # For non-start commands, try to find the peasant's owning branch first
+    if not auto_pull:
+        session_name = f"peasant-{ticket_id}"
+        owning_branch = find_peasant_branch(base, session_name)
+        if owning_branch:
+            ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+            return PeasantContext(
+                base=base,
+                ticket=ticket,
+                ticket_path=ticket_path,
+                full_ticket_id=ticket.id,
+                feature=owning_branch,
+            )
+
+    # Fall back to current session (required for start, fine for others)
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
@@ -1264,7 +1285,13 @@ def peasant_accept(
         print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
         raise typer.Exit(code=1)
 
-    # Gate: must be on the feature branch
+    # Gate: must be on the feature branch for merge safety
+    # Resolve the original git branch name from state.json (feature may be normalized)
+    from kingdom.state import read_json as _read_json
+
+    state_json = _read_json(branch_root(base, feature) / "state.json")
+    git_branch_name = state_json.get("branch", feature)
+
     current_branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
@@ -1273,8 +1300,8 @@ def peasant_accept(
     ).stdout.strip()
     if normalize_branch_name(current_branch) != normalize_branch_name(feature):
         print_error(
-            f"Cannot accept: expected to be on '{feature}' but HEAD is on '{current_branch}'. "
-            "Switch branches and retry."
+            f"Cannot accept: expected to be on '{git_branch_name}' but HEAD is on '{current_branch}'.\n"
+            f"Run `git checkout {git_branch_name}` first, then retry."
         )
         raise typer.Exit(code=1)
 

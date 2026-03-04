@@ -757,6 +757,68 @@ class TestTicketMove:
         assert branch_tickets.exists()
         assert not (backlog_dir / "kin-mv05.md").exists()
 
+    def test_move_to_nonexistent_branch_errors(self) -> None:
+        """--to with a branch that doesn't exist in .kd/branches/ errors."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            from kingdom.state import set_current_run
+
+            set_current_run(base, BRANCH)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv06")
+
+            result = runner.invoke(ticket_app, ["move", "kin-mv06", "--to", "feature/nope"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output
+
+    def test_move_across_branches(self) -> None:
+        """kd tk move <id> --to <branch> moves ticket between branches."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            ensure_branch_layout(base, "feature/other")
+            from kingdom.state import set_current_run
+
+            set_current_run(base, BRANCH)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv07")
+
+            result = runner.invoke(ticket_app, ["move", "kin-mv07", "--to", "feature/other"])
+
+            assert result.exit_code == 0, result.output
+            assert "Moved" in result.output
+            # Verify file moved
+            assert not (tickets_dir / "kin-mv07.md").exists()
+            assert (branch_root(base, "feature/other") / "tickets" / "kin-mv07.md").exists()
+
+    def test_move_blocked_by_active_peasant(self) -> None:
+        """Moving a ticket with an active peasant is blocked."""
+        from kingdom.session import AgentState, set_agent_state
+        from kingdom.state import set_current_run
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            ensure_branch_layout(base, "feature/other")
+            set_current_run(base, BRANCH)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv08")
+
+            # Create an active peasant session for this ticket
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-mv08",
+                AgentState(name="peasant-kin-mv08", status="working", ticket="kin-mv08"),
+            )
+
+            result = runner.invoke(ticket_app, ["move", "kin-mv08", "--to", "feature/other"])
+
+            assert result.exit_code == 1
+            assert "active peasant" in result.output
+
 
 class TestTicketPull:
     def test_pull_single_ticket(self, cli_project: Path) -> None:

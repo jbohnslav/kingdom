@@ -175,6 +175,33 @@ def list_active_agents(base: Path, branch: str) -> list[AgentState]:
     return active
 
 
+def find_peasant_branch(base: Path, session_name: str) -> str | None:
+    """Find which branch owns a peasant session by scanning all branches.
+
+    Returns the normalized branch name, or None if not found.
+    """
+    from kingdom.state import branches_root
+
+    branches_dir = branches_root(base)
+    if not branches_dir.exists():
+        return None
+
+    for branch_dir in sorted(branches_dir.iterdir()):
+        if not branch_dir.is_dir():
+            continue
+        session_file = branch_dir / "sessions" / f"{session_name}.json"
+        if session_file.exists():
+            try:
+                data = read_json(session_file)
+                # Only match if the session has actually been used (not idle default)
+                if data.get("status", "idle") != "idle":
+                    return branch_dir.name
+            except (FileNotFoundError, KeyError):
+                continue
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Current thread pointer (in state.json)
 # ---------------------------------------------------------------------------

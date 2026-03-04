@@ -2424,3 +2424,118 @@ class TestReassembleStreamText:
         assert len(display) == 1
         assert display[0].endswith("...")
         assert len(display[0]) == 53
+
+
+# ---------------------------------------------------------------------------
+# Cross-branch peasant resolution
+# ---------------------------------------------------------------------------
+
+BRANCH_A = "feature/branch-a"
+BRANCH_B = "feature/branch-b"
+
+
+class TestCrossBranchPeasantContext:
+    """Test that resolve_peasant_context finds peasant sessions across branches."""
+
+    def test_resolve_finds_peasant_on_different_branch(self) -> None:
+        """Post-start commands resolve context via peasant ownership, not current session."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            # Set up two branches
+            ensure_branch_layout(base, BRANCH_A)
+            ensure_branch_layout(base, BRANCH_B)
+
+            # Create ticket on branch A
+            tickets_dir_a = base / ".kd" / "branches" / normalize_branch_name(BRANCH_A) / "tickets"
+            ticket = Ticket(id="abcd", status="in_review", title="Cross-branch test", created=datetime.now(UTC))
+            ticket_path = tickets_dir_a / "abcd.md"
+            write_ticket(ticket, ticket_path)
+
+            # Create peasant session on branch A
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-abcd",
+                AgentState(name="peasant-abcd", status="needs_king_review", ticket="abcd"),
+            )
+
+            # Switch active session to branch B
+            set_current_run(base, normalize_branch_name(BRANCH_B))
+
+            # resolve_peasant_context should find the peasant on branch A
+            ctx = resolve_peasant_context("abcd", base=base)
+            assert ctx.feature == normalize_branch_name(BRANCH_A)
+            assert ctx.full_ticket_id == "abcd"
+
+    def test_start_still_uses_current_session(self) -> None:
+        """peasant start (auto_pull=True) uses the current session, not cross-branch scan."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_B)
+            set_current_run(base, normalize_branch_name(BRANCH_B))
+
+            # Create ticket on branch B
+            tickets_dir_b = base / ".kd" / "branches" / normalize_branch_name(BRANCH_B) / "tickets"
+            ticket = Ticket(id="efgh", status="open", title="Start test", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir_b / "efgh.md")
+
+            ctx = resolve_peasant_context("efgh", base=base, auto_pull=True)
+            assert ctx.feature == normalize_branch_name(BRANCH_B)
+
+    def test_falls_back_to_current_session_when_no_peasant_found(self) -> None:
+        """When no peasant session exists, falls back to current run."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_current_run(base, normalize_branch_name(BRANCH_A))
+
+            # Create ticket on branch A, no peasant session
+            tickets_dir = base / ".kd" / "branches" / normalize_branch_name(BRANCH_A) / "tickets"
+            ticket = Ticket(id="nope", status="open", title="No peasant", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir / "nope.md")
+
+            ctx = resolve_peasant_context("nope", base=base)
+            assert ctx.feature == normalize_branch_name(BRANCH_A)
+
+
+class TestFindPeasantBranch:
+    """Test the find_peasant_branch helper in session.py."""
+
+    def test_finds_active_session(self) -> None:
+        from kingdom.session import find_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="working", ticket="xyz"),
+            )
+            result = find_peasant_branch(base, "peasant-xyz")
+            assert result == normalize_branch_name(BRANCH_A)
+
+    def test_ignores_idle_sessions(self) -> None:
+        from kingdom.session import find_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-idle",
+                AgentState(name="peasant-idle", status="idle"),
+            )
+            result = find_peasant_branch(base, "peasant-idle")
+            assert result is None
+
+    def test_returns_none_when_not_found(self) -> None:
+        from kingdom.session import find_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            result = find_peasant_branch(base, "peasant-nonexistent")
+            assert result is None
