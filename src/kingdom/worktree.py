@@ -49,6 +49,44 @@ def run_init_script(
         log(f"{step_prefix}No init-worktree.sh found, skipping dependency refresh.")
 
 
+def sync_workflow_files(base: Path, worktree_path: Path, log: Callable[[str], None] = print) -> None:
+    """Copy untracked workflow files from the project root into a worktree.
+
+    Currently syncs ``.claude/settings.json`` — the only critical untracked
+    file that worktrees miss (tracked files like CLAUDE.md are already present).
+    """
+    files_to_sync = [Path(".claude", "settings.json")]
+
+    for rel in files_to_sync:
+        src = base / rel
+        dst = worktree_path / rel
+        if src.exists() and not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(src.read_bytes())
+            log(f"Synced {rel} into worktree")
+
+
+def check_uncommitted_changes(base: Path) -> list[str]:
+    """Return list of uncommitted change descriptions, or empty list if clean.
+
+    Fails open: returns an empty list if git is unavailable or errors out.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=base,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        return lines
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+
+
 def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] = print) -> Path:
     """Create a git worktree for a ticket. Returns the worktree path."""
     worktree_path = worktree_path_for(base, full_ticket_id)
@@ -90,6 +128,7 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
         raise RuntimeError(f"Error creating worktree: {result.stderr.strip()}")
 
     run_init_script(base, worktree_path, log=log)
+    sync_workflow_files(base, worktree_path, log=log)
 
     try:
         feature = resolve_current_run(base)

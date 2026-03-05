@@ -61,6 +61,7 @@ class TestPeasantStart:
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-test"])
 
@@ -220,6 +221,7 @@ class TestPeasantStart:
                 patch("os.open", return_value=3),
                 patch("os.close"),
                 patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--watch"])
 
@@ -242,6 +244,7 @@ class TestPeasantStart:
                 patch("os.open", return_value=3),
                 patch("os.close"),
                 patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-test"])
 
@@ -333,6 +336,69 @@ class TestPeasantStart:
             assert "Failed to launch" in result.output
             state = get_agent_state(base, BRANCH, "peasant-kin-test")
             assert state.status == "failed"
+
+    def test_start_warns_on_uncommitted_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[" M dirty.py"]),
+            ):
+                result = runner.invoke(peasant_app, ["start", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "uncommitted" in result.output.lower()
+            assert "--hand" in result.output
+
+    def test_start_no_preflight_suppresses_warning(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes") as mock_check,
+            ):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--no-preflight"])
+
+            assert result.exit_code == 0, result.output
+            mock_check.assert_not_called()
+
+    def test_start_hand_mode_skips_preflight(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes") as mock_check,
+            ):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            mock_check.assert_not_called()
 
 
 class TestPeasantStatus:
@@ -1864,6 +1930,7 @@ class TestBacklogAutoPull:
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-back"])
 
@@ -1908,6 +1975,7 @@ class TestBacklogAutoPull:
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 runner.invoke(peasant_app, ["start", "kin-list"])
 
