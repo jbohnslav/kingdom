@@ -678,6 +678,7 @@ def ticket_start(
 @ticket_app.command("current", help="Show the in-progress ticket for this branch.")
 def ticket_current(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+    id_only: Annotated[bool, typer.Option("--id", help="Print only the ticket ID.")] = False,
 ) -> None:
     """Find and display the ticket currently marked as in_progress on this branch."""
     base = require_project_root()
@@ -685,22 +686,32 @@ def ticket_current(
     try:
         feature = resolve_current_run(base)
     except RuntimeError:
+        if id_only:
+            raise typer.Exit(code=1) from None
         print_error("No active session. Use `kd start` first.")
         raise typer.Exit(code=1) from None
 
     tickets_dir = branch_root(base, feature) / "tickets"
     if not tickets_dir.exists():
+        if id_only:
+            raise typer.Exit(code=1)
         print_error("No in-progress ticket on this branch.")
         raise typer.Exit(code=1)
 
     in_progress = [t for t in list_tickets(tickets_dir) if t.status == "in_progress"]
 
     if not in_progress:
+        if id_only:
+            raise typer.Exit(code=1)
         print_error("No in-progress ticket on this branch.")
         raise typer.Exit(code=1)
 
     ticket = in_progress[0]
     ticket_path = tickets_dir / f"{ticket.id}.md"
+
+    if id_only:
+        typer.echo(ticket.id)
+        return
 
     if output_json:
         result_json = ticket_to_json(ticket, detailed=True, base=base, path=ticket_path)
