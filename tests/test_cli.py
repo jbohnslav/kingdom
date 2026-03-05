@@ -26,7 +26,7 @@ class TestCliWiring:
         """All expected sub-apps are reachable from the top-level app."""
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("council", "design", "peasant", "config", "ticket", "update"):
+        for cmd in ("council", "design", "peasant", "config", "plugin", "ticket", "update"):
             assert cmd in result.output, f"{cmd} not in --help output"
         # tk is a hidden alias — verify it's mounted by invoking it
         tk_result = runner.invoke(app, ["tk", "--help"])

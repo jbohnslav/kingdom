@@ -47,6 +47,7 @@ from .peasant import (  # noqa: F401
     peasant_app,
     resolve_peasant_context,
 )
+from .plugin import plugin_app
 from .ticket import format_ticket_line, format_ticket_summary, get_tickets_dir, ticket_app  # noqa: F401
 
 NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
@@ -78,6 +79,7 @@ app.add_typer(council_app, name="council")
 app.add_typer(design_app, name="design")
 app.add_typer(peasant_app, name="peasant")
 app.add_typer(config_app, name="config")
+app.add_typer(plugin_app, name="plugin")
 app.add_typer(ticket_app, name="ticket")
 app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
 

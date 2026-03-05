@@ -138,6 +138,8 @@ Proactively `kd tk log` whenever a durable state change occurs. The King should 
 
 The threshold is **durable state change**, not every chat turn. If future-you or another agent would need this fact, log it now.
 
+**Log before you continue.** When you discover durable information — a relevant issue, a root cause, a key finding from research — run `kd tk log` immediately, before continuing your work. The worklog survives context compaction; chat doesn't. Don't let valuable findings exist only in conversation history that will be compressed away.
+
 **Decision made** — King says "let's go with raw TypeScript over React":
 
 ```
