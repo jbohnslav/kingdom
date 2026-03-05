@@ -35,8 +35,9 @@ SESSION_START_BRIEF = (
 )
 
 USER_PROMPT_REMINDER = (
-    "Kingdom: create or update a ticket? (kd tk create|move|log)."
-    " King decision? Log it. Finished work item? Log it. Found a bug? Ticket it."
+    "Kingdom: keep the ticket accurate (body/AC/status/worklog)."
+    " Requirement or acceptance-criteria change -> edit ticket markdown now."
+    " Work/findings -> kd tk log. New bug/scope -> kd tk create|move."
 )
 
 WORK_TOOLS = {"WebSearch", "WebFetch", "Edit", "Write"}
