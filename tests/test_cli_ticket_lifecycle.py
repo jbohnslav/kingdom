@@ -570,6 +570,51 @@ class TestTicketCloseUnblocked:
         assert "Unblocked" not in result.output
 
 
+class TestTicketCloseActivePeasantWarning:
+    """Closing a ticket with an active peasant should warn."""
+
+    def test_warns_when_peasant_active(self, cli_project: Path) -> None:
+        from kingdom.session import AgentState, set_agent_state
+
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-pwrn")
+
+        # Create an active peasant session for this ticket
+        state = AgentState(name="peasant-kin-pwrn", status="working", ticket="kin-pwrn")
+        set_agent_state(cli_project, BRANCH, "peasant-kin-pwrn", state)
+
+        result = runner.invoke(ticket_app, ["close", "kin-pwrn"])
+
+        assert result.exit_code == 0
+        assert "closed" in result.output
+        assert "Warning" in result.output
+        assert "peasant-kin-pwrn" in result.output
+
+    def test_no_warning_when_no_peasant(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-nop")
+
+        result = runner.invoke(ticket_app, ["close", "kin-nop"])
+
+        assert result.exit_code == 0
+        assert "closed" in result.output
+        assert "Warning" not in result.output
+
+    def test_no_warning_for_stopped_peasant(self, cli_project: Path) -> None:
+        from kingdom.session import AgentState, set_agent_state
+
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-stp")
+
+        state = AgentState(name="peasant-kin-stp", status="stopped", ticket="kin-stp")
+        set_agent_state(cli_project, BRANCH, "peasant-kin-stp", state)
+
+        result = runner.invoke(ticket_app, ["close", "kin-stp"])
+
+        assert result.exit_code == 0
+        assert "Warning" not in result.output
+
+
 class TestTicketClosed:
     """Tests for kd tk list --closed and kd tk close."""
 

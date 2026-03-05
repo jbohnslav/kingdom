@@ -608,6 +608,42 @@ class TestCouncilList:
             assert "timed out" in result.output
             assert "pending" in result.output
 
+    def test_list_shows_message_count(self) -> None:
+        """council list should show the number of messages per thread."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-count", ["king", "claude", "codex"], "council")
+            add_message(base, BRANCH, "council-count", from_="king", to="all", body="Question?")
+            add_message(base, BRANCH, "council-count", from_="claude", to="king", body="Answer 1")
+            add_message(base, BRANCH, "council-count", from_="codex", to="king", body="Answer 2")
+
+            result = runner.invoke(council_app, ["list"])
+
+            assert result.exit_code == 0
+            assert "3 msgs" in result.output
+
+    def test_list_shows_singular_message_count(self) -> None:
+        """council list should use singular 'msg' for one message."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-one", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-one", from_="king", to="all", body="Question?")
+
+            result = runner.invoke(council_app, ["list"])
+
+            assert result.exit_code == 0
+            assert "1 msg" in result.output
+            # Make sure it's not "1 msgs"
+            assert "1 msgs" not in result.output
+
     def test_list_no_legend_when_no_threads(self) -> None:
         """When there are no council threads, no legend should be printed."""
         with runner.isolated_filesystem():

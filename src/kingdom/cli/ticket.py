@@ -770,6 +770,24 @@ def ticket_close(
         ticket.duplicate_of = dup_ticket.id
         reason = reason or f"Duplicate of {dup_ticket.id}"
 
+    # Warn if an active peasant is working on this ticket
+    try:
+        feature = resolve_current_run(base)
+        from kingdom.session import list_active_agents
+
+        active = list_active_agents(base, feature)
+        active_peasants = [
+            a
+            for a in active
+            if a.name.startswith("peasant-") and a.ticket == ticket.id and a.status not in ("done", "failed", "stopped")
+        ]
+        if active_peasants:
+            names = ", ".join(a.name for a in active_peasants)
+            error_console.print(f"[yellow]Warning:[/yellow] active peasant(s) on this ticket: {names}")
+            error_console.print("Consider stopping them first with `kd peasant stop`.")
+    except RuntimeError:
+        pass  # no active branch — skip the check
+
     old_status = ticket.status
     ticket.status = "closed"
     ticket.closed_at = datetime.now(UTC)

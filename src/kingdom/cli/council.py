@@ -672,6 +672,7 @@ def council_list() -> None:
 
         # Get topic from first king message
         messages = list_messages(base, feature, t.id)
+        msg_count = len(messages)
         topic = ""
         for msg in messages:
             if msg.from_ == "king":
@@ -688,7 +689,8 @@ def council_list() -> None:
             member_parts.append(f"{symbol} {name}")
         members_str = "  ".join(member_parts) if member_parts else ""
 
-        console.print(f"[bold]{t.id}[/bold]  [dim]{created}[/dim]{marker}")
+        count_str = f"[dim]{msg_count} msg{'s' if msg_count != 1 else ''}[/dim]"
+        console.print(f"[bold]{t.id}[/bold]  [dim]{created}[/dim]  {count_str}{marker}")
         if topic:
             console.print(f"  {topic}")
         if members_str:

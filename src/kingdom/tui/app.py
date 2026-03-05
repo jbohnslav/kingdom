@@ -75,15 +75,18 @@ def mention_bump(response_text: str, remaining: list[str], valid_members: list[s
 
 
 CHAT_PREAMBLE = (
+    "[MODE: READ-ONLY] You do not have file-write permissions in this session.\n"
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
     "This is a live conversation — read the full thread before responding. "
     "Reference specific points others have made (agree, disagree, extend, or synthesize). "
     "Don't just answer the King's question in isolation — engage with what's already been said. "
     "If you disagree with another agent, say so directly and explain why. "
-    "Do NOT create, edit, or write files. Do NOT run git commands that modify state.\n\n"
+    "Do NOT create, edit, or write files. Do NOT run git commands that modify state. "
+    "If asked to edit or create files, state that you are in read-only mode and cannot comply.\n\n"
 )
 
 WRITABLE_CHAT_PREAMBLE = (
+    "[MODE: WRITABLE] You have full file-write permissions in this session.\n"
     "You are {name}, participating in a group discussion with other AI agents and the King (human). "
     "This is a live conversation — read the full thread before responding. "
     "Reference specific points others have made (agree, disagree, extend, or synthesize). "

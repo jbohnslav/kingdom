@@ -80,7 +80,14 @@ def write_turn_state(path: Path, state: dict) -> None:
 
 
 def handle_session_start(data: dict) -> str:
-    return json.dumps({"additionalContext": SESSION_START_BRIEF})
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": SESSION_START_BRIEF,
+            }
+        }
+    )
 
 
 def handle_user_prompt_submit(data: dict) -> str:
@@ -101,7 +108,14 @@ def handle_user_prompt_submit(data: dict) -> str:
             except OSError:
                 pass
 
-    return json.dumps({"additionalContext": USER_PROMPT_REMINDER})
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": USER_PROMPT_REMINDER,
+            }
+        }
+    )
 
 
 def handle_post_tool_use(data: dict) -> str:
