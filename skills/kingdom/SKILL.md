@@ -140,6 +140,8 @@ The threshold is **durable state change**, not every chat turn. If future-you or
 
 **Log before you continue.** When you discover durable information — a relevant issue, a root cause, a key finding from research — run `kd tk log` immediately, before continuing your work. The worklog survives context compaction; chat doesn't. Don't let valuable findings exist only in conversation history that will be compressed away.
 
+**Edit ticket body vs worklog.** If the King changes requirements or acceptance criteria, update the ticket's markdown directly (description, AC section). The worklog is for timeline events — decisions, findings, progress, blockers. Don't stuff requirements into `kd tk log`; edit the ticket file instead.
+
 **Decision made** — King says "let's go with raw TypeScript over React":
 
 ```
