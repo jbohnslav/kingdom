@@ -6,6 +6,7 @@ links: [0240]
 created: 2026-03-05T16:22:24Z
 type: task
 priority: 1
+closed_at: 2026-03-05T21:50:16Z
 assignee: peasant-d1fa
 ---
 # Replace bash hook script with `kd hook run` subcommand
@@ -14,17 +15,17 @@ The kingdom hook logic currently lives in a bash script (`.claude/hooks/kd-workf
 
 ## Acceptance Criteria
 
-- [ ] New `kd hook run` subcommand reads hook payload JSON from stdin, dispatches by event type, writes JSON to stdout
-- [ ] SessionStart handler emits behavioral brief via `additionalContext`
-- [ ] UserPromptSubmit handler emits enforcement reminder via `additionalContext`
-- [ ] PostToolUse handler sets per-session turn-state flags (`had_work`, `did_log`)
-- [ ] Stop handler checks active ticket (`kd tk current`), blocks if `had_work && !did_log && has_ticket`, fail-open on all errors
-- [ ] `kd plugin enable` writes settings.json with `kd hook run` as the command for all hook events (no bash path)
-- [ ] `kd plugin disable` unchanged
-- [ ] `kd plugin status` reports correctly with new command format
-- [ ] `.claude/hooks/kd-workflow.sh` deleted — all logic in Python
-- [ ] Tests cover all event handlers, state lifecycle, enable/disable, and fail-open behavior
-- [ ] Works after `uv tool install kingdom-cli` on a fresh machine with no kingdom source checkout
+- [x] New `kd hook run` subcommand reads hook payload JSON from stdin, dispatches by event type, writes JSON to stdout
+- [x] SessionStart handler emits behavioral brief via `additionalContext`
+- [x] UserPromptSubmit handler emits enforcement reminder via `additionalContext`
+- [x] PostToolUse handler sets per-session turn-state flags (`had_work`, `did_log`)
+- [x] Stop handler checks active ticket (`kd tk current`), blocks if `had_work && !did_log && has_ticket`, fail-open on all errors
+- [x] `kd plugin enable` writes settings.json with `kd hook run` as the command for all hook events (no bash path)
+- [x] `kd plugin disable` unchanged
+- [x] `kd plugin status` reports correctly with new command format
+- [x] `.claude/hooks/kd-workflow.sh` deleted — all logic in Python
+- [x] Tests cover all event handlers, state lifecycle, enable/disable, and fail-open behavior
+- [x] Works after `uv tool install kingdom-cli` on a fresh machine with no kingdom source checkout
 
 ## Worklog
 
@@ -60,3 +61,18 @@ The kingdom hook logic currently lives in a bash script (`.claude/hooks/kd-workf
 - [14:43] — Council review: APPROVED — awaiting king review
   [claude] APPROVED: Let me review the updated implementation after the bounce fix for `additionalContext` JSON wrapping.The `additionalContext` fix is in place. Let me verify the tests and check the full diff for this round.Good. Now run the tests.All 1639 tests pass. Let me verify the stale files from previous iterations are gone.---
   [codex] APPROVED: Using the `kingdom` skill again for this review since it’s a `kd` CLI workflow change. I’ll verify the two-commit stack (`b1d73d9` + `399f9ec`) against the acceptance criteria, then re-run tests/lint before final verdict.
+- 2026-03-05 15:23 — Bug report from live usage: the UserPromptSubmit hook fires and returns 'success' but the additionalContext content doesn't appear in the agent's context. The SessionStart hook DOES work — its additionalContext shows up as a system-reminder. But UserPromptSubmit only shows 'UserPromptSubmit hook success: Success' with no content injected.
+
+  The handler returns json.dumps({'additionalContext': USER_PROMPT_REMINDER}) which should work — same pattern as SessionStart. The hook is registered correctly in .claude/settings.json. Something about how Claude Code processes the UserPromptSubmit hook response may differ from SessionStart.
+
+  Tested manually: echo '{"type": "UserPromptSubmit", "prompt": "test"}' | kd hook run produces no stdout output. That's the bug — the handler expects hook_event_name in the payload but the manual test used 'type'. However, Claude Code should be passing hook_event_name. The 'success' status message suggests the hook ran and returned something, but the additionalContext isn't being surfaced to the agent.
+
+  Need to investigate: is Claude Code actually passing hook_event_name for UserPromptSubmit? Is the JSON output format correct? Is there a difference in how additionalContext is handled for different hook events?
+- 2026-03-05 15:34 — Council consulted on additionalContext bug. Two theories:
+
+  1. [claude] Thinks it IS working — additionalContext gets folded into prompt invisibly, not as a system-reminder. The 'Success' status confirms JSON was accepted. Suggests testing by asking agent what kingdom workflow says without reading files.
+
+  2. [codex] Thinks it's a schema mismatch — Claude Code hooks docs suggest event-specific output should use hookSpecificOutput wrapper: {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}. Top-level additionalContext may only work for certain event types. Links to https://docs.anthropic.com/en/docs/claude-code/hooks
+
+  My take: codex's theory is more likely. If additionalContext were silently injected, I'd have kingdom workflow knowledge in context — but I don't. The brief and reminder text are absent from my prompt. The hook runs and returns clean JSON, but Claude Code may be ignoring the top-level additionalContext because it expects a different schema shape for SessionStart/UserPromptSubmit events. Next step: check the official hooks docs for the correct output schema.
+- 2026-03-05 15:41 — Fixed additionalContext bug. Root cause: Claude Code hooks require additionalContext to be nested inside hookSpecificOutput with a hookEventName field, not at the top level. Changed handle_session_start and handle_user_prompt_submit to output {"hookSpecificOutput": {"hookEventName": "<event>", "additionalContext": "..."}}. Updated all tests. Full suite: 1652 passed. Codex's theory was correct — confirmed via official docs at code.claude.com/docs/en/hooks.
