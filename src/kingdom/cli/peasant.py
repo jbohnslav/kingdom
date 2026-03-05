@@ -30,6 +30,7 @@ from kingdom.state import (
 )
 from kingdom.ticket import Ticket, move_ticket, write_ticket
 from kingdom.worktree import (
+    check_uncommitted_changes,
     create_worktree,
     remove_worktree,
     run_init_script,
@@ -256,6 +257,7 @@ def peasant_start(
     hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
     tmux: Annotated[bool, typer.Option("--tmux", help="Open agent in a new tmux window.")] = False,
     watch: Annotated[bool, typer.Option("--watch", "-w", help="Watch peasant progress after starting.")] = False,
+    no_preflight: Annotated[bool, typer.Option("--no-preflight", help="Skip uncommitted-changes warning.")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
     import kingdom.cli as _cli
@@ -291,6 +293,16 @@ def peasant_start(
     if existing.status == "working" and existing.pid and is_process_alive(existing.pid):
         print_error(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
         raise typer.Exit(code=1)
+
+    # 0. Preflight: warn on uncommitted changes (skipped in hand mode or with --no-preflight)
+    if not hand and not no_preflight:
+        uncommitted = check_uncommitted_changes(base)
+        if uncommitted:
+            error_console.print(
+                f"[yellow]Warning:[/yellow] {len(uncommitted)} uncommitted change(s) in {base}.\n"
+                "  Worktrees are created from the last commit — uncommitted changes won't be included.\n"
+                "  Commit or stash first, or use [bold]--hand[/bold] to work in the current directory."
+            )
 
     # 1. Create worktree (or use base if hand mode)
     if hand:

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from kingdom.state import ensure_base_layout, ensure_branch_layout
-from kingdom.worktree import design_state_path, worktree_path_for
+from kingdom.worktree import check_uncommitted_changes, design_state_path, sync_workflow_files, worktree_path_for
 
 
 class TestWorktreePathFor:
@@ -13,6 +14,94 @@ class TestWorktreePathFor:
         ensure_base_layout(tmp_path)
         result = worktree_path_for(tmp_path, "kin-abcd")
         assert result == tmp_path / ".kd" / "worktrees" / "kin-abcd"
+
+
+class TestSyncWorkflowFiles:
+    def test_copies_settings_json(self, tmp_path: Path) -> None:
+        base = tmp_path / "project"
+        base.mkdir()
+        settings = base / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"hooks": {}}')
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        messages: list[str] = []
+        sync_workflow_files(base, worktree, log=messages.append)
+
+        dst = worktree / ".claude" / "settings.json"
+        assert dst.exists()
+        assert dst.read_text() == '{"hooks": {}}'
+        assert any("settings.json" in m for m in messages)
+
+    def test_skips_when_source_missing(self, tmp_path: Path) -> None:
+        base = tmp_path / "project"
+        base.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        messages: list[str] = []
+        sync_workflow_files(base, worktree, log=messages.append)
+
+        assert not (worktree / ".claude" / "settings.json").exists()
+        assert messages == []
+
+    def test_skips_when_destination_already_exists(self, tmp_path: Path) -> None:
+        base = tmp_path / "project"
+        base.mkdir()
+        settings = base / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"source": true}')
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        dst = worktree / ".claude" / "settings.json"
+        dst.parent.mkdir(parents=True)
+        dst.write_text('{"existing": true}')
+
+        sync_workflow_files(base, worktree)
+
+        assert dst.read_text() == '{"existing": true}'
+
+
+class TestCheckUncommittedChanges:
+    def test_returns_changes(self, tmp_path: Path) -> None:
+        import subprocess
+
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=" M file.py\n?? new.txt\n")
+        with patch("kingdom.worktree.subprocess.run", return_value=result):
+            changes = check_uncommitted_changes(tmp_path)
+        assert len(changes) == 2
+        assert " M file.py" in changes
+
+    def test_returns_empty_on_clean(self, tmp_path: Path) -> None:
+        import subprocess
+
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
+        with patch("kingdom.worktree.subprocess.run", return_value=result):
+            changes = check_uncommitted_changes(tmp_path)
+        assert changes == []
+
+    def test_fail_open_on_git_not_found(self, tmp_path: Path) -> None:
+        with patch("kingdom.worktree.subprocess.run", side_effect=FileNotFoundError):
+            changes = check_uncommitted_changes(tmp_path)
+        assert changes == []
+
+    def test_fail_open_on_git_error(self, tmp_path: Path) -> None:
+        import subprocess
+
+        result = subprocess.CompletedProcess(args=[], returncode=128, stdout="", stderr="not a git repo")
+        with patch("kingdom.worktree.subprocess.run", return_value=result):
+            changes = check_uncommitted_changes(tmp_path)
+        assert changes == []
+
+    def test_fail_open_on_timeout(self, tmp_path: Path) -> None:
+        import subprocess
+
+        with patch("kingdom.worktree.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)):
+            changes = check_uncommitted_changes(tmp_path)
+        assert changes == []
 
 
 class TestDesignStatePath:
