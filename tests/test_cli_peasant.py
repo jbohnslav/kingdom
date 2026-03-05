@@ -719,6 +719,119 @@ class TestPeasantStop:
             assert result.exit_code == 1
             assert "not found" in result.output
 
+    def test_stop_no_pid_fails_without_force(self) -> None:
+        """Stop without --force should fail when no PID is tracked."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(name="peasant-kin-test", status="working", pid=None),
+            )
+
+            result = runner.invoke(peasant_app, ["stop", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "No PID" in result.output
+            assert "--force" in result.output
+
+    def test_stop_force_closes_without_pid(self) -> None:
+        """Stop --force should close session state even when no PID is tracked."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(name="peasant-kin-test", status="working", pid=None),
+            )
+
+            result = runner.invoke(peasant_app, ["stop", "kin-test", "--force"])
+
+            assert result.exit_code == 0
+            assert "force-closing" in result.output
+            state = get_agent_state(base, BRANCH, "peasant-kin-test")
+            assert state.status == "stopped"
+
+    def test_kill_peasant_process_rejects_pid_zero(self) -> None:
+        """kill_peasant_process must not call killpg with pid=0 (would signal caller)."""
+        from kingdom.cli.peasant import kill_peasant_process
+
+        with patch("os.killpg") as mock_killpg:
+            result = kill_peasant_process(0, "test")
+
+        assert result is False
+        mock_killpg.assert_not_called()
+
+
+class TestPeasantPrune:
+    def test_prune_marks_stale_sessions_stopped(self) -> None:
+        """Prune should mark working sessions with no PID as stopped."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-stale1",
+                AgentState(name="peasant-stale1", status="working", pid=None),
+            )
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-healthy",
+                AgentState(name="peasant-healthy", status="done"),
+            )
+
+            result = runner.invoke(peasant_app, ["prune"])
+
+            assert result.exit_code == 0
+            assert "Pruned" in result.output
+            assert "peasant-stale1" in result.output
+            assert "1 session(s) pruned" in result.output
+            state = get_agent_state(base, BRANCH, "peasant-stale1")
+            assert state.status == "stopped"
+
+    def test_prune_dry_run(self) -> None:
+        """Prune --dry-run should show what would be pruned without changing state."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-stale1",
+                AgentState(name="peasant-stale1", status="working", pid=None),
+            )
+
+            result = runner.invoke(peasant_app, ["prune", "--dry-run"])
+
+            assert result.exit_code == 0
+            assert "Would prune" in result.output
+            # State should NOT be changed
+            state = get_agent_state(base, BRANCH, "peasant-stale1")
+            assert state.status == "working"
+
+    def test_prune_nothing_stale(self) -> None:
+        """Prune with no stale sessions should report nothing to do."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(peasant_app, ["prune"])
+
+            assert result.exit_code == 0
+            assert "No stale" in result.output
+
 
 class TestPeasantClean:
     def test_clean_removes_worktree(self) -> None:
@@ -1452,7 +1565,7 @@ class TestPeasantReview:
 
             assert result.exit_code == 0, result.output
             assert "rejected" in result.output
-            assert "in_progress" in result.output
+            assert "stopped" in result.output
             assert "relaunched" not in result.output
 
             # Should NOT have relaunched
@@ -1463,6 +1576,10 @@ class TestPeasantReview:
             assert ticket_result is not None
             ticket, _ = ticket_result
             assert ticket.status == "in_progress"
+
+            # Session should be stopped, not working
+            state = get_agent_state(base, BRANCH, session_name)
+            assert state.status == "stopped"
 
             # Feedback should still be in the thread
             messages = list_messages(base, BRANCH, thread_id)

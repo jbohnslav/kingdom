@@ -405,6 +405,33 @@ class TestPeasantTmux:
                 session_name="peasant-t1",
             )
 
+    def test_tmux_errors_on_pid_discovery_failure(self, tmp_path) -> None:
+        """--tmux should error if PID discovery fails after window creation."""
+        import pytest
+        from click.exceptions import Exit as ClickExit
+
+        # Three subprocess.run calls: display-message, new-window, list-panes
+        mock_display = MagicMock(returncode=0, stdout="main")
+        mock_new_window = MagicMock(returncode=0, stdout="main:1.0")
+        mock_list_panes = MagicMock(returncode=0, stdout="")  # empty → IndexError
+
+        with (
+            patch(
+                "kingdom.cli.peasant.subprocess.run",
+                side_effect=[mock_display, mock_new_window, mock_list_panes],
+            ),
+            pytest.raises(ClickExit),
+        ):
+            launch_work_tmux(
+                base=tmp_path,
+                feature="test",
+                ticket_id="t1",
+                agent="claude",
+                worktree_path=tmp_path,
+                thread_id="t1-work",
+                session_name="peasant-t1",
+            )
+
 
 class TestProjectRootDiscovery:
     """CLI commands use find_project_root to locate .kd/."""
