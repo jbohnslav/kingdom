@@ -27,15 +27,18 @@ runner = CliRunner()
 
 
 class TestSessionStart:
-    def test_emits_brief(self) -> None:
+    def test_emits_brief_as_additional_context(self) -> None:
         output = handle_session_start({"hook_event_name": "SessionStart"})
-        assert "KINGDOM WORKFLOW" in output
-        assert "TICKET FIRST" in output
-        assert "LOG PROACTIVELY" in output
+        parsed = json.loads(output)
+        assert "additionalContext" in parsed
+        assert "KINGDOM WORKFLOW" in parsed["additionalContext"]
+        assert "TICKET FIRST" in parsed["additionalContext"]
+        assert "LOG PROACTIVELY" in parsed["additionalContext"]
 
     def test_emits_on_resume(self) -> None:
         output = handle_session_start({"hook_event_name": "SessionStart", "source": "resume"})
-        assert "KINGDOM WORKFLOW" in output
+        parsed = json.loads(output)
+        assert "KINGDOM WORKFLOW" in parsed["additionalContext"]
 
 
 # ---------------------------------------------------------------------------
@@ -44,11 +47,13 @@ class TestSessionStart:
 
 
 class TestUserPromptSubmit:
-    def test_emits_reminder(self, tmp_path: Path) -> None:
+    def test_emits_reminder_as_additional_context(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit"})
-        assert "Kingdom:" in output
-        assert "kd tk create" in output
+        parsed = json.loads(output)
+        assert "additionalContext" in parsed
+        assert "Kingdom:" in parsed["additionalContext"]
+        assert "kd tk create" in parsed["additionalContext"]
 
     def test_creates_state_file(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
@@ -368,12 +373,14 @@ class TestHookRunCLI:
     def test_session_start_via_cli(self) -> None:
         result = runner.invoke(app, ["hook", "run"], input='{"hook_event_name": "SessionStart"}')
         assert result.exit_code == 0
-        assert "KINGDOM WORKFLOW" in result.output
+        parsed = json.loads(result.output.strip())
+        assert "KINGDOM WORKFLOW" in parsed["additionalContext"]
 
     def test_user_prompt_submit_via_cli(self) -> None:
         result = runner.invoke(app, ["hook", "run"], input='{"hook_event_name": "UserPromptSubmit"}')
         assert result.exit_code == 0
-        assert "Kingdom:" in result.output
+        parsed = json.loads(result.output.strip())
+        assert "Kingdom:" in parsed["additionalContext"]
 
     def test_unknown_event_silent(self) -> None:
         result = runner.invoke(app, ["hook", "run"], input='{"hook_event_name": "Notification"}')
