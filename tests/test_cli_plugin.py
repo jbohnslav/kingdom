@@ -1,7 +1,6 @@
 """Tests for kd plugin enable/disable/status commands."""
 
 import json
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +8,7 @@ from typer.testing import CliRunner
 
 from kingdom.cli import app
 from kingdom.cli.plugin import (
+    HOOK_COMMAND,
     HOOK_CONFIG,
     HOOK_EVENTS,
     has_hook_for_event,
@@ -113,7 +113,17 @@ class TestPluginEnable:
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
         assert is_hook_installed(settings)
 
-    def test_enable_installs_both_hooks(self, tmp_path: Path) -> None:
+    def test_enable_uses_kd_hook_run_command(self, tmp_path: Path) -> None:
+        """Hook command should be 'kd hook run', not a bash script path."""
+        with mock_git_root(tmp_path):
+            runner.invoke(app, ["plugin", "enable"])
+
+        settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+        for event in HOOK_EVENTS:
+            hook = settings["hooks"][event][0]["hooks"][0]
+            assert hook["command"] == "kd hook run"
+
+    def test_enable_installs_all_hooks(self, tmp_path: Path) -> None:
         with mock_git_root(tmp_path):
             runner.invoke(app, ["plugin", "enable"])
 
@@ -158,7 +168,6 @@ class TestPluginEnable:
 
         settings = json.loads(settings_path.read_text())
         assert is_hook_installed(settings)
-        # UserPromptSubmit should still only have one entry
         assert len(settings["hooks"]["UserPromptSubmit"]) == 1
 
 
@@ -215,328 +224,7 @@ class TestPluginStatus:
         assert "disabled" in result.output
 
 
-# ---------------------------------------------------------------------------
-# Hook script tests
-# ---------------------------------------------------------------------------
-
-
-class TestHookScript:
-    """Test the hook shell script behavior."""
-
-    hook_path = Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "kd-workflow.sh"
-
-    def test_session_start_emits_brief(self) -> None:
-        result = subprocess.run(
-            [str(self.hook_path)],
-            input='{"hook_event_name": "SessionStart", "source": "startup"}',
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        assert result.returncode == 0
-        assert "KINGDOM WORKFLOW" in result.stdout
-        assert "TICKET FIRST" in result.stdout
-        assert "LOG PROACTIVELY" in result.stdout
-
-    def test_session_start_resume(self) -> None:
-        result = subprocess.run(
-            [str(self.hook_path)],
-            input='{"hook_event_name": "SessionStart", "source": "resume"}',
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        assert result.returncode == 0
-        assert "KINGDOM WORKFLOW" in result.stdout
-
-    def test_user_prompt_submit_emits_reminder(self) -> None:
-        result = subprocess.run(
-            [str(self.hook_path)],
-            input='{"hook_event_name": "UserPromptSubmit"}',
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        assert result.returncode == 0
-        assert "Kingdom:" in result.stdout
-        assert "kd tk create" in result.stdout
-
-    def test_stop_no_state_fails_open(self, tmp_path: Path) -> None:
-        """Stop with no state file should not block (fail-open)."""
-        env = {**subprocess.os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path)}
-        result = subprocess.run(
-            [str(self.hook_path)],
-            input='{"hook_event_name": "Stop", "stop_hook_active": false}',
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env=env,
-        )
-        assert result.returncode == 0
-        assert result.stdout == ""
-
-    def test_unknown_event_silent(self) -> None:
-        result = subprocess.run(
-            [str(self.hook_path)],
-            input='{"hook_event_name": "Notification"}',
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        assert result.returncode == 0
-        assert result.stdout == ""
-
-    def test_empty_input_silent(self) -> None:
-        result = subprocess.run(
-            [str(self.hook_path)],
-            input="{}",
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        assert result.returncode == 0
-        assert result.stdout == ""
-
-
-# ---------------------------------------------------------------------------
-# V2 blocker tests
-# ---------------------------------------------------------------------------
-
-
-class TestV2Blocker:
-    """Test the stateful Stop blocker lifecycle."""
-
-    hook_path = Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "kd-workflow.sh"
-
-    def run_hook(
-        self,
-        tmp_path: Path,
-        payload: dict,
-        *,
-        bypass: bool = False,
-        kd_ticket_id: str | None = None,
-    ) -> subprocess.CompletedProcess:
-        env = {**subprocess.os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path)}
-        if bypass:
-            env["KD_HOOK_BYPASS"] = "1"
-        if kd_ticket_id is not None:
-            # Create a mock kd script that returns the given ticket ID (or fails if empty).
-            mock_bin = tmp_path / "_mock_bin"
-            mock_bin.mkdir(exist_ok=True)
-            mock_kd = mock_bin / "kd"
-            if kd_ticket_id:
-                mock_kd.write_text(f'#!/bin/sh\necho "{kd_ticket_id}"\n')
-            else:
-                mock_kd.write_text("#!/bin/sh\nexit 1\n")
-            mock_kd.chmod(0o755)
-            env["PATH"] = f"{mock_bin}:{env.get('PATH', '')}"
-        return subprocess.run(
-            [str(self.hook_path)],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env=env,
-        )
-
-    def state_file(self, tmp_path: Path, session_id: str) -> Path:
-        return tmp_path / ".kd" / "runtime" / f"turn-{session_id}.json"
-
-    def read_state(self, tmp_path: Path, session_id: str) -> dict:
-        return json.loads(self.state_file(tmp_path, session_id).read_text())
-
-    def submit(self, tmp_path: Path, session_id: str = "sess-1") -> None:
-        self.run_hook(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": session_id})
-
-    def tool_use(self, tmp_path: Path, tool: str, session_id: str = "sess-1", command: str = "") -> None:
-        payload = {"hook_event_name": "PostToolUse", "session_id": session_id, "tool_name": tool, "tool_input": {}}
-        if command:
-            payload["tool_input"]["command"] = command
-        self.run_hook(tmp_path, payload)
-
-    def stop(
-        self,
-        tmp_path: Path,
-        session_id: str = "sess-1",
-        stop_active: bool = False,
-        **kw,
-    ) -> subprocess.CompletedProcess:
-        payload = {"hook_event_name": "Stop", "session_id": session_id, "stop_hook_active": stop_active}
-        return self.run_hook(tmp_path, payload, **kw)
-
-    # --- UserPromptSubmit creates/resets state ---
-
-    def test_submit_creates_state_file(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        state = self.read_state(tmp_path, "sess-1")
-        assert state == {"had_work": False, "did_log": False}
-
-    def test_submit_resets_state(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        assert self.read_state(tmp_path, "sess-1")["had_work"] is True
-        # New submit resets.
-        self.submit(tmp_path)
-        assert self.read_state(tmp_path, "sess-1") == {"had_work": False, "did_log": False}
-
-    # --- PostToolUse tracking ---
-
-    def test_edit_sets_had_work(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        assert self.read_state(tmp_path, "sess-1")["had_work"] is True
-
-    def test_write_sets_had_work(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Write")
-        assert self.read_state(tmp_path, "sess-1")["had_work"] is True
-
-    def test_web_search_sets_had_work(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "WebSearch")
-        assert self.read_state(tmp_path, "sess-1")["had_work"] is True
-
-    def test_web_fetch_sets_had_work(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "WebFetch")
-        assert self.read_state(tmp_path, "sess-1")["had_work"] is True
-
-    def test_read_does_not_set_had_work(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Read")
-        assert self.read_state(tmp_path, "sess-1")["had_work"] is False
-
-    def test_bash_does_not_set_had_work(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Bash", command="ls -la")
-        assert self.read_state(tmp_path, "sess-1")["had_work"] is False
-
-    def test_kd_tk_log_sets_did_log(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Bash", command='kd tk log d4fc "did stuff"')
-        assert self.read_state(tmp_path, "sess-1")["did_log"] is True
-
-    def test_kd_ticket_log_sets_did_log(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Bash", command='kd ticket log d4fc "did stuff"')
-        assert self.read_state(tmp_path, "sess-1")["did_log"] is True
-
-    def test_unrelated_bash_does_not_set_did_log(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Bash", command="pytest")
-        assert self.read_state(tmp_path, "sess-1")["did_log"] is False
-
-    # --- Stop blocker ---
-
-    def test_stop_blocks_when_had_work_no_log(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        result = self.stop(tmp_path, kd_ticket_id="0042")
-        output = json.loads(result.stdout)
-        assert output["decision"] == "block"
-        assert "kd tk log 0042" in output["reason"]
-
-    def test_stop_allows_when_did_log(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        self.tool_use(tmp_path, "Bash", command='kd tk log d4fc "summary"')
-        result = self.stop(tmp_path)
-        assert result.stdout.strip() == "" or "block" not in result.stdout
-
-    def test_stop_allows_when_no_work(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        result = self.stop(tmp_path)
-        assert result.stdout.strip() == "" or "block" not in result.stdout
-
-    def test_stop_allows_when_stop_hook_active(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        result = self.stop(tmp_path, stop_active=True)
-        assert result.stdout.strip() == "" or "block" not in result.stdout
-
-    def test_bypass_skips_blocking(self, tmp_path: Path) -> None:
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        result = self.stop(tmp_path, bypass=True)
-        assert result.returncode == 0
-        assert result.stdout == ""
-
-    def test_missing_state_file_fails_open(self, tmp_path: Path) -> None:
-        # No submit → no state file → Stop should not block.
-        result = self.stop(tmp_path)
-        assert result.returncode == 0
-        assert result.stdout.strip() == "" or "block" not in result.stdout
-
-    # --- Active ticket gating ---
-
-    def test_stop_no_active_ticket_passes_through(self, tmp_path: Path) -> None:
-        """No active ticket + had work => no block."""
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        result = self.stop(tmp_path, kd_ticket_id="")
-        assert result.returncode == 0
-        assert result.stdout.strip() == "" or "block" not in result.stdout
-
-    def test_stop_active_ticket_blocks_with_real_id(self, tmp_path: Path) -> None:
-        """Active ticket + had work + no log => block with concrete ticket ID."""
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        result = self.stop(tmp_path, kd_ticket_id="a1b2")
-        output = json.loads(result.stdout)
-        assert output["decision"] == "block"
-        assert "kd tk log a1b2" in output["reason"]
-        # No placeholder tokens like <ticket-id>.
-        assert "<" not in output["reason"]
-
-    def test_stop_kd_current_failure_fails_open(self, tmp_path: Path) -> None:
-        """If kd tk current --id fails or times out, Stop fails open."""
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        # Mock kd that exits 1 (no active ticket).
-        result = self.stop(tmp_path, kd_ticket_id="")
-        assert result.returncode == 0
-        assert result.stdout.strip() == "" or "block" not in result.stdout
-
-    def test_mid_turn_ticket_accept_enforces_at_stop(self, tmp_path: Path) -> None:
-        """Ticket created/accepted mid-turn => Stop resolves current ticket at Stop time."""
-        self.submit(tmp_path)
-        self.tool_use(tmp_path, "Edit")
-        # Simulate: at stop time, kd tk current --id now returns a ticket.
-        result = self.stop(tmp_path, kd_ticket_id="0240")
-        output = json.loads(result.stdout)
-        assert output["decision"] == "block"
-        assert "kd tk log 0240" in output["reason"]
-
-    # --- Multi-agent isolation ---
-
-    def test_separate_sessions_no_cross_blocking(self, tmp_path: Path) -> None:
-        # Session A does work, session B does not.
-        self.submit(tmp_path, session_id="sess-a")
-        self.submit(tmp_path, session_id="sess-b")
-        self.tool_use(tmp_path, "Edit", session_id="sess-a")
-        # Session B's Stop should not block.
-        result = self.stop(tmp_path, session_id="sess-b")
-        assert result.stdout.strip() == "" or "block" not in result.stdout
-        # Session A's Stop should block.
-        result = self.stop(tmp_path, session_id="sess-a", kd_ticket_id="0099")
-        output = json.loads(result.stdout)
-        assert output["decision"] == "block"
-
-    def test_sessions_have_independent_state(self, tmp_path: Path) -> None:
-        self.submit(tmp_path, session_id="sess-a")
-        self.submit(tmp_path, session_id="sess-b")
-        self.tool_use(tmp_path, "Write", session_id="sess-a")
-        self.tool_use(tmp_path, "Bash", session_id="sess-b", command='kd tk log x "y"')
-        assert self.read_state(tmp_path, "sess-a") == {"had_work": True, "did_log": False}
-        assert self.read_state(tmp_path, "sess-b") == {"had_work": False, "did_log": True}
-
-    def test_stale_state_does_not_block_new_session(self, tmp_path: Path) -> None:
-        # Create a state file for an old session that looks like it had work.
-        runtime = tmp_path / ".kd" / "runtime"
-        runtime.mkdir(parents=True)
-        stale = runtime / "turn-old-session.json"
-        stale.write_text(json.dumps({"had_work": True, "did_log": False}))
-        # New session should not be affected.
-        self.submit(tmp_path, session_id="new-session")
-        result = self.stop(tmp_path, session_id="new-session")
-        assert result.stdout.strip() == "" or "block" not in result.stdout
+class TestHookCommand:
+    def test_hook_command_is_kd_hook_run(self) -> None:
+        """The hook command should be 'kd hook run', not a bash path."""
+        assert HOOK_COMMAND == "kd hook run"

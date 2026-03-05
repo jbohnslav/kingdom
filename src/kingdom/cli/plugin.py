@@ -12,7 +12,7 @@ from .display import print_error, styled_echo
 
 plugin_app = typer.Typer(name="plugin", help="Manage Claude Code hooks plugin.")
 
-HOOK_COMMAND = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/kd-workflow.sh'
+HOOK_COMMAND = "kd hook run"
 
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
 
