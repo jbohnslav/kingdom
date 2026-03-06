@@ -34,6 +34,7 @@ from pathlib import Path
 from kingdom.parsing import parse_frontmatter, parse_iso_datetime, serialize_frontmatter
 
 STATUSES = {"open", "in_progress", "in_review", "closed"}
+TICKET_TYPES = {"task", "bug", "feature", "epic"}
 
 
 @dataclass
@@ -45,7 +46,7 @@ class Ticket:
     deps: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
     created: datetime = field(default_factory=lambda: datetime.now(UTC))
-    type: str = "task"  # task, bug, feature
+    type: str = "task"  # task, bug, feature, epic
     priority: int = 2  # 0-3, 0 is highest
     assignee: str | None = None
     title: str = ""
