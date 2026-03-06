@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import unittest.mock
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -361,3 +362,108 @@ def test_done_cleans_up_worktrees_from_state() -> None:
         # Worktrees map should be cleared in state.json
         state = read_json(state_path)
         assert state.get("worktrees", {}) == {}
+
+
+def test_done_skips_worktree_confirm_when_not_tty() -> None:
+    """kd done should skip worktree-removal confirmation when stdin is not a TTY."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+
+        wt_root = state_root(base) / "worktrees"
+        wt_root.mkdir(parents=True, exist_ok=True)
+        wt1 = wt_root / "tf-abc1"
+        wt1.mkdir()
+
+        state_path = branch_dir / "state.json"
+        state = read_json(state_path) if state_path.exists() else {}
+        state["worktrees"] = {"tf-abc1": str(wt1)}
+        write_json(state_path, state)
+
+        original_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "worktree", "remove"]:
+                import shutil
+
+                target = Path(cmd[-1])
+                if target.exists():
+                    shutil.rmtree(target)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return original_run(cmd, **kwargs)
+
+        # stdin.isatty() returns False (non-interactive) — should skip confirmation
+        with (
+            unittest.mock.patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+            unittest.mock.patch("kingdom.cli.sys.stdin") as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            result = runner.invoke(app, ["done"])
+
+        assert result.exit_code == 0
+        assert not wt1.exists()
+        # Should NOT have asked for confirmation
+        assert "Remove" not in result.output or "worktree" not in result.output
+
+
+def test_done_prompts_worktree_confirm_when_tty() -> None:
+    """kd done should prompt for worktree removal when stdin IS a TTY."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+
+        wt_root = state_root(base) / "worktrees"
+        wt_root.mkdir(parents=True, exist_ok=True)
+        wt1 = wt_root / "tf-abc1"
+        wt1.mkdir()
+
+        state_path = branch_dir / "state.json"
+        state = read_json(state_path) if state_path.exists() else {}
+        state["worktrees"] = {"tf-abc1": str(wt1)}
+        write_json(state_path, state)
+
+        # Patch sys.stdin with a mock whose isatty() returns True.
+        # CliRunner replaces sys.stdin, so we patch it inside the done function.
+        mock_stdin = unittest.mock.MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            unittest.mock.patch("kingdom.cli.sys") as mock_sys,
+            unittest.mock.patch("kingdom.cli.typer.confirm") as mock_confirm,
+        ):
+            mock_sys.stdin = mock_stdin
+            runner.invoke(app, ["done"])
+
+        # Confirm was called (worktree removal prompt triggered)
+        mock_confirm.assert_called_once()
+        assert "tf-abc1" in mock_confirm.call_args[0][0]
+
+
+def test_done_blocks_open_tickets_even_when_not_tty() -> None:
+    """kd done should still block on open tickets when stdin is not a TTY."""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        tickets_dir = branch_dir / "tickets"
+        write_ticket(
+            Ticket(id="kin-open1", status="open", title="Open ticket", created=datetime.now(UTC)),
+            tickets_dir / "kin-open1.md",
+        )
+
+        with unittest.mock.patch("kingdom.cli.sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            result = runner.invoke(app, ["done"])
+
+        assert result.exit_code == 1
+        assert "open ticket(s)" in result.output
