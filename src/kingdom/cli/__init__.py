@@ -42,6 +42,7 @@ from .design import design_app, get_branch_paths, get_doc_status  # noqa: F401 (
 from .display import error_console, print_error, styled_echo
 from .helpers import install_skill, is_git_repo, require_project_root, verbose_echo  # noqa: F401
 from .hook import hook_app
+from .lord import lord_app
 from .peasant import (  # noqa: F401
     PeasantContext,
     launch_work_background,
@@ -82,6 +83,7 @@ app.add_typer(design_app, name="design")
 app.add_typer(peasant_app, name="peasant")
 app.add_typer(config_app, name="config")
 app.add_typer(hook_app, name="hook")
+app.add_typer(lord_app, name="lord")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(ticket_app, name="ticket")
 app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
@@ -435,11 +437,11 @@ def status(
         if ticket.status in status_counts:
             status_counts[ticket.status] += 1
 
-    # Count ready tickets (open/in_progress with all deps closed — excludes in_review)
+    # Count ready tickets (open with all deps closed — startable, not already started)
     status_by_id = {t.id: t.status for t in tickets}
     ready_count = 0
     for ticket in tickets:
-        if ticket.status not in ("open", "in_progress"):
+        if ticket.status != "open":
             continue
         all_deps_closed = all(status_by_id.get(dep, "unknown") == "closed" for dep in ticket.deps)
         if all_deps_closed:
