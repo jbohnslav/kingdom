@@ -29,7 +29,8 @@ default timeouts.
     },
     "codex": {
       "backend": "codex",
-      "model": "o3"
+      "model": "gpt-5.4",
+      "reasoning_effort": "high"
     },
     "cursor": {
       "backend": "cursor"
@@ -58,6 +59,41 @@ default timeouts.
 }
 ```
 
+## Reasoning effort example
+
+Use separate named agents when you want different reasoning effort levels for
+council queries vs peasant work:
+
+```json
+{
+  "agents": {
+    "claude": {
+      "backend": "claude_code"
+    },
+    "codex_council": {
+      "backend": "codex",
+      "model": "gpt-5.4",
+      "reasoning_effort": "high"
+    },
+    "codex_peasant": {
+      "backend": "codex",
+      "model": "gpt-5.4",
+      "reasoning_effort": "medium"
+    }
+  },
+  "council": {
+    "members": ["claude", "codex_council"]
+  },
+  "peasant": {
+    "agent": "codex_peasant"
+  }
+}
+```
+
+This keeps model and effort separate — no need to encode effort into the model
+name (e.g. `gpt-5.4-high`). The Codex command builder translates
+`reasoning_effort` to the Codex CLI's `model_reasoning_effort` config setting.
+
 ## Top-level keys
 
 | Key | Type | Description |
@@ -80,9 +116,13 @@ Each agent is an object with:
 | `prompt` | string | no | `""` | System prompt prepended to all queries |
 | `prompts` | object | no | `{}` | Per-phase prompt overrides (see below) |
 | `extra_flags` | list[string] | no | `[]` | Extra CLI flags passed to the backend |
+| `reasoning_effort` | string | no | `""` | Reasoning effort level: `low`, `medium`, or `high` (Codex only) |
 
 Built-in agents `claude` and `codex` are always present. You can override their
 settings or add new agents by name.
+
+Setting `reasoning_effort` on a non-Codex backend is a validation error (surfaced
+by `kd doctor`).
 
 ### `agents.<name>.prompts`
 

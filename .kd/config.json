@@ -5,7 +5,8 @@
     },
     "codex": {
       "backend": "codex",
-      "model": "gpt-5.4-high"
+      "model": "gpt-5.4",
+      "reasoning_effort": "high"
     }
   },
   "council": {

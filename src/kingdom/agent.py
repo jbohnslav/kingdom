@@ -62,6 +62,7 @@ class AgentConfig:
     install_hint: str = ""
     model: str = ""
     extra_flags: list[str] = field(default_factory=list)
+    reasoning_effort: str = ""
 
 
 def resolve_agent(name: str, agent_def: AgentDef) -> AgentConfig:
@@ -85,6 +86,7 @@ def resolve_agent(name: str, agent_def: AgentDef) -> AgentConfig:
         install_hint=defaults["install_hint"],
         model=agent_def.model,
         extra_flags=list(agent_def.extra_flags),
+        reasoning_effort=agent_def.reasoning_effort,
     )
 
 
@@ -430,6 +432,8 @@ def build_codex_command(
         parts.extend(["-c", 'sandbox_permissions=["disk-full-read-access"]'])
     if config.model:
         parts.extend(["--model", config.model])
+    if config.reasoning_effort:
+        parts.extend(["-c", f"model_reasoning_effort={config.reasoning_effort}"])
     if config.extra_flags:
         parts.extend(config.extra_flags)
     if session_id:
