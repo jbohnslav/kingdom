@@ -95,6 +95,18 @@ No changes to `kd peasant accept`'s behavior needed — the existing error outpu
 
 **CWD requirement:** The lord must run on the feature branch. Since it runs in the base checkout and is launched via `kd lord start` (which validates the current branch), this is guaranteed at startup. The lord should not switch branches during its run.
 
+### Epic worklog as the cross-ticket log
+
+When the lord manages an epic, the **epic ticket's worklog** is where cross-ticket information lives:
+- Merge conflict resolutions (what conflicted, how it was resolved)
+- Implementation decisions that span multiple tickets
+- Progress summaries ("3/7 tickets closed, 2 in progress, blocked on X")
+- Escalation notes for the King
+
+Individual ticket worklogs stay ticket-scoped (what the peasant did, what the council said). The epic worklog is the lord's journal — the single place the King reads to understand the overall state of the workstream.
+
+This also applies when the King or Hand works tickets directly. Any decision or finding that affects sibling tickets should be logged to the parent epic, not buried in one child's worklog.
+
 ### Review depth
 
 The lord's review of peasant work is lightweight by default:
