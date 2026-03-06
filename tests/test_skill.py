@@ -125,10 +125,9 @@ class TestPackagedSkillMirrorsCanonical:
             pkg_file = pkg_refs / canonical_file.name
             assert pkg_file.exists(), f"Packaged reference {canonical_file.name} missing from {pkg_refs}"
             if pkg_file.is_symlink():
-                assert pkg_file.resolve() == canonical_file.resolve(), (
-                    f"{canonical_file.name} symlink points to {pkg_file.resolve()}, "
-                    f"expected {canonical_file.resolve()}"
-                )
+                assert (
+                    pkg_file.resolve() == canonical_file.resolve()
+                ), f"{canonical_file.name} symlink points to {pkg_file.resolve()}, expected {canonical_file.resolve()}"
             else:
                 assert (
                     pkg_file.read_text() == canonical_file.read_text()

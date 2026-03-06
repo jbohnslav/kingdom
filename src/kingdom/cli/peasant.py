@@ -1149,7 +1149,7 @@ def peasant_stop(
     if state.pid:
         kill_peasant_process(state.pid, full_ticket_id)
     elif not force:
-        print_error(f"No PID found for peasant {full_ticket_id}. " "Use --force to close session state anyway.")
+        print_error(f"No PID found for peasant {full_ticket_id}. Use --force to close session state anyway.")
         raise typer.Exit(code=1)
     else:
         typer.echo(f"{full_ticket_id}: no PID found, force-closing session state")
