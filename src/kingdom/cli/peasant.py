@@ -278,6 +278,13 @@ def peasant_start(
         print_error(f"Cannot start work on {full_ticket_id}: ticket is {ticket.status}")
         raise typer.Exit(code=1)
 
+    # Block starting work on epic tickets (epics aren't atomic work units)
+    if ticket.type == "epic":
+        print_error(
+            f"Cannot start a peasant on {full_ticket_id}: epic tickets are not atomic work units. Break it into child tickets first."
+        )
+        raise typer.Exit(code=1)
+
     # Transition open → in_progress
     if ticket.status == "open":
         ticket.status = "in_progress"

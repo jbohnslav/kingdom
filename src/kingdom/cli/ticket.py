@@ -31,6 +31,7 @@ from kingdom.state import (
 )
 from kingdom.ticket import (
     STATUSES,
+    TICKET_TYPES,
     AmbiguousTicketMatch,
     Ticket,
     collect_all_tickets,
@@ -175,7 +176,8 @@ def render_ticket_table(
         ]
         if has_assignee:
             row.append(assignee_str)
-        row.append(ticket.title)
+        title_display = f"[dim]\\[epic][/dim] {ticket.title}" if ticket.type == "epic" else ticket.title
+        row.append(title_display)
         if has_deps:
             row.append(dep_str)
         if show_location:
@@ -306,8 +308,10 @@ def render_ticket_panel(
     # Children: tickets with this as parent
     children = [t for t in all_tickets if t.parent == ticket.id]
     if children:
+        closed_count = sum(1 for t in children if t.status == "closed")
+        header = f"**Children** ({closed_count}/{len(children)} closed)"
         lines = [f"- {t.id} ({t.status}) {t.title}" for t in children]
-        relations.append("**Children**\n" + "\n".join(lines))
+        relations.append(header + "\n" + "\n".join(lines))
 
     # Linked: resolve link targets
     if ticket.links:
@@ -343,7 +347,7 @@ def ticket_create(
     title: Annotated[str, typer.Argument(help="Ticket title.")],
     description: Annotated[str | None, typer.Option("-d", "--description", help="Ticket description.")] = None,
     priority: Annotated[str, typer.Option("-p", "--priority", help="Priority (0-3 or p0-p3, 0 is highest).")] = "2",
-    ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature).")] = "task",
+    ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature, epic).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
     parent: Annotated[str | None, typer.Option("--parent", help="Parent ticket ID.")] = None,
@@ -363,6 +367,10 @@ def ticket_create(
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1) from None
+
+    if ticket_type not in TICKET_TYPES:
+        print_error(f"Invalid type '{ticket_type}'. Valid types: {', '.join(sorted(TICKET_TYPES))}")
+        raise typer.Exit(code=1)
 
     # Ensure base layout exists
     ensure_base_layout(base)
@@ -449,6 +457,7 @@ def ticket_list(
     tag: Annotated[str | None, typer.Option("--tag", "-T", help="Filter by tag.")] = None,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON (full ticket schema).")] = False,
     jq_filter: Annotated[str | None, typer.Option("--jq", help="Apply a jq filter (implies --json).")] = None,
+    parent_id: Annotated[str | None, typer.Option("--parent", help="Show only children of this ticket.")] = None,
 ) -> None:
     """List tickets in the current branch or all locations."""
     if ready and blocked:
@@ -472,7 +481,10 @@ def ticket_list(
     def apply_all_filters(tickets: list[Ticket], status_by_id: dict[str, str]) -> list[Ticket]:
         filtered = filter_tickets_by_status(tickets, status, include_closed)
         filtered = filter_tickets(filtered, assignee=assignee, tag=tag, priority=priority)
-        return filter_tickets_by_deps(filtered, status_by_id, ready=ready, blocked=blocked)
+        filtered = filter_tickets_by_deps(filtered, status_by_id, ready=ready, blocked=blocked)
+        if resolved_parent_id:
+            filtered = [t for t in filtered if t.parent == resolved_parent_id]
+        return filtered
 
     def output_tickets_json(tickets: list[Ticket], location_map: dict[str, str] | None = None) -> None:
         """Output tickets as JSON, optionally piping through jq."""
@@ -502,6 +514,13 @@ def ticket_list(
             typer.echo(json.dumps(data, indent=2))
 
     base = require_project_root()
+
+    # Resolve --parent to a full ticket ID; --parent implies --all
+    resolved_parent_id: str | None = None
+    if parent_id:
+        parent_ticket, _ = resolve_ticket_or_exit(base, parent_id, not_found_label="Parent ticket not found")
+        resolved_parent_id = parent_ticket.id
+        all_tickets = True
 
     # Build a global status lookup for dep-based filtering and dep annotations.
     # Always include done branches so deps in done branches get correct ✓ marks.
@@ -760,6 +779,16 @@ def ticket_close(
     base = require_project_root()
 
     ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+
+    # Block closing an epic with open children
+    if ticket.type == "epic":
+        all_known = collect_all_tickets(base)
+        open_children = [t for t in all_known if t.parent == ticket.id and t.status != "closed"]
+        if open_children:
+            print_error(f"Cannot close epic {ticket.id}: {len(open_children)} child ticket(s) still open")
+            for child in open_children:
+                error_console.print(f"  {child.id} ({child.status}) {child.title}")
+            raise typer.Exit(code=1)
 
     if duplicate_of:
         # Validate target exists and is not self-referencing
@@ -1317,3 +1346,12 @@ def ticket_edit(
     _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     editor = os.environ.get("EDITOR", "vim")
     subprocess.run([*shlex.split(editor), str(ticket_path)])
+
+    # Post-edit validation: re-read and check type
+    try:
+        edited = read_ticket(ticket_path)
+        if edited.type not in TICKET_TYPES:
+            print_error(f"Invalid type '{edited.type}'. Valid types: {', '.join(sorted(TICKET_TYPES))}")
+            raise typer.Exit(code=1)
+    except (ValueError, FileNotFoundError):
+        pass  # ticket was deleted or has broken frontmatter — not our problem here
