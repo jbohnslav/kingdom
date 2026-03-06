@@ -1405,6 +1405,16 @@ class TestPeasantReview:
                     result.returncode = 0
                     result.stdout = f"{BRANCH}\n"
                     result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    # Branch not yet merged
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    # Clean working tree
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
                 else:
                     # git merge
                     result.returncode = 0
@@ -1799,11 +1809,24 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
+            call_count = 0
+
             def mock_run(cmd, **kwargs):
+                nonlocal call_count
                 result = MagicMock()
                 if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
                     result.returncode = 0
                     result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    # Branch not yet merged
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    # Clean working tree
+                    result.returncode = 0
+                    result.stdout = ""
                     result.stderr = ""
                 else:
                     # git merge — simulate conflict
@@ -1819,6 +1842,105 @@ class TestPeasantReview:
             assert "Integration failed" in result.output
             assert "Recovery steps" in result.output
             assert "CONFLICT" in result.output
+            # Recovery steps should reference the feature branch, not the worktree
+            assert "Resolve conflict markers" in result.output
+            assert "git add" in result.output
+            assert "re-run" in result.output
+
+            # Ticket should still be in_review
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "in_review"
+
+    def test_review_accept_already_merged_skips_merge(self) -> None:
+        """If the ticket branch is already merged, accept should skip merge and do cleanup."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    # Branch already merged
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "already merged" in result.output
+            assert "accepted" in result.output
+
+            # Ticket should be closed
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
+
+            # Session should be done
+            state = get_agent_state(base, BRANCH, session_name)
+            assert state.status == "done"
+
+    def test_review_accept_uncommitted_changes_blocks(self) -> None:
+        """Accept should refuse to merge if there are uncommitted changes."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    # Branch not yet merged
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    # Dirty working tree
+                    result.returncode = 0
+                    result.stdout = " M src/foo.py\n M src/bar.py\n"
+                    result.stderr = ""
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "Uncommitted changes" in result.output
+            assert "commit or stash" in result.output
 
             # Ticket should still be in_review
             ticket_result = find_ticket(base, "kin-test")
