@@ -633,7 +633,9 @@ def council_show(
 
 
 @council_app.command("list", help="List all council threads.")
-def council_list() -> None:
+def council_list(
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+) -> None:
     """Show all council threads with topic summary and member status."""
     from kingdom.thread import (
         MEMBER_ERRORED,
@@ -655,7 +657,10 @@ def council_list() -> None:
     council_threads = [t for t in threads if t.pattern == "council"]
 
     if not council_threads:
-        typer.echo('No council threads. Start one with `kd council ask "prompt"`.')
+        if output_json:
+            typer.echo("[]")
+        else:
+            typer.echo('No council threads. Start one with `kd council ask "prompt"`.')
         return
 
     state_symbols = {
@@ -665,6 +670,34 @@ def council_list() -> None:
         MEMBER_TIMED_OUT: ("[red]\u29d6[/red]", "timed out"),
         MEMBER_PENDING: ("[dim]\u2026[/dim]", "pending"),
     }
+
+    if output_json:
+        data = []
+        for t in council_threads:
+            messages = list_messages(base, feature, t.id)
+            topic = ""
+            for msg in messages:
+                if msg.from_ == "king":
+                    first_line = msg.body.strip().split("\n", 1)[0]
+                    topic = first_line[:60] + ("\u2026" if len(first_line) > 60 else "")
+                    break
+            status = thread_response_status(base, feature, t.id)
+            members = {}
+            for name in sorted(status.member_states):
+                ms = status.member_states[name]
+                members[name] = ms.state
+            data.append(
+                {
+                    "id": t.id,
+                    "created_at": t.created_at.isoformat(),
+                    "message_count": len(messages),
+                    "topic": topic,
+                    "current": t.id == current,
+                    "members": members,
+                }
+            )
+        typer.echo(json.dumps(data, indent=2))
+        return
 
     for t in council_threads:
         marker = "[bold] *[/bold]" if t.id == current else ""
@@ -713,6 +746,7 @@ def council_status(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current/most recent).")] = None,
     all_threads: Annotated[bool, typer.Option("--all", help="Show status for all threads.")] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show log file paths.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Show which councillors have responded and which are still pending."""
     from kingdom.thread import list_threads, thread_response_status
@@ -720,11 +754,37 @@ def council_status(
     base = require_project_root()
     feature = resolve_current_run(base)
 
+    def thread_status_to_dict(ts: ThreadStatus) -> dict:
+        members = {}
+        for name in sorted(ts.member_states):
+            ms = ts.member_states[name]
+            entry: dict = {"state": ms.state}
+            if ms.error:
+                entry["error"] = ms.error
+            members[name] = entry
+        return {
+            "thread_id": ts.thread_id,
+            "expected": sorted(ts.expected),
+            "responded": sorted(ts.responded),
+            "pending": sorted(ts.pending),
+            "members": members,
+        }
+
     if all_threads:
         threads = list_threads(base, feature)
         council_threads = [t for t in threads if t.pattern == "council"]
         if not council_threads:
-            typer.echo('No council threads. Start one with `kd council ask "prompt"`.')
+            if output_json:
+                typer.echo("[]")
+            else:
+                typer.echo('No council threads. Start one with `kd council ask "prompt"`.')
+            return
+        if output_json:
+            data = []
+            for t in council_threads:
+                status = thread_response_status(base, feature, t.id)
+                data.append(thread_status_to_dict(status))
+            typer.echo(json.dumps(data, indent=2))
             return
         for t in council_threads:
             status = thread_response_status(base, feature, t.id)
@@ -736,6 +796,9 @@ def council_status(
     thread_id = resolve_council_thread_id(base, feature, thread_id, command="status")
 
     status = thread_response_status(base, feature, thread_id)
+    if output_json:
+        typer.echo(json.dumps(thread_status_to_dict(status), indent=2))
+        return
     print_thread_status(status, base, feature, verbose)
 
 

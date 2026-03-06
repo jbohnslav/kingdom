@@ -925,6 +925,7 @@ def deps_remove(
 def deps_tree(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
     full: Annotated[bool, typer.Option("--full", help="Show duplicate subtrees instead of deduplicating.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Display the dependency tree rooted at a ticket."""
     base = require_project_root()
@@ -934,6 +935,39 @@ def deps_tree(
     all_tickets = collect_all_tickets(base)
     ticket_map = {t.id: t for t in all_tickets}
     seen: set[str] = set()
+
+    if output_json:
+
+        def build_tree(tid: str, ancestors: frozenset[str] = frozenset()) -> dict:
+            t = ticket_map.get(tid)
+            node: dict = {
+                "id": tid,
+                "status": t.status if t else "unknown",
+                "title": t.title if t else None,
+            }
+            if tid in ancestors:
+                node["cycle"] = True
+                return node
+            if not full and tid in seen:
+                node["duplicate"] = True
+                return node
+            seen.add(tid)
+            if t and t.deps:
+                child_ancestors = ancestors | {tid}
+                node["deps"] = [build_tree(dep_id, child_ancestors) for dep_id in t.deps]
+            return node
+
+        root: dict = {
+            "id": root_ticket.id,
+            "status": root_ticket.status,
+            "title": root_ticket.title,
+        }
+        seen.add(root_ticket.id)
+        root_ancestors = frozenset({root_ticket.id})
+        if root_ticket.deps:
+            root["deps"] = [build_tree(dep_id, root_ancestors) for dep_id in root_ticket.deps]
+        typer.echo(json.dumps(root, indent=2))
+        return
 
     def print_tree(tid: str, prefix: str = "", last: bool = True, ancestors: frozenset[str] = frozenset()) -> None:
         t = ticket_map.get(tid)

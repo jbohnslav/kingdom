@@ -415,6 +415,7 @@ WATCH_TERMINAL_STATUSES = {"done", "failed", "stopped", "needs_king_review", "bl
 @peasant_app.command("status", help="Show active peasants.")
 def peasant_status(
     show_all: Annotated[bool, typer.Option("--all", "-a", help="Include completed/stopped peasants.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Show table of active peasants: ticket, agent, status, elapsed, last activity."""
 
@@ -440,6 +441,44 @@ def peasant_status(
         peasants = [p for p in peasants if p.status not in TERMINAL_STATUSES]
         hidden = [p for p in all_peasants if p.status in TERMINAL_STATUSES]
 
+    now = datetime.now(UTC)
+
+    def peasant_to_dict(p):
+        ticket = p.ticket or p.name.replace("peasant-", "")
+        elapsed_minutes = None
+        if p.started_at:
+            try:
+                started = parse_iso_datetime(p.started_at)
+                elapsed_minutes = int((now - started).total_seconds() / 60)
+            except (ValueError, TypeError):
+                pass
+        last_activity_minutes = None
+        if p.last_activity:
+            try:
+                last_dt = parse_iso_datetime(p.last_activity)
+                last_activity_minutes = int((now - last_dt).total_seconds() / 60)
+            except (ValueError, TypeError):
+                pass
+        # Effective status: report "dead" not "working" for dead processes
+        effective_status = p.status
+        if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):
+            effective_status = "dead"
+        return {
+            "ticket": ticket,
+            "agent": p.agent_backend or None,
+            "status": effective_status,
+            "elapsed_minutes": elapsed_minutes,
+            "last_activity_minutes": last_activity_minutes,
+            "pid": p.pid,
+            "started_at": p.started_at,
+            "last_activity": p.last_activity,
+        }
+
+    if output_json:
+        data = [peasant_to_dict(p) for p in peasants]
+        typer.echo(json.dumps(data, indent=2))
+        return
+
     if not peasants:
         if hidden:
             from collections import Counter
@@ -459,35 +498,8 @@ def peasant_status(
     table.add_column("Elapsed")
     table.add_column("Last Activity")
 
-    now = datetime.now(UTC)
     for p in peasants:
-        ticket = p.ticket or p.name.replace("peasant-", "")
-
-        # Calculate elapsed
-        elapsed = ""
-        if p.started_at:
-            try:
-                started = parse_iso_datetime(p.started_at)
-                delta = now - started
-                minutes = int(delta.total_seconds() / 60)
-                elapsed = f"{minutes}m"
-            except (ValueError, TypeError):
-                elapsed = "?"
-
-        # Format last activity
-        last = ""
-        if p.last_activity:
-            try:
-                last_dt = parse_iso_datetime(p.last_activity)
-                ago = int((now - last_dt).total_seconds() / 60)
-                last = f"{ago}m ago"
-            except (ValueError, TypeError):
-                last = "?"
-
-        # Check if process is still alive
-        display_status = p.status
-        if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):
-            display_status = "dead"
+        d = peasant_to_dict(p)
 
         # Color status
         status_style = {
@@ -499,14 +511,15 @@ def peasant_status(
             "dead": "red",
             "awaiting_council": "magenta",
             "needs_king_review": "cyan",
-        }.get(display_status, "")
+        }.get(d["status"], "")
 
-        agent_display = p.agent_backend or "?"
+        elapsed = f"{d['elapsed_minutes']}m" if d["elapsed_minutes"] is not None else ""
+        last = f"{d['last_activity_minutes']}m ago" if d["last_activity_minutes"] is not None else ""
 
         table.add_row(
-            ticket,
-            agent_display,
-            f"[{status_style}]{display_status}[/{status_style}]" if status_style else display_status,
+            d["ticket"],
+            d["agent"] or "?",
+            f"[{status_style}]{d['status']}[/{status_style}]" if status_style else d["status"],
             elapsed,
             last,
         )
@@ -524,6 +537,7 @@ def peasant_status(
 @peasant_app.command("show", help="Show structured peasant history.")
 def peasant_show(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Show worklog, agent activity, and commits for a peasant."""
     from kingdom.harness import extract_worklog
@@ -536,13 +550,10 @@ def peasant_show(
 
     # --- Worklog ---
     worklog = extract_worklog(ctx.ticket_path)
-    if worklog:
-        console.print(Markdown(f"## Worklog\n\n{worklog}"))
-    else:
-        typer.echo("(no worklog entries)")
 
     # --- Agent activity from agent-live.log ---
     agent_live_log = logs_root(ctx.base, ctx.feature) / session_name / "agent-live.log"
+    activity: list[str] = []
     if agent_live_log.exists() and agent_live_log.stat().st_size > 0:
         # Resolve backend for NDJSON decoding
         agent_backend = ""
@@ -576,12 +587,6 @@ def peasant_show(
         # because they come from the same log file but are extracted by
         # different parsers — ordering within each group is chronological.
         activity = plain_lines + stream_lines
-        if activity:
-            console.print(Markdown("## Agent Activity"))
-            for line in activity:
-                console.print(f"  {line}", markup=False)
-    else:
-        typer.echo("(no agent activity log)")
 
     # --- Commits on the peasant's branch ---
     branch_name = f"ticket/{ctx.full_ticket_id}"
@@ -596,6 +601,7 @@ def peasant_show(
         st = read_json(branch_root(ctx.base, ctx.feature) / "state.json")
         git_ref = st.get("branch", ctx.feature)
         log_spec = [f"{git_ref}..{branch_name}"]
+    commits: list[str] = []
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", *log_spec],
@@ -604,13 +610,43 @@ def peasant_show(
             cwd=str(ctx.base),
             timeout=10,
         )
-        commits = result.stdout.strip()
-        if result.returncode == 0 and commits:
-            console.print(Markdown(f"## Commits\n\n```\n{commits}\n```"))
-        else:
-            typer.echo("(no commits)")
+        if result.returncode == 0 and result.stdout.strip():
+            commits = result.stdout.strip().splitlines()
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        typer.echo("(could not read commits)")
+        pass
+
+    if output_json:
+        data = {
+            "ticket_id": ctx.full_ticket_id,
+            "status": state.status,
+            "agent": state.agent_backend,
+            "pid": state.pid,
+            "started_at": state.started_at,
+            "hand_mode": state.hand_mode,
+            "worklog": worklog or None,
+            "activity": activity,
+            "commits": commits,
+        }
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    # --- Rich display ---
+    if worklog:
+        console.print(Markdown(f"## Worklog\n\n{worklog}"))
+    else:
+        typer.echo("(no worklog entries)")
+
+    if activity:
+        console.print(Markdown("## Agent Activity"))
+        for line in activity:
+            console.print(f"  {line}", markup=False)
+    elif not (agent_live_log.exists() and agent_live_log.stat().st_size > 0):
+        typer.echo("(no agent activity log)")
+
+    if commits:
+        console.print(Markdown(f"## Commits\n\n```\n{chr(10).join(commits)}\n```"))
+    else:
+        typer.echo("(no commits)")
 
 
 FLAG_VERBS: dict[str, str] = {
