@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from kingdom.cli.peasant import peasant_app, poll_council_status, resolve_peasant_context
+from kingdom.cli.peasant import peasant_app, resolve_peasant_context
 from kingdom.cli.ticket import ticket_app
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
 from kingdom.state import backlog_root, ensure_branch_layout, logs_root, normalize_branch_name, set_current_run
@@ -2838,59 +2838,123 @@ class TestFindActivePeasantBranch:
             assert result == normalize_branch_name(BRANCH_A)
 
 
-class TestPollCouncilStatus:
-    """Tests for poll_council_status — detects active council queries via stream files."""
+class TestPeasantStatusJson:
+    """Tests for kd peasant status --json."""
 
-    def test_no_threads_returns_none(self, tmp_path: Path) -> None:
-        ensure_branch_layout(tmp_path, BRANCH)
-        assert poll_council_status(tmp_path, BRANCH) is None
+    def test_status_json_outputs_valid_json(self) -> None:
+        import json
 
-    def test_no_stream_files_returns_none(self, tmp_path: Path) -> None:
-        ensure_branch_layout(tmp_path, BRANCH)
-        create_thread(tmp_path, BRANCH, "council-abc", ["king", "claude", "codex"], "council")
-        add_message(tmp_path, BRANCH, "council-abc", "king", "all", "What do you think?")
-        assert poll_council_status(tmp_path, BRANCH) is None
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
 
-    def test_active_stream_files_detected(self, tmp_path: Path) -> None:
-        ensure_branch_layout(tmp_path, BRANCH)
-        create_thread(tmp_path, BRANCH, "council-abc", ["king", "claude", "codex"], "council")
-        add_message(tmp_path, BRANCH, "council-abc", "king", "all", "What do you think?")
-        tdir = thread_dir(tmp_path, BRANCH, "council-abc")
-        (tdir / ".stream-claude.jsonl").write_text("")
-        (tdir / ".stream-codex.jsonl").write_text("")
+            now = datetime.now(UTC).isoformat()
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-042",
+                AgentState(
+                    name="peasant-kin-042",
+                    status="working",
+                    pid=99999,
+                    ticket="kin-042",
+                    agent_backend="claude",
+                    started_at=now,
+                    last_activity=now,
+                ),
+            )
 
-        result = poll_council_status(tmp_path, BRANCH)
-        assert result is not None
-        assert "Awaiting council response" in result
-        assert "claude" in result
-        assert "codex" in result
+            with patch("os.kill"):  # Mock kill so liveness check passes
+                result = runner.invoke(peasant_app, ["status", "--json"])
 
-    def test_partial_responses_shown(self, tmp_path: Path) -> None:
-        ensure_branch_layout(tmp_path, BRANCH)
-        create_thread(tmp_path, BRANCH, "council-abc", ["king", "claude", "codex"], "council")
-        add_message(tmp_path, BRANCH, "council-abc", "king", "all", "What do you think?")
-        tdir = thread_dir(tmp_path, BRANCH, "council-abc")
-        add_message(tmp_path, BRANCH, "council-abc", "claude", "all", "I think...")
-        (tdir / ".stream-codex.jsonl").write_text("")
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["ticket"] == "kin-042"
+            assert data[0]["status"] == "working"
+            assert data[0]["agent"] == "claude"
+            assert data[0]["pid"] == 99999
+            assert data[0]["started_at"] == now
+            assert isinstance(data[0]["elapsed_minutes"], int)
 
-        result = poll_council_status(tmp_path, BRANCH)
-        assert result is not None
-        assert "claude responded" in result
-        assert "codex running" in result
+    def test_status_json_reports_dead_for_dead_process(self) -> None:
+        """The most critical AC: dead processes must report 'dead', not 'working'."""
+        import json
 
-    def test_non_council_thread_ignored(self, tmp_path: Path) -> None:
-        ensure_branch_layout(tmp_path, BRANCH)
-        create_thread(tmp_path, BRANCH, "work-abc", ["king", "peasant"], "work")
-        tdir = thread_dir(tmp_path, BRANCH, "work-abc")
-        (tdir / ".stream-peasant.jsonl").write_text("")
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
 
-        assert poll_council_status(tmp_path, BRANCH) is None
+            now = datetime.now(UTC).isoformat()
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-dead",
+                AgentState(
+                    name="peasant-kin-dead",
+                    status="working",
+                    pid=99999,
+                    ticket="kin-dead",
+                    agent_backend="claude",
+                    started_at=now,
+                    last_activity=now,
+                ),
+            )
 
-    def test_completed_query_returns_none(self, tmp_path: Path) -> None:
-        """After all members respond and stream files are cleaned up, returns None."""
-        ensure_branch_layout(tmp_path, BRANCH)
-        create_thread(tmp_path, BRANCH, "council-abc", ["king", "claude", "codex"], "council")
-        add_message(tmp_path, BRANCH, "council-abc", "king", "all", "What do you think?")
-        add_message(tmp_path, BRANCH, "council-abc", "claude", "all", "I think...")
-        add_message(tmp_path, BRANCH, "council-abc", "codex", "all", "I agree...")
-        assert poll_council_status(tmp_path, BRANCH) is None
+            # Don't mock os.kill — is_process_alive will raise OSError → dead
+            result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 1
+            assert data[0]["status"] == "dead"
+
+    def test_status_json_empty_returns_empty_list(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data == []
+
+
+class TestPeasantShowJson:
+    """Tests for kd peasant show --json."""
+
+    def test_show_json_outputs_valid_json(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base)
+
+            # Add worklog
+            content = ticket_path.read_text(encoding="utf-8")
+            content += "\n\n## Worklog\n\n- [09:00] Started work\n"
+            ticket_path.write_text(content, encoding="utf-8")
+
+            # Create agent-live.log with plain text
+            peasant_logs_dir = logs_root(base, BRANCH) / "peasant-kin-test"
+            peasant_logs_dir.mkdir(parents=True, exist_ok=True)
+            (peasant_logs_dir / "agent-live.log").write_text(
+                "Reading the source file for context\n",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(peasant_app, ["show", "--json", "kin-test"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["ticket_id"] == "kin-test"
+            assert "Started work" in data["worklog"]
+            assert isinstance(data["activity"], list)
+            assert isinstance(data["commits"], list)
+            assert "status" in data
+            assert "hand_mode" in data

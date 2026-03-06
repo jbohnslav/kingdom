@@ -348,6 +348,74 @@ class TestTicketDepCycle:
         assert "No dependency cycles" in result.output
 
 
+class TestTicketDepTreeJson:
+    """Tests for kd tk deps tree --json."""
+
+    def test_tree_json_outputs_valid_json(self, cli_project: Path) -> None:
+        import json
+
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="aaaa", status="open", title="Root", body="", deps=["bbbb"], created=datetime.now(UTC)),
+            tickets_dir / "aaaa.md",
+        )
+        write_ticket(
+            Ticket(id="bbbb", status="in_progress", title="Dep", body="", created=datetime.now(UTC)),
+            tickets_dir / "bbbb.md",
+        )
+
+        result = runner.invoke(ticket_app, ["deps", "tree", "--json", "aaaa"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["id"] == "aaaa"
+        assert data["status"] == "open"
+        assert data["title"] == "Root"
+        assert len(data["deps"]) == 1
+        assert data["deps"][0]["id"] == "bbbb"
+        assert data["deps"][0]["status"] == "in_progress"
+        assert data["deps"][0]["title"] == "Dep"
+
+    def test_tree_json_with_cycle(self, cli_project: Path) -> None:
+        import json
+
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="aaaa", status="open", title="A", body="", deps=["bbbb"], created=datetime.now(UTC)),
+            tickets_dir / "aaaa.md",
+        )
+        write_ticket(
+            Ticket(id="bbbb", status="open", title="B", body="", deps=["aaaa"], created=datetime.now(UTC)),
+            tickets_dir / "bbbb.md",
+        )
+
+        result = runner.invoke(ticket_app, ["deps", "tree", "--json", "--full", "aaaa"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["deps"][0]["id"] == "bbbb"
+        # The cycle back to aaaa should be flagged
+        cycle_node = data["deps"][0]["deps"][0]
+        assert cycle_node["id"] == "aaaa"
+        assert cycle_node.get("cycle") is True
+
+    def test_tree_json_no_deps(self, cli_project: Path) -> None:
+        import json
+
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="aaaa", status="open", title="Leaf", body="", created=datetime.now(UTC)),
+            tickets_dir / "aaaa.md",
+        )
+
+        result = runner.invoke(ticket_app, ["deps", "tree", "--json", "aaaa"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["id"] == "aaaa"
+        assert "deps" not in data  # No deps key when ticket has no deps
+
+
 class TestTicketBlocked:
     """Tests for kd tk list --blocked."""
 
