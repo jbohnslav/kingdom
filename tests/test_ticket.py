@@ -1377,26 +1377,37 @@ class TestFilterTicketsByDeps:
             Ticket(id="c", status="open", title="Dep on open", deps=["y"]),
             Ticket(id="d", status="in_review", title="In review no deps"),
             Ticket(id="e", status="closed", title="Already closed"),
+            Ticket(id="f", status="in_progress", title="In progress no deps"),
         ]
 
     def _status_map(self) -> dict[str, str]:
-        return {"x": "closed", "y": "open", "a": "open", "b": "open", "c": "open", "d": "in_review", "e": "closed"}
+        return {
+            "x": "closed",
+            "y": "open",
+            "a": "open",
+            "b": "open",
+            "c": "open",
+            "d": "in_review",
+            "e": "closed",
+            "f": "in_progress",
+        }
 
-    def test_ready_returns_unblocked_non_review(self) -> None:
+    def test_ready_returns_unblocked_open_only(self) -> None:
         result = filter_tickets_by_deps(self._tickets(), self._status_map(), ready=True)
         ids = [t.id for t in result]
-        assert "a" in ids  # no deps
-        assert "b" in ids  # dep on closed ticket
+        assert "a" in ids  # no deps, open
+        assert "b" in ids  # dep on closed ticket, open
         assert "c" not in ids  # dep on open ticket
         assert "d" not in ids  # in_review excluded from ready
         assert "e" not in ids  # closed excluded
+        assert "f" not in ids  # in_progress excluded from ready
 
     def test_blocked_returns_tickets_with_open_deps(self) -> None:
         result = filter_tickets_by_deps(self._tickets(), self._status_map(), blocked=True)
         ids = [t.id for t in result]
         assert ids == ["c"]
 
-    def test_ready_excludes_custom_statuses(self) -> None:
+    def test_ready_excludes_non_open_statuses(self) -> None:
         tickets = [
             Ticket(id="a", status="open", title="Open ticket"),
             Ticket(id="b", status="in_progress", title="In progress ticket"),
@@ -1406,8 +1417,8 @@ class TestFilterTicketsByDeps:
         status_map = {"a": "open", "b": "in_progress", "c": "blocked", "d": "waiting"}
         result = filter_tickets_by_deps(tickets, status_map, ready=True)
         ids = [t.id for t in result]
-        assert "a" in ids
-        assert "b" in ids
+        assert "a" in ids  # open with no deps = ready
+        assert "b" not in ids  # in_progress excluded from ready
         assert "c" not in ids  # custom status excluded
         assert "d" not in ids  # custom status excluded
 
