@@ -175,6 +175,67 @@ def list_active_agents(base: Path, branch: str) -> list[AgentState]:
     return active
 
 
+def find_peasant_branch(base: Path, session_name: str) -> str | None:
+    """Find which branch owns a peasant session by scanning all branches.
+
+    Returns the normalized branch name, or None if not found.
+    """
+    from kingdom.state import branches_root
+
+    branches_dir = branches_root(base)
+    if not branches_dir.exists():
+        return None
+
+    for branch_dir in sorted(branches_dir.iterdir()):
+        if not branch_dir.is_dir():
+            continue
+        session_file = branch_dir / "sessions" / f"{session_name}.json"
+        if session_file.exists():
+            try:
+                data = read_json(session_file)
+                # Only match if the session has actually been used (not idle default)
+                if data.get("status", "idle") != "idle":
+                    return branch_dir.name
+            except (FileNotFoundError, KeyError):
+                continue
+
+    return None
+
+
+# Statuses that represent a truly active peasant (work in progress or awaiting action).
+# Done/failed/stopped sessions are historical — they shouldn't block operations.
+ACTIVE_PEASANT_STATUSES = frozenset({"working", "awaiting_council", "needs_king_review"})
+
+
+def find_active_peasant_branch(base: Path, session_name: str) -> str | None:
+    """Find which branch has an *active* peasant session.
+
+    Like ``find_peasant_branch`` but only matches sessions in active statuses
+    (working, awaiting_council, needs_king_review). Terminal statuses like
+    done, failed, stopped are ignored — they represent historical runs and
+    should not block operations like ticket moves.
+    """
+    from kingdom.state import branches_root
+
+    branches_dir = branches_root(base)
+    if not branches_dir.exists():
+        return None
+
+    for branch_dir in sorted(branches_dir.iterdir()):
+        if not branch_dir.is_dir():
+            continue
+        session_file = branch_dir / "sessions" / f"{session_name}.json"
+        if session_file.exists():
+            try:
+                data = read_json(session_file)
+                if data.get("status") in ACTIVE_PEASANT_STATUSES:
+                    return branch_dir.name
+            except (FileNotFoundError, KeyError):
+                continue
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Current thread pointer (in state.json)
 # ---------------------------------------------------------------------------

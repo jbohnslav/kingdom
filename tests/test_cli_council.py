@@ -85,7 +85,29 @@ class TestCouncilAsk:
             assert messages[0].from_ == "king"
             assert messages[0].body == "What is caching?"
 
-    def test_ask_continues_existing_thread(self) -> None:
+    def test_ask_creates_new_thread_by_default(self) -> None:
+        """Each ask creates a new thread unless --continue is used."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            responses = make_responses("claude", "codex")
+            with mock_council_query_to_thread(responses):
+                runner.invoke(council_app, ["ask", "First topic"])
+                first_thread = get_current_thread(base, BRANCH)
+
+                runner.invoke(council_app, ["ask", "Second topic"])
+                second_thread = get_current_thread(base, BRANCH)
+
+            assert first_thread != second_thread
+            assert second_thread.startswith("council-")
+
+            # Each thread should have 3 messages (1 king + 2 responses)
+            assert len(list_messages(base, BRANCH, first_thread)) == 3
+            assert len(list_messages(base, BRANCH, second_thread)) == 3
+
+    def test_ask_continue_reuses_thread(self) -> None:
+        """--continue appends to the current thread."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -93,7 +115,7 @@ class TestCouncilAsk:
             responses = make_responses("claude", "codex")
             with mock_council_query_to_thread(responses):
                 runner.invoke(council_app, ["ask", "First question"])
-                result = runner.invoke(council_app, ["ask", "Follow up"])
+                result = runner.invoke(council_app, ["ask", "--continue", "Follow up"])
 
             assert result.exit_code == 0
 
@@ -104,25 +126,16 @@ class TestCouncilAsk:
             assert messages[0].body == "First question"
             assert messages[3].body == "Follow up"
 
-    def test_ask_thread_new_starts_fresh(self) -> None:
+    def test_ask_continue_no_thread_errors(self) -> None:
+        """--continue with no active thread should error."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
 
-            responses = make_responses("claude", "codex")
-            with mock_council_query_to_thread(responses):
-                runner.invoke(council_app, ["ask", "First topic"])
-                first_thread = get_current_thread(base, BRANCH)
+            result = runner.invoke(council_app, ["ask", "--continue", "Follow up"])
 
-                runner.invoke(council_app, ["ask", "--new-thread", "New topic"])
-                second_thread = get_current_thread(base, BRANCH)
-
-            assert first_thread != second_thread
-            assert second_thread.startswith("council-")
-
-            # Each thread should have 3 messages (1 king + 2 responses)
-            assert len(list_messages(base, BRANCH, first_thread)) == 3
-            assert len(list_messages(base, BRANCH, second_thread)) == 3
+            assert result.exit_code == 1
+            assert "No active council thread" in result.output
 
     def test_ask_to_specific_member(self) -> None:
         with runner.isolated_filesystem():
@@ -176,8 +189,8 @@ class TestCouncilAsk:
             assert result.exit_code == 1
             assert "Unknown member" in result.output
 
-    def test_ask_stale_current_thread_recovers(self) -> None:
-        """If current_thread points to a missing directory, ask creates a new thread."""
+    def test_ask_continue_stale_thread_errors(self) -> None:
+        """--continue with a stale pointer (missing dir) should error."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -185,16 +198,10 @@ class TestCouncilAsk:
             # Set a stale pointer
             set_current_thread(base, BRANCH, "council-gone")
 
-            responses = make_responses("claude", "codex")
-            with mock_council_query_to_thread(responses):
-                result = runner.invoke(council_app, ["ask", "After stale"])
+            result = runner.invoke(council_app, ["ask", "--continue", "After stale"])
 
-            assert result.exit_code == 0
-
-            current = get_current_thread(base, BRANCH)
-            assert current is not None
-            assert current != "council-gone"
-            assert current.startswith("council-")
+            assert result.exit_code == 1
+            assert "No active council thread" in result.output
 
     def test_ask_json_output(self) -> None:
         with runner.isolated_filesystem():
@@ -507,7 +514,7 @@ class TestCouncilList:
             responses = make_responses("claude", "codex")
             with mock_council_query_to_thread(responses):
                 runner.invoke(council_app, ["ask", "Topic 1"])
-                runner.invoke(council_app, ["ask", "--new-thread", "Topic 2"])
+                runner.invoke(council_app, ["ask", "Topic 2"])
 
             result = runner.invoke(council_app, ["list"])
 
@@ -600,6 +607,42 @@ class TestCouncilList:
             assert "errored" in result.output
             assert "timed out" in result.output
             assert "pending" in result.output
+
+    def test_list_shows_message_count(self) -> None:
+        """council list should show the number of messages per thread."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-count", ["king", "claude", "codex"], "council")
+            add_message(base, BRANCH, "council-count", from_="king", to="all", body="Question?")
+            add_message(base, BRANCH, "council-count", from_="claude", to="king", body="Answer 1")
+            add_message(base, BRANCH, "council-count", from_="codex", to="king", body="Answer 2")
+
+            result = runner.invoke(council_app, ["list"])
+
+            assert result.exit_code == 0
+            assert "3 msgs" in result.output
+
+    def test_list_shows_singular_message_count(self) -> None:
+        """council list should use singular 'msg' for one message."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-one", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-one", from_="king", to="all", body="Question?")
+
+            result = runner.invoke(council_app, ["list"])
+
+            assert result.exit_code == 0
+            assert "1 msg" in result.output
+            # Make sure it's not "1 msgs"
+            assert "1 msgs" not in result.output
 
     def test_list_no_legend_when_no_threads(self) -> None:
         """When there are no council threads, no legend should be printed."""
@@ -947,7 +990,7 @@ class TestCouncilStatus:
             responses = make_responses("claude", "codex")
             with mock_council_query_to_thread(responses):
                 runner.invoke(council_app, ["ask", "Topic 1"])
-                runner.invoke(council_app, ["ask", "--new-thread", "Topic 2"])
+                runner.invoke(council_app, ["ask", "Topic 2"])
 
             result = runner.invoke(council_app, ["status", "--all"])
 

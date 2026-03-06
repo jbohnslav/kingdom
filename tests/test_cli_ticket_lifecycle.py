@@ -570,6 +570,51 @@ class TestTicketCloseUnblocked:
         assert "Unblocked" not in result.output
 
 
+class TestTicketCloseActivePeasantWarning:
+    """Closing a ticket with an active peasant should warn."""
+
+    def test_warns_when_peasant_active(self, cli_project: Path) -> None:
+        from kingdom.session import AgentState, set_agent_state
+
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-pwrn")
+
+        # Create an active peasant session for this ticket
+        state = AgentState(name="peasant-kin-pwrn", status="working", ticket="kin-pwrn")
+        set_agent_state(cli_project, BRANCH, "peasant-kin-pwrn", state)
+
+        result = runner.invoke(ticket_app, ["close", "kin-pwrn"])
+
+        assert result.exit_code == 0
+        assert "closed" in result.output
+        assert "Warning" in result.output
+        assert "peasant-kin-pwrn" in result.output
+
+    def test_no_warning_when_no_peasant(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-nop")
+
+        result = runner.invoke(ticket_app, ["close", "kin-nop"])
+
+        assert result.exit_code == 0
+        assert "closed" in result.output
+        assert "Warning" not in result.output
+
+    def test_no_warning_for_stopped_peasant(self, cli_project: Path) -> None:
+        from kingdom.session import AgentState, set_agent_state
+
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-stp")
+
+        state = AgentState(name="peasant-kin-stp", status="stopped", ticket="kin-stp")
+        set_agent_state(cli_project, BRANCH, "peasant-kin-stp", state)
+
+        result = runner.invoke(ticket_app, ["close", "kin-stp"])
+
+        assert result.exit_code == 0
+        assert "Warning" not in result.output
+
+
 class TestTicketClosed:
     """Tests for kd tk list --closed and kd tk close."""
 
@@ -756,6 +801,96 @@ class TestTicketMove:
         branch_tickets = branch_root(cli_project, BRANCH) / "tickets" / "kin-mv05.md"
         assert branch_tickets.exists()
         assert not (backlog_dir / "kin-mv05.md").exists()
+
+    def test_move_to_nonexistent_branch_errors(self) -> None:
+        """--to with a branch that doesn't exist in .kd/branches/ errors."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            from kingdom.state import set_current_run
+
+            set_current_run(base, BRANCH)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv06")
+
+            result = runner.invoke(ticket_app, ["move", "kin-mv06", "--to", "feature/nope"])
+
+            assert result.exit_code == 1
+            assert "not found" in result.output
+
+    def test_move_across_branches(self) -> None:
+        """kd tk move <id> --to <branch> moves ticket between branches."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            ensure_branch_layout(base, "feature/other")
+            from kingdom.state import set_current_run
+
+            set_current_run(base, BRANCH)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv07")
+
+            result = runner.invoke(ticket_app, ["move", "kin-mv07", "--to", "feature/other"])
+
+            assert result.exit_code == 0, result.output
+            assert "Moved" in result.output
+            # Verify file moved
+            assert not (tickets_dir / "kin-mv07.md").exists()
+            assert (branch_root(base, "feature/other") / "tickets" / "kin-mv07.md").exists()
+
+    def test_move_blocked_by_active_peasant(self) -> None:
+        """Moving a ticket with an active peasant is blocked."""
+        from kingdom.session import AgentState, set_agent_state
+        from kingdom.state import set_current_run
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            ensure_branch_layout(base, "feature/other")
+            set_current_run(base, BRANCH)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv08")
+
+            # Create an active peasant session for this ticket
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-mv08",
+                AgentState(name="peasant-kin-mv08", status="working", ticket="kin-mv08"),
+            )
+
+            result = runner.invoke(ticket_app, ["move", "kin-mv08", "--to", "feature/other"])
+
+            assert result.exit_code == 1
+            assert "active peasant" in result.output
+
+    def test_move_allowed_after_done_peasant(self) -> None:
+        """Moving a ticket whose peasant is done/failed/stopped should succeed."""
+        from kingdom.session import AgentState, set_agent_state
+        from kingdom.state import set_current_run
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+            ensure_branch_layout(base, "feature/other")
+            set_current_run(base, BRANCH)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            create_ticket_in(tickets_dir, "kin-mv09")
+
+            # Peasant finished — terminal status should not block the move
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-mv09",
+                AgentState(name="peasant-kin-mv09", status="done", ticket="kin-mv09"),
+            )
+
+            result = runner.invoke(ticket_app, ["move", "kin-mv09", "--to", "feature/other"])
+
+            assert result.exit_code == 0, result.output
+            assert "Moved" in result.output
+            assert not (tickets_dir / "kin-mv09.md").exists()
+            assert (branch_root(base, "feature/other") / "tickets" / "kin-mv09.md").exists()
 
 
 class TestTicketPull:

@@ -1027,6 +1027,27 @@ class TestWritableMode:
         assert prompt.startswith(CouncilMember.WRITABLE_PREAMBLE)
         assert CouncilMember.COUNCIL_PREAMBLE not in prompt
 
+    def test_readonly_preamble_contains_mode_marker(self) -> None:
+        """Read-only preamble should contain an explicit mode marker."""
+        member = make_member("claude")
+        cmd = member.build_command("hello")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert "[MODE: READ-ONLY]" in prompt
+        assert "[MODE: WRITABLE]" not in prompt
+
+    def test_writable_preamble_contains_mode_marker(self) -> None:
+        """Writable preamble should contain an explicit mode marker."""
+        member = make_member("claude")
+        member.writable = True
+        cmd = member.build_command("do something")
+        prompt = cmd[cmd.index("-p") + 1]
+        assert "[MODE: WRITABLE]" in prompt
+        assert "[MODE: READ-ONLY]" not in prompt
+
+    def test_readonly_preamble_instructs_refusal(self) -> None:
+        """Read-only preamble should instruct agent to state it cannot edit."""
+        assert "read-only mode" in CouncilMember.COUNCIL_PREAMBLE.lower()
+
     def test_writable_with_custom_preamble_uses_custom(self) -> None:
         """Custom preamble should override writable preamble too."""
         member = make_member("claude")

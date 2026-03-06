@@ -67,7 +67,7 @@ kd tk close ab12
 kd council ask "Should we use WebSockets or SSE for real-time updates? We need low latency but also need to work behind corporate proxies."
 ```
 
-**King says "ask the council."** Decide whether to continue an existing thread or start a new one. If the conversation is a continuation of an active design discussion, default to the current thread — just run `kd council ask "follow-up question"`. If the topic has shifted materially or the old thread is resolved, start fresh with `kd council ask --new-thread "new topic"`. When ambiguous, check existing threads with `kd council list` or `kd council show <thread>`, or ask the King a brief clarifying question before running the command.
+**King says "ask the council."** Every `kd council ask` creates a new thread by default. If the conversation is a continuation of an active design discussion, use `kd council ask --continue "follow-up question"` to append to the current thread. When ambiguous, check existing threads with `kd council list` or `kd council show <thread>`, or ask the King a brief clarifying question before running the command.
 
 **King wants to note progress.** Log it against the active ticket:
 
@@ -137,6 +137,10 @@ This applies regardless of execution mode.
 Proactively `kd tk log` whenever a durable state change occurs. The King should never have to say "update the worklog." Log against the active ticket without asking which ticket — you know what you're working on.
 
 The threshold is **durable state change**, not every chat turn. If future-you or another agent would need this fact, log it now.
+
+**Log before you continue.** When you discover durable information — a relevant issue, a root cause, a key finding from research — run `kd tk log` immediately, before continuing your work. The worklog survives context compaction; chat doesn't. Don't let valuable findings exist only in conversation history that will be compressed away.
+
+**Edit ticket body vs worklog.** If the King changes requirements or acceptance criteria, update the ticket's markdown directly (description, AC section). The worklog is for timeline events — decisions, findings, progress, blockers. Don't stuff requirements into `kd tk log`; edit the ticket file instead.
 
 **Decision made** — King says "let's go with raw TypeScript over React":
 
@@ -237,9 +241,9 @@ kd tk create --backlog "title"                           # backlog ticket
 kd tk create --backlog --ac "criterion" "title"          # backlog with acceptance criteria
 
 # council — threading and targeting
-kd council ask "prompt"                                  # all members, current thread
+kd council ask "prompt"                                  # all members, new thread
+kd council ask --continue "prompt"                       # continue current thread
 kd council ask --to claude "prompt"                      # single member
-kd council ask --new-thread "prompt"                     # start fresh thread
 kd council list / show <thread>                          # inspect threads
 kd council retry                                         # re-query failed members
 

@@ -61,6 +61,7 @@ class TestPeasantStart:
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-test"])
 
@@ -220,6 +221,7 @@ class TestPeasantStart:
                 patch("os.open", return_value=3),
                 patch("os.close"),
                 patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--watch"])
 
@@ -242,6 +244,7 @@ class TestPeasantStart:
                 patch("os.open", return_value=3),
                 patch("os.close"),
                 patch("kingdom.cli.peasant.peasant_watch") as mock_watch,
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-test"])
 
@@ -333,6 +336,69 @@ class TestPeasantStart:
             assert "Failed to launch" in result.output
             state = get_agent_state(base, BRANCH, "peasant-kin-test")
             assert state.status == "failed"
+
+    def test_start_warns_on_uncommitted_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[" M dirty.py"]),
+            ):
+                result = runner.invoke(peasant_app, ["start", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "uncommitted" in result.output.lower()
+            assert "--hand" in result.output
+
+    def test_start_no_preflight_suppresses_warning(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes") as mock_check,
+            ):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--no-preflight"])
+
+            assert result.exit_code == 0, result.output
+            mock_check.assert_not_called()
+
+    def test_start_hand_mode_skips_preflight(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes") as mock_check,
+            ):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            mock_check.assert_not_called()
 
 
 class TestPeasantStatus:
@@ -718,6 +784,119 @@ class TestPeasantStop:
 
             assert result.exit_code == 1
             assert "not found" in result.output
+
+    def test_stop_no_pid_fails_without_force(self) -> None:
+        """Stop without --force should fail when no PID is tracked."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(name="peasant-kin-test", status="working", pid=None),
+            )
+
+            result = runner.invoke(peasant_app, ["stop", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "No PID" in result.output
+            assert "--force" in result.output
+
+    def test_stop_force_closes_without_pid(self) -> None:
+        """Stop --force should close session state even when no PID is tracked."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(name="peasant-kin-test", status="working", pid=None),
+            )
+
+            result = runner.invoke(peasant_app, ["stop", "kin-test", "--force"])
+
+            assert result.exit_code == 0
+            assert "force-closing" in result.output
+            state = get_agent_state(base, BRANCH, "peasant-kin-test")
+            assert state.status == "stopped"
+
+    def test_kill_peasant_process_rejects_pid_zero(self) -> None:
+        """kill_peasant_process must not call killpg with pid=0 (would signal caller)."""
+        from kingdom.cli.peasant import kill_peasant_process
+
+        with patch("os.killpg") as mock_killpg:
+            result = kill_peasant_process(0, "test")
+
+        assert result is False
+        mock_killpg.assert_not_called()
+
+
+class TestPeasantPrune:
+    def test_prune_marks_stale_sessions_stopped(self) -> None:
+        """Prune should mark working sessions with no PID as stopped."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-stale1",
+                AgentState(name="peasant-stale1", status="working", pid=None),
+            )
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-healthy",
+                AgentState(name="peasant-healthy", status="done"),
+            )
+
+            result = runner.invoke(peasant_app, ["prune"])
+
+            assert result.exit_code == 0
+            assert "Pruned" in result.output
+            assert "peasant-stale1" in result.output
+            assert "1 session(s) pruned" in result.output
+            state = get_agent_state(base, BRANCH, "peasant-stale1")
+            assert state.status == "stopped"
+
+    def test_prune_dry_run(self) -> None:
+        """Prune --dry-run should show what would be pruned without changing state."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-stale1",
+                AgentState(name="peasant-stale1", status="working", pid=None),
+            )
+
+            result = runner.invoke(peasant_app, ["prune", "--dry-run"])
+
+            assert result.exit_code == 0
+            assert "Would prune" in result.output
+            # State should NOT be changed
+            state = get_agent_state(base, BRANCH, "peasant-stale1")
+            assert state.status == "working"
+
+    def test_prune_nothing_stale(self) -> None:
+        """Prune with no stale sessions should report nothing to do."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(peasant_app, ["prune"])
+
+            assert result.exit_code == 0
+            assert "No stale" in result.output
 
 
 class TestPeasantClean:
@@ -1452,7 +1631,7 @@ class TestPeasantReview:
 
             assert result.exit_code == 0, result.output
             assert "rejected" in result.output
-            assert "in_progress" in result.output
+            assert "stopped" in result.output
             assert "relaunched" not in result.output
 
             # Should NOT have relaunched
@@ -1463,6 +1642,10 @@ class TestPeasantReview:
             assert ticket_result is not None
             ticket, _ = ticket_result
             assert ticket.status == "in_progress"
+
+            # Session should be stopped, not working
+            state = get_agent_state(base, BRANCH, session_name)
+            assert state.status == "stopped"
 
             # Feedback should still be in the thread
             messages = list_messages(base, BRANCH, thread_id)
@@ -1747,6 +1930,7 @@ class TestBacklogAutoPull:
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-back"])
 
@@ -1791,6 +1975,7 @@ class TestBacklogAutoPull:
                 patch("subprocess.Popen", return_value=mock_proc),
                 patch("os.open", return_value=3),
                 patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]),
             ):
                 runner.invoke(peasant_app, ["start", "kin-list"])
 
@@ -2424,3 +2609,230 @@ class TestReassembleStreamText:
         assert len(display) == 1
         assert display[0].endswith("...")
         assert len(display[0]) == 53
+
+
+# ---------------------------------------------------------------------------
+# Cross-branch peasant resolution
+# ---------------------------------------------------------------------------
+
+BRANCH_A = "feature/branch-a"
+BRANCH_B = "feature/branch-b"
+
+
+class TestCrossBranchPeasantContext:
+    """Test that resolve_peasant_context finds peasant sessions across branches."""
+
+    def test_resolve_finds_peasant_on_different_branch(self) -> None:
+        """Post-start commands resolve context via peasant ownership, not current session."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            # Set up two branches
+            ensure_branch_layout(base, BRANCH_A)
+            ensure_branch_layout(base, BRANCH_B)
+
+            # Create ticket on branch A
+            tickets_dir_a = base / ".kd" / "branches" / normalize_branch_name(BRANCH_A) / "tickets"
+            ticket = Ticket(id="abcd", status="in_review", title="Cross-branch test", created=datetime.now(UTC))
+            ticket_path = tickets_dir_a / "abcd.md"
+            write_ticket(ticket, ticket_path)
+
+            # Create peasant session on branch A
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-abcd",
+                AgentState(name="peasant-abcd", status="needs_king_review", ticket="abcd"),
+            )
+
+            # Switch active session to branch B
+            set_current_run(base, normalize_branch_name(BRANCH_B))
+
+            # resolve_peasant_context should find the peasant on branch A
+            ctx = resolve_peasant_context("abcd", base=base)
+            assert ctx.feature == normalize_branch_name(BRANCH_A)
+            assert ctx.full_ticket_id == "abcd"
+
+    def test_start_still_uses_current_session(self) -> None:
+        """peasant start (auto_pull=True) uses the current session, not cross-branch scan."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_B)
+            set_current_run(base, normalize_branch_name(BRANCH_B))
+
+            # Create ticket on branch B
+            tickets_dir_b = base / ".kd" / "branches" / normalize_branch_name(BRANCH_B) / "tickets"
+            ticket = Ticket(id="efgh", status="open", title="Start test", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir_b / "efgh.md")
+
+            ctx = resolve_peasant_context("efgh", base=base, auto_pull=True)
+            assert ctx.feature == normalize_branch_name(BRANCH_B)
+
+    def test_falls_back_to_current_session_when_no_peasant_found(self) -> None:
+        """When no peasant session exists, falls back to current run."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_current_run(base, normalize_branch_name(BRANCH_A))
+
+            # Create ticket on branch A, no peasant session
+            tickets_dir = base / ".kd" / "branches" / normalize_branch_name(BRANCH_A) / "tickets"
+            ticket = Ticket(id="nope", status="open", title="No peasant", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir / "nope.md")
+
+            ctx = resolve_peasant_context("nope", base=base)
+            assert ctx.feature == normalize_branch_name(BRANCH_A)
+
+
+class TestFindPeasantBranch:
+    """Test the find_peasant_branch helper in session.py."""
+
+    def test_finds_active_session(self) -> None:
+        from kingdom.session import find_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="working", ticket="xyz"),
+            )
+            result = find_peasant_branch(base, "peasant-xyz")
+            assert result == normalize_branch_name(BRANCH_A)
+
+    def test_ignores_idle_sessions(self) -> None:
+        from kingdom.session import find_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-idle",
+                AgentState(name="peasant-idle", status="idle"),
+            )
+            result = find_peasant_branch(base, "peasant-idle")
+            assert result is None
+
+    def test_returns_none_when_not_found(self) -> None:
+        from kingdom.session import find_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            result = find_peasant_branch(base, "peasant-nonexistent")
+            assert result is None
+
+
+class TestCrossBranchPrefixId:
+    """Test that prefix ticket IDs work with cross-branch resolution."""
+
+    def test_prefix_id_resolves_cross_branch(self) -> None:
+        """A prefix like 'ab' should resolve to the full ID before session lookup."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            ensure_branch_layout(base, BRANCH_B)
+
+            # Create ticket with full ID "abcd" on branch A
+            tickets_dir_a = base / ".kd" / "branches" / normalize_branch_name(BRANCH_A) / "tickets"
+            ticket = Ticket(id="abcd", status="in_review", title="Prefix test", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir_a / "abcd.md")
+
+            # Create peasant session on branch A with the full ID
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-abcd",
+                AgentState(name="peasant-abcd", status="needs_king_review", ticket="abcd"),
+            )
+
+            # Switch active session to branch B
+            set_current_run(base, normalize_branch_name(BRANCH_B))
+
+            # Use a PREFIX — this is the bug that was reported
+            ctx = resolve_peasant_context("ab", base=base)
+            assert ctx.feature == normalize_branch_name(BRANCH_A)
+            assert ctx.full_ticket_id == "abcd"
+
+
+class TestFindActivePeasantBranch:
+    """Test the find_active_peasant_branch helper in session.py."""
+
+    def test_finds_working_session(self) -> None:
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="working", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result == normalize_branch_name(BRANCH_A)
+
+    def test_ignores_done_sessions(self) -> None:
+        """Done peasants should not block operations."""
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="done", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result is None
+
+    def test_ignores_failed_sessions(self) -> None:
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="failed", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result is None
+
+    def test_ignores_stopped_sessions(self) -> None:
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="stopped", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result is None
+
+    def test_finds_needs_king_review(self) -> None:
+        from kingdom.session import find_active_peasant_branch
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-xyz",
+                AgentState(name="peasant-xyz", status="needs_king_review", ticket="xyz"),
+            )
+            result = find_active_peasant_branch(base, "peasant-xyz")
+            assert result == normalize_branch_name(BRANCH_A)

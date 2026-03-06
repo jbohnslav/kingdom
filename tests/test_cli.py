@@ -26,7 +26,7 @@ class TestCliWiring:
         """All expected sub-apps are reachable from the top-level app."""
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("council", "design", "peasant", "config", "ticket", "update"):
+        for cmd in ("council", "design", "peasant", "config", "plugin", "ticket", "update"):
             assert cmd in result.output, f"{cmd} not in --help output"
         # tk is a hidden alias — verify it's mounted by invoking it
         tk_result = runner.invoke(app, ["tk", "--help"])
@@ -405,6 +405,33 @@ class TestPeasantTmux:
                 session_name="peasant-t1",
             )
 
+    def test_tmux_errors_on_pid_discovery_failure(self, tmp_path) -> None:
+        """--tmux should error if PID discovery fails after window creation."""
+        import pytest
+        from click.exceptions import Exit as ClickExit
+
+        # Three subprocess.run calls: display-message, new-window, list-panes
+        mock_display = MagicMock(returncode=0, stdout="main")
+        mock_new_window = MagicMock(returncode=0, stdout="main:1.0")
+        mock_list_panes = MagicMock(returncode=0, stdout="")  # empty → IndexError
+
+        with (
+            patch(
+                "kingdom.cli.peasant.subprocess.run",
+                side_effect=[mock_display, mock_new_window, mock_list_panes],
+            ),
+            pytest.raises(ClickExit),
+        ):
+            launch_work_tmux(
+                base=tmp_path,
+                feature="test",
+                ticket_id="t1",
+                agent="claude",
+                worktree_path=tmp_path,
+                thread_id="t1-work",
+                session_name="peasant-t1",
+            )
+
 
 class TestProjectRootDiscovery:
     """CLI commands use find_project_root to locate .kd/."""
@@ -542,3 +569,87 @@ class TestUpdate:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
         assert "update" in result.output
+
+
+# ---------------------------------------------------------------------------
+# kd switch
+# ---------------------------------------------------------------------------
+
+
+class TestSwitch:
+    def test_switch_updates_current(self) -> None:
+        """kd switch <branch> updates .kd/current."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, "feature/alpha")
+            ensure_branch_layout(base, "feature/beta")
+            set_current_run(base, "feature-alpha")
+
+            with patch("kingdom.cli.get_current_git_branch", return_value="feature/alpha"):
+                result = runner.invoke(app, ["switch", "feature/beta"])
+            assert result.exit_code == 0, result.output
+            assert "beta" in result.output
+
+            current = (base / ".kd" / "current").read_text().strip()
+            assert current == "feature-beta"
+
+    def test_switch_shows_ticket_counts(self) -> None:
+        """kd switch prints open/closed ticket counts."""
+        from datetime import UTC, datetime
+
+        from kingdom.ticket import Ticket, write_ticket
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, "feature/alpha")
+            tickets_dir = base / ".kd" / "branches" / "feature-alpha" / "tickets"
+            write_ticket(Ticket(id="t1", status="open", title="A", created=datetime.now(UTC)), tickets_dir / "t1.md")
+            write_ticket(Ticket(id="t2", status="closed", title="B", created=datetime.now(UTC)), tickets_dir / "t2.md")
+
+            with patch("kingdom.cli.get_current_git_branch", return_value="main"):
+                result = runner.invoke(app, ["switch", "feature/alpha"])
+            assert result.exit_code == 0
+            assert "1 open" in result.output
+            assert "1 closed" in result.output
+
+    def test_switch_shows_git_mismatch(self) -> None:
+        """kd switch warns when git branch doesn't match."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, "feature/alpha")
+
+            with patch("kingdom.cli.get_current_git_branch", return_value="main"):
+                result = runner.invoke(app, ["switch", "feature/alpha"])
+            assert result.exit_code == 0
+            assert "mismatch" in result.output
+
+    def test_switch_no_args_lists_branches(self) -> None:
+        """kd switch (no args) lists tracked branches."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, "feature/alpha")
+            ensure_branch_layout(base, "feature/beta")
+            set_current_run(base, "feature-alpha")
+
+            with patch("kingdom.cli.get_current_git_branch", return_value="feature/alpha"):
+                result = runner.invoke(app, ["switch"])
+            assert result.exit_code == 0
+            # Should list both branches
+            assert "alpha" in result.output
+            assert "beta" in result.output
+
+    def test_switch_nonexistent_branch_errors(self) -> None:
+        """kd switch to a non-existent branch errors."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, "feature/alpha")
+
+            result = runner.invoke(app, ["switch", "feature/nope"])
+            assert result.exit_code == 1
+            assert "not found" in result.output
+
+    def test_switch_appears_in_help(self) -> None:
+        """kd switch is visible in --help output."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "switch" in result.output

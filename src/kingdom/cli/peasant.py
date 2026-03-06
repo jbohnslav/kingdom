@@ -30,6 +30,7 @@ from kingdom.state import (
 )
 from kingdom.ticket import Ticket, move_ticket, write_ticket
 from kingdom.worktree import (
+    check_uncommitted_changes,
     create_worktree,
     remove_worktree,
     run_init_script,
@@ -62,15 +63,38 @@ class PeasantContext(NamedTuple):
 def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull: bool = False) -> PeasantContext:
     """Resolve ticket and feature branch, or exit with an error message.
 
-    Handles the repeated preamble shared by peasant_* commands:
-    find_ticket + AmbiguousTicketMatch handling + resolve_current_run.
+    For post-start commands (auto_pull=False), searches all branches for
+    the peasant's session so that cross-branch operations work regardless
+    of which session is currently active.
+
+    For mutating commands (auto_pull=True, i.e. peasant start), uses the
+    current session as before.
 
     Args:
         auto_pull: If True, move backlog tickets into the current branch.
             Only set for mutating commands (peasant start).
     """
+    from kingdom.session import find_peasant_branch
+
     base = base or require_project_root()
 
+    # For non-start commands, try to find the peasant's owning branch first.
+    # Resolve the full ticket ID before building the session name — the user
+    # may pass a prefix (e.g. "0e") but session files use the full ID.
+    if not auto_pull:
+        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        session_name = f"peasant-{ticket.id}"
+        owning_branch = find_peasant_branch(base, session_name)
+        if owning_branch:
+            return PeasantContext(
+                base=base,
+                ticket=ticket,
+                ticket_path=ticket_path,
+                full_ticket_id=ticket.id,
+                feature=owning_branch,
+            )
+
+    # Fall back to current session (required for start, fine for others)
     try:
         feature = resolve_current_run(base)
     except RuntimeError as exc:
@@ -220,8 +244,13 @@ def launch_work_tmux(
             timeout=5,
         )
         pid = int(pid_result.stdout.strip().splitlines()[0])
-    except (ValueError, IndexError, subprocess.TimeoutExpired):
-        pid = 0  # Can't determine PID — still functional
+    except (ValueError, IndexError, subprocess.TimeoutExpired) as exc:
+        print_error(
+            f"tmux window created but PID discovery failed: {exc}\n"
+            "  The agent may be running in tmux but cannot be tracked.\n"
+            "  Use `tmux list-windows` to find it, or retry with `--hand`."
+        )
+        raise typer.Exit(code=1) from None
 
     return pid
 
@@ -233,6 +262,7 @@ def peasant_start(
     hand: Annotated[bool, typer.Option("--hand", help="Run in current directory (serial mode).")] = False,
     tmux: Annotated[bool, typer.Option("--tmux", help="Open agent in a new tmux window.")] = False,
     watch: Annotated[bool, typer.Option("--watch", "-w", help="Watch peasant progress after starting.")] = False,
+    no_preflight: Annotated[bool, typer.Option("--no-preflight", help="Skip uncommitted-changes warning.")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
     import kingdom.cli as _cli
@@ -268,6 +298,16 @@ def peasant_start(
     if existing.status == "working" and existing.pid and is_process_alive(existing.pid):
         print_error(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
         raise typer.Exit(code=1)
+
+    # 0. Preflight: warn on uncommitted changes (skipped in hand mode or with --no-preflight)
+    if not hand and not no_preflight:
+        uncommitted = check_uncommitted_changes(base)
+        if uncommitted:
+            error_console.print(
+                f"[yellow]Warning:[/yellow] {len(uncommitted)} uncommitted change(s) in {base}.\n"
+                "  Worktrees are created from the last commit — uncommitted changes won't be included.\n"
+                "  Commit or stash first, or use [bold]--hand[/bold] to work in the current directory."
+            )
 
     # 1. Create worktree (or use base if hand mode)
     if hand:
@@ -446,7 +486,7 @@ def peasant_status(
 
         # Check if process is still alive
         display_status = p.status
-        if p.pid and p.status == "working" and not is_process_alive(p.pid):
+        if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):
             display_status = "dead"
 
         # Color status
@@ -820,14 +860,19 @@ def peasant_watch(
     last_worktree_poll: float = 0.0
     last_heartbeat_time: float = 0.0
     last_log_poll: float = 0.0
-    last_worktree_status: list[str] | None = None
     worktree_poll_interval = 30.0  # seconds between worktree polls
     log_poll_interval = 15.0  # seconds between agent log polls
-    agent_log_offset: int = 0  # byte offset into agent-live.log
     stream_buffer: str = ""  # carry-over buffer for reassemble_stream_text
 
-    # Resolve agent live log path
+    # Seed worktree status so we don't re-report existing state with current time
+    last_worktree_status: list[str] | None = poll_worktree(worktree)
+
+    # Resolve agent live log path and skip to end so we don't replay old content
     agent_live_log = logs_root(ctx.base, ctx.feature) / session_name / "agent-live.log"
+    try:
+        agent_log_offset: int = agent_live_log.stat().st_size
+    except OSError:
+        agent_log_offset = 0
 
     # Seed HEAD SHA so we can detect commits
     head = poll_head_commit(worktree)
@@ -950,9 +995,44 @@ def peasant_watch(
         console.print("\n[dim]Stopped watching.[/dim]")
 
 
+def kill_peasant_process(pid: int, label: str = "") -> bool:
+    """Kill a peasant process group (SIGTERM → wait → SIGKILL).
+
+    Returns True if the process was killed, False if already dead or not found.
+    """
+    prefix = f"{label}: " if label else ""
+    if pid <= 0:
+        typer.echo(f"{prefix}invalid PID ({pid}), skipping kill")
+        return False
+    try:
+        os.killpg(pid, signal.SIGTERM)
+        typer.echo(f"{prefix}sent SIGTERM to process group (pgid {pid})")
+    except OSError:
+        typer.echo(f"{prefix}process group {pid} not found (already dead)")
+        return False
+
+    # Wait for processes to exit, then SIGKILL stragglers
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pid, 0)
+        except OSError:
+            return True  # all dead
+        time.sleep(0.2)
+
+    # Still alive after timeout — force kill
+    try:
+        os.killpg(pid, signal.SIGKILL)
+        typer.echo(f"{prefix}sent SIGKILL to process group (pgid {pid})")
+    except OSError:
+        pass
+    return True
+
+
 @peasant_app.command("stop", help="Stop a running peasant.")
 def peasant_stop(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    force: Annotated[bool, typer.Option("--force", "-f", help="Force-close session state even without a PID.")] = False,
 ) -> None:
     """Send SIGTERM to the peasant process and update status to stopped."""
     from kingdom.session import get_agent_state, update_agent_state
@@ -963,39 +1043,17 @@ def peasant_stop(
     session_name = peasant_session_name(full_ticket_id)
     state = get_agent_state(base, feature, session_name)
 
-    if state.status != "working":
+    if state.status not in ("working", "awaiting_council", "needs_king_review"):
         print_error(f"Peasant {full_ticket_id} is not running (status: {state.status})")
         raise typer.Exit(code=1)
 
-    if not state.pid:
-        print_error(f"No PID found for peasant {full_ticket_id}")
+    if state.pid:
+        kill_peasant_process(state.pid, full_ticket_id)
+    elif not force:
+        print_error(f"No PID found for peasant {full_ticket_id}. " "Use --force to close session state anyway.")
         raise typer.Exit(code=1)
-
-    # Kill the entire process group (harness + backend + children).
-    # The harness is launched with start_new_session=True, so its PID
-    # is the process group leader.
-    pgid = state.pid
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-        typer.echo(f"{full_ticket_id}: sent SIGTERM to process group (pgid {pgid})")
-    except OSError as e:
-        typer.echo(f"Process group {pgid} not found: {e}")
-
-    # Wait for processes to exit, then SIGKILL stragglers
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(pgid, 0)  # check if any process in group is alive
-        except OSError:
-            break  # all dead
-        time.sleep(0.2)
     else:
-        # Still alive after timeout — force kill
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-            typer.echo(f"{full_ticket_id}: sent SIGKILL to process group (pgid {pgid})")
-        except OSError:
-            pass  # already dead
+        typer.echo(f"{full_ticket_id}: no PID found, force-closing session state")
 
     # Update session status
     now = datetime.now(UTC).isoformat()
@@ -1030,6 +1088,51 @@ def peasant_clean(
     except RuntimeError as exc:
         print_error(str(exc))
         raise typer.Exit(code=1) from None
+
+
+@peasant_app.command("prune", help="Clean up stale peasant sessions (dead processes, orphaned state).")
+def peasant_prune(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", "-n", help="Show what would be pruned without changing anything.")
+    ] = False,
+) -> None:
+    """Find peasant sessions with dead/missing processes and mark them stopped."""
+    from kingdom.session import list_active_agents, update_agent_state
+
+    base = require_project_root()
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
+
+    active = list_active_agents(base, feature)
+    peasants = [a for a in active if a.name.startswith("peasant-")]
+
+    stale = []
+    for p in peasants:
+        if p.status in ("done", "failed", "stopped"):
+            continue
+        if not p.pid or not is_process_alive(p.pid):
+            stale.append(p)
+
+    if not stale:
+        typer.echo("No stale peasant sessions found.")
+        return
+
+    for p in stale:
+        reason = "no PID" if not p.pid else f"dead process (pid {p.pid})"
+        if dry_run:
+            typer.echo(f"Would prune: {p.name} (status: {p.status}, {reason})")
+        else:
+            now = datetime.now(UTC).isoformat()
+            update_agent_state(base, feature, p.name, status="stopped", last_activity=now)
+            typer.echo(f"Pruned: {p.name} (was {p.status}, {reason})")
+
+    if dry_run:
+        typer.echo(f"\n{len(stale)} session(s) would be pruned. Run without --dry-run to apply.")
+    else:
+        typer.echo(f"\n{len(stale)} session(s) pruned.")
 
 
 @peasant_app.command("sync", help="Pull parent branch changes into a peasant's worktree.")
@@ -1264,7 +1367,13 @@ def peasant_accept(
         print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
         raise typer.Exit(code=1)
 
-    # Gate: must be on the feature branch
+    # Gate: must be on the feature branch for merge safety
+    # Resolve the original git branch name from state.json (feature may be normalized)
+    from kingdom.state import read_json
+
+    state_json = read_json(branch_root(base, feature) / "state.json")
+    git_branch_name = state_json.get("branch", feature)
+
     current_branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
@@ -1273,8 +1382,8 @@ def peasant_accept(
     ).stdout.strip()
     if normalize_branch_name(current_branch) != normalize_branch_name(feature):
         print_error(
-            f"Cannot accept: expected to be on '{feature}' but HEAD is on '{current_branch}'. "
-            "Switch branches and retry."
+            f"Cannot accept: expected to be on '{git_branch_name}' but HEAD is on '{current_branch}'.\n"
+            f"Run `git checkout {git_branch_name}` first, then retry."
         )
         raise typer.Exit(code=1)
 
@@ -1346,10 +1455,13 @@ def peasant_reject(
         print_error(f"Cannot reject: session is '{state.status}', expected 'needs_king_review'.")
         raise typer.Exit(code=1)
 
-    # Gate: old process must be dead before relaunching
-    if not no_resume and state.pid and is_process_alive(state.pid):
-        print_error(f"Peasant process (pid {state.pid}) is still alive. Stop it first or use --no-resume.")
-        raise typer.Exit(code=1)
+    # Kill the process if it's still alive (regardless of --no-resume)
+    if state.pid and is_process_alive(state.pid):
+        if no_resume:
+            kill_peasant_process(state.pid, full_ticket_id)
+        else:
+            print_error(f"Peasant process (pid {state.pid}) is still alive. Stop it first or use --no-resume.")
+            raise typer.Exit(code=1)
 
     try:
         add_message(base, feature, thread_id, from_="king", to=session_name, body=feedback)
@@ -1366,12 +1478,12 @@ def peasant_reject(
             base,
             feature,
             session_name,
-            status="working",
+            status="stopped",
             pid=None,
             review_bounce_count=0,
             last_activity=datetime.now(UTC).isoformat(),
         )
-        typer.echo(f"{full_ticket_id}: rejected — feedback sent, ticket back to in_progress")
+        typer.echo(f"{full_ticket_id}: rejected — feedback sent, peasant stopped")
         return
 
     # Auto-resume: relaunch the peasant

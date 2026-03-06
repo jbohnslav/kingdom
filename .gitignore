@@ -15,4 +15,7 @@ third-party/
 # Council threads and peasant work logs (generated locally)
 .kd/**/threads/
 
+# Claude Code local settings (synced into worktrees by kd)
+.claude/
+
 # Kingdom operational state (json/logs ignored via .kd/.gitignore)

@@ -40,6 +40,7 @@ from .council import council_app
 from .design import design_app, get_branch_paths, get_doc_status  # noqa: F401 (re-export)
 from .display import error_console, print_error, styled_echo
 from .helpers import install_skill, is_git_repo, require_project_root, verbose_echo  # noqa: F401
+from .hook import hook_app
 from .peasant import (  # noqa: F401
     PeasantContext,
     launch_work_background,
@@ -47,6 +48,7 @@ from .peasant import (  # noqa: F401
     peasant_app,
     resolve_peasant_context,
 )
+from .plugin import plugin_app
 from .ticket import format_ticket_line, format_ticket_summary, get_tickets_dir, ticket_app  # noqa: F401
 
 NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
@@ -78,6 +80,8 @@ app.add_typer(council_app, name="council")
 app.add_typer(design_app, name="design")
 app.add_typer(peasant_app, name="peasant")
 app.add_typer(config_app, name="config")
+app.add_typer(hook_app, name="hook")
+app.add_typer(plugin_app, name="plugin")
 app.add_typer(ticket_app, name="ticket")
 app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
 
@@ -133,7 +137,10 @@ def start(
     if current_path.exists() and not force:
         existing = current_path.read_text(encoding="utf-8").strip()
         print_error(f"A session is already active: {existing}")
-        error_console.print("  Use --force to override, or run `kd done` first.")
+        error_console.print(
+            "  If that branch is finished, run `kd done` to clean it up before starting a new session.\n"
+            "  If you need to switch mid-work, use `kd start --force` to override."
+        )
         raise typer.Exit(code=1)
 
     # Determine branch name
@@ -166,6 +173,109 @@ def start(
     typer.echo(f"Started session for branch {branch}")
     typer.echo(f"  Location: {branch_dir}")
     typer.echo(f"  Design: {design_path}")
+
+
+@app.command(help="Switch the active kd session to another branch.")
+def switch(
+    branch: Annotated[str | None, typer.Argument(help="Branch name to switch to.")] = None,
+) -> None:
+    """Switch the active kd session without changing git branch.
+
+    With an argument: validate the branch exists in .kd/branches/ and update .kd/current.
+    Without arguments: list all tracked branches, marking the current session and git branch.
+    """
+    base = require_project_root()
+    console = Console()
+
+    if branch is None:
+        # List mode: show all tracked branches
+        branches_dir = base / ".kd" / "branches"
+        if not branches_dir.exists() or not any(branches_dir.iterdir()):
+            typer.echo("No tracked branches. Use `kd start <branch>` to create one.")
+            return
+
+        # Determine current kd session
+        current_session: str | None = None
+        current_path = base / ".kd" / "current"
+        if current_path.exists():
+            current_session = current_path.read_text(encoding="utf-8").strip() or None
+
+        # Determine current git branch
+        git_branch = get_current_git_branch()
+        git_normalized = normalize_branch_name(git_branch) if git_branch else None
+
+        for branch_dir in sorted(branches_dir.iterdir()):
+            if not branch_dir.is_dir():
+                continue
+            name = branch_dir.name
+
+            # Read original branch name from state.json
+            state_path = branch_dir / "state.json"
+            original = name
+            branch_status = ""
+            if state_path.exists():
+                try:
+                    state = read_json(state_path)
+                    original = state.get("branch", name)
+                    if state.get("status") == "done":
+                        branch_status = " [dim](done)[/dim]"
+                except (FileNotFoundError, KeyError):
+                    pass
+
+            # Count open tickets
+            tickets_dir = branch_dir / "tickets"
+            ticket_count = 0
+            if tickets_dir.exists():
+                ticket_count = sum(1 for f in tickets_dir.glob("*.md"))
+
+            # Build markers
+            markers = []
+            if name == current_session:
+                markers.append("[bold cyan]* session[/bold cyan]")
+            if name == git_normalized:
+                markers.append("[green]* git[/green]")
+            marker_str = f"  ({', '.join(markers)})" if markers else ""
+
+            console.print(f"  {original}{branch_status}  [{ticket_count} tickets]{marker_str}")
+        return
+
+    # Switch mode: validate and update
+    normalized = normalize_branch_name(branch)
+    branch_dir = base / ".kd" / "branches" / normalized
+    if not branch_dir.exists():
+        print_error(f"Branch '{branch}' not found in .kd/branches/.")
+        error_console.print("Available branches:")
+        branches_dir = base / ".kd" / "branches"
+        if branches_dir.exists():
+            for d in sorted(branches_dir.iterdir()):
+                if d.is_dir():
+                    error_console.print(f"  {d.name}")
+        raise typer.Exit(code=1)
+
+    set_current_run(base, normalized)
+
+    # Print summary
+    state_path = branch_dir / "state.json"
+    original = branch
+    if state_path.exists():
+        try:
+            state = read_json(state_path)
+            original = state.get("branch", branch)
+        except (FileNotFoundError, KeyError):
+            pass
+
+    tickets_dir = branch_dir / "tickets"
+    tickets = list_tickets(tickets_dir) if tickets_dir.exists() else []
+    open_count = sum(1 for t in tickets if t.status != "closed")
+    closed_count = sum(1 for t in tickets if t.status == "closed")
+
+    git_branch = get_current_git_branch()
+    git_info = f"  git: {git_branch}" if git_branch else ""
+    if git_branch and normalize_branch_name(git_branch) != normalized:
+        git_info += " [yellow](mismatch)[/yellow]"
+
+    console.print(f"Switched to [bold]{original}[/bold]")
+    console.print(f"  {open_count} open, {closed_count} closed tickets{git_info}")
 
 
 @app.command(help="Mark the current session as done.")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,8 +34,8 @@ class TestChatCommand:
         assert result.exit_code == 1
         assert "Thread not found" in result.output
 
-    def test_no_args_no_threads_auto_creates(self, project: Path) -> None:
-        """Auto-create a new thread when none exist for the branch."""
+    def test_no_args_creates_new_thread(self, project: Path) -> None:
+        """Bare `chat` always creates a new thread and launches the TUI."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
@@ -44,7 +43,6 @@ class TestChatCommand:
         ):
             result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
-        assert "Created new thread:" in result.output
         mock_run.assert_called_once()
 
         # Verify a current thread was set
@@ -52,33 +50,39 @@ class TestChatCommand:
         assert current is not None
         assert current.startswith("council-")
 
-    def test_no_args_lists_threads(self, project: Path) -> None:
+    def test_no_args_ignores_existing_threads(self, project: Path) -> None:
+        """Bare `chat` creates a new thread even when others exist."""
         create_thread(project, BRANCH, "council-abc1", ["king", "claude"], "council")
         create_thread(project, BRANCH, "council-abc2", ["king", "codex"], "council")
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
-        assert "council-abc1" in result.output
-        assert "council-abc2" in result.output
+        mock_run.assert_called_once()
 
-    def test_new_creates_thread_and_launches(self, project: Path) -> None:
+        current = get_current_thread(project, BRANCH)
+        assert current is not None
+        assert current not in ("council-abc1", "council-abc2")
+
+    def test_explicit_thread_id_resumes(self, project: Path) -> None:
+        """Passing a thread ID opens that specific thread."""
+        create_thread(project, BRANCH, "council-abc1", ["king", "claude"], "council")
+
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
-            result = runner.invoke(council_app, ["chat", "--new"])
+            result = runner.invoke(council_app, ["chat", "council-abc1"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
-        # Check thread was created and current_thread was set
         current = get_current_thread(project, BRANCH)
-        assert current is not None
-        assert current.startswith("council-")
+        assert current == "council-abc1"
 
     def test_explicit_thread_id_launches(self, project: Path) -> None:
         create_thread(project, BRANCH, "council-test", ["king", "claude"], "council")
@@ -112,7 +116,8 @@ class TestChatCommand:
         )
         mock_chat_app.return_value.run.assert_called_once()
 
-    def test_resumes_current_thread(self, project: Path) -> None:
+    def test_bare_chat_ignores_current_thread(self, project: Path) -> None:
+        """Bare `chat` creates a new thread even when current_thread is set."""
         create_thread(project, BRANCH, "council-resume", ["king", "claude"], "council")
         set_current_thread(project, BRANCH, "council-resume")
 
@@ -125,17 +130,9 @@ class TestChatCommand:
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
-    def test_stale_current_thread_falls_back_to_list(self, project: Path) -> None:
-        set_current_thread(project, BRANCH, "council-gone")
-        create_thread(project, BRANCH, "council-other", ["king", "claude"], "council")
-
-        with (
-            patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
-        ):
-            result = runner.invoke(council_app, ["chat"])
-        assert result.exit_code == 0
-        assert "council-other" in result.output
+        current = get_current_thread(project, BRANCH)
+        assert current is not None
+        assert current != "council-resume"
 
     def test_explicit_thread_sets_current(self, project: Path) -> None:
         """Explicit thread-id should become the current_thread."""
@@ -886,45 +883,28 @@ class TestPhase1SmokeTest:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
-            result = runner.invoke(council_app, ["chat", "--new"])
+            result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
-    def test_chat_list_shows_newest_first(self, project: Path) -> None:
-        """kd council chat (no args, no current thread) should list threads newest-first."""
-        from datetime import datetime
-
-        from kingdom.state import write_json
-        from kingdom.thread import threads_root
-
-        troot = threads_root(project, BRANCH)
-        # Create threads with explicit timestamps to control ordering
-        for i, name in enumerate(["thread-old", "thread-mid", "thread-new"]):
-            tdir = troot / name
-            tdir.mkdir(parents=True)
-            ts = datetime(2026, 1, 1 + i, tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            write_json(
-                tdir / "thread.json",
-                {
-                    "id": name,
-                    "members": ["king", "claude"],
-                    "pattern": "council",
-                    "created_at": ts,
-                },
-            )
+    def test_bare_chat_creates_new_thread_with_existing(self, project: Path) -> None:
+        """Bare `chat` creates a new thread even when other threads exist."""
+        create_thread(project, BRANCH, "council-old1", ["king", "claude"], "council")
+        create_thread(project, BRANCH, "council-old2", ["king", "claude"], "council")
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
 
         assert result.exit_code == 0
-        assert "Recent threads:" in result.output
-        lines = [ln.strip() for ln in result.output.splitlines() if ln.strip().startswith("thread-")]
-        # Newest should be first
-        assert lines[0].startswith("thread-new")
-        assert lines[-1].startswith("thread-old")
+        mock_run.assert_called_once()
+
+        current = get_current_thread(project, BRANCH)
+        assert current is not None
+        assert current not in ("council-old1", "council-old2")
 
     def test_chat_color_auto_detects_tmux_cc(self, project: Path) -> None:
         """--color auto enables ansi_color when tmux -CC is detected."""
@@ -935,7 +915,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=True),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
-            result = runner.invoke(council_app, ["chat", "--new"])
+            result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
         assert "tmux control mode" in result.output
         assert mock_init.call_args.kwargs["ansi_color"] is True
@@ -949,7 +929,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
-            result = runner.invoke(council_app, ["chat", "--new"])
+            result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
         assert mock_init.call_args.kwargs["ansi_color"] is False
 
@@ -961,7 +941,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.app.ChatApp.run"),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
-            result = runner.invoke(council_app, ["chat", "--new", "--color", "ansi"])
+            result = runner.invoke(council_app, ["chat", "--color", "ansi"])
         assert result.exit_code == 0
         assert mock_init.call_args.kwargs["ansi_color"] is True
 
@@ -979,14 +959,14 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.app.ChatApp.run", side_effect=check_no_color),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
-            result = runner.invoke(council_app, ["chat", "--new", "--color", "none"])
+            result = runner.invoke(council_app, ["chat", "--color", "none"])
         assert result.exit_code == 0
         assert mock_init.call_args.kwargs["ansi_color"] is True
         assert no_color_was_set, "NO_COLOR should be set in environment when app runs"
 
     def test_chat_color_invalid_exits(self, project: Path) -> None:
         """--color with invalid value is rejected by click.Choice before function body runs."""
-        result = runner.invoke(council_app, ["chat", "--new", "--color", "bogus"])
+        result = runner.invoke(council_app, ["chat", "--color", "bogus"])
         assert result.exit_code != 0
         assert "Invalid value" in result.output or "bogus" in result.output
 
@@ -1007,7 +987,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.tui.app.ChatApp.run", side_effect=run_side_effect),
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
         ):
-            result = runner.invoke(council_app, ["chat", "--new"])
+            result = runner.invoke(council_app, ["chat"])
         assert result.exit_code == 0
         assert "color rendering error" in result.output
         assert call_count == 2
@@ -1023,7 +1003,7 @@ class TestPhase1SmokeTest:
             patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run", side_effect=crash),
         ):
-            result = runner.invoke(council_app, ["chat", "--new", "--color", "truecolor"])
+            result = runner.invoke(council_app, ["chat", "--color", "truecolor"])
         # Should re-raise, not silently retry
         assert result.exit_code != 0
 

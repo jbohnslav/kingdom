@@ -678,6 +678,7 @@ def ticket_start(
 @ticket_app.command("current", help="Show the in-progress ticket for this branch.")
 def ticket_current(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+    id_only: Annotated[bool, typer.Option("--id", help="Print only the ticket ID.")] = False,
 ) -> None:
     """Find and display the ticket currently marked as in_progress on this branch."""
     base = require_project_root()
@@ -685,22 +686,32 @@ def ticket_current(
     try:
         feature = resolve_current_run(base)
     except RuntimeError:
+        if id_only:
+            raise typer.Exit(code=1) from None
         print_error("No active session. Use `kd start` first.")
         raise typer.Exit(code=1) from None
 
     tickets_dir = branch_root(base, feature) / "tickets"
     if not tickets_dir.exists():
+        if id_only:
+            raise typer.Exit(code=1)
         print_error("No in-progress ticket on this branch.")
         raise typer.Exit(code=1)
 
     in_progress = [t for t in list_tickets(tickets_dir) if t.status == "in_progress"]
 
     if not in_progress:
+        if id_only:
+            raise typer.Exit(code=1)
         print_error("No in-progress ticket on this branch.")
         raise typer.Exit(code=1)
 
     ticket = in_progress[0]
     ticket_path = tickets_dir / f"{ticket.id}.md"
+
+    if id_only:
+        typer.echo(ticket.id)
+        return
 
     if output_json:
         result_json = ticket_to_json(ticket, detailed=True, base=base, path=ticket_path)
@@ -758,6 +769,24 @@ def ticket_close(
             raise typer.Exit(code=1)
         ticket.duplicate_of = dup_ticket.id
         reason = reason or f"Duplicate of {dup_ticket.id}"
+
+    # Warn if an active peasant is working on this ticket
+    try:
+        feature = resolve_current_run(base)
+        from kingdom.session import list_active_agents
+
+        active = list_active_agents(base, feature)
+        active_peasants = [
+            a
+            for a in active
+            if a.name.startswith("peasant-") and a.ticket == ticket.id and a.status not in ("done", "failed", "stopped")
+        ]
+        if active_peasants:
+            names = ", ".join(a.name for a in active_peasants)
+            error_console.print(f"[yellow]Warning:[/yellow] active peasant(s) on this ticket: {names}")
+            error_console.print("Consider stopping them first with `kd peasant stop`.")
+    except RuntimeError:
+        pass  # no active branch — skip the check
 
     old_status = ticket.status
     ticket.status = "closed"
@@ -1071,7 +1100,13 @@ def ticket_move(
 
     Single ticket: `kd tk move <id> --to <branch>` or `kd tk move <id>` (to current branch).
     Multiple tickets: `kd tk move <id1> <id2> --to <branch>`.
+
+    Searches all branches for the source ticket (IDs are globally unique).
+    Validates --to target exists in .kd/branches/. Blocks moves on tickets
+    with active peasant sessions.
     """
+    from kingdom.session import find_active_peasant_branch
+
     base = require_project_root()
 
     target = to_target
@@ -1110,18 +1145,35 @@ def ticket_move(
         dest_label = f"branch '{resolved}'"
     else:
         normalized = normalize_branch_name(target)
-        dest_dir = branches_root(base) / normalized / "tickets"
+        branch_dir = branches_root(base) / normalized
+        # Validate target branch exists — no silent directory creation
+        if not branch_dir.exists():
+            print_error(f"Target branch '{target}' not found in .kd/branches/.")
+            error_console.print("Use `kd start <branch>` to create it first.")
+            raise typer.Exit(code=1)
+        dest_dir = branch_dir / "tickets"
         dest_label = f"branch '{normalized}'"
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pass 1: validate all tickets
+    # Pass 1: validate all tickets (search globally, not scoped to current branch)
     validated: list[tuple[Ticket, Path]] = []
     for tid in ticket_ids:
         ticket, ticket_path = resolve_ticket_or_exit(base, tid)
         if ticket_path.parent.resolve() == dest_dir.resolve():
             typer.echo(f"Ticket {ticket.id} is already in {dest_label}")
             continue
+
+        # Block moves on tickets with active peasant sessions
+        session_name = peasant_session_name(ticket.id)
+        owning_branch = find_active_peasant_branch(base, session_name)
+        if owning_branch:
+            print_error(
+                f"Ticket {ticket.id} has an active peasant session on branch '{owning_branch}'.\n"
+                f"Stop the peasant first: `kd peasant stop {ticket.id}`"
+            )
+            raise typer.Exit(code=1)
+
         validated.append((ticket, ticket_path))
 
     # Pass 2: move all validated tickets
