@@ -1492,27 +1492,45 @@ def peasant_accept(
         typer.echo(f"Hand mode — changes already on {feature}, skipping merge")
     else:
         # Worktree mode: merge ticket branch into feature branch
-        worktree_path = worktree_path_for(base, full_ticket_id)
-        merge_result = subprocess.run(
-            ["git", "merge", branch_name, "--no-edit"],
+        # Check if already merged (idempotent re-run after manual conflict resolution)
+        already_merged = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", branch_name, "HEAD"],
             capture_output=True,
             text=True,
             cwd=str(base),
         )
-        if merge_result.returncode != 0:
-            # Integration failed — keep in_review, show recovery steps
-            merge_err = merge_result.stdout.strip()
-            if merge_result.stderr.strip():
-                merge_err += "\n" + merge_result.stderr.strip()
-            print_error("Integration failed — ticket remains in_review.")
-            error_console.print(f"\n{merge_err}\n")
-            error_console.print("Recovery steps:")
-            error_console.print(f"  1. cd {worktree_path}")
-            error_console.print(f"  2. git merge {feature} (resolve conflicts)")
-            error_console.print(f"  3. kd peasant accept {full_ticket_id} (retry)")
-            raise typer.Exit(code=1)
+        if already_merged.returncode == 0:
+            typer.echo(f"{branch_name} already merged into {feature}, skipping merge")
+        else:
+            # Check for uncommitted changes before attempting merge
+            uncommitted = check_uncommitted_changes(base)
+            if uncommitted:
+                print_error(
+                    f"Uncommitted changes on {git_branch_name} — commit or stash before accepting.\n"
+                    f"  Found {len(uncommitted)} changed file(s)."
+                )
+                raise typer.Exit(code=1)
 
-        typer.echo(f"Integrated {branch_name} into {feature}")
+            merge_result = subprocess.run(
+                ["git", "merge", branch_name, "--no-edit"],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+            )
+            if merge_result.returncode != 0:
+                # Integration failed — keep in_review, show recovery steps
+                merge_err = merge_result.stdout.strip()
+                if merge_result.stderr.strip():
+                    merge_err += "\n" + merge_result.stderr.strip()
+                print_error("Integration failed — merge conflicts detected. Ticket remains in_review.")
+                error_console.print(f"\n{merge_err}\n")
+                error_console.print("Recovery steps:")
+                error_console.print(f"  1. Resolve conflict markers in the working tree (you are on {git_branch_name})")
+                error_console.print("  2. git add <resolved files> && git commit")
+                error_console.print(f"  3. kd peasant accept {full_ticket_id}  (re-run — detects merge is done)")
+                raise typer.Exit(code=1)
+
+            typer.echo(f"Integrated {branch_name} into {feature}")
 
     ticket.status = "closed"
     write_ticket(ticket, ticket_path)

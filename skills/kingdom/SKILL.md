@@ -210,6 +210,22 @@ When a command fails, diagnose before retrying. Never silently drop a failed ope
 - **`kd peasant start` fails — ticket is in_review or closed.** The ticket needs to be reopened or the review resolved before a peasant can work it. Check ticket status with `kd tk show <id>` and tell the King.
 - **Peasant seems stuck.** Check `kd peasant status` and `kd peasant show <id>` before escalating to the King.
 - **Council query sent — want to check on it.** Run `kd council show` to read the thread and see which members have responded. Don't re-run `kd council ask` with the same prompt.
+- **`kd peasant accept` fails — merge conflicts.** See "Merge Conflict Recovery" below.
+
+## Merge Conflict Recovery
+
+When `kd peasant accept <id>` hits merge conflicts, the merge happens on the **feature branch** (not in the worktree). The command leaves you in a merge state with conflict markers in your working tree.
+
+**Before accepting:** Commit or stash any uncommitted changes on the feature branch first. Accept will refuse to merge if the working tree is dirty.
+
+**Recovery steps when conflicts occur:**
+
+1. You are already on the feature branch with conflict markers in the working tree.
+2. Resolve the conflict markers in each file (combine both sides as needed).
+3. `git add <resolved files> && git commit` — this completes the merge.
+4. `kd peasant accept <id>` — re-run accept. It detects the branch is already merged and proceeds with cleanup (close ticket, update session).
+
+Accept is idempotent: if the ticket branch is already merged into the feature branch, it skips the merge step and goes straight to cleanup. This means you can safely re-run accept after manual conflict resolution.
 
 ## Council
 
