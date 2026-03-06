@@ -1396,6 +1396,21 @@ class TestFilterTicketsByDeps:
         ids = [t.id for t in result]
         assert ids == ["c"]
 
+    def test_ready_excludes_custom_statuses(self) -> None:
+        tickets = [
+            Ticket(id="a", status="open", title="Open ticket"),
+            Ticket(id="b", status="in_progress", title="In progress ticket"),
+            Ticket(id="c", status="blocked", title="Blocked ticket"),
+            Ticket(id="d", status="waiting", title="Waiting ticket"),
+        ]
+        status_map = {"a": "open", "b": "in_progress", "c": "blocked", "d": "waiting"}
+        result = filter_tickets_by_deps(tickets, status_map, ready=True)
+        ids = [t.id for t in result]
+        assert "a" in ids
+        assert "b" in ids
+        assert "c" not in ids  # custom status excluded
+        assert "d" not in ids  # custom status excluded
+
     def test_neither_ready_nor_blocked_returns_all(self) -> None:
         tickets = self._tickets()
         result = filter_tickets_by_deps(tickets, self._status_map())

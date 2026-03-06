@@ -573,7 +573,7 @@ def filter_tickets_by_deps(
 ) -> list[Ticket]:
     """Filter tickets by dependency status (ready or blocked).
 
-    - ready: tickets with no open deps and status not in_review/closed
+    - ready: tickets with no open deps and status is open or in_progress
     - blocked: tickets with at least one open dep
     """
     if not ready and not blocked:
@@ -583,7 +583,7 @@ def filter_tickets_by_deps(
         if t.status == "closed":
             continue
         has_open_dep = any(status_by_id.get(d, "unknown") != "closed" for d in t.deps)
-        if (ready and not has_open_dep and t.status not in ("in_review", "closed")) or (blocked and has_open_dep):
+        if (ready and not has_open_dep and t.status in ("open", "in_progress")) or (blocked and has_open_dep):
             result.append(t)
     return result
 
