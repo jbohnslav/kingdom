@@ -280,6 +280,29 @@ class TestTicketCloseArchive:
         assert restored.exists()
 
 
+class TestTicketStatus:
+    def test_status_sets_arbitrary_value(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-stat")
+
+        result = runner.invoke(ticket_app, ["status", "kin-stat", "blocked"])
+
+        assert result.exit_code == 0, result.output
+        assert "open → blocked" in result.output
+        ticket = read_ticket(branch_dir / "kin-stat.md")
+        assert ticket.status == "blocked"
+
+    def test_status_round_trip(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-rt")
+
+        runner.invoke(ticket_app, ["status", "kin-rt", "in_review"])
+        result = runner.invoke(ticket_app, ["status", "kin-rt", "waiting"])
+
+        assert result.exit_code == 0, result.output
+        assert "in_review → waiting" in result.output
+
+
 class TestTicketCloseIdempotent:
     def test_close_already_archived_ticket_is_noop(self, cli_project: Path) -> None:
         """Closing an already-closed archived ticket should not double-move."""

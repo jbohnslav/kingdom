@@ -822,6 +822,15 @@ def ticket_reopen(
     update_ticket_status(ticket_id, "open")
 
 
+@ticket_app.command("status", help="Set a ticket's status to an arbitrary value.")
+def ticket_status(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    status: Annotated[str, typer.Argument(help="New status (e.g. blocked, in_review, waiting).")],
+) -> None:
+    """Set ticket status to any arbitrary string."""
+    update_ticket_status(ticket_id, status)
+
+
 @ticket_app.command("delete", help="Permanently delete a ticket file.")
 def ticket_delete(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
