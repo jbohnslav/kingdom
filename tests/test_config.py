@@ -348,6 +348,37 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be positive"):
             validate_config({"peasant": {"max_iterations": 0}})
 
+    def test_reasoning_effort_valid_on_codex(self) -> None:
+        for effort in ("low", "medium", "high"):
+            cfg = validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": effort}}})
+            assert cfg.agents["codex"].reasoning_effort == effort
+
+    def test_reasoning_effort_absent_defaults_empty(self) -> None:
+        cfg = validate_config({})
+        assert cfg.agents["codex"].reasoning_effort == ""
+        assert cfg.agents["claude"].reasoning_effort == ""
+
+    def test_reasoning_effort_bad_value(self) -> None:
+        with pytest.raises(ValueError, match="must be one of"):
+            validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": "turbo"}}})
+
+    def test_reasoning_effort_bad_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": 3}}})
+
+    def test_reasoning_effort_falsey_bad_types_rejected(self) -> None:
+        for val in (0, False, []):
+            with pytest.raises(ValueError, match="must be a string"):
+                validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": val}}})
+
+    def test_reasoning_effort_unsupported_backend_claude(self) -> None:
+        with pytest.raises(ValueError, match="only supported for backends"):
+            validate_config({"agents": {"claude": {"backend": "claude_code", "reasoning_effort": "high"}}})
+
+    def test_reasoning_effort_unsupported_backend_cursor(self) -> None:
+        with pytest.raises(ValueError, match="only supported for backends"):
+            validate_config({"agents": {"mycursor": {"backend": "cursor", "reasoning_effort": "low"}}})
+
 
 class TestLoadConfig:
     def test_no_file_returns_defaults(self, tmp_path: Path) -> None:

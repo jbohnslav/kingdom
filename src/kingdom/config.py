@@ -27,6 +27,7 @@ class AgentDef:
     prompt: str = ""
     prompts: dict[str, str] = field(default_factory=dict)
     extra_flags: list[str] = field(default_factory=list)
+    reasoning_effort: str = ""
 
 
 @dataclass
@@ -115,7 +116,9 @@ def default_config() -> KingdomConfig:
 # ---------------------------------------------------------------------------
 
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
-VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
+VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags", "reasoning_effort"}
+VALID_REASONING_EFFORTS = {"low", "medium", "high"}
+REASONING_EFFORT_BACKENDS = {"codex"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
 VALID_COUNCIL_KEYS = {
     "members",
@@ -180,12 +183,29 @@ def validate_agent(name: str, data: dict) -> AgentDef:
         if not isinstance(flag, str):
             raise ValueError(f"agents.{name}.extra_flags[{i}] must be a string, got {type(flag).__name__}")
 
+    reasoning_effort = data.get("reasoning_effort", "")
+    if "reasoning_effort" in data:
+        if not isinstance(reasoning_effort, str):
+            raise ValueError(f"agents.{name}.reasoning_effort must be a string, got {type(reasoning_effort).__name__}")
+        if reasoning_effort and reasoning_effort not in VALID_REASONING_EFFORTS:
+            raise ValueError(
+                f"agents.{name}.reasoning_effort must be one of "
+                f"{', '.join(sorted(VALID_REASONING_EFFORTS))}, got '{reasoning_effort}'"
+            )
+        if reasoning_effort and backend not in REASONING_EFFORT_BACKENDS:
+            raise ValueError(
+                f"agents.{name}.reasoning_effort is only supported for backends: "
+                f"{', '.join(sorted(REASONING_EFFORT_BACKENDS))}. "
+                f"Agent '{name}' uses backend '{backend}'"
+            )
+
     return AgentDef(
         backend=backend,
         model=model or "",
         prompt=prompt or "",
         prompts=prompts,
         extra_flags=extra_flags,
+        reasoning_effort=reasoning_effort or "",
     )
 
 

@@ -254,6 +254,42 @@ class TestBuildCommandExtraFlags:
         assert debug_idx < prompt_idx
 
 
+class TestBuildCommandReasoningEffort:
+    def test_codex_reasoning_effort_in_command(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", model="gpt-5.4", reasoning_effort="high"))
+        cmd = build_command(config, "hello")
+        assert "-c" in cmd
+        c_idx = cmd.index("-c")
+        assert cmd[c_idx + 1] == "model_reasoning_effort=high"
+
+    def test_codex_reasoning_effort_low(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", reasoning_effort="low"))
+        cmd = build_command(config, "hello")
+        assert "-c" in cmd
+        c_idx = cmd.index("-c")
+        assert cmd[c_idx + 1] == "model_reasoning_effort=low"
+
+    def test_codex_no_reasoning_effort_no_flag(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex"))
+        cmd = build_command(config, "hello")
+        assert "model_reasoning_effort" not in " ".join(cmd)
+
+    def test_codex_reasoning_effort_before_extra_flags(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", reasoning_effort="medium", extra_flags=["--debug"]))
+        cmd = build_command(config, "hello")
+        c_idx = cmd.index("-c")
+        debug_idx = cmd.index("--debug")
+        assert c_idx < debug_idx
+
+    def test_resolve_agent_carries_reasoning_effort(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", reasoning_effort="high"))
+        assert config.reasoning_effort == "high"
+
+    def test_resolve_agent_empty_reasoning_effort(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex"))
+        assert config.reasoning_effort == ""
+
+
 class TestBuildCommandSkipPermissions:
     def test_claude_skip_permissions_false(self) -> None:
         cmd = build_command(make_config("claude"), "hello world", skip_permissions=False)
