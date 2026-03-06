@@ -1346,3 +1346,12 @@ def ticket_edit(
     _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     editor = os.environ.get("EDITOR", "vim")
     subprocess.run([*shlex.split(editor), str(ticket_path)])
+
+    # Post-edit validation: re-read and check type
+    try:
+        edited = read_ticket(ticket_path)
+        if edited.type not in TICKET_TYPES:
+            print_error(f"Invalid type '{edited.type}'. Valid types: {', '.join(sorted(TICKET_TYPES))}")
+            raise typer.Exit(code=1)
+    except (ValueError, FileNotFoundError):
+        pass  # ticket was deleted or has broken frontmatter — not our problem here

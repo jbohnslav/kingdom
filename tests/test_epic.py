@@ -42,6 +42,31 @@ class TestTicketTypeValidation:
         assert "Invalid type" in result.output
         assert "story" in result.output
 
+    def test_edit_rejects_invalid_type(self, cli_project: Path) -> None:
+        """Post-edit validation catches invalid type set via editor."""
+        tdir = tickets_dir(cli_project)
+        ticket = Ticket(id="ed01", status="open", title="Edit me", type="task", body="", created=datetime.now(UTC))
+        write_ticket(ticket, tdir / "ed01.md")
+
+        # Simulate editor changing type to an invalid value by writing directly
+        content = (tdir / "ed01.md").read_text()
+        (tdir / "ed01.md").write_text(content.replace("type: task", "type: story"))
+
+        # Invoke edit with a no-op editor (cat) so the invalid type is read back
+        result = runner.invoke(ticket_app, ["edit", "ed01"], env={"EDITOR": "true"})
+        assert result.exit_code == 1
+        assert "Invalid type" in result.output
+        assert "story" in result.output
+
+    def test_edit_accepts_valid_type(self, cli_project: Path) -> None:
+        """Post-edit validation passes for valid types."""
+        tdir = tickets_dir(cli_project)
+        ticket = Ticket(id="ed02", status="open", title="Edit me", type="epic", body="", created=datetime.now(UTC))
+        write_ticket(ticket, tdir / "ed02.md")
+
+        result = runner.invoke(ticket_app, ["edit", "ed02"], env={"EDITOR": "true"})
+        assert result.exit_code == 0
+
     def test_create_epic_type_persisted(self, cli_project: Path) -> None:
         result = runner.invoke(ticket_app, ["create", "My epic", "-t", "epic"])
         assert result.exit_code == 0
