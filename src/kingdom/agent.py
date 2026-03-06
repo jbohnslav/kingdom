@@ -310,6 +310,63 @@ RESPONSE_PARSERS: dict[str, ResponseParser] = {
 }
 
 
+def extract_codex_error(stdout: str, stderr: str, code: int) -> str | None:
+    """Extract a human-meaningful error from Codex JSONL output.
+
+    Prefers terminal failure events over transient reconnect notices so callers
+    can surface the actual cause instead of a generic exit code.
+    """
+    del code  # Error extraction only depends on emitted output.
+
+    turn_failed: list[str] = []
+    item_errors: list[str] = []
+    event_errors: list[str] = []
+
+    for line in stdout.strip().split("\n"):
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+        if event_type == "turn.failed":
+            error = event.get("error", {})
+            if isinstance(error, dict):
+                message = error.get("message")
+                if isinstance(message, str) and message:
+                    turn_failed.append(message)
+        elif event_type == "item.completed":
+            item = event.get("item", {})
+            if isinstance(item, dict) and item.get("type") == "error":
+                message = item.get("message") or item.get("text")
+                if isinstance(message, str) and message:
+                    item_errors.append(message)
+        elif event_type == "error":
+            message = event.get("message")
+            if isinstance(message, str) and message:
+                event_errors.append(message)
+
+    for candidates in (turn_failed, item_errors, event_errors):
+        if candidates:
+            return candidates[-1]
+
+    stripped = stderr.strip()
+    if stripped:
+        return stripped
+    return None
+
+
+ErrorExtractor = Callable[[str, str, int], str | None]
+
+ERROR_EXTRACTORS: dict[str, ErrorExtractor] = {
+    "codex": extract_codex_error,
+}
+
+
 # ---------------------------------------------------------------------------
 # Backend-specific command builders
 # ---------------------------------------------------------------------------
@@ -491,6 +548,20 @@ def parse_response(config: AgentConfig, stdout: str, stderr: str, code: int) -> 
     if parser is None:
         return stdout.strip(), None, stdout
     return parser(stdout, stderr, code)
+
+
+def extract_error(config: AgentConfig, stdout: str, stderr: str, code: int) -> str | None:
+    """Extract a backend-aware error message from CLI output."""
+    extractor = ERROR_EXTRACTORS.get(config.backend)
+    if extractor is not None:
+        error = extractor(stdout, stderr, code)
+        if error:
+            return error
+
+    stripped = stderr.strip()
+    if stripped:
+        return stripped
+    return None
 
 
 # ---------------------------------------------------------------------------

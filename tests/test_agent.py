@@ -8,6 +8,7 @@ from kingdom.agent import (
     BACKEND_DEFAULTS,
     AgentConfig,
     build_command,
+    extract_error,
     extract_stream_text,
     parse_claude_response,
     parse_codex_response,
@@ -342,6 +343,23 @@ class TestParseCodexResponse:
         text, session_id, _ = parse_codex_response(stdout, "", 0)
         assert text == "line1\nline2"
         assert session_id == "t1"
+
+
+class TestExtractError:
+    def test_codex_turn_failed_preferred_over_transient_errors(self) -> None:
+        config = make_config("codex")
+        stdout = (
+            '{"type":"error","message":"Reconnecting... 5/5"}\n'
+            '{"type":"item.completed","item":{"type":"error","message":"Falling back to HTTPS"}}\n'
+            '{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}\n'
+        )
+        error = extract_error(config, stdout, "", 1)
+        assert error == "stream disconnected before completion"
+
+    def test_codex_uses_stderr_when_no_structured_error(self) -> None:
+        config = make_config("codex")
+        error = extract_error(config, '{"type":"thread.started","thread_id":"t1"}\n', "network down\n", 1)
+        assert error == "network down"
 
 
 class TestParseCursorResponse:
