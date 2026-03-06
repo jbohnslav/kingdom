@@ -1,11 +1,13 @@
 ---
 id: "ca2e"
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-03-06T13:35:54Z
 type: bug
 priority: 2
+assignee: peasant-ca2e
+parent: 1ba2
 ---
 # Hook wrongly nags to log one-off commits against peasant-owned tickets
 
@@ -14,3 +16,8 @@ The post-commit hook suggests logging to a peasant-assigned ticket when the Hand
 ## Acceptance Criteria
 
 - [ ]
+
+## Worklog
+
+- [12:20] — Iteration 1/50 — calling agent
+  Ticket: Hook wrongly nags to log one-off commits against peasant-owned tickets
