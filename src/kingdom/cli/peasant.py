@@ -1342,6 +1342,7 @@ def peasant_review(
         typer.echo(f"\nUse `kd peasant reject {full_ticket_id} 'feedback'` to send feedback.")
 
 
+@peasant_app.command("approve", help="Accept a peasant's work and close the ticket.", hidden=True)
 @peasant_app.command("accept", help="Accept a peasant's work and close the ticket.")
 def peasant_accept(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
