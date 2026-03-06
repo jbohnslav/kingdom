@@ -1487,9 +1487,16 @@ def peasant_accept(
         text=True,
         cwd=str(base),
     ).stdout.strip()
-    if normalize_branch_name(current_branch) != normalize_branch_name(feature):
+    if "branch" in state_json:
+        # Original git branch name stored — compare exactly
+        branch_match = current_branch == git_branch_name
+    else:
+        # No original name stored (legacy state) — fall back to normalized comparison
+        branch_match = normalize_branch_name(current_branch) == normalize_branch_name(feature)
+    if not branch_match:
         print_error(
             f"Cannot accept: expected to be on '{git_branch_name}' but HEAD is on '{current_branch}'.\n"
+            f"  (kd branch key: {feature})\n"
             f"Run `git checkout {git_branch_name}` first, then retry."
         )
         raise typer.Exit(code=1)

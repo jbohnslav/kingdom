@@ -1473,6 +1473,64 @@ class TestPeasantReview:
             assert "Cannot accept" in result.output
             assert "master" in result.output
 
+    def test_accept_slash_branch_with_stored_name(self) -> None:
+        """Accept should work for branches with slashes when state.json has the original name."""
+        slash_branch = "jrb/my-feature"
+        normalized = normalize_branch_name(slash_branch)
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, slash_branch)
+            set_current_run(base, slash_branch)
+
+            # Store original branch name in state.json (like kd start does)
+            from kingdom.state import branch_root, read_json, write_json
+
+            state_path = branch_root(base, slash_branch) / "state.json"
+            state = read_json(state_path)
+            state["branch"] = slash_branch
+            write_json(state_path, state)
+
+            # Create ticket and session
+            tickets_dir = base / ".kd" / "branches" / normalized / "tickets"
+            tickets_dir.mkdir(parents=True, exist_ok=True)
+            ticket = Ticket(id="slash-test", title="Slash branch test", status="in_review")
+            write_ticket(ticket, tickets_dir / "slash-test.md")
+
+            session_name = "peasant-slash-test"
+            set_agent_state(
+                base,
+                slash_branch,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{slash_branch}\n"  # git returns original name with slash
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                else:
+                    result.returncode = 0
+                    result.stdout = "Already up to date."
+                    result.stderr = ""
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "slash-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "accepted" in result.output
+
     def test_review_accept_hand_mode_skips_merge(self) -> None:
         """In hand mode, --accept should skip merge and close ticket directly."""
         with runner.isolated_filesystem():
