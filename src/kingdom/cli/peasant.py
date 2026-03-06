@@ -817,6 +817,65 @@ def poll_head_commit(worktree: Path) -> tuple[str, str] | None:
         return None
 
 
+def poll_council_status(base: Path, branch: str) -> str | None:
+    """Check for active council queries by scanning for .stream-*.jsonl files.
+
+    Returns a human-readable status string like
+    "Awaiting council response — claude responded, codex pending"
+    or None if no council query is active.
+    """
+    from kingdom.thread import (
+        MEMBER_PENDING,
+        MEMBER_RESPONDED,
+        MEMBER_RUNNING,
+        thread_response_status,
+        threads_root,
+    )
+
+    troot = threads_root(base, branch)
+    if not troot.exists():
+        return None
+
+    # Find council threads with active stream files
+    for entry in sorted(troot.iterdir()):
+        if not entry.is_dir():
+            continue
+        stream_files = list(entry.glob(".stream-*.jsonl"))
+        if not stream_files:
+            continue
+        # This thread has active streams — get full status
+        meta_path = entry / "thread.json"
+        if not meta_path.exists():
+            continue
+        try:
+            from kingdom.state import read_json
+
+            data = read_json(meta_path)
+            if data.get("pattern") != "council":
+                continue
+            thread_id = data["id"]
+        except (KeyError, FileNotFoundError):
+            continue
+
+        status = thread_response_status(base, branch, thread_id)
+        parts: list[str] = []
+        for name in sorted(status.member_states):
+            ms = status.member_states[name]
+            if ms.state == MEMBER_RESPONDED:
+                parts.append(f"{name} responded")
+            elif ms.state == MEMBER_RUNNING:
+                parts.append(f"{name} running")
+            elif ms.state == MEMBER_PENDING:
+                parts.append(f"{name} pending")
+            else:
+                parts.append(f"{name} {ms.state}")
+
+        detail = ", ".join(parts) if parts else "waiting"
+        return f"Awaiting council response — {detail}"
+
+    return None
+
+
 @peasant_app.command("watch", help="Watch peasant progress in real time.")
 def peasant_watch(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
@@ -983,12 +1042,16 @@ def peasant_watch(
                 except OSError:
                     pass
 
-            # Heartbeat: if no activity for 60s, show a "still working" line
+            # Heartbeat: if no activity for 60s, show status
             silence = now - last_activity_time
             if silence >= 60 and now - last_heartbeat_time >= 60:
                 last_heartbeat_time = now
-                elapsed_mins = int(silence / 60)
-                console.print(f"  [dim]Still working... {elapsed_mins}m since last activity[/dim]")
+                council_status = poll_council_status(ctx.base, ctx.feature)
+                if council_status:
+                    console.print(f"  [dim]{council_status}[/dim]")
+                else:
+                    elapsed_mins = int(silence / 60)
+                    console.print(f"  [dim]Still working... {elapsed_mins}m since last activity[/dim]")
 
             time_mod.sleep(1)
     except KeyboardInterrupt:
