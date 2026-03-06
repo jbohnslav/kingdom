@@ -1439,6 +1439,52 @@ class TestPeasantReview:
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "done"
 
+    def test_review_accept_works_when_session_already_done(self) -> None:
+        """Accept should succeed when session is 'done' (peasant closed ticket prematurely)."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                else:
+                    result.returncode = 0
+                    result.stdout = "Already up to date."
+                    result.stderr = ""
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "accepted" in result.output
+
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
+
     def test_review_accept_wrong_branch_fails(self) -> None:
         """--accept should hard-fail if HEAD is not on the feature branch."""
         with runner.isolated_filesystem():
@@ -1807,7 +1853,7 @@ class TestPeasantReview:
             assert "in_review" in result.output
 
     def test_review_accept_rejects_wrong_session_status(self) -> None:
-        """--accept should fail if session is not needs_king_review."""
+        """--accept should fail if session is not needs_king_review or done."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
