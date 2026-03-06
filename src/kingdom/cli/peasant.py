@@ -853,63 +853,63 @@ def poll_head_commit(worktree: Path) -> tuple[str, str] | None:
         return None
 
 
-def poll_council_status(base: Path, branch: str) -> str | None:
-    """Check for active council queries by scanning for .stream-*.jsonl files.
+def poll_council_status(base: Path, branch: str, thread_id: str) -> str | None:
+    """Return live council status for a specific work thread.
 
-    Returns a human-readable status string like
-    "Awaiting council response — claude responded, codex pending"
-    or None if no council query is active.
+    Peasant review runs inside the ticket's work thread, not a separate
+    branch-level council thread. Scope the status lookup to that thread so
+    stale stream files from unrelated council chats do not leak into watch.
     """
     from kingdom.thread import (
-        MEMBER_PENDING,
-        MEMBER_RESPONDED,
-        MEMBER_RUNNING,
-        thread_response_status,
-        threads_root,
+        get_thread,
+        is_error_response,
+        is_timeout_response,
+        list_messages,
+        thread_dir,
     )
 
-    troot = threads_root(base, branch)
-    if not troot.exists():
+    try:
+        get_thread(base, branch, thread_id)
+    except FileNotFoundError:
         return None
 
-    # Find council threads with active stream files
-    for entry in sorted(troot.iterdir()):
-        if not entry.is_dir():
-            continue
-        stream_files = list(entry.glob(".stream-*.jsonl"))
-        if not stream_files:
-            continue
-        # This thread has active streams — get full status
-        meta_path = entry / "thread.json"
-        if not meta_path.exists():
-            continue
-        try:
-            from kingdom.state import read_json
+    tdir = thread_dir(base, branch, thread_id)
+    stream_members = {
+        path.name.removeprefix(".stream-").removesuffix(".jsonl") for path in tdir.glob(".stream-*.jsonl")
+    }
+    if not stream_members:
+        return None
 
-            data = read_json(meta_path)
-            if data.get("pattern") != "council":
-                continue
-            thread_id = data["id"]
-        except (KeyError, FileNotFoundError):
-            continue
+    messages = list_messages(base, branch, thread_id)
+    last_ask_seq = 0
+    for msg in messages:
+        if msg.from_ == "king":
+            last_ask_seq = msg.sequence
 
-        status = thread_response_status(base, branch, thread_id)
-        parts: list[str] = []
-        for name in sorted(status.member_states):
-            ms = status.member_states[name]
-            if ms.state == MEMBER_RESPONDED:
-                parts.append(f"{name} responded")
-            elif ms.state == MEMBER_RUNNING:
-                parts.append(f"{name} running")
-            elif ms.state == MEMBER_PENDING:
-                parts.append(f"{name} pending")
+    response_msgs = {
+        msg.from_: msg
+        for msg in messages
+        if msg.sequence > last_ask_seq and msg.from_ not in {"king"} and not msg.from_.startswith("peasant-")
+    }
+    expected = stream_members | set(response_msgs)
+
+    parts: list[str] = []
+    for name in sorted(expected):
+        msg = response_msgs.get(name)
+        if msg:
+            if msg.status == "timeout" or is_timeout_response(msg.body):
+                parts.append(f"{name} timed_out")
+            elif msg.status in ("error", "interrupted") or is_error_response(msg.body):
+                parts.append(f"{name} errored")
             else:
-                parts.append(f"{name} {ms.state}")
+                parts.append(f"{name} responded")
+        elif name in stream_members:
+            parts.append(f"{name} running")
+        else:
+            parts.append(f"{name} pending")
 
-        detail = ", ".join(parts) if parts else "waiting"
-        return f"Awaiting council response — {detail}"
-
-    return None
+    detail = ", ".join(parts) if parts else "waiting"
+    return f"Awaiting council response — {detail}"
 
 
 @peasant_app.command("watch", help="Watch peasant progress in real time.")
@@ -1082,7 +1082,7 @@ def peasant_watch(
             silence = now - last_activity_time
             if silence >= 60 and now - last_heartbeat_time >= 60:
                 last_heartbeat_time = now
-                council_status = poll_council_status(ctx.base, ctx.feature)
+                council_status = poll_council_status(ctx.base, ctx.feature, f"{ctx.full_ticket_id}-work")
                 if council_status:
                     console.print(f"  [dim]{council_status}[/dim]")
                 else:

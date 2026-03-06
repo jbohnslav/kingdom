@@ -10,7 +10,7 @@
   },
   "council": {
     "members": ["claude", "codex"],
-    "timeout": 600
+    "timeout": 900
   },
   "peasant": {
     "agent": "claude",

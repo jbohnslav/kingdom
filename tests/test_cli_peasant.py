@@ -2473,6 +2473,53 @@ class TestFilterAgentLogLines:
         assert result == []
 
 
+class TestPollCouncilStatus:
+    def test_ignores_unrelated_branch_council_threads(self) -> None:
+        from kingdom.cli.peasant import poll_council_status
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            work_thread_id = setup_work_thread(base)
+
+            create_thread(base, BRANCH, "council-stale", ["king", "claude", "codex"], "council")
+            stale_dir = thread_dir(base, BRANCH, "council-stale")
+            (stale_dir / ".stream-claude.jsonl").write_text('{"type":"event"}\n')
+            (stale_dir / ".stream-codex.jsonl").write_text('{"type":"event"}\n')
+            add_message(base, BRANCH, "council-stale", from_="king", to="all", body="hi")
+            add_message(base, BRANCH, "council-stale", from_="claude", to="king", body="ok")
+            add_message(base, BRANCH, "council-stale", from_="codex", to="king", body="*Error: Exit code 1*")
+
+            assert poll_council_status(base, BRANCH, work_thread_id) is None
+
+    def test_uses_ticket_work_thread_only(self) -> None:
+        from kingdom.cli.peasant import poll_council_status
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            work_thread_id = setup_work_thread(base)
+            work_dir = thread_dir(base, BRANCH, work_thread_id)
+
+            add_message(base, BRANCH, work_thread_id, from_="king", to="council", body="review this")
+            add_message(base, BRANCH, work_thread_id, from_="claude", to="king", body="Looks good", status="complete")
+            (work_dir / ".stream-codex.jsonl").write_text('{"type":"event"}\n')
+
+            create_thread(base, BRANCH, "council-stale", ["king", "claude", "codex"], "council")
+            stale_dir = thread_dir(base, BRANCH, "council-stale")
+            (stale_dir / ".stream-claude.jsonl").write_text('{"type":"event"}\n')
+            (stale_dir / ".stream-codex.jsonl").write_text('{"type":"event"}\n')
+            add_message(base, BRANCH, "council-stale", from_="king", to="all", body="old question")
+            add_message(
+                base, BRANCH, "council-stale", from_="codex", to="king", body="*Error: Exit code 1*", status="error"
+            )
+
+            result = poll_council_status(base, BRANCH, work_thread_id)
+            assert result == "Awaiting council response — claude responded, codex running"
+
+
 class TestReassembleStreamText:
     """Tests for reassemble_stream_text — NDJSON delta accumulation."""
 

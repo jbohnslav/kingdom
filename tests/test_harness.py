@@ -926,6 +926,12 @@ class TestBuildReviewPrompt:
         assert "VERDICT: APPROVED" in prompt
         assert "VERDICT: BLOCKING" in prompt
 
+    def test_review_prompt_discourages_full_suite_reruns(self) -> None:
+        prompt = build_review_prompt(changed_files="foo.py | 1 +")
+        assert "peasant's reported test/lint results" in prompt
+        assert "Re-run targeted commands" in prompt
+        assert "do not need to rerun the full test suite or linter by default" in prompt
+
     def test_includes_review_commands(self) -> None:
         prompt = build_review_prompt(
             changed_files="foo.py | 1 +",
