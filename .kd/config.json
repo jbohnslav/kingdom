@@ -4,7 +4,8 @@
       "backend": "claude_code"
     },
     "codex": {
-      "backend": "codex"
+      "backend": "codex",
+      "model": "gpt-5.4-high"
     }
   },
   "council": {

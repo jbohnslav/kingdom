@@ -50,10 +50,10 @@ kd lord start [<epic-id> | --all]
   │     2. For each ready ticket: kd peasant start <id>
   │     3. kd peasant status --json → check for completed peasants
   │     4. For each needs_king_review:
-  │     │     kd peasant review <id> → read work + council feedback
+  │     │     kd peasant review <id> → read work + council feedback (markdown)
   │     │     Decide: accept or reject (with reason)
   │     │     kd peasant accept <id> / kd peasant reject <id> "reason"
-  │     │     Resolve merge conflicts on accept (escalate if too complex)
+  │     │     If merge conflict: resolve in worktree, retry (escalate if too complex)
   │     5. kd tk log <epic-id> "status update" (if epic)
   │     6. Sleep <interval> (default 5 minutes)
   │     │
@@ -82,14 +82,18 @@ The lord interacts with Kingdom through `kd` commands, not by importing Python i
 
 ### Merge conflict resolution
 
-When the lord runs `kd peasant accept`, the peasant's worktree branch merges back to the feature branch. With multiple peasants working in parallel, later merges may conflict. The lord handles this:
+When the lord runs `kd peasant accept`, the peasant's worktree branch merges back to the feature branch. With multiple peasants working in parallel, later merges may conflict.
 
-1. Attempt the merge
-2. If clean: proceed
-3. If conflicted: assess the conflict scope
-   - Small/mechanical conflicts (import ordering, adjacent edits): resolve directly
-   - Large/semantic conflicts (overlapping logic changes): escalate to King with context
-4. Log the resolution or escalation in the worklog
+The lord handles this the same way a human does:
+1. Run `kd peasant accept <id>`
+2. If the merge fails (exit code 1), go into the worktree and resolve the conflicts manually
+3. Commit the resolution, then retry `kd peasant accept <id>`
+4. If the conflicts are too complex (large semantic overlaps), escalate to the King
+5. Log the resolution or escalation in the worklog
+
+No changes to `kd peasant accept`'s behavior needed — the existing error output already tells you the recovery steps.
+
+**CWD requirement:** The lord must run on the feature branch. Since it runs in the base checkout and is launched via `kd lord start` (which validates the current branch), this is guaranteed at startup. The lord should not switch branches during its run.
 
 ### Review depth
 
@@ -157,7 +161,7 @@ The culmination. A separate `lord_loop()` (not shoehorned into the peasant harne
 **Commands:**
 - `kd lord start [<epic-id>]` — launch supervisor on an epic's children (or all branch tickets if no epic specified)
 - `kd lord status` — show lord activity, managed tickets, active peasants, progress
-- `kd lord stop` — signal lord to stop after current cycle (interruptible sleep)
+- `kd lord stop` — signal lord to stop after current cycle (sets session status to `"stopping"`; lord checks its own status each cycle and exits cleanly)
 - `kd lord log` — show lord's worklog/decisions
 
 **Lord session:**
