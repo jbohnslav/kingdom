@@ -198,38 +198,7 @@ class TestTicketCurrent:
             assert "kt01" in result.output
             assert "pt01" not in result.output
 
-    def test_exclude_peasant_falls_back_to_epic(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-
-            epic = Ticket(
-                id="ep01",
-                status="open",
-                title="Epic ticket",
-                body="",
-                type="epic",
-                created=datetime.now(UTC),
-            )
-            peasant_ticket = Ticket(
-                id="pt02",
-                status="in_progress",
-                title="Peasant work",
-                body="",
-                assignee="peasant-pt02",
-                parent="ep01",
-                created=datetime.now(UTC),
-            )
-            write_ticket(epic, tickets_dir / "ep01.md")
-            write_ticket(peasant_ticket, tickets_dir / "pt02.md")
-
-            result = runner.invoke(ticket_app, ["current", "--id", "--exclude-peasant"])
-
-            assert result.exit_code == 0, result.output
-            assert "ep01" in result.output
-
-    def test_exclude_peasant_no_epic_exits_1(self) -> None:
+    def test_exclude_peasant_no_nonpeasant_exits_1(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)

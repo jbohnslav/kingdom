@@ -725,13 +725,6 @@ def ticket_current(
     if exclude_peasant:
         in_progress = [t for t in in_progress if not (t.assignee or "").startswith("peasant-")]
 
-    if not in_progress and exclude_peasant:
-        # Fall back to the branch's epic ticket.
-        all_tickets = list_tickets(tickets_dir)
-        epics = [t for t in all_tickets if t.type == "epic"]
-        if epics:
-            in_progress = [epics[0]]
-
     if not in_progress:
         if id_only:
             raise typer.Exit(code=1)
