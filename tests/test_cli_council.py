@@ -1738,3 +1738,101 @@ class TestCouncilArchiveThreads:
             assert result.exit_code == 0
             assert "council-loc1" in result.output
             assert "council-arc1" not in result.output
+
+
+class TestCouncilListJson:
+    """Tests for kd council list --json."""
+
+    def test_list_json_outputs_valid_json(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-ab12", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-ab12")
+            add_message(base, BRANCH, "council-ab12", from_="king", to="all", body="Review this design")
+            add_message(base, BRANCH, "council-ab12", from_="claude", to="king", body="Looks good")
+
+            result = runner.invoke(council_app, ["list", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            thread = data[0]
+            assert thread["id"] == "council-ab12"
+            assert thread["current"] is True
+            assert thread["message_count"] == 2
+            assert "Review this design" in thread["topic"]
+            assert "claude" in thread["members"]
+            assert thread["members"]["claude"] == "responded"
+            assert "created_at" in thread
+
+    def test_list_json_empty_returns_empty_list(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(council_app, ["list", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data == []
+
+
+class TestCouncilStatusJson:
+    """Tests for kd council status --json."""
+
+    def test_status_json_outputs_valid_json(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-cd34", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-cd34")
+            add_message(base, BRANCH, "council-cd34", from_="king", to="all", body="Question?")
+            add_message(base, BRANCH, "council-cd34", from_="claude", to="king", body="Answer")
+
+            result = runner.invoke(council_app, ["status", "--json", "council-cd34"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["thread_id"] == "council-cd34"
+            assert "claude" in data["responded"]
+            assert "codex" in data["pending"]
+            assert "claude" in data["members"]
+            assert data["members"]["claude"]["state"] == "responded"
+
+    def test_status_json_all_returns_list(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-ef56", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-ef56", from_="king", to="all", body="Q1")
+            add_message(base, BRANCH, "council-ef56", from_="claude", to="king", body="A1")
+
+            result = runner.invoke(council_app, ["status", "--all", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["thread_id"] == "council-ef56"
+
+    def test_status_json_all_empty_returns_empty_list(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(council_app, ["status", "--all", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data == []

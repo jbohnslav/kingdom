@@ -415,6 +415,7 @@ WATCH_TERMINAL_STATUSES = {"done", "failed", "stopped", "needs_king_review", "bl
 @peasant_app.command("status", help="Show active peasants.")
 def peasant_status(
     show_all: Annotated[bool, typer.Option("--all", "-a", help="Include completed/stopped peasants.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Show table of active peasants: ticket, agent, status, elapsed, last activity."""
 
@@ -440,6 +441,44 @@ def peasant_status(
         peasants = [p for p in peasants if p.status not in TERMINAL_STATUSES]
         hidden = [p for p in all_peasants if p.status in TERMINAL_STATUSES]
 
+    now = datetime.now(UTC)
+
+    def peasant_to_dict(p):
+        ticket = p.ticket or p.name.replace("peasant-", "")
+        elapsed_minutes = None
+        if p.started_at:
+            try:
+                started = parse_iso_datetime(p.started_at)
+                elapsed_minutes = int((now - started).total_seconds() / 60)
+            except (ValueError, TypeError):
+                pass
+        last_activity_minutes = None
+        if p.last_activity:
+            try:
+                last_dt = parse_iso_datetime(p.last_activity)
+                last_activity_minutes = int((now - last_dt).total_seconds() / 60)
+            except (ValueError, TypeError):
+                pass
+        # Effective status: report "dead" not "working" for dead processes
+        effective_status = p.status
+        if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):
+            effective_status = "dead"
+        return {
+            "ticket": ticket,
+            "agent": p.agent_backend or None,
+            "status": effective_status,
+            "elapsed_minutes": elapsed_minutes,
+            "last_activity_minutes": last_activity_minutes,
+            "pid": p.pid,
+            "started_at": p.started_at,
+            "last_activity": p.last_activity,
+        }
+
+    if output_json:
+        data = [peasant_to_dict(p) for p in peasants]
+        typer.echo(json.dumps(data, indent=2))
+        return
+
     if not peasants:
         if hidden:
             from collections import Counter
@@ -459,35 +498,8 @@ def peasant_status(
     table.add_column("Elapsed")
     table.add_column("Last Activity")
 
-    now = datetime.now(UTC)
     for p in peasants:
-        ticket = p.ticket or p.name.replace("peasant-", "")
-
-        # Calculate elapsed
-        elapsed = ""
-        if p.started_at:
-            try:
-                started = parse_iso_datetime(p.started_at)
-                delta = now - started
-                minutes = int(delta.total_seconds() / 60)
-                elapsed = f"{minutes}m"
-            except (ValueError, TypeError):
-                elapsed = "?"
-
-        # Format last activity
-        last = ""
-        if p.last_activity:
-            try:
-                last_dt = parse_iso_datetime(p.last_activity)
-                ago = int((now - last_dt).total_seconds() / 60)
-                last = f"{ago}m ago"
-            except (ValueError, TypeError):
-                last = "?"
-
-        # Check if process is still alive
-        display_status = p.status
-        if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):
-            display_status = "dead"
+        d = peasant_to_dict(p)
 
         # Color status
         status_style = {
@@ -499,14 +511,15 @@ def peasant_status(
             "dead": "red",
             "awaiting_council": "magenta",
             "needs_king_review": "cyan",
-        }.get(display_status, "")
+        }.get(d["status"], "")
 
-        agent_display = p.agent_backend or "?"
+        elapsed = f"{d['elapsed_minutes']}m" if d["elapsed_minutes"] is not None else ""
+        last = f"{d['last_activity_minutes']}m ago" if d["last_activity_minutes"] is not None else ""
 
         table.add_row(
-            ticket,
-            agent_display,
-            f"[{status_style}]{display_status}[/{status_style}]" if status_style else display_status,
+            d["ticket"],
+            d["agent"] or "?",
+            f"[{status_style}]{d['status']}[/{status_style}]" if status_style else d["status"],
             elapsed,
             last,
         )
@@ -524,6 +537,7 @@ def peasant_status(
 @peasant_app.command("show", help="Show structured peasant history.")
 def peasant_show(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Show worklog, agent activity, and commits for a peasant."""
     from kingdom.harness import extract_worklog
@@ -536,13 +550,10 @@ def peasant_show(
 
     # --- Worklog ---
     worklog = extract_worklog(ctx.ticket_path)
-    if worklog:
-        console.print(Markdown(f"## Worklog\n\n{worklog}"))
-    else:
-        typer.echo("(no worklog entries)")
 
     # --- Agent activity from agent-live.log ---
     agent_live_log = logs_root(ctx.base, ctx.feature) / session_name / "agent-live.log"
+    activity: list[str] = []
     if agent_live_log.exists() and agent_live_log.stat().st_size > 0:
         # Resolve backend for NDJSON decoding
         agent_backend = ""
@@ -576,12 +587,6 @@ def peasant_show(
         # because they come from the same log file but are extracted by
         # different parsers — ordering within each group is chronological.
         activity = plain_lines + stream_lines
-        if activity:
-            console.print(Markdown("## Agent Activity"))
-            for line in activity:
-                console.print(f"  {line}", markup=False)
-    else:
-        typer.echo("(no agent activity log)")
 
     # --- Commits on the peasant's branch ---
     branch_name = f"ticket/{ctx.full_ticket_id}"
@@ -596,6 +601,7 @@ def peasant_show(
         st = read_json(branch_root(ctx.base, ctx.feature) / "state.json")
         git_ref = st.get("branch", ctx.feature)
         log_spec = [f"{git_ref}..{branch_name}"]
+    commits: list[str] = []
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", *log_spec],
@@ -604,13 +610,43 @@ def peasant_show(
             cwd=str(ctx.base),
             timeout=10,
         )
-        commits = result.stdout.strip()
-        if result.returncode == 0 and commits:
-            console.print(Markdown(f"## Commits\n\n```\n{commits}\n```"))
-        else:
-            typer.echo("(no commits)")
+        if result.returncode == 0 and result.stdout.strip():
+            commits = result.stdout.strip().splitlines()
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        typer.echo("(could not read commits)")
+        pass
+
+    if output_json:
+        data = {
+            "ticket_id": ctx.full_ticket_id,
+            "status": state.status,
+            "agent": state.agent_backend,
+            "pid": state.pid,
+            "started_at": state.started_at,
+            "hand_mode": state.hand_mode,
+            "worklog": worklog or None,
+            "activity": activity,
+            "commits": commits,
+        }
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    # --- Rich display ---
+    if worklog:
+        console.print(Markdown(f"## Worklog\n\n{worklog}"))
+    else:
+        typer.echo("(no worklog entries)")
+
+    if activity:
+        console.print(Markdown("## Agent Activity"))
+        for line in activity:
+            console.print(f"  {line}", markup=False)
+    elif not (agent_live_log.exists() and agent_live_log.stat().st_size > 0):
+        typer.echo("(no agent activity log)")
+
+    if commits:
+        console.print(Markdown(f"## Commits\n\n```\n{chr(10).join(commits)}\n```"))
+    else:
+        typer.echo("(no commits)")
 
 
 FLAG_VERBS: dict[str, str] = {
@@ -817,6 +853,65 @@ def poll_head_commit(worktree: Path) -> tuple[str, str] | None:
         return None
 
 
+def poll_council_status(base: Path, branch: str) -> str | None:
+    """Check for active council queries by scanning for .stream-*.jsonl files.
+
+    Returns a human-readable status string like
+    "Awaiting council response — claude responded, codex pending"
+    or None if no council query is active.
+    """
+    from kingdom.thread import (
+        MEMBER_PENDING,
+        MEMBER_RESPONDED,
+        MEMBER_RUNNING,
+        thread_response_status,
+        threads_root,
+    )
+
+    troot = threads_root(base, branch)
+    if not troot.exists():
+        return None
+
+    # Find council threads with active stream files
+    for entry in sorted(troot.iterdir()):
+        if not entry.is_dir():
+            continue
+        stream_files = list(entry.glob(".stream-*.jsonl"))
+        if not stream_files:
+            continue
+        # This thread has active streams — get full status
+        meta_path = entry / "thread.json"
+        if not meta_path.exists():
+            continue
+        try:
+            from kingdom.state import read_json
+
+            data = read_json(meta_path)
+            if data.get("pattern") != "council":
+                continue
+            thread_id = data["id"]
+        except (KeyError, FileNotFoundError):
+            continue
+
+        status = thread_response_status(base, branch, thread_id)
+        parts: list[str] = []
+        for name in sorted(status.member_states):
+            ms = status.member_states[name]
+            if ms.state == MEMBER_RESPONDED:
+                parts.append(f"{name} responded")
+            elif ms.state == MEMBER_RUNNING:
+                parts.append(f"{name} running")
+            elif ms.state == MEMBER_PENDING:
+                parts.append(f"{name} pending")
+            else:
+                parts.append(f"{name} {ms.state}")
+
+        detail = ", ".join(parts) if parts else "waiting"
+        return f"Awaiting council response — {detail}"
+
+    return None
+
+
 @peasant_app.command("watch", help="Watch peasant progress in real time.")
 def peasant_watch(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
@@ -983,12 +1078,16 @@ def peasant_watch(
                 except OSError:
                     pass
 
-            # Heartbeat: if no activity for 60s, show a "still working" line
+            # Heartbeat: if no activity for 60s, show status
             silence = now - last_activity_time
             if silence >= 60 and now - last_heartbeat_time >= 60:
                 last_heartbeat_time = now
-                elapsed_mins = int(silence / 60)
-                console.print(f"  [dim]Still working... {elapsed_mins}m since last activity[/dim]")
+                council_status = poll_council_status(ctx.base, ctx.feature)
+                if council_status:
+                    console.print(f"  [dim]{council_status}[/dim]")
+                else:
+                    elapsed_mins = int(silence / 60)
+                    console.print(f"  [dim]Still working... {elapsed_mins}m since last activity[/dim]")
 
             time_mod.sleep(1)
     except KeyboardInterrupt:
@@ -1342,6 +1441,7 @@ def peasant_review(
         typer.echo(f"\nUse `kd peasant reject {full_ticket_id} 'feedback'` to send feedback.")
 
 
+@peasant_app.command("approve", help="Accept a peasant's work and close the ticket.", hidden=True)
 @peasant_app.command("accept", help="Accept a peasant's work and close the ticket.")
 def peasant_accept(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],

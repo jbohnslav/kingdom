@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -329,7 +330,7 @@ def done(
     # Clean up associated worktrees (read from state.json worktrees map)
     worktrees = state.get("worktrees", {})
     if worktrees:
-        if not force:
+        if not force and sys.stdin.isatty():
             names = ", ".join(worktrees.keys())
             typer.confirm(f"Remove {len(worktrees)} worktree(s) ({names})?", abort=True)
         for ticket_id, wt_path in worktrees.items():
