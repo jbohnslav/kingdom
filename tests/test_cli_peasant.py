@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from kingdom.cli.peasant import peasant_app, resolve_peasant_context
+from kingdom.cli.peasant import peasant_app, poll_council_status, resolve_peasant_context
 from kingdom.cli.ticket import ticket_app
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
 from kingdom.state import backlog_root, ensure_branch_layout, logs_root, normalize_branch_name, set_current_run
@@ -2836,3 +2836,61 @@ class TestFindActivePeasantBranch:
             )
             result = find_active_peasant_branch(base, "peasant-xyz")
             assert result == normalize_branch_name(BRANCH_A)
+
+
+class TestPollCouncilStatus:
+    """Tests for poll_council_status — detects active council queries via stream files."""
+
+    def test_no_threads_returns_none(self, tmp_path: Path) -> None:
+        ensure_branch_layout(tmp_path, BRANCH)
+        assert poll_council_status(tmp_path, BRANCH) is None
+
+    def test_no_stream_files_returns_none(self, tmp_path: Path) -> None:
+        ensure_branch_layout(tmp_path, BRANCH)
+        create_thread(tmp_path, BRANCH, "council-abc", ["king", "claude", "codex"], "council")
+        add_message(tmp_path, BRANCH, "council-abc", "king", "all", "What do you think?")
+        assert poll_council_status(tmp_path, BRANCH) is None
+
+    def test_active_stream_files_detected(self, tmp_path: Path) -> None:
+        ensure_branch_layout(tmp_path, BRANCH)
+        create_thread(tmp_path, BRANCH, "council-abc", ["king", "claude", "codex"], "council")
+        add_message(tmp_path, BRANCH, "council-abc", "king", "all", "What do you think?")
+        tdir = thread_dir(tmp_path, BRANCH, "council-abc")
+        (tdir / ".stream-claude.jsonl").write_text("")
+        (tdir / ".stream-codex.jsonl").write_text("")
+
+        result = poll_council_status(tmp_path, BRANCH)
+        assert result is not None
+        assert "Awaiting council response" in result
+        assert "claude" in result
+        assert "codex" in result
+
+    def test_partial_responses_shown(self, tmp_path: Path) -> None:
+        ensure_branch_layout(tmp_path, BRANCH)
+        create_thread(tmp_path, BRANCH, "council-abc", ["king", "claude", "codex"], "council")
+        add_message(tmp_path, BRANCH, "council-abc", "king", "all", "What do you think?")
+        tdir = thread_dir(tmp_path, BRANCH, "council-abc")
+        add_message(tmp_path, BRANCH, "council-abc", "claude", "all", "I think...")
+        (tdir / ".stream-codex.jsonl").write_text("")
+
+        result = poll_council_status(tmp_path, BRANCH)
+        assert result is not None
+        assert "claude responded" in result
+        assert "codex running" in result
+
+    def test_non_council_thread_ignored(self, tmp_path: Path) -> None:
+        ensure_branch_layout(tmp_path, BRANCH)
+        create_thread(tmp_path, BRANCH, "work-abc", ["king", "peasant"], "work")
+        tdir = thread_dir(tmp_path, BRANCH, "work-abc")
+        (tdir / ".stream-peasant.jsonl").write_text("")
+
+        assert poll_council_status(tmp_path, BRANCH) is None
+
+    def test_completed_query_returns_none(self, tmp_path: Path) -> None:
+        """After all members respond and stream files are cleaned up, returns None."""
+        ensure_branch_layout(tmp_path, BRANCH)
+        create_thread(tmp_path, BRANCH, "council-abc", ["king", "claude", "codex"], "council")
+        add_message(tmp_path, BRANCH, "council-abc", "king", "all", "What do you think?")
+        add_message(tmp_path, BRANCH, "council-abc", "claude", "all", "I think...")
+        add_message(tmp_path, BRANCH, "council-abc", "codex", "all", "I agree...")
+        assert poll_council_status(tmp_path, BRANCH) is None
