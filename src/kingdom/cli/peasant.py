@@ -1441,7 +1441,7 @@ def peasant_review(
         styled_echo("\nWarning: no code diff detected — peasant may not have made meaningful changes.", fg="yellow")
 
     # Prompt for action
-    can_accept = ticket.status == "in_review" and state.status == "needs_king_review"
+    can_accept = ticket.status == "in_review" and state.status in {"needs_king_review", "done"}
     if can_accept:
         typer.echo(f"\nUse `kd peasant accept {full_ticket_id}` or `kd peasant reject {full_ticket_id} 'feedback'`.")
     else:
@@ -1468,10 +1468,13 @@ def peasant_accept(
         print_error(f"Cannot accept: ticket is '{ticket.status}', expected 'in_review'.")
         raise typer.Exit(code=1)
 
-    # Gate: session must be needs_king_review
+    # Gate: session must be needs_king_review or done
+    # A peasant may close the ticket prematurely (session → done) before the
+    # normal council-review flow sets needs_king_review.  Both are acceptable.
     state = get_agent_state(base, feature, session_name)
-    if state.status != "needs_king_review":
-        print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
+    acceptable_statuses = {"needs_king_review", "done"}
+    if state.status not in acceptable_statuses:
+        print_error(f"Cannot accept: session is '{state.status}', expected one of {sorted(acceptable_statuses)}.")
         raise typer.Exit(code=1)
 
     # Gate: must be on the feature branch for merge safety
