@@ -269,7 +269,7 @@ def build_lord_prompt(
     parts.append("### Monitoring")
     parts.append("`kd peasant status --json` — Check all active peasant statuses")
     parts.append("`kd peasant show <ticket-id> --json` — Show detailed peasant history")
-    parts.append("`kd tk list --parent {epic_id}` — List all epic children")
+    parts.append(f"`kd tk list --parent {epic_id}` — List all epic children")
     parts.append("`kd tk show <ticket-id>` — Show ticket details")
     parts.append("")
     parts.append("### Reviewing completed work")
@@ -398,10 +398,17 @@ def run_lord_loop(
     final_status = "failed"
 
     for cycle in range(1, max_cycles + 1):
+        # Check for stop: either SIGTERM signal or persisted "stopping" session state
+        if not stop_requested:
+            session_state = get_agent_state(base, branch, session_name)
+            if session_state.status == "stopping":
+                stop_requested = True
+                logger.info("Stop detected via session state (stopping)")
+
         if stop_requested:
             final_status = "stopped"
-            append_lord_worklog(epic_path, "STOP signal received — shutting down")
-            logger.info("Stopping at cycle %d (signal received)", cycle)
+            append_lord_worklog(epic_path, "Stop requested — shutting down gracefully")
+            logger.info("Stopping at cycle %d", cycle)
             break
 
         # Check if all children are closed

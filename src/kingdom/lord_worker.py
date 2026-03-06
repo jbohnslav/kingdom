@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         session_name=args.session,
     )
 
-    return 0 if status in ("done", "blocked") else 1
+    return 0 if status in ("done", "blocked", "stopped") else 1
 
 
 if __name__ == "__main__":

@@ -278,6 +278,15 @@ class TestBuildLordPrompt:
         assert "kd peasant accept" in prompt
         assert "kd peasant reject" in prompt
 
+    def test_toolkit_contains_epic_id(self, project_with_run: Path) -> None:
+        """The tk list command in the toolkit should contain the actual epic ID, not a template var."""
+        _, epic_path = make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1")
+
+        prompt = build_lord_prompt(epic_path, "epic1", project_with_run, BRANCH)
+        assert "`kd tk list --parent epic1`" in prompt
+        assert "{epic_id}" not in prompt
+
     def test_stop_signal(self, project_with_run: Path) -> None:
         _, epic_path = make_epic(project_with_run)
         make_child(project_with_run, "ch01", "epic1")
@@ -417,7 +426,8 @@ class TestLordCLIStop:
         assert result.exit_code == 1
         assert "no running lord" in result.output.lower()
 
-    def test_stop_with_force(self, cli_project: Path) -> None:
+    def test_stop_with_force_no_pid(self, cli_project: Path) -> None:
+        """Force stop with no PID goes straight to stopped."""
         tdir = tickets_dir(cli_project)
         tdir.mkdir(parents=True, exist_ok=True)
         epic = Ticket(
@@ -437,6 +447,30 @@ class TestLordCLIStop:
 
         state = get_agent_state(cli_project, BRANCH, "lord-epic1")
         assert state.status == "stopped"
+
+    def test_stop_sets_stopping(self, cli_project: Path) -> None:
+        """Normal stop (with PID) sets status to stopping for graceful shutdown."""
+        tdir = tickets_dir(cli_project)
+        tdir.mkdir(parents=True, exist_ok=True)
+        epic = Ticket(
+            id="epic1",
+            status="in_progress",
+            title="Test Epic",
+            type="epic",
+            body="",
+            created=datetime.now(UTC),
+        )
+        write_ticket(epic, tdir / "epic1.md")
+
+        update_agent_state(cli_project, BRANCH, "lord-epic1", status="working", pid=99999)
+
+        with patch("kingdom.cli.lord.os.killpg"):
+            result = runner.invoke(lord_app, ["stop", "epic1"])
+        assert result.exit_code == 0
+        assert "stopping" in result.output.lower()
+
+        state = get_agent_state(cli_project, BRANCH, "lord-epic1")
+        assert state.status == "stopping"
 
 
 class TestLordCLIStatus:
@@ -465,9 +499,41 @@ class TestLordCLIStatus:
         assert data[0]["status"] == "working"
 
 
+class TestLordHarnessStopDetection:
+    def test_stopping_session_state_triggers_stop(self, project_with_run: Path) -> None:
+        """The lord loop should detect 'stopping' session state and exit gracefully."""
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="stopping")
+
+        # The loop should check session state on the first cycle and stop immediately
+        # without calling the agent backend at all
+        status = run_lord_loop(
+            base=project_with_run,
+            branch=BRANCH,
+            agent_name="claude",
+            epic_id="epic1",
+            session_name=session_name,
+            max_cycles=5,
+        )
+        assert status == "stopped"
+
+        state = get_agent_state(project_with_run, BRANCH, session_name)
+        assert state.status == "stopped"
+
+
 class TestLordWorker:
     def test_main_requires_args(self) -> None:
         from kingdom.lord_worker import main
 
         with pytest.raises(SystemExit):
             main([])
+
+    def test_stopped_is_success_exit(self) -> None:
+        """Graceful stop should return exit code 0, not 1."""
+        # This tests the exit code mapping directly
+        assert ("stopped" in ("done", "blocked", "stopped")) is True

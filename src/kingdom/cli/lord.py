@@ -219,8 +219,15 @@ def stop(
         typer.echo(f"Lord {epic_id}: no PID found, force-closing session state")
 
     now = datetime.now(UTC).isoformat()
-    update_agent_state(base, feature, session_name, status="stopped", last_activity=now)
-    typer.echo("Lord status updated to stopped")
+    if force and not state.pid:
+        # Force mode with no process — go straight to stopped
+        update_agent_state(base, feature, session_name, status="stopped", last_activity=now)
+        typer.echo("Lord status updated to stopped")
+    else:
+        # Set to stopping — the harness will detect this and shut down gracefully,
+        # then set the final "stopped" status itself
+        update_agent_state(base, feature, session_name, status="stopping", last_activity=now)
+        typer.echo("Lord status updated to stopping (harness will shut down gracefully)")
 
 
 @lord_app.command()
