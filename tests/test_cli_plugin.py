@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from kingdom.cli import app
@@ -33,6 +34,12 @@ class TestReadWriteSettings:
         p = tmp_path / "settings.json"
         p.write_text('{"foo": 1}')
         assert read_settings(p) == {"foo": 1}
+
+    def test_read_malformed_json_raises_valueerror(self, tmp_path: Path) -> None:
+        p = tmp_path / "settings.json"
+        p.write_text("{bad json")
+        with pytest.raises(ValueError, match="Malformed JSON"):
+            read_settings(p)
 
     def test_write_creates_parent_dirs(self, tmp_path: Path) -> None:
         p = tmp_path / "a" / "b" / "settings.json"

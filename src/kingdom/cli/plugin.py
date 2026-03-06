@@ -43,9 +43,12 @@ def find_git_root() -> Path:
 
 
 def read_settings(settings_path: Path) -> dict:
-    """Read .claude/settings.json, returning empty dict if missing."""
+    """Read .claude/settings.json, returning empty dict if missing or malformed."""
     if settings_path.exists():
-        return json.loads(settings_path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed JSON in {settings_path}: {exc}") from None
     return {}
 
 
