@@ -957,16 +957,7 @@ def deps_tree(
                 node["deps"] = [build_tree(dep_id, child_ancestors) for dep_id in t.deps]
             return node
 
-        root: dict = {
-            "id": root_ticket.id,
-            "status": root_ticket.status,
-            "title": root_ticket.title,
-        }
-        seen.add(root_ticket.id)
-        root_ancestors = frozenset({root_ticket.id})
-        if root_ticket.deps:
-            root["deps"] = [build_tree(dep_id, root_ancestors) for dep_id in root_ticket.deps]
-        typer.echo(json.dumps(root, indent=2))
+        typer.echo(json.dumps(build_tree(root_ticket.id), indent=2))
         return
 
     def print_tree(tid: str, prefix: str = "", last: bool = True, ancestors: frozenset[str] = frozenset()) -> None:

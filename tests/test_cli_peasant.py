@@ -2836,3 +2836,125 @@ class TestFindActivePeasantBranch:
             )
             result = find_active_peasant_branch(base, "peasant-xyz")
             assert result == normalize_branch_name(BRANCH_A)
+
+
+class TestPeasantStatusJson:
+    """Tests for kd peasant status --json."""
+
+    def test_status_json_outputs_valid_json(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            now = datetime.now(UTC).isoformat()
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-042",
+                AgentState(
+                    name="peasant-kin-042",
+                    status="working",
+                    pid=99999,
+                    ticket="kin-042",
+                    agent_backend="claude",
+                    started_at=now,
+                    last_activity=now,
+                ),
+            )
+
+            with patch("os.kill"):  # Mock kill so liveness check passes
+                result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["ticket"] == "kin-042"
+            assert data[0]["status"] == "working"
+            assert data[0]["agent"] == "claude"
+            assert data[0]["pid"] == 99999
+            assert data[0]["started_at"] == now
+            assert isinstance(data[0]["elapsed_minutes"], int)
+
+    def test_status_json_reports_dead_for_dead_process(self) -> None:
+        """The most critical AC: dead processes must report 'dead', not 'working'."""
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            now = datetime.now(UTC).isoformat()
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-dead",
+                AgentState(
+                    name="peasant-kin-dead",
+                    status="working",
+                    pid=99999,
+                    ticket="kin-dead",
+                    agent_backend="claude",
+                    started_at=now,
+                    last_activity=now,
+                ),
+            )
+
+            # Don't mock os.kill — is_process_alive will raise OSError → dead
+            result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 1
+            assert data[0]["status"] == "dead"
+
+    def test_status_json_empty_returns_empty_list(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data == []
+
+
+class TestPeasantShowJson:
+    """Tests for kd peasant show --json."""
+
+    def test_show_json_outputs_valid_json(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base)
+
+            # Add worklog
+            content = ticket_path.read_text(encoding="utf-8")
+            content += "\n\n## Worklog\n\n- [09:00] Started work\n"
+            ticket_path.write_text(content, encoding="utf-8")
+
+            # Create agent-live.log with plain text
+            peasant_logs_dir = logs_root(base, BRANCH) / "peasant-kin-test"
+            peasant_logs_dir.mkdir(parents=True, exist_ok=True)
+            (peasant_logs_dir / "agent-live.log").write_text(
+                "Reading the source file for context\n",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(peasant_app, ["show", "--json", "kin-test"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["ticket_id"] == "kin-test"
+            assert "Started work" in data["worklog"]
+            assert isinstance(data["activity"], list)
+            assert isinstance(data["commits"], list)
+            assert "status" in data
+            assert "hand_mode" in data
