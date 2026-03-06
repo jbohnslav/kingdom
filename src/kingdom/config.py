@@ -184,15 +184,15 @@ def validate_agent(name: str, data: dict) -> AgentDef:
             raise ValueError(f"agents.{name}.extra_flags[{i}] must be a string, got {type(flag).__name__}")
 
     reasoning_effort = data.get("reasoning_effort", "")
-    if reasoning_effort:
+    if "reasoning_effort" in data:
         if not isinstance(reasoning_effort, str):
             raise ValueError(f"agents.{name}.reasoning_effort must be a string, got {type(reasoning_effort).__name__}")
-        if reasoning_effort not in VALID_REASONING_EFFORTS:
+        if reasoning_effort and reasoning_effort not in VALID_REASONING_EFFORTS:
             raise ValueError(
                 f"agents.{name}.reasoning_effort must be one of "
                 f"{', '.join(sorted(VALID_REASONING_EFFORTS))}, got '{reasoning_effort}'"
             )
-        if backend not in REASONING_EFFORT_BACKENDS:
+        if reasoning_effort and backend not in REASONING_EFFORT_BACKENDS:
             raise ValueError(
                 f"agents.{name}.reasoning_effort is only supported for backends: "
                 f"{', '.join(sorted(REASONING_EFFORT_BACKENDS))}. "

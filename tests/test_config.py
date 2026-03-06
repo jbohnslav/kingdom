@@ -366,6 +366,11 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be a string"):
             validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": 3}}})
 
+    def test_reasoning_effort_falsey_bad_types_rejected(self) -> None:
+        for val in (0, False, []):
+            with pytest.raises(ValueError, match="must be a string"):
+                validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": val}}})
+
     def test_reasoning_effort_unsupported_backend_claude(self) -> None:
         with pytest.raises(ValueError, match="only supported for backends"):
             validate_config({"agents": {"claude": {"backend": "claude_code", "reasoning_effort": "high"}}})
