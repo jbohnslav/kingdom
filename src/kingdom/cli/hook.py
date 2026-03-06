@@ -164,7 +164,7 @@ def handle_stop(data: dict) -> str:
     # Check for an active ticket (fail-open on any error).
     try:
         proc = subprocess.run(
-            ["kd", "tk", "current", "--id"],
+            ["kd", "tk", "current", "--id", "--exclude-peasant"],
             capture_output=True,
             text=True,
             timeout=5,

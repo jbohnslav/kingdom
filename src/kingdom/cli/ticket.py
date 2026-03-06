@@ -698,6 +698,9 @@ def ticket_start(
 def ticket_current(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
     id_only: Annotated[bool, typer.Option("--id", help="Print only the ticket ID.")] = False,
+    exclude_peasant: Annotated[
+        bool, typer.Option("--exclude-peasant", help="Skip peasant-assigned tickets; fall back to epic.")
+    ] = False,
 ) -> None:
     """Find and display the ticket currently marked as in_progress on this branch."""
     base = require_project_root()
@@ -718,6 +721,16 @@ def ticket_current(
         raise typer.Exit(code=1)
 
     in_progress = [t for t in list_tickets(tickets_dir) if t.status == "in_progress"]
+
+    if exclude_peasant:
+        in_progress = [t for t in in_progress if not (t.assignee or "").startswith("peasant-")]
+
+    if not in_progress and exclude_peasant:
+        # Fall back to the branch's epic ticket.
+        all_tickets = list_tickets(tickets_dir)
+        epics = [t for t in all_tickets if t.type == "epic"]
+        if epics:
+            in_progress = [epics[0]]
 
     if not in_progress:
         if id_only:

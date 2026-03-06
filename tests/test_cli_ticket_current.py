@@ -168,6 +168,108 @@ class TestTicketCurrent:
             # in_review ticket should not appear
             assert "rev1" not in result.output
 
+    def test_exclude_peasant_skips_peasant_assigned(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            peasant_ticket = Ticket(
+                id="pt01",
+                status="in_progress",
+                title="Peasant work",
+                body="",
+                assignee="peasant-pt01",
+                created=datetime.now(UTC),
+            )
+            king_ticket = Ticket(
+                id="kt01",
+                status="in_progress",
+                title="King work",
+                body="",
+                created=datetime.now(UTC),
+            )
+            write_ticket(peasant_ticket, tickets_dir / "pt01.md")
+            write_ticket(king_ticket, tickets_dir / "kt01.md")
+
+            result = runner.invoke(ticket_app, ["current", "--id", "--exclude-peasant"])
+
+            assert result.exit_code == 0, result.output
+            assert "kt01" in result.output
+            assert "pt01" not in result.output
+
+    def test_exclude_peasant_falls_back_to_epic(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            epic = Ticket(
+                id="ep01",
+                status="open",
+                title="Epic ticket",
+                body="",
+                type="epic",
+                created=datetime.now(UTC),
+            )
+            peasant_ticket = Ticket(
+                id="pt02",
+                status="in_progress",
+                title="Peasant work",
+                body="",
+                assignee="peasant-pt02",
+                parent="ep01",
+                created=datetime.now(UTC),
+            )
+            write_ticket(epic, tickets_dir / "ep01.md")
+            write_ticket(peasant_ticket, tickets_dir / "pt02.md")
+
+            result = runner.invoke(ticket_app, ["current", "--id", "--exclude-peasant"])
+
+            assert result.exit_code == 0, result.output
+            assert "ep01" in result.output
+
+    def test_exclude_peasant_no_epic_exits_1(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            peasant_ticket = Ticket(
+                id="pt03",
+                status="in_progress",
+                title="Peasant work",
+                body="",
+                assignee="peasant-pt03",
+                created=datetime.now(UTC),
+            )
+            write_ticket(peasant_ticket, tickets_dir / "pt03.md")
+
+            result = runner.invoke(ticket_app, ["current", "--id", "--exclude-peasant"])
+
+            assert result.exit_code == 1
+
+    def test_without_exclude_peasant_returns_peasant_ticket(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            peasant_ticket = Ticket(
+                id="pt04",
+                status="in_progress",
+                title="Peasant work",
+                body="",
+                assignee="peasant-pt04",
+                created=datetime.now(UTC),
+            )
+            write_ticket(peasant_ticket, tickets_dir / "pt04.md")
+
+            result = runner.invoke(ticket_app, ["current", "--id"])
+
+            assert result.exit_code == 0, result.output
+            assert "pt04" in result.output
+
     def test_current_only_in_review_exits_1(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
