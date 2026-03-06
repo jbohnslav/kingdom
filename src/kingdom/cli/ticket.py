@@ -1154,6 +1154,49 @@ def ticket_unassign(
     typer.echo(f"{ticket.id}: unassigned")
 
 
+@ticket_app.command("parent", help="Set or clear the parent of a ticket.")
+def ticket_parent(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    parent_id: Annotated[str | None, typer.Argument(help="Parent ticket ID to set.")] = None,
+    clear: Annotated[bool, typer.Option("--clear", help="Remove the parent.")] = False,
+) -> None:
+    """Set or clear a ticket's parent.
+
+    Set parent:   kd tk parent <ticket-id> <epic-id>
+    Clear parent: kd tk parent <ticket-id> --clear
+    """
+    if not parent_id and not clear:
+        typer.echo("Provide a parent ticket ID or use --clear.", err=True)
+        raise typer.Exit(1)
+    if parent_id and clear:
+        typer.echo("Cannot set a parent and --clear at the same time.", err=True)
+        raise typer.Exit(1)
+
+    base = require_project_root()
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+
+    if clear:
+        old_parent = ticket.parent
+        ticket.parent = None
+        write_ticket(ticket, ticket_path)
+        typer.echo(
+            f"{ticket.id}: parent cleared (was {old_parent})" if old_parent else f"{ticket.id}: no parent to clear"
+        )
+    else:
+        assert parent_id is not None
+        parent_ticket, _ = resolve_ticket_or_exit(base, parent_id, not_found_label="Parent ticket not found")
+        if parent_ticket.id == ticket.id:
+            typer.echo("A ticket cannot be its own parent.", err=True)
+            raise typer.Exit(1)
+        old_parent = ticket.parent
+        ticket.parent = parent_ticket.id
+        write_ticket(ticket, ticket_path)
+        if old_parent:
+            typer.echo(f"{ticket.id}: parent {old_parent} → {parent_ticket.id}")
+        else:
+            typer.echo(f"{ticket.id}: parent set to {parent_ticket.id}")
+
+
 @ticket_app.command("move", help="Move a ticket to another branch.")
 def ticket_move(
     ticket_ids: Annotated[list[str], typer.Argument(help="Ticket ID(s) (full or partial).")],
