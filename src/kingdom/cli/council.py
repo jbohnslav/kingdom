@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
-    from kingdom.thread import ThreadStatus
+    from kingdom.thread import ThreadLocation, ThreadStatus
 
 import click
 import typer
@@ -114,6 +114,97 @@ def resolve_council_thread_id(
     raise typer.Exit(code=1)
 
 
+def resolve_council_thread_location(
+    base: Path,
+    feature: str,
+    thread_id: str | None,
+    *,
+    command: str = "show",
+) -> ThreadLocation:
+    """Like resolve_council_thread_id, but searches archived branches as fallback.
+
+    Returns a ThreadLocation with branch and archived info. Used by commands
+    that support viewing archived threads (show, chat).
+    """
+    from kingdom.thread import (
+        AmbiguousThreadMatch,
+        ThreadLocation,
+        ThreadNotFoundError,
+        list_threads,
+        resolve_thread,
+        resolve_thread_globally,
+    )
+
+    # Case 1: explicit thread_id — try current branch first, then global search
+    if thread_id is not None:
+        try:
+            meta = resolve_thread(base, feature, thread_id, pattern="council")
+            return ThreadLocation(meta=meta, branch=feature, archived=False)
+        except AmbiguousThreadMatch as exc:
+            # Ambiguous on current branch — show topics and exit
+            print_error(f"'{thread_id}' matches multiple threads:")
+            for m in exc.matches:
+                topic = topic_for_thread(base, feature, m.id)
+                label = f"  {m.id}  {m.created_at.strftime('%Y-%m-%d %H:%M')}"
+                if topic:
+                    label += f"  {topic}"
+                error_console.print(label)
+            error_console.print(f"\nBe more specific, e.g.: kd council {command} {exc.matches[0].id}")
+            raise typer.Exit(code=1) from None
+        except ThreadNotFoundError:
+            pass
+
+        # Fallback: search across all branches and archive
+        try:
+            return resolve_thread_globally(base, thread_id, pattern="council")
+        except AmbiguousThreadMatch as exc:
+            print_error(f"'{thread_id}' matches multiple threads:")
+            for m in exc.matches:
+                error_console.print(f"  {m.id}  {m.created_at.strftime('%Y-%m-%d %H:%M')}")
+            error_console.print(f"\nBe more specific, e.g.: kd council {command} {exc.matches[0].id}")
+            raise typer.Exit(code=1) from None
+        except ThreadNotFoundError as exc:
+            # Show error with available threads — prefer current branch for topics
+            print_error(f"Thread not found: {thread_id}")
+            available = exc.available
+            if available:
+                error_console.print("\nAvailable council threads:")
+                for t in available[-5:]:
+                    topic = topic_for_thread(base, feature, t.id)
+                    label = f"  {t.id}  {t.created_at.strftime('%Y-%m-%d %H:%M')}"
+                    if topic:
+                        label += f"  {topic}"
+                    error_console.print(label)
+                if len(available) > 5:
+                    error_console.print(f"  ... and {len(available) - 5} more (use `kd council list --all`)")
+            else:
+                print_error("No council threads exist. Use `kd council ask` to start one.")
+            raise typer.Exit(code=1) from None
+
+    # Case 2: no explicit thread_id — try current_thread pointer
+    current = get_current_thread(base, feature)
+    if current is not None:
+        from kingdom.thread import thread_dir
+
+        tdir = thread_dir(base, feature, current)
+        if tdir.exists():
+            meta = resolve_thread(base, feature, current, pattern="council")
+            return ThreadLocation(meta=meta, branch=feature, archived=False)
+        # Stale pointer — fall through
+
+    # Case 3: most recent council thread on current branch
+    threads = list_threads(base, feature)
+    council_threads = [t for t in threads if t.pattern == "council"]
+    if council_threads:
+        picked = council_threads[-1]
+        typer.echo(f"Using most recent thread: {picked.id}")
+        return ThreadLocation(meta=picked, branch=feature, archived=False)
+
+    # No threads at all
+    print_error("No council threads. Use `kd council ask` to start one.")
+    raise typer.Exit(code=1)
+
+
 def topic_for_thread(base: Path, feature: str, thread_id: str) -> str:
     """Return the first king message body (truncated) as a topic summary, or empty string."""
     from kingdom.thread import list_messages
@@ -122,6 +213,23 @@ def topic_for_thread(base: Path, feature: str, thread_id: str) -> str:
         messages = list_messages(base, feature, thread_id)
     except FileNotFoundError:
         return ""
+    for msg in messages:
+        if msg.from_ == "king":
+            first_line = msg.body.strip().split("\n", 1)[0]
+            if len(first_line) > 60:
+                return first_line[:60] + "..."
+            return first_line
+    return ""
+
+
+def topic_for_location(base: Path, loc: ThreadLocation) -> str:
+    """Return the topic for a ThreadLocation."""
+    from kingdom.thread import list_messages_from_dir, thread_dir_for_location
+
+    tdir = thread_dir_for_location(base, loc)
+    if not tdir.exists():
+        return ""
+    messages = list_messages_from_dir(tdir)
     for msg in messages:
         if msg.from_ == "king":
             first_line = msg.body.strip().split("\n", 1)[0]
@@ -574,7 +682,7 @@ def council_show(
     show_all: Annotated[bool, typer.Option("--all", help="Show full thread history.")] = False,
 ) -> None:
     """Display a council thread's message history."""
-    from kingdom.thread import list_messages
+    from kingdom.thread import list_messages_from_dir, thread_dir_for_location
 
     base = require_project_root()
     feature = resolve_current_run(base)
@@ -585,12 +693,17 @@ def council_show(
         show_legacy_run(base, feature, thread_id, console)
         return
 
-    # Resolve via prefix matching / current pointer / most-recent fallback
-    thread_id = resolve_council_thread_id(base, feature, thread_id, command="show")
+    # Resolve via archive-aware location lookup
+    loc = resolve_council_thread_location(base, feature, thread_id, command="show")
+    resolved_id = loc.meta.id
 
-    messages = list_messages(base, feature, thread_id)
+    tdir = thread_dir_for_location(base, loc)
+    messages = list_messages_from_dir(tdir)
     if not messages:
-        print_error(f'Thread {thread_id}: no messages. Send one with `kd council ask "prompt"`.')
+        if loc.archived:
+            print_error(f"Thread {resolved_id}: no messages (archived from {loc.branch}).")
+        else:
+            print_error(f'Thread {resolved_id}: no messages. Send one with `kd council ask "prompt"`.')
         raise typer.Exit(code=1)
 
     turns = group_messages_into_turns(messages)
@@ -616,7 +729,11 @@ def council_show(
     def pl(n: int, word: str) -> str:
         return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
-    console.print(f"[bold]Thread: {thread_id}[/bold]")
+    # Show thread header with archived label
+    header = f"[bold]Thread: {resolved_id}[/bold]"
+    if loc.archived:
+        header += f"  [yellow]\\[archived — {loc.branch}][/yellow]"
+    console.print(header)
     if hidden_turns > 0:
         console.print(
             f"[dim]Showing {pl(len(visible_turns), 'turn')} of {total_turns} "
@@ -633,7 +750,9 @@ def council_show(
 
 
 @council_app.command("list", help="List all council threads.")
-def council_list() -> None:
+def council_list(
+    show_all: Annotated[bool, typer.Option("--all", help="Show threads from all branches including archived.")] = False,
+) -> None:
     """Show all council threads with topic summary and member status."""
     from kingdom.thread import (
         MEMBER_ERRORED,
@@ -641,8 +760,11 @@ def council_list() -> None:
         MEMBER_RESPONDED,
         MEMBER_RUNNING,
         MEMBER_TIMED_OUT,
+        list_all_threads,
         list_messages,
+        list_messages_from_dir,
         list_threads,
+        thread_dir_for_location,
         thread_response_status,
     )
 
@@ -650,13 +772,6 @@ def council_list() -> None:
     feature = resolve_current_run(base)
     current = get_current_thread(base, feature)
     console = Console()
-
-    threads = list_threads(base, feature)
-    council_threads = [t for t in threads if t.pattern == "council"]
-
-    if not council_threads:
-        typer.echo('No council threads. Start one with `kd council ask "prompt"`.')
-        return
 
     state_symbols = {
         MEMBER_RESPONDED: ("[green]\u2713[/green]", "responded"),
@@ -666,46 +781,91 @@ def council_list() -> None:
         MEMBER_PENDING: ("[dim]\u2026[/dim]", "pending"),
     }
 
-    for t in council_threads:
-        marker = "[bold] *[/bold]" if t.id == current else ""
-        created = t.created_at.strftime("%Y-%m-%d %H:%M")
+    if show_all:
+        # Show threads across all branches and archive
+        all_locs = list_all_threads(base, pattern="council")
+        if not all_locs:
+            typer.echo('No council threads found. Start one with `kd council ask "prompt"`.')
+            return
 
-        # Get topic from first king message
-        messages = list_messages(base, feature, t.id)
-        msg_count = len(messages)
-        topic = ""
-        for msg in messages:
-            if msg.from_ == "king":
-                first_line = msg.body.strip().split("\n", 1)[0]
-                topic = first_line[:60] + ("\u2026" if len(first_line) > 60 else "")
-                break
+        for loc in all_locs:
+            t = loc.meta
+            marker = "[bold] *[/bold]" if (not loc.archived and t.id == current) else ""
+            created = t.created_at.strftime("%Y-%m-%d %H:%M")
 
-        # Get per-member status
-        status = thread_response_status(base, feature, t.id)
-        member_parts = []
-        for name in sorted(status.member_states):
-            ms = status.member_states[name]
-            symbol, _label = state_symbols.get(ms.state, ("?", "unknown"))
-            member_parts.append(f"{symbol} {name}")
-        members_str = "  ".join(member_parts) if member_parts else ""
+            # Get topic from thread directory
+            tdir = thread_dir_for_location(base, loc)
+            messages = list_messages_from_dir(tdir)
+            msg_count = len(messages)
+            topic = ""
+            for msg in messages:
+                if msg.from_ == "king":
+                    first_line = msg.body.strip().split("\n", 1)[0]
+                    topic = first_line[:60] + ("\u2026" if len(first_line) > 60 else "")
+                    break
 
-        count_str = f"[dim]{msg_count} msg{'s' if msg_count != 1 else ''}[/dim]"
-        console.print(f"[bold]{t.id}[/bold]  [dim]{created}[/dim]  {count_str}{marker}")
-        if topic:
-            console.print(f"  {topic}")
-        if members_str:
-            console.print(f"  {members_str}")
-        console.print()
+            # Branch / archived label
+            if loc.archived:
+                branch_label = f"  [yellow]\\[archived — {loc.branch}][/yellow]"
+            else:
+                branch_label = f"  [dim]\\[{loc.branch}][/dim]"
 
-    # Print legend explaining the status symbols
-    legend_parts = [f"{sym} {label}" for sym, label in state_symbols.values()]
-    console.print(f"[dim]{' '.join(legend_parts)}[/dim]")
+            count_str = f"[dim]{msg_count} msg{'s' if msg_count != 1 else ''}[/dim]"
+            console.print(f"[bold]{t.id}[/bold]  [dim]{created}[/dim]  {count_str}{branch_label}{marker}")
+            if topic:
+                console.print(f"  {topic}")
+            console.print()
+    else:
+        # Default: current branch only
+        threads = list_threads(base, feature)
+        council_threads = [t for t in threads if t.pattern == "council"]
+
+        if not council_threads:
+            typer.echo('No council threads. Start one with `kd council ask "prompt"`.')
+            return
+
+        for t in council_threads:
+            marker = "[bold] *[/bold]" if t.id == current else ""
+            created = t.created_at.strftime("%Y-%m-%d %H:%M")
+
+            # Get topic from first king message
+            messages = list_messages(base, feature, t.id)
+            msg_count = len(messages)
+            topic = ""
+            for msg in messages:
+                if msg.from_ == "king":
+                    first_line = msg.body.strip().split("\n", 1)[0]
+                    topic = first_line[:60] + ("\u2026" if len(first_line) > 60 else "")
+                    break
+
+            # Get per-member status
+            status = thread_response_status(base, feature, t.id)
+            member_parts = []
+            for name in sorted(status.member_states):
+                ms = status.member_states[name]
+                symbol, _label = state_symbols.get(ms.state, ("?", "unknown"))
+                member_parts.append(f"{symbol} {name}")
+            members_str = "  ".join(member_parts) if member_parts else ""
+
+            count_str = f"[dim]{msg_count} msg{'s' if msg_count != 1 else ''}[/dim]"
+            console.print(f"[bold]{t.id}[/bold]  [dim]{created}[/dim]  {count_str}{marker}")
+            if topic:
+                console.print(f"  {topic}")
+            if members_str:
+                console.print(f"  {members_str}")
+            console.print()
+
+        # Print legend explaining the status symbols
+        legend_parts = [f"{sym} {label}" for sym, label in state_symbols.values()]
+        console.print(f"[dim]{' '.join(legend_parts)}[/dim]")
 
 
 @council_app.command("ls", hidden=True)
-def council_ls() -> None:
+def council_ls(
+    show_all: Annotated[bool, typer.Option("--all", help="Show threads from all branches including archived.")] = False,
+) -> None:
     """Alias for 'council list'."""
-    council_list()
+    council_list(show_all=show_all)
 
 
 @council_app.command("status", help="Show response status for council threads.")
@@ -1150,7 +1310,26 @@ def council_chat(
     cfg = load_config(base)
 
     if thread_id:
-        tid = resolve_council_thread_id(base, feature, thread_id, command="chat")
+        # Use archive-aware resolution
+        loc = resolve_council_thread_location(base, feature, thread_id, command="chat")
+        if loc.archived:
+            # Archived threads are read-only — show full history instead of TUI
+            from kingdom.thread import list_messages_from_dir, thread_dir_for_location
+
+            console = Console()
+            tdir = thread_dir_for_location(base, loc)
+            messages = list_messages_from_dir(tdir)
+            if not messages:
+                print_error(f"Thread {loc.meta.id}: no messages.")
+                raise typer.Exit(code=1)
+            console.print(f"[bold]Thread: {loc.meta.id}[/bold]  [yellow]\\[archived — {loc.branch}][/yellow]")
+            console.print("[dim]Archived threads are read-only. Showing full history.[/dim]")
+            console.print()
+            turns = group_messages_into_turns(messages)
+            for i, turn_msgs in enumerate(turns):
+                print_turn(console, turn_msgs, i + 1, len(turns))
+            return
+        tid = loc.meta.id
         set_current_thread(base, feature, tid)
     else:
         # Default: new thread (same as ask)
