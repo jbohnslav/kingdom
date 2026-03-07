@@ -135,7 +135,10 @@ def get_active_peasants(base: Path, branch: str, epic_id: str) -> list[tuple[str
 
 
 def get_completed_peasants(base: Path, branch: str, epic_id: str) -> list[tuple[str, str]]:
-    """Find peasants that have completed (needs_king_review) on epic children.
+    """Find peasants that have completed work and need lord attention.
+
+    Matches session status ``needs_king_review`` (normal completion) as well as
+    ``done`` with ticket ``in_review`` (diverged-state completion via peasant accept).
 
     Returns list of (ticket_id, session_name).
     """
@@ -145,7 +148,7 @@ def get_completed_peasants(base: Path, branch: str, epic_id: str) -> list[tuple[
         ticket = read_ticket(ticket_path)
         session_name = f"peasant-{ticket.id}"
         state = get_agent_state(base, branch, session_name)
-        if state.status == "needs_king_review":
+        if state.status == "needs_king_review" or (state.status == "done" and ticket.status == "in_review"):
             completed.append((ticket.id, session_name))
     return completed
 

@@ -218,6 +218,25 @@ class TestGetCompletedPeasants:
         assert len(completed) == 1
         assert completed[0][0] == "ch01"
 
+    def test_finds_done_with_in_review_ticket(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_review")
+
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="done")
+
+        completed = get_completed_peasants(project_with_run, BRANCH, "epic1")
+        assert len(completed) == 1
+        assert completed[0][0] == "ch01"
+
+    def test_excludes_done_without_in_review_ticket(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="done")
+
+        completed = get_completed_peasants(project_with_run, BRANCH, "epic1")
+        assert len(completed) == 0
+
     def test_excludes_working(self, project_with_run: Path) -> None:
         make_epic(project_with_run)
         make_child(project_with_run, "ch01", "epic1", status="in_progress")
@@ -625,6 +644,12 @@ class TestHasActionableWork:
         make_epic(project_with_run)
         make_child(project_with_run, "ch01", "epic1", status="in_review")
         update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="needs_king_review")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+    def test_done_in_review_is_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_review")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="done")
         assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
 
     def test_only_working_peasants_not_actionable(self, project_with_run: Path) -> None:
