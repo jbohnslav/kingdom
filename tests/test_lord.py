@@ -16,6 +16,7 @@ from kingdom.lord_harness import (
     all_children_closed,
     build_lord_prompt,
     discover_epic_children,
+    extract_bounded_worklog,
     extract_lord_summary,
     get_children_summary,
     get_completed_peasants,
@@ -973,3 +974,105 @@ class TestBuildLordPromptWaiting:
         prompt = build_lord_prompt(epic_path, "epic1", project_with_run, BRANCH)
         assert "STATUS: WAITING" in prompt
         assert "nothing actionable" in prompt.lower()
+
+
+class TestExtractBoundedWorklog:
+    def test_empty_when_no_worklog(self) -> None:
+        assert extract_bounded_worklog("Just a body, no worklog.") == ""
+
+    def test_empty_when_worklog_has_no_entries(self) -> None:
+        assert extract_bounded_worklog("Body.\n\n## Worklog\n\n") == ""
+
+    def test_returns_lord_entries(self) -> None:
+        body = (
+            "Body.\n\n## Worklog\n\n"
+            "- [10:00] [lord-epic1] — Launched peasant on ch01\n"
+            "- [10:05] [peasant-ch01] — Started working\n"
+            "- [10:10] [lord-epic1] — Accepted ch01\n"
+        )
+        result = extract_bounded_worklog(body)
+        assert "Launched peasant on ch01" in result
+        assert "Accepted ch01" in result
+        assert "Started working" not in result
+
+    def test_includes_unknown_entries(self) -> None:
+        body = "Body.\n\n## Worklog\n\n- 2026-01-01 10:00 — Legacy entry\n"
+        result = extract_bounded_worklog(body)
+        assert "Legacy entry" in result
+
+    def test_excludes_peasant_entries(self) -> None:
+        body = (
+            "Body.\n\n## Worklog\n\n"
+            "- [10:00] [peasant-ch01] — Did something\n"
+            "- [10:05] [peasant-ch02] — Did something else\n"
+        )
+        result = extract_bounded_worklog(body)
+        assert result == ""
+
+    def test_bounds_to_max_entries(self) -> None:
+        lines = [f"- [10:{i:02d}] [lord-epic1] — Entry {i}" for i in range(50)]
+        body = "Body.\n\n## Worklog\n\n" + "\n".join(lines)
+        result = extract_bounded_worklog(body, max_entries=10)
+        assert "Entry 40" in result
+        assert "Entry 49" in result
+        assert "Entry 39" not in result
+        assert "last 10 of 50" in result
+
+    def test_no_truncation_header_when_within_limit(self) -> None:
+        body = "Body.\n\n## Worklog\n\n" "- [10:00] [lord-epic1] — Entry 1\n" "- [10:05] [lord-epic1] — Entry 2\n"
+        result = extract_bounded_worklog(body, max_entries=10)
+        assert "Recent Worklog" in result
+        assert "last" not in result
+
+    def test_preserves_continuation_lines(self) -> None:
+        body = (
+            "Body.\n\n## Worklog\n\n"
+            "- [10:00] [lord-epic1] — Decision made\n"
+            "  Reason: because X\n"
+            "  Follow-up: do Y\n"
+        )
+        result = extract_bounded_worklog(body)
+        assert "Decision made" in result
+        assert "Reason: because X" in result
+        assert "Follow-up: do Y" in result
+
+    def test_stops_at_next_heading(self) -> None:
+        body = "Body.\n\n## Worklog\n\n" "- [10:00] [lord-epic1] — Entry 1\n" "\n## Other Section\n\nStuff here.\n"
+        result = extract_bounded_worklog(body)
+        assert "Entry 1" in result
+        assert "Other Section" not in result
+        assert "Stuff here" not in result
+
+
+class TestBuildLordPromptWorklog:
+    def test_prompt_includes_worklog_context(self, project_with_run: Path) -> None:
+        tdir = tickets_dir(project_with_run)
+        tdir.mkdir(parents=True, exist_ok=True)
+        epic = Ticket(
+            id="epic1",
+            status="open",
+            title="Test Epic",
+            type="epic",
+            body=(
+                "Epic body.\n\n## Worklog\n\n"
+                "- [10:00] [lord-epic1] — Launched peasant on ch01\n"
+                "- [10:05] [peasant-ch01] — Started working\n"
+            ),
+            created=datetime.now(UTC),
+        )
+        epic_path = tdir / "epic1.md"
+        write_ticket(epic, epic_path)
+        make_child(project_with_run, "ch01", "epic1")
+
+        prompt = build_lord_prompt(epic_path, "epic1", project_with_run, BRANCH)
+        assert "Recent Worklog" in prompt
+        assert "Launched peasant on ch01" in prompt
+        assert "Started working" not in prompt
+
+    def test_prompt_without_worklog_still_works(self, project_with_run: Path) -> None:
+        _, epic_path = make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1")
+
+        prompt = build_lord_prompt(epic_path, "epic1", project_with_run, BRANCH)
+        assert "You are a lord" in prompt
+        assert "Recent Worklog" not in prompt

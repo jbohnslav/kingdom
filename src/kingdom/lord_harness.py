@@ -22,13 +22,21 @@ from pathlib import Path
 from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.state import logs_root
-from kingdom.ticket import Ticket, append_worklog_entry, find_ticket, list_tickets, read_ticket
+from kingdom.ticket import (
+    Ticket,
+    append_worklog_entry,
+    filter_worklog_lines,
+    find_ticket,
+    list_tickets,
+    read_ticket,
+)
 
 logger = logging.getLogger("kingdom.lord_harness")
 
 MAX_REQUEUE_ATTEMPTS = 3
 POLL_INTERVAL_SECONDS = 30
 MAX_PARALLEL_PEASANTS = 10
+MAX_WORKLOG_ENTRIES = 30
 
 # Idle detection backoff parameters
 BACKOFF_STEPS = (5, 15, 30, 60)  # escalating delays, cap at 60s
@@ -274,6 +282,54 @@ def get_children_summary(
     return tuple(sorted(summary))
 
 
+def extract_bounded_worklog(body: str, *, max_entries: int = MAX_WORKLOG_ENTRIES) -> str:
+    """Extract the worklog from an epic body, filtered and bounded for the lord prompt.
+
+    Filters to lord-* and unknown (legacy) entries, then takes the most recent
+    *max_entries* entries to prevent unbounded prompt growth.
+
+    Returns the formatted worklog section text, or empty string if no entries.
+    """
+    if "## Worklog" not in body:
+        return ""
+
+    worklog_section = body.split("## Worklog", 1)[1]
+    # Stop at the next heading (if any)
+    next_heading = re.search(r"\n## ", worklog_section)
+    if next_heading:
+        worklog_section = worklog_section[: next_heading.start()]
+
+    # Split into lines and filter
+    lines = worklog_section.strip().splitlines()
+    if not lines:
+        return ""
+
+    filtered = filter_worklog_lines(lines)
+    if not filtered:
+        return ""
+
+    # Group into entries (each starting with "- ") and take the last N
+    entries: list[list[str]] = []
+    for line in filtered:
+        if line.startswith("- "):
+            entries.append([line])
+        elif entries:
+            entries[-1].append(line)
+
+    if not entries:
+        return ""
+
+    bounded = entries[-max_entries:]
+    entry_text = "\n".join(line for entry in bounded for line in entry)
+
+    truncated = len(entries) > max_entries
+    header = "## Recent Worklog"
+    if truncated:
+        header += f" (last {max_entries} of {len(entries)} entries)"
+
+    return f"{header}\n\n{entry_text}"
+
+
 def build_lord_prompt(
     epic_path: Path,
     epic_id: str,
@@ -340,10 +396,14 @@ def build_lord_prompt(
     parts.append(f"**Epic ID:** {epic_id}")
     parts.append(f"**Epic ticket:** {epic_path}")
     parts.append("")
-    # Show epic body (before worklog)
-    body = epic.body.split("## Worklog")[0].strip() if "## Worklog" in epic.body else epic.body.strip()
-    if body:
-        parts.append(body)
+    # Show epic body (before worklog) plus bounded worklog context
+    body_before_worklog = epic.body.split("## Worklog")[0].strip() if "## Worklog" in epic.body else epic.body.strip()
+    if body_before_worklog:
+        parts.append(body_before_worklog)
+        parts.append("")
+    worklog_context = extract_bounded_worklog(epic.body)
+    if worklog_context:
+        parts.append(worklog_context)
         parts.append("")
 
     # Children status
