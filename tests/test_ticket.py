@@ -18,6 +18,7 @@ from kingdom.ticket import (
     filter_tickets,
     filter_tickets_by_deps,
     filter_tickets_by_status,
+    filter_worklog_lines,
     find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
@@ -26,6 +27,7 @@ from kingdom.ticket import (
     list_tickets,
     move_ticket,
     parse_ticket,
+    parse_worklog_author,
     read_ticket,
     serialize_ticket,
     write_ticket,
@@ -1112,11 +1114,11 @@ class TestAppendWorklogEntry:
         local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
         entry = append_worklog_entry(path, "Started implementation", timestamp=ts)
 
-        assert entry == f"- {local_ts} — Started implementation"
+        assert entry == f"- [{local_ts}] — Started implementation"
 
         content = path.read_text()
         assert "## Worklog" in content
-        assert f"- {local_ts} — Started implementation" in content
+        assert f"- [{local_ts}] — Started implementation" in content
 
     def test_appends_to_existing_worklog_section(self, tmp_path: Path) -> None:
         """Appends entry to an existing ## Worklog section."""
@@ -1138,8 +1140,8 @@ class TestAppendWorklogEntry:
         append_worklog_entry(path, "Second entry", timestamp=ts2)
 
         content = path.read_text()
-        assert f"- {local_ts1} — First entry" in content
-        assert f"- {local_ts2} — Second entry" in content
+        assert f"- [{local_ts1}] — First entry" in content
+        assert f"- [{local_ts2}] — Second entry" in content
 
         # Entries should appear in order
         first_pos = content.index("First entry")
@@ -1220,7 +1222,7 @@ Some notes here.
 
         updated = path.read_text()
         assert "- 2026-02-10 14:00 — Existing entry" in updated
-        assert f"- {local_ts} — New entry" in updated
+        assert f"- [{local_ts}] — New entry" in updated
         assert "## Notes" in updated
         assert "Some notes here." in updated
 
@@ -1265,7 +1267,7 @@ Some notes here.
         local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
         entry = append_worklog_entry(path, "Council review: APPROVED\n[claude] Looks great!", timestamp=ts)
 
-        assert f"- {local_ts} — Council review: APPROVED" in entry
+        assert f"- [{local_ts}] — Council review: APPROVED" in entry
         assert "\n  [claude] Looks great!" in entry
 
         content = path.read_text()
@@ -1657,3 +1659,114 @@ class TestCoerceToStrListDedup:
 
     def test_no_duplicates_unchanged(self) -> None:
         assert coerce_to_str_list(["a", "b", "c"]) == ["a", "b", "c"]
+
+
+class TestAppendWorklogEntryAuthor:
+    """Tests for author tagging in append_worklog_entry."""
+
+    def test_author_tag_in_entry(self, tmp_path: Path) -> None:
+        ticket = Ticket(id="auth01", status="open", title="Test", body="")
+        path = tmp_path / "auth01.md"
+        write_ticket(ticket, path)
+
+        ts = datetime(2026, 3, 7, 14, 32, 0, tzinfo=UTC)
+        entry = append_worklog_entry(path, "started peasant on 57e2", timestamp=ts, author="lord-4d4a")
+
+        local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
+        assert entry == f"- [{local_ts}] [lord-4d4a] — started peasant on 57e2"
+        assert "[lord-4d4a]" in path.read_text()
+
+    def test_no_author_tag_when_none(self, tmp_path: Path) -> None:
+        ticket = Ticket(id="auth02", status="open", title="Test", body="")
+        path = tmp_path / "auth02.md"
+        write_ticket(ticket, path)
+
+        ts = datetime(2026, 3, 7, 14, 32, 0, tzinfo=UTC)
+        entry = append_worklog_entry(path, "legacy entry", timestamp=ts)
+
+        local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
+        assert entry == f"- [{local_ts}] — legacy entry"
+
+    def test_peasant_author_tag(self, tmp_path: Path) -> None:
+        ticket = Ticket(id="auth03", status="open", title="Test", body="")
+        path = tmp_path / "auth03.md"
+        write_ticket(ticket, path)
+
+        ts = datetime(2026, 3, 7, 14, 32, 0, tzinfo=UTC)
+        entry = append_worklog_entry(path, "iteration 1", timestamp=ts, author="peasant-ab12")
+
+        assert "[peasant-ab12]" in entry
+        assert "[peasant-ab12]" in path.read_text()
+
+
+class TestParseWorklogAuthor:
+    """Tests for parse_worklog_author."""
+
+    def test_tagged_entry(self) -> None:
+        assert parse_worklog_author("- [14:32] [lord-4d4a] — started peasant") == "lord-4d4a"
+
+    def test_tagged_entry_with_date(self) -> None:
+        assert parse_worklog_author("- [2026-03-07 14:32] [peasant-ab12] — iteration 1") == "peasant-ab12"
+
+    def test_legacy_entry_no_author(self) -> None:
+        assert parse_worklog_author("- [14:32] — old entry") == "unknown"
+
+    def test_legacy_entry_with_date(self) -> None:
+        assert parse_worklog_author("- [2026-03-07 14:32] — old entry") == "unknown"
+
+    def test_continuation_line(self) -> None:
+        assert parse_worklog_author("  some continuation text") == "unknown"
+
+    def test_king_author(self) -> None:
+        assert parse_worklog_author("- [14:32] [king] — decision made") == "king"
+
+    def test_unbracketed_timestamp_with_author(self) -> None:
+        assert parse_worklog_author("- 2026-03-07 14:32 [king] — decision made") == "king"
+
+
+class TestFilterWorklogLines:
+    """Tests for filter_worklog_lines."""
+
+    def test_show_all_returns_everything(self) -> None:
+        lines = [
+            "- [14:32] [lord-4d4a] — lord entry",
+            "- [14:33] [peasant-ab12] — peasant entry",
+            "- [14:34] — legacy entry",
+        ]
+        assert filter_worklog_lines(lines, show_all=True) == lines
+
+    def test_default_keeps_lord_and_unknown(self) -> None:
+        lines = [
+            "- [14:32] [lord-4d4a] — lord entry",
+            "- [14:33] [peasant-ab12] — peasant entry",
+            "- [14:34] — legacy entry",
+            "- [14:35] [king] — king entry",
+        ]
+        result = filter_worklog_lines(lines)
+        assert len(result) == 2
+        assert "lord entry" in result[0]
+        assert "legacy entry" in result[1]
+
+    def test_continuation_lines_follow_parent(self) -> None:
+        lines = [
+            "- [14:32] [lord-4d4a] — lord entry",
+            "  continuation of lord entry",
+            "- [14:33] [peasant-ab12] — peasant entry",
+            "  continuation of peasant entry",
+            "- [14:34] — legacy entry",
+        ]
+        result = filter_worklog_lines(lines)
+        assert len(result) == 3
+        assert "lord entry" in result[0]
+        assert "continuation of lord entry" in result[1]
+        assert "legacy entry" in result[2]
+
+    def test_empty_input(self) -> None:
+        assert filter_worklog_lines([]) == []
+
+    def test_all_legacy_entries_included(self) -> None:
+        lines = [
+            "- [14:32] — first legacy",
+            "- [14:33] — second legacy",
+        ]
+        assert filter_worklog_lines(lines) == lines

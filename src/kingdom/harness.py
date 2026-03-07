@@ -211,9 +211,10 @@ def format_worklog_timestamp(dt: datetime) -> str:
     return f"[{local_dt.strftime('%Y-%m-%d %H:%M')}]"
 
 
-def append_worklog(ticket_path: Path, entry: str) -> None:
+def append_worklog(ticket_path: Path, entry: str, ticket_id: str = "") -> None:
     now = datetime.now(UTC)
-    append_worklog_entry(ticket_path, entry, timestamp=now, timestamp_text=format_worklog_timestamp(now))
+    author = f"peasant-{ticket_id}" if ticket_id else None
+    append_worklog_entry(ticket_path, entry, timestamp=now, timestamp_text=format_worklog_timestamp(now), author=author)
 
 
 def is_placeholder_worklog_paragraph(paragraph: str) -> bool:
@@ -837,7 +838,8 @@ def run_agent_loop(
     if not check_worktree_branch(worktree, expected_branch):
         append_worklog(
             ticket_path,
-            f"BRANCH ESCAPE: worktree is not on expected branch '{expected_branch}' — aborting",
+            ticket_id=ticket_id,
+            entry=f"BRANCH ESCAPE: worktree is not on expected branch '{expected_branch}' — aborting",
         )
         now = datetime.now(UTC).isoformat()
         update_agent_state(base, branch, session_name, status="failed", last_activity=now)
@@ -883,19 +885,24 @@ def run_agent_loop(
         # Iteration start entry with context about what the agent will work on
         if iteration == 1:
             append_worklog(
-                ticket_path, f"Iteration {iteration}/{max_iterations} — calling agent\nTicket: {ticket_title}"
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=f"Iteration {iteration}/{max_iterations} — calling agent\nTicket: {ticket_title}",
             )
         elif last_bounce_feedback:
             n_blocking = sum(1 for f in last_bounce_feedback if parse_verdict(f) == "blocking")
             n_total = len(last_bounce_feedback)
             append_worklog(
                 ticket_path,
-                f"Iteration {iteration}/{max_iterations} — calling agent\n"
+                ticket_id=ticket_id,
+                entry=f"Iteration {iteration}/{max_iterations} — calling agent\n"
                 f"Bouncing on council feedback ({n_blocking} blocking, {n_total - n_blocking} approved) — see review above",
             )
             last_bounce_feedback = []
         else:
-            append_worklog(ticket_path, f"Iteration {iteration}/{max_iterations} — calling agent")
+            append_worklog(
+                ticket_path, ticket_id=ticket_id, entry=f"Iteration {iteration}/{max_iterations} — calling agent"
+            )
 
         worklog = extract_worklog(ticket_path)
 
@@ -949,7 +956,7 @@ def run_agent_loop(
         except FileNotFoundError:
             cmd_name = agent_config.cli.split()[0]
             logger.error("Backend command not found: %s", cmd_name)
-            append_worklog(ticket_path, f"Backend command not found: {cmd_name}")
+            append_worklog(ticket_path, ticket_id=ticket_id, entry=f"Backend command not found: {cmd_name}")
             final_status = "failed"
             break
 
@@ -963,7 +970,8 @@ def run_agent_loop(
         if not check_worktree_branch(worktree, expected_branch):
             append_worklog(
                 ticket_path,
-                f"BRANCH ESCAPE detected after iteration {iteration}: "
+                ticket_id=ticket_id,
+                entry=f"BRANCH ESCAPE detected after iteration {iteration}: "
                 f"worktree is not on expected branch '{expected_branch}' — aborting",
             )
             final_status = "failed"
@@ -984,7 +992,7 @@ def run_agent_loop(
         if not text and proc.returncode != 0:
             error_msg = proc.stderr.strip() or f"Exit code {proc.returncode}"
             logger.error("Backend error: %s", error_msg)
-            append_worklog(ticket_path, f"Backend error: {error_msg}")
+            append_worklog(ticket_path, ticket_id=ticket_id, entry=f"Backend error: {error_msg}")
             final_status = "failed"
             break
 
@@ -995,11 +1003,11 @@ def run_agent_loop(
         diff_stat = get_diff_stat(worktree, since=pre_iteration_sha)
         worklog_entry = extract_worklog_entry(text)
         if worklog_entry:
-            append_worklog(ticket_path, worklog_entry)
+            append_worklog(ticket_path, ticket_id=ticket_id, entry=worklog_entry)
 
         # Append file change summary from git diff --stat
         if diff_stat:
-            append_worklog(ticket_path, f"Files changed:\n{diff_stat}")
+            append_worklog(ticket_path, ticket_id=ticket_id, entry=f"Files changed:\n{diff_stat}")
 
         # Write response to work thread
         try:
@@ -1025,7 +1033,9 @@ def run_agent_loop(
             agent_state = get_agent_state(base, branch, session_name)
             if not has_code_changes(worktree, agent_state.start_sha):
                 logger.info("Agent reports DONE with no code changes — proceeding to review")
-                append_worklog(ticket_path, "DONE with no code changes — proceeding to council review.")
+                append_worklog(
+                    ticket_path, ticket_id=ticket_id, entry="DONE with no code changes — proceeding to council review."
+                )
 
             # --- Council review phase ---
             # Transition ticket to in_review, session to awaiting_council
@@ -1058,13 +1068,13 @@ def run_agent_loop(
             if review_outcome == "no_council":
                 # No council configured — go straight to needs_king_review
                 final_status = "needs_king_review"
-                append_worklog(ticket_path, "No council configured — awaiting king review")
+                append_worklog(ticket_path, ticket_id=ticket_id, entry="No council configured — awaiting king review")
                 break
 
             if review_outcome == "timeout":
                 # Council timed out — escalate to king
                 final_status = "needs_king_review"
-                append_worklog(ticket_path, "Council review timed out — escalating to king")
+                append_worklog(ticket_path, ticket_id=ticket_id, entry="Council review timed out — escalating to king")
                 break
 
             if review_outcome == "approved":
@@ -1073,7 +1083,7 @@ def run_agent_loop(
                 msg = "Council review: APPROVED — awaiting king review"
                 if feedback_summary:
                     msg += f"\n{feedback_summary}"
-                append_worklog(ticket_path, msg)
+                append_worklog(ticket_path, ticket_id=ticket_id, entry=msg)
                 break
 
             # Blocking feedback — check bounce limit
@@ -1088,7 +1098,7 @@ def run_agent_loop(
                 msg = f"Council review: BLOCKING (bounce {bounce_count}/3) — escalating to king"
                 if feedback_summary:
                     msg += f"\n{feedback_summary}"
-                append_worklog(ticket_path, msg)
+                append_worklog(ticket_path, ticket_id=ticket_id, entry=msg)
                 logger.warning("Review bounce limit reached (%d), escalating to king", bounce_count)
                 break
 
@@ -1097,7 +1107,7 @@ def run_agent_loop(
             msg = f"Council review: BLOCKING (bounce {bounce_count}/3) — returning to working"
             if feedback_summary:
                 msg += f"\n{feedback_summary}"
-            append_worklog(ticket_path, msg)
+            append_worklog(ticket_path, ticket_id=ticket_id, entry=msg)
 
             # Save blocking feedback for next iteration's worklog context
             last_bounce_feedback = review_feedback
@@ -1129,7 +1139,9 @@ def run_agent_loop(
     else:
         # Max iterations reached
         logger.warning("Max iterations (%d) reached", max_iterations)
-        append_worklog(ticket_path, f"Max iterations ({max_iterations}) reached without completion")
+        append_worklog(
+            ticket_path, ticket_id=ticket_id, entry=f"Max iterations ({max_iterations}) reached without completion"
+        )
         final_status = "failed"
 
     # Final session update
