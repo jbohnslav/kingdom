@@ -31,9 +31,7 @@ POLL_INTERVAL_SECONDS = 30
 MAX_PARALLEL_PEASANTS = 10
 
 # Idle detection backoff parameters
-BACKOFF_INITIAL = 5
 BACKOFF_STEPS = (5, 15, 30, 60)  # escalating delays, cap at 60s
-BACKOFF_CAP = 60
 WAITING_DELAY = 30  # delay after agent returns WAITING
 
 
@@ -164,48 +162,34 @@ def all_children_closed(base: Path, branch: str, epic_id: str) -> bool:
     return True
 
 
-def get_children_summary(base: Path, branch: str, epic_id: str) -> tuple[tuple[str, str, str], ...]:
-    """Snapshot the state of all epic children and their peasants.
+def get_children_summary(
+    base: Path, branch: str, epic_id: str
+) -> tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...]:
+    """Snapshot the state of all epic children, their peasants, and dependency statuses.
 
-    Returns a tuple of (ticket_id, ticket_status, peasant_status) for each child,
-    sorted by ticket_id for stable comparison.
+    Returns a tuple of (ticket_id, ticket_status, peasant_status, dep_statuses)
+    for each child, sorted by ticket_id for stable comparison.
+
+    dep_statuses is a sorted tuple of (dep_id, dep_status) so the snapshot changes
+    when an external dependency closes (making a child newly startable).
     """
+    from kingdom.state import branch_root
+
     children = discover_epic_children(base, branch, epic_id)
+
+    # Build status map for deps (includes all tickets, not just epic children)
+    tickets_dir = branch_root(base, branch) / "tickets"
+    all_tickets = list_tickets(tickets_dir)
+    status_by_id = {t.id: t.status for t in all_tickets}
+
     summary = []
     for child_path in children:
         ticket = read_ticket(child_path)
         session_name = f"peasant-{ticket.id}"
         state = get_agent_state(base, branch, session_name)
-        summary.append((ticket.id, ticket.status, state.status))
+        dep_statuses = tuple(sorted((d, status_by_id.get(d, "unknown")) for d in ticket.deps))
+        summary.append((ticket.id, ticket.status, state.status, dep_statuses))
     return tuple(sorted(summary))
-
-
-def is_actionable(base: Path, branch: str, epic_id: str, stop_requested: bool) -> bool:
-    """Check if the current state has something actionable for the lord.
-
-    Actionable means at least one of:
-    - A startable child exists (open, no blocking deps)
-    - A peasant is needs_king_review
-    - All children are closed (epic complete)
-    - Stop requested
-    - No active peasants remain but open work still exists
-    """
-    if stop_requested:
-        return True
-    if all_children_closed(base, branch, epic_id):
-        return True
-    if get_startable_children(base, branch, epic_id):
-        return True
-    if get_completed_peasants(base, branch, epic_id):
-        return True
-    # No active peasants but open work exists
-    active = get_active_peasants(base, branch, epic_id)
-    if not active:
-        children = discover_epic_children(base, branch, epic_id)
-        has_open = any(read_ticket(p).status != "closed" for p in children)
-        if has_open:
-            return True
-    return False
 
 
 def build_lord_prompt(
@@ -447,7 +431,7 @@ def run_lord_loop(
     resume_id = agent_state.resume_id
 
     final_status = "failed"
-    last_seen_states: tuple[tuple[str, str, str], ...] | None = None
+    last_seen_states: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] | None = None
     consecutive_idle = 0
 
     for cycle in range(1, max_cycles + 1):

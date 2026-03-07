@@ -20,7 +20,6 @@ from kingdom.lord_harness import (
     get_children_summary,
     get_completed_peasants,
     get_startable_children,
-    is_actionable,
     lord_session_name,
     parse_lord_status,
 )
@@ -566,12 +565,44 @@ class TestGetChildrenSummary:
         update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
 
         summary = get_children_summary(project_with_run, BRANCH, "epic1")
-        assert summary[0] == ("ch01", "in_progress", "working")
+        assert summary[0] == ("ch01", "in_progress", "working", ())
 
     def test_empty_when_no_children(self, project_with_run: Path) -> None:
         make_epic(project_with_run)
         summary = get_children_summary(project_with_run, BRANCH, "epic1")
         assert summary == ()
+
+    def test_includes_dep_statuses(self, project_with_run: Path) -> None:
+        """Snapshot should include dependency statuses so external dep changes are detected."""
+        make_epic(project_with_run)
+        # ch02 depends on ch01
+        make_child(project_with_run, "ch01", "epic1", status="open")
+        make_child(project_with_run, "ch02", "epic1", status="open", deps=["ch01"])
+
+        summary = get_children_summary(project_with_run, BRANCH, "epic1")
+        # ch01 has no deps, ch02 has one dep on ch01 (open)
+        assert summary[0][3] == ()  # ch01 no deps
+        assert summary[1][3] == (("ch01", "open"),)  # ch02 depends on ch01
+
+    def test_snapshot_changes_when_dep_closes(self, project_with_run: Path) -> None:
+        """Closing a dependency should change the snapshot (wakes the lord)."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="open")
+        make_child(project_with_run, "ch02", "epic1", status="open", deps=["ch01"])
+
+        s1 = get_children_summary(project_with_run, BRANCH, "epic1")
+
+        # Close ch01 — ch02's dep status changes
+        from kingdom.ticket import read_ticket as rt
+        from kingdom.ticket import write_ticket as wt
+
+        ch01_path = tickets_dir(project_with_run) / "ch01.md"
+        ch01 = rt(ch01_path)
+        ch01.status = "closed"
+        wt(ch01, ch01_path)
+
+        s2 = get_children_summary(project_with_run, BRANCH, "epic1")
+        assert s1 != s2  # snapshot changed because dep status changed
 
     def test_stable_for_comparison(self, project_with_run: Path) -> None:
         """Two calls with same state produce equal results."""
@@ -581,43 +612,6 @@ class TestGetChildrenSummary:
         s1 = get_children_summary(project_with_run, BRANCH, "epic1")
         s2 = get_children_summary(project_with_run, BRANCH, "epic1")
         assert s1 == s2
-
-
-class TestIsActionable:
-    def test_startable_child_is_actionable(self, project_with_run: Path) -> None:
-        make_epic(project_with_run)
-        make_child(project_with_run, "ch01", "epic1", status="open")
-        assert is_actionable(project_with_run, BRANCH, "epic1", stop_requested=False) is True
-
-    def test_needs_king_review_is_actionable(self, project_with_run: Path) -> None:
-        make_epic(project_with_run)
-        make_child(project_with_run, "ch01", "epic1", status="in_review")
-        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="needs_king_review")
-        assert is_actionable(project_with_run, BRANCH, "epic1", stop_requested=False) is True
-
-    def test_all_closed_is_actionable(self, project_with_run: Path) -> None:
-        make_epic(project_with_run)
-        make_child(project_with_run, "ch01", "epic1", status="closed")
-        assert is_actionable(project_with_run, BRANCH, "epic1", stop_requested=False) is True
-
-    def test_stop_requested_is_actionable(self, project_with_run: Path) -> None:
-        make_epic(project_with_run)
-        make_child(project_with_run, "ch01", "epic1", status="in_progress")
-        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
-        assert is_actionable(project_with_run, BRANCH, "epic1", stop_requested=True) is True
-
-    def test_only_working_peasants_not_actionable(self, project_with_run: Path) -> None:
-        make_epic(project_with_run)
-        make_child(project_with_run, "ch01", "epic1", status="in_progress")
-        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
-        assert is_actionable(project_with_run, BRANCH, "epic1", stop_requested=False) is False
-
-    def test_no_active_peasants_open_work_is_actionable(self, project_with_run: Path) -> None:
-        """If no peasants are running but open tickets exist, that's actionable (stuck state)."""
-        make_epic(project_with_run)
-        # in_progress ticket but peasant is idle (crashed?)
-        make_child(project_with_run, "ch01", "epic1", status="in_progress")
-        assert is_actionable(project_with_run, BRANCH, "epic1", stop_requested=False) is True
 
 
 class TestIdleDetectionInLoop:
