@@ -281,17 +281,23 @@ def build_lord_prompt(
     *,
     cycle_number: int = 1,
     stop_requested: bool = False,
+    children: list[Path] | None = None,
+    tickets: dict[str, Ticket] | None = None,
 ) -> str:
     """Build the system prompt for the lord agent session.
 
     The lord gets context about the epic, its children, their statuses,
     and a toolkit of kd commands to orchestrate work.
+
+    If *children* / *tickets* are provided they are reused instead of
+    re-discovering from disk.
     """
     epic = read_ticket(epic_path)
-    children = discover_epic_children(base, branch, epic_id)
+    if children is None:
+        children = discover_epic_children(base, branch, epic_id)
 
     # Parse all child tickets once and reuse across helpers
-    child_tickets: dict[str, Ticket] = {p.stem: read_ticket(p) for p in children}
+    child_tickets: dict[str, Ticket] = tickets if tickets is not None else {p.stem: read_ticket(p) for p in children}
 
     # Build children status summary
     child_summary_lines = []
@@ -546,15 +552,19 @@ def run_lord_loop(
             logger.info("Stopping at cycle %d", cycle)
             break
 
+        # Discover children and parse tickets once per cycle iteration
+        cycle_children = discover_epic_children(base, branch, epic_id)
+        cycle_tickets: dict[str, Ticket] = {p.stem: read_ticket(p) for p in cycle_children}
+
         # Check if all children are closed
-        if all_children_closed(base, branch, epic_id):
+        if all_children_closed(base, branch, epic_id, children=cycle_children, tickets=cycle_tickets):
             final_status = "done"
             append_lord_worklog(epic_path, "All epic children closed — epic complete")
             logger.info("All children closed at cycle %d", cycle)
             break
 
         # --- Idle detection: snapshot state and check actionability ---
-        current_states = get_children_summary(base, branch, epic_id)
+        current_states = get_children_summary(base, branch, epic_id, children=cycle_children, tickets=cycle_tickets)
         if current_states != last_seen_states:
             # State changed — update snapshot and reset backoff counter
             if consecutive_idle > 0:
@@ -564,7 +574,7 @@ def run_lord_loop(
 
             # Even though state changed, only wake the lord if something is actionable.
             # Non-actionable changes (e.g. working→awaiting_council) should still idle.
-            if not has_actionable_work(base, branch, epic_id):
+            if not has_actionable_work(base, branch, epic_id, children=cycle_children, tickets=cycle_tickets):
                 logger.info("State changed but nothing actionable — idle skip (cycle %d)", cycle)
                 print(
                     f"[lord-{epic_id}] state changed but nothing actionable — sleeping {BACKOFF_STEPS[0]}s",
@@ -602,7 +612,7 @@ def run_lord_loop(
 
         logger.info("Cycle %d/%d — calling lord agent", cycle, max_cycles)
 
-        # Build prompt with current state
+        # Build prompt with current state (reuse cycle's children/tickets)
         prompt = build_lord_prompt(
             epic_path,
             epic_id,
@@ -610,6 +620,8 @@ def run_lord_loop(
             branch,
             cycle_number=cycle,
             stop_requested=stop_requested,
+            children=cycle_children,
+            tickets=cycle_tickets,
         )
 
         # Call agent
