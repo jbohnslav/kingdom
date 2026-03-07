@@ -26,6 +26,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -494,6 +495,7 @@ def append_worklog_entry(
     message: str,
     timestamp: datetime | None = None,
     timestamp_text: str | None = None,
+    author: str | None = None,
 ) -> str:
     """Append to the ticket's ``## Worklog`` section (created if missing).
 
@@ -514,7 +516,8 @@ def append_worklog_entry(
     first = lines[0]
     rest = [f"  {line}" for line in lines[1:]]
     formatted = "\n".join([first, *rest])
-    entry = f"- {timestamp_text} — {formatted}"
+    author_tag = f" [{author}]" if author else ""
+    entry = f"- {timestamp_text}{author_tag} — {formatted}"
 
     content = path.read_text(encoding="utf-8")
     new_content = insert_worklog_entry(content, entry)
@@ -631,3 +634,50 @@ def collect_tickets_by_location(
             pairs.append(("backlog", ticket))
 
     return pairs
+
+
+# ---------------------------------------------------------------------------
+# Worklog author parsing and filtering
+# ---------------------------------------------------------------------------
+
+# Matches: - [HH:MM] [author] — ... or - [YYYY-MM-DD HH:MM] [author] — ...
+WORKLOG_AUTHOR_RE = re.compile(r"^- \[[\d:. -]+\]\s+\[([^\]]+)\]\s+—")
+
+
+def parse_worklog_author(line: str) -> str:
+    """Extract the author tag from a worklog line.
+
+    Returns the author string if present, or ``"unknown"`` for legacy
+    untagged entries.
+    """
+    m = WORKLOG_AUTHOR_RE.match(line)
+    if m:
+        return m.group(1)
+    return "unknown"
+
+
+def filter_worklog_lines(lines: list[str], *, show_all: bool = False) -> list[str]:
+    """Filter worklog lines to lord-relevant entries.
+
+    By default keeps ``lord-*`` and ``unknown`` (legacy) entries.
+    With ``show_all=True``, returns all lines unfiltered.
+
+    Continuation lines (indented, starting with spaces) follow their
+    parent bullet.
+    """
+    if show_all:
+        return lines
+
+    result: list[str] = []
+    include_current = True
+
+    for line in lines:
+        if line.startswith("- "):
+            author = parse_worklog_author(line)
+            include_current = author == "unknown" or author.startswith("lord")
+        # else: continuation line — follows parent bullet's include decision
+
+        if include_current:
+            result.append(line)
+
+    return result

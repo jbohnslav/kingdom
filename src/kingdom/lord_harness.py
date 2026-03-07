@@ -49,10 +49,11 @@ def format_lord_timestamp(dt: datetime) -> str:
     return f"[{local_dt.strftime('%Y-%m-%d %H:%M')}]"
 
 
-def append_lord_worklog(ticket_path: Path, entry: str) -> None:
-    """Append an entry to the epic ticket's worklog."""
+def append_lord_worklog(ticket_path: Path, entry: str, epic_id: str = "") -> None:
+    """Append an entry to the epic ticket's worklog, tagged as lord-<epic_id>."""
     now = datetime.now(UTC)
-    append_worklog_entry(ticket_path, entry, timestamp=now, timestamp_text=format_lord_timestamp(now))
+    author = lord_session_name(epic_id) if epic_id else None
+    append_worklog_entry(ticket_path, entry, timestamp=now, timestamp_text=format_lord_timestamp(now), author=author)
 
 
 def discover_epic_children(base: Path, branch: str, epic_id: str) -> list[Path]:
@@ -482,14 +483,14 @@ def run_lord_loop(
 
         if stop_requested:
             final_status = "stopped"
-            append_lord_worklog(epic_path, "Stop requested — shutting down gracefully")
+            append_lord_worklog(epic_path, epic_id=epic_id, entry="Stop requested — shutting down gracefully")
             logger.info("Stopping at cycle %d", cycle)
             break
 
         # Check if all children are closed
         if all_children_closed(base, branch, epic_id):
             final_status = "done"
-            append_lord_worklog(epic_path, "All epic children closed — epic complete")
+            append_lord_worklog(epic_path, epic_id=epic_id, entry="All epic children closed — epic complete")
             logger.info("All children closed at cycle %d", cycle)
             break
 
@@ -568,14 +569,16 @@ def run_lord_loop(
         except FileNotFoundError:
             cmd_name = agent_config.cli.split()[0]
             logger.error("Backend command not found: %s", cmd_name)
-            append_lord_worklog(epic_path, f"Backend command not found: {cmd_name}")
+            append_lord_worklog(epic_path, epic_id=epic_id, entry=f"Backend command not found: {cmd_name}")
             final_status = "failed"
             break
 
         # Check for stop after agent call
         if stop_requested:
             final_status = "stopped"
-            append_lord_worklog(epic_path, "STOP signal received after agent call — shutting down")
+            append_lord_worklog(
+                epic_path, epic_id=epic_id, entry="STOP signal received after agent call — shutting down"
+            )
             break
 
         # Parse response
@@ -587,7 +590,7 @@ def run_lord_loop(
         if not text and proc.returncode != 0:
             error_msg = proc.stderr.strip() or f"Exit code {proc.returncode}"
             logger.error("Backend error: %s", error_msg)
-            append_lord_worklog(epic_path, f"Backend error: {error_msg}")
+            append_lord_worklog(epic_path, epic_id=epic_id, entry=f"Backend error: {error_msg}")
             final_status = "failed"
             break
 
@@ -607,22 +610,22 @@ def run_lord_loop(
 
         if status == "done":
             final_status = "done"
-            append_lord_worklog(epic_path, "Lord reports epic complete")
+            append_lord_worklog(epic_path, epic_id=epic_id, entry="Lord reports epic complete")
             break
         elif status == "blocked":
             final_status = "blocked"
-            append_lord_worklog(epic_path, "Lord reports BLOCKED — needs King intervention")
+            append_lord_worklog(epic_path, epic_id=epic_id, entry="Lord reports BLOCKED — needs King intervention")
             break
         elif status == "escalate":
             final_status = "blocked"
             msg = f"Lord ESCALATES ticket {escalate_ticket} — needs King attention"
-            append_lord_worklog(epic_path, msg)
+            append_lord_worklog(epic_path, epic_id=epic_id, entry=msg)
             logger.warning("Escalation: %s", msg)
             # Don't break — lord can continue working other tickets
             # But if there's nothing else to do, it'll report DONE or BLOCKED next cycle
         elif status == "stopped":
             final_status = "stopped"
-            append_lord_worklog(epic_path, "Lord stopping gracefully")
+            append_lord_worklog(epic_path, epic_id=epic_id, entry="Lord stopping gracefully")
             break
         elif status == "waiting":
             # Agent says nothing actionable — use longer delay before next cycle
@@ -642,7 +645,7 @@ def run_lord_loop(
     else:
         # Max cycles reached
         logger.warning("Max cycles (%d) reached", max_cycles)
-        append_lord_worklog(epic_path, f"Max cycles ({max_cycles}) reached without completion")
+        append_lord_worklog(epic_path, epic_id=epic_id, entry=f"Max cycles ({max_cycles}) reached without completion")
         final_status = "failed"
 
     # Final session update

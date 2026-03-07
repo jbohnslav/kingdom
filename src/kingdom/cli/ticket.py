@@ -1381,7 +1381,13 @@ def ticket_log(
     base = require_project_root()
 
     ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
-    entry = append_worklog_entry(ticket_path, message)
+
+    # Infer author from environment
+    role = os.environ.get("KD_ROLE", "")
+    agent_name = os.environ.get("KD_AGENT_NAME", "")
+    author = agent_name or role or None
+
+    entry = append_worklog_entry(ticket_path, message, author=author)
     typer.echo(f"{ticket.id}: {entry}")
 
 

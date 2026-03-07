@@ -308,6 +308,7 @@ def status(
 @lord_app.command("watch", help="Watch lord progress in real time.")
 def lord_watch(
     epic_id: Annotated[str, typer.Argument(help="Epic ticket ID.")],
+    show_all: Annotated[bool, typer.Option("--all", help="Show all worklog entries (unfiltered).")] = False,
 ) -> None:
     """Tail the epic worklog and show lord progress."""
     import time as time_mod
@@ -318,7 +319,7 @@ def lord_watch(
     from kingdom.lord_harness import lord_session_name
     from kingdom.session import get_agent_state
     from kingdom.state import resolve_current_run
-    from kingdom.ticket import find_ticket
+    from kingdom.ticket import filter_worklog_lines, find_ticket
 
     base = require_project_root()
 
@@ -347,7 +348,8 @@ def lord_watch(
         worklog = extract_worklog(ticket_path)
         if not worklog.strip():
             return []
-        return worklog.strip().splitlines()
+        raw_lines = worklog.strip().splitlines()
+        return filter_worklog_lines(raw_lines, show_all=show_all)
 
     try:
         while True:
