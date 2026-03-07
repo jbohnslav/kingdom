@@ -370,6 +370,20 @@ def build_lord_prompt(
     parts.append(f"- After {MAX_REQUEUE_ATTEMPTS} failed attempts, report ESCALATE with the ticket ID and reason")
     parts.append("- Resolve merge conflicts directly rather than rejecting for them")
     parts.append("")
+    parts.append("## Worklog Hygiene")
+    parts.append("The epic worklog is **durable decision history**, not a live transcript.")
+    parts.append("Only log to the epic worklog (`kd tk log`) on these events:")
+    parts.append("- Peasant launched (which ticket, why now)")
+    parts.append("- Peasant work accepted or rejected (with rationale)")
+    parts.append("- Council bounce received")
+    parts.append("- Escalation to the King")
+    parts.append("- Merge conflict resolved")
+    parts.append("- Blocked state entered or cleared")
+    parts.append("- Epic completed")
+    parts.append("")
+    parts.append("Do NOT log idle observations, status checks, or 'nothing to do' entries.")
+    parts.append("Per-cycle narration goes to stdout (captured in agent-live.log), not the worklog.")
+    parts.append("")
 
     # Response format
     parts.append("## Response Format")
@@ -526,7 +540,7 @@ def run_lord_loop(
             last_activity=now,
         )
 
-        append_lord_worklog(epic_path, f"Cycle {cycle}/{max_cycles} — calling lord agent")
+        logger.info("Cycle %d/%d — calling lord agent", cycle, max_cycles)
 
         # Build prompt with current state
         prompt = build_lord_prompt(
@@ -581,10 +595,11 @@ def run_lord_loop(
         status, escalate_ticket = parse_lord_status(text)
         logger.info("Lord status: %s (escalate: %s)", status, escalate_ticket)
 
-        # Log lord's summary to worklog
+        # Log lord's summary to debug log (not the epic worklog — the lord
+        # logs durable events itself via `kd tk log`)
         summary = extract_lord_summary(text)
         if summary:
-            append_lord_worklog(epic_path, summary)
+            logger.info("Lord summary: %s", summary)
 
         # Update session timestamp
         now = datetime.now(UTC).isoformat()
