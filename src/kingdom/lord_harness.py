@@ -30,6 +30,10 @@ MAX_REQUEUE_ATTEMPTS = 3
 POLL_INTERVAL_SECONDS = 30
 MAX_PARALLEL_PEASANTS = 10
 
+# Idle detection backoff parameters
+BACKOFF_STEPS = (5, 15, 30, 60)  # escalating delays, cap at 60s
+WAITING_DELAY = 30  # delay after agent returns WAITING
+
 
 def lord_session_name(epic_id: str) -> str:
     """Return the canonical session name for a lord orchestrating *epic_id*."""
@@ -156,6 +160,60 @@ def all_children_closed(base: Path, branch: str, epic_id: str) -> bool:
         if ticket.status != "closed":
             return False
     return True
+
+
+def has_actionable_work(base: Path, branch: str, epic_id: str) -> bool:
+    """Check whether the current state has something the lord can act on.
+
+    Returns True when at least one of these is true:
+    - A startable child exists (open, deps met, no active peasant)
+    - A peasant is ``needs_king_review``
+    - No active peasants remain but open work still exists (stuck state)
+
+    Note: ``all_children_closed`` and ``stop_requested`` are checked separately
+    in the loop before this function is called.
+    """
+    if get_startable_children(base, branch, epic_id):
+        return True
+    if get_completed_peasants(base, branch, epic_id):
+        return True
+    # No active peasants but open work exists → stuck, lord should investigate
+    active = get_active_peasants(base, branch, epic_id)
+    if not active:
+        children = discover_epic_children(base, branch, epic_id)
+        if any(read_ticket(p).status != "closed" for p in children):
+            return True
+    return False
+
+
+def get_children_summary(
+    base: Path, branch: str, epic_id: str
+) -> tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...]:
+    """Snapshot the state of all epic children, their peasants, and dependency statuses.
+
+    Returns a tuple of (ticket_id, ticket_status, peasant_status, dep_statuses)
+    for each child, sorted by ticket_id for stable comparison.
+
+    dep_statuses is a sorted tuple of (dep_id, dep_status) so the snapshot changes
+    when an external dependency closes (making a child newly startable).
+    """
+    from kingdom.state import branch_root
+
+    children = discover_epic_children(base, branch, epic_id)
+
+    # Build status map for deps (includes all tickets, not just epic children)
+    tickets_dir = branch_root(base, branch) / "tickets"
+    all_tickets = list_tickets(tickets_dir)
+    status_by_id = {t.id: t.status for t in all_tickets}
+
+    summary = []
+    for child_path in children:
+        ticket = read_ticket(child_path)
+        session_name = f"peasant-{ticket.id}"
+        state = get_agent_state(base, branch, session_name)
+        dep_statuses = tuple(sorted((d, status_by_id.get(d, "unknown")) for d in ticket.deps))
+        summary.append((ticket.id, ticket.status, state.status, dep_statuses))
+    return tuple(sorted(summary))
 
 
 def build_lord_prompt(
@@ -320,6 +378,7 @@ def build_lord_prompt(
     parts.append("")
     parts.append("STATUS: DONE — All epic children are closed, epic is complete")
     parts.append("STATUS: CONTINUE — More work to do, need another cycle")
+    parts.append("STATUS: WAITING — Nothing actionable right now, all peasants working/in council review")
     parts.append("STATUS: BLOCKED — Cannot proceed, need King intervention")
     parts.append("STATUS: ESCALATE <ticket-id> — Ticket needs King attention after repeated failures")
     parts.append("STATUS: STOPPED — Stop signal received, shutting down gracefully")
@@ -335,7 +394,7 @@ def parse_lord_status(response_text: str) -> tuple[str, str | None]:
     """
     for line in reversed(response_text.strip().splitlines()):
         line = line.strip()
-        match = re.match(r"^STATUS:\s*(DONE|CONTINUE|BLOCKED|STOPPED)$", line, re.IGNORECASE)
+        match = re.match(r"^STATUS:\s*(DONE|CONTINUE|BLOCKED|STOPPED|WAITING)$", line, re.IGNORECASE)
         if match:
             return match.group(1).lower(), None
         match = re.match(r"^STATUS:\s*ESCALATE\s+(\S+)", line, re.IGNORECASE)
@@ -396,6 +455,8 @@ def run_lord_loop(
     resume_id = agent_state.resume_id
 
     final_status = "failed"
+    last_seen_states: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] | None = None
+    consecutive_idle = 0
 
     for cycle in range(1, max_cycles + 1):
         # Check for stop: either SIGTERM signal or persisted "stopping" session state
@@ -417,6 +478,43 @@ def run_lord_loop(
             append_lord_worklog(epic_path, "All epic children closed — epic complete")
             logger.info("All children closed at cycle %d", cycle)
             break
+
+        # --- Idle detection: snapshot state and check actionability ---
+        current_states = get_children_summary(base, branch, epic_id)
+        if current_states != last_seen_states:
+            # State changed — update snapshot and reset backoff counter
+            if consecutive_idle > 0:
+                logger.info("State changed after %d idle skips", consecutive_idle)
+            last_seen_states = current_states
+            consecutive_idle = 0
+
+            # Even though state changed, only wake the lord if something is actionable.
+            # Non-actionable changes (e.g. working→awaiting_council) should still idle.
+            if not has_actionable_work(base, branch, epic_id):
+                logger.info("State changed but nothing actionable — idle skip (cycle %d)", cycle)
+                print(
+                    f"[lord-{epic_id}] state changed but nothing actionable — sleeping {BACKOFF_STEPS[0]}s",
+                    flush=True,
+                )
+                time.sleep(BACKOFF_STEPS[0])
+                continue
+        else:
+            # Nothing changed — apply escalating backoff and skip LLM call
+            consecutive_idle += 1
+            idx = min(consecutive_idle - 1, len(BACKOFF_STEPS) - 1)
+            backoff_delay = BACKOFF_STEPS[idx]
+            logger.info(
+                "Idle skip %d — no state change, sleeping %ds (cycle %d)",
+                consecutive_idle,
+                backoff_delay,
+                cycle,
+            )
+            print(
+                f"[lord-{epic_id}] idle skip {consecutive_idle} — no state change, sleeping {backoff_delay}s",
+                flush=True,
+            )
+            time.sleep(backoff_delay)
+            continue
 
         # Update session: working
         now = datetime.now(UTC).isoformat()
@@ -511,6 +609,15 @@ def run_lord_loop(
             final_status = "stopped"
             append_lord_worklog(epic_path, "Lord stopping gracefully")
             break
+        elif status == "waiting":
+            # Agent says nothing actionable — use longer delay before next cycle
+            logger.info("Lord reports WAITING — applying %ds delay", WAITING_DELAY)
+            print(
+                f"[lord-{epic_id}] agent waiting — " f"nothing actionable, sleeping {WAITING_DELAY}s",
+                flush=True,
+            )
+            time.sleep(WAITING_DELAY)
+            continue
         # else: continue to next cycle
 
         # Brief pause between cycles to avoid hammering
@@ -541,7 +648,7 @@ def extract_lord_summary(response_text: str) -> str:
     """Extract a summary from the lord's response for the worklog."""
     lines = []
     for line in response_text.strip().splitlines():
-        if re.match(r"^STATUS:\s*(DONE|BLOCKED|CONTINUE|STOPPED|ESCALATE)", line.strip(), re.IGNORECASE):
+        if re.match(r"^STATUS:\s*(DONE|BLOCKED|CONTINUE|STOPPED|ESCALATE|WAITING)", line.strip(), re.IGNORECASE):
             break
         lines.append(line)
 

@@ -11,12 +11,16 @@ from typer.testing import CliRunner
 
 from kingdom.cli.lord import lord_app
 from kingdom.lord_harness import (
+    BACKOFF_STEPS,
+    WAITING_DELAY,
     all_children_closed,
     build_lord_prompt,
     discover_epic_children,
     extract_lord_summary,
+    get_children_summary,
     get_completed_peasants,
     get_startable_children,
+    has_actionable_work,
     lord_session_name,
     parse_lord_status,
 )
@@ -107,6 +111,9 @@ class TestParseLordStatus:
 
     def test_case_insensitive(self) -> None:
         assert parse_lord_status("STATUS: done")[0] == "done"
+
+    def test_waiting(self) -> None:
+        assert parse_lord_status("Nothing to do.\nSTATUS: WAITING") == ("waiting", None)
 
     def test_no_status_defaults_continue(self) -> None:
         assert parse_lord_status("No status line here.") == ("continue", None)
@@ -537,3 +544,407 @@ class TestLordWorker:
         """Graceful stop should return exit code 0, not 1."""
         # This tests the exit code mapping directly
         assert ("stopped" in ("done", "blocked", "stopped")) is True
+
+
+class TestGetChildrenSummary:
+    def test_returns_sorted_tuples(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch02", "epic1", status="open")
+        make_child(project_with_run, "ch01", "epic1", status="closed")
+
+        summary = get_children_summary(project_with_run, BRANCH, "epic1")
+        assert len(summary) == 2
+        # Sorted by ticket_id
+        assert summary[0][0] == "ch01"
+        assert summary[0][1] == "closed"
+        assert summary[1][0] == "ch02"
+        assert summary[1][1] == "open"
+
+    def test_includes_peasant_status(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        summary = get_children_summary(project_with_run, BRANCH, "epic1")
+        assert summary[0] == ("ch01", "in_progress", "working", ())
+
+    def test_empty_when_no_children(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        summary = get_children_summary(project_with_run, BRANCH, "epic1")
+        assert summary == ()
+
+    def test_includes_dep_statuses(self, project_with_run: Path) -> None:
+        """Snapshot should include dependency statuses so external dep changes are detected."""
+        make_epic(project_with_run)
+        # ch02 depends on ch01
+        make_child(project_with_run, "ch01", "epic1", status="open")
+        make_child(project_with_run, "ch02", "epic1", status="open", deps=["ch01"])
+
+        summary = get_children_summary(project_with_run, BRANCH, "epic1")
+        # ch01 has no deps, ch02 has one dep on ch01 (open)
+        assert summary[0][3] == ()  # ch01 no deps
+        assert summary[1][3] == (("ch01", "open"),)  # ch02 depends on ch01
+
+    def test_snapshot_changes_when_dep_closes(self, project_with_run: Path) -> None:
+        """Closing a dependency should change the snapshot (wakes the lord)."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="open")
+        make_child(project_with_run, "ch02", "epic1", status="open", deps=["ch01"])
+
+        s1 = get_children_summary(project_with_run, BRANCH, "epic1")
+
+        # Close ch01 — ch02's dep status changes
+        from kingdom.ticket import read_ticket as rt
+        from kingdom.ticket import write_ticket as wt
+
+        ch01_path = tickets_dir(project_with_run) / "ch01.md"
+        ch01 = rt(ch01_path)
+        ch01.status = "closed"
+        wt(ch01, ch01_path)
+
+        s2 = get_children_summary(project_with_run, BRANCH, "epic1")
+        assert s1 != s2  # snapshot changed because dep status changed
+
+    def test_stable_for_comparison(self, project_with_run: Path) -> None:
+        """Two calls with same state produce equal results."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="open")
+
+        s1 = get_children_summary(project_with_run, BRANCH, "epic1")
+        s2 = get_children_summary(project_with_run, BRANCH, "epic1")
+        assert s1 == s2
+
+
+class TestHasActionableWork:
+    def test_startable_child_is_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="open")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+    def test_needs_king_review_is_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_review")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="needs_king_review")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+    def test_only_working_peasants_not_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is False
+
+    def test_awaiting_council_not_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="awaiting_council")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is False
+
+    def test_no_active_peasants_open_work_is_actionable(self, project_with_run: Path) -> None:
+        """If no peasants are running but open tickets exist, that's actionable (stuck state)."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        # peasant is idle — stuck state
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+
+class TestIdleDetectionInLoop:
+    def test_idle_skips_llm_when_not_actionable(self, project_with_run: Path) -> None:
+        """When only working peasants exist, the LLM should never be called."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = "Monitoring peasants.\nSTATUS: CONTINUE"
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+        ):
+            run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=4,
+            )
+
+        # All cycles idle — nothing actionable (only a working peasant)
+        # Cycle 1: new state but not actionable -> idle skip (sleep BACKOFF_STEPS[0])
+        # Cycles 2-4: unchanged state -> escalating backoff
+        assert mock_subprocess.call_count == 0
+
+    def test_calls_llm_when_actionable(self, project_with_run: Path) -> None:
+        """When a startable child exists, the LLM should be called."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        # ch01 is open with no deps and no active peasant — startable
+        make_child(project_with_run, "ch01", "epic1", status="open")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = "Started peasant.\nSTATUS: CONTINUE"
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+        ):
+            run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=2,
+            )
+
+        # Cycle 1: new state + actionable (startable child) -> LLM call
+        # ch01 is still open after the mock LLM call, so cycle 2 also has unchanged
+        # but actionable state — but state hasn't changed so it idles
+        assert mock_subprocess.call_count == 1
+
+    def test_backoff_increases(self, project_with_run: Path) -> None:
+        """Backoff delay should increase with consecutive idle skips (no state change)."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+        ):
+            run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=5,
+            )
+
+        # Cycle 1: new state but not actionable -> sleep(BACKOFF_STEPS[0])
+        # Cycle 2: same state -> idle skip 1 -> sleep(BACKOFF_STEPS[0])
+        # Cycle 3: same state -> idle skip 2 -> sleep(BACKOFF_STEPS[1])
+        # Cycle 4: same state -> idle skip 3 -> sleep(BACKOFF_STEPS[2])
+        # Cycle 5: same state -> idle skip 4 -> sleep(BACKOFF_STEPS[3])
+        sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
+        assert sleep_calls == [
+            BACKOFF_STEPS[0],
+            BACKOFF_STEPS[0],
+            BACKOFF_STEPS[1],
+            BACKOFF_STEPS[2],
+            BACKOFF_STEPS[3],
+        ]
+
+    def test_non_actionable_state_change_stays_idle(self, project_with_run: Path) -> None:
+        """A peasant moving working->awaiting_council should not wake the lord."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        cycle_count = 0
+
+        def summary_with_transition(base, branch, epic_id):
+            nonlocal cycle_count
+            cycle_count += 1
+            if cycle_count <= 2:
+                return (("ch01", "in_progress", "working", ()),)
+            # Peasant moves to awaiting_council — state changes but NOT actionable
+            return (("ch01", "in_progress", "awaiting_council", ()),)
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+            patch("kingdom.lord_harness.get_children_summary", side_effect=summary_with_transition),
+            patch("kingdom.lord_harness.has_actionable_work", return_value=False),
+        ):
+            run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=4,
+            )
+
+        # All 4 cycles should idle — the state change at cycle 3 is non-actionable
+        assert mock_subprocess.call_count == 0
+
+    def test_backoff_resets_on_actionable_state_change(self, project_with_run: Path) -> None:
+        """Backoff should reset when state changes to something actionable."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = "Monitoring.\nSTATUS: CONTINUE"
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        call_count = 0
+
+        def changing_summary(base, branch, epic_id):
+            nonlocal call_count
+            call_count += 1
+            # Return different state on calls 1 and 4 to trigger resets
+            if call_count in (1, 4):
+                return (("ch01", "in_progress", f"working-{call_count}"),)
+            return (("ch01", "in_progress", "working"),)
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+            patch("kingdom.lord_harness.get_children_summary", side_effect=changing_summary),
+            patch("kingdom.lord_harness.has_actionable_work", return_value=True),
+        ):
+            run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=6,
+            )
+
+        # Cycle 1: call_count=1, new state "working-1", actionable -> LLM -> sleep(5)
+        # Cycle 2: call_count=2, state "working" (differs), actionable -> LLM -> sleep(5)
+        # Cycle 3: call_count=3, state "working" (same) -> idle skip 1 -> sleep(5)
+        # Cycle 4: call_count=4, state "working-4" (different!), actionable -> LLM -> sleep(5)
+        # Cycle 5: call_count=5, state "working" (differs), actionable -> LLM -> sleep(5)
+        # Cycle 6: call_count=6, state "working" (same) -> idle skip 1 -> sleep(5)
+        sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
+        # All sleeps should be 5s (backoff resets each time state changes)
+        assert sleep_calls == [5, 5, BACKOFF_STEPS[0], 5, 5, BACKOFF_STEPS[0]]
+
+
+class TestWaitingStatusInLoop:
+    def test_waiting_applies_longer_delay(self, project_with_run: Path) -> None:
+        """WAITING status from agent should trigger a longer delay."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        parse_call_count = 0
+
+        def mock_parse_response(agent_config, stdout, stderr, returncode):
+            nonlocal parse_call_count
+            parse_call_count += 1
+            if parse_call_count == 1:
+                return "Nothing actionable.\nSTATUS: WAITING", "sess1", ""
+            return "All done.\nSTATUS: DONE", "sess1", ""
+
+        # Make each cycle see a different state so idle detection doesn't kick in
+        cycle_count = 0
+
+        def unique_summary(base, branch, epic_id):
+            nonlocal cycle_count
+            cycle_count += 1
+            return (("ch01", "in_progress", f"state-{cycle_count}"),)
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+            patch("kingdom.lord_harness.get_children_summary", side_effect=unique_summary),
+            patch("kingdom.lord_harness.parse_response", side_effect=mock_parse_response),
+            patch("kingdom.lord_harness.has_actionable_work", return_value=True),
+        ):
+            status = run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=5,
+            )
+
+        assert status == "done"
+        # First call returns WAITING -> sleep(WAITING_DELAY)
+        # Second call returns DONE -> no sleep
+        sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
+        assert WAITING_DELAY in sleep_calls
+
+
+class TestBuildLordPromptWaiting:
+    def test_prompt_includes_waiting_status(self, project_with_run: Path) -> None:
+        _, epic_path = make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1")
+
+        prompt = build_lord_prompt(epic_path, "epic1", project_with_run, BRANCH)
+        assert "STATUS: WAITING" in prompt
+        assert "nothing actionable" in prompt.lower()
