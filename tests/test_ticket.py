@@ -1114,11 +1114,11 @@ class TestAppendWorklogEntry:
         local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
         entry = append_worklog_entry(path, "Started implementation", timestamp=ts)
 
-        assert entry == f"- {local_ts} — Started implementation"
+        assert entry == f"- [{local_ts}] — Started implementation"
 
         content = path.read_text()
         assert "## Worklog" in content
-        assert f"- {local_ts} — Started implementation" in content
+        assert f"- [{local_ts}] — Started implementation" in content
 
     def test_appends_to_existing_worklog_section(self, tmp_path: Path) -> None:
         """Appends entry to an existing ## Worklog section."""
@@ -1140,8 +1140,8 @@ class TestAppendWorklogEntry:
         append_worklog_entry(path, "Second entry", timestamp=ts2)
 
         content = path.read_text()
-        assert f"- {local_ts1} — First entry" in content
-        assert f"- {local_ts2} — Second entry" in content
+        assert f"- [{local_ts1}] — First entry" in content
+        assert f"- [{local_ts2}] — Second entry" in content
 
         # Entries should appear in order
         first_pos = content.index("First entry")
@@ -1222,7 +1222,7 @@ Some notes here.
 
         updated = path.read_text()
         assert "- 2026-02-10 14:00 — Existing entry" in updated
-        assert f"- {local_ts} — New entry" in updated
+        assert f"- [{local_ts}] — New entry" in updated
         assert "## Notes" in updated
         assert "Some notes here." in updated
 
@@ -1267,7 +1267,7 @@ Some notes here.
         local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
         entry = append_worklog_entry(path, "Council review: APPROVED\n[claude] Looks great!", timestamp=ts)
 
-        assert f"- {local_ts} — Council review: APPROVED" in entry
+        assert f"- [{local_ts}] — Council review: APPROVED" in entry
         assert "\n  [claude] Looks great!" in entry
 
         content = path.read_text()
@@ -1673,7 +1673,7 @@ class TestAppendWorklogEntryAuthor:
         entry = append_worklog_entry(path, "started peasant on 57e2", timestamp=ts, author="lord-4d4a")
 
         local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
-        assert entry == f"- {local_ts} [lord-4d4a] — started peasant on 57e2"
+        assert entry == f"- [{local_ts}] [lord-4d4a] — started peasant on 57e2"
         assert "[lord-4d4a]" in path.read_text()
 
     def test_no_author_tag_when_none(self, tmp_path: Path) -> None:
@@ -1685,7 +1685,7 @@ class TestAppendWorklogEntryAuthor:
         entry = append_worklog_entry(path, "legacy entry", timestamp=ts)
 
         local_ts = ts.astimezone().strftime("%Y-%m-%d %H:%M")
-        assert entry == f"- {local_ts} — legacy entry"
+        assert entry == f"- [{local_ts}] — legacy entry"
 
     def test_peasant_author_tag(self, tmp_path: Path) -> None:
         ticket = Ticket(id="auth03", status="open", title="Test", body="")
@@ -1719,6 +1719,9 @@ class TestParseWorklogAuthor:
 
     def test_king_author(self) -> None:
         assert parse_worklog_author("- [14:32] [king] — decision made") == "king"
+
+    def test_unbracketed_timestamp_with_author(self) -> None:
+        assert parse_worklog_author("- 2026-03-07 14:32 [king] — decision made") == "king"
 
 
 class TestFilterWorklogLines:

@@ -509,7 +509,7 @@ def append_worklog_entry(
 
     if timestamp_text is None:
         local_ts = timestamp.astimezone()
-        timestamp_text = local_ts.strftime("%Y-%m-%d %H:%M")
+        timestamp_text = f"[{local_ts.strftime('%Y-%m-%d %H:%M')}]"
 
     # Indent continuation lines so multiline entries render as grouped bullets
     lines = message.split("\n")
@@ -640,8 +640,11 @@ def collect_tickets_by_location(
 # Worklog author parsing and filtering
 # ---------------------------------------------------------------------------
 
-# Matches: - [HH:MM] [author] — ... or - [YYYY-MM-DD HH:MM] [author] — ...
-WORKLOG_AUTHOR_RE = re.compile(r"^- \[[\d:. -]+\]\s+\[([^\]]+)\]\s+—")
+# Matches tagged worklog entries in both bracketed and unbracketed timestamp forms:
+#   - [HH:MM] [author] — ...
+#   - [YYYY-MM-DD HH:MM] [author] — ...
+#   - YYYY-MM-DD HH:MM [author] — ...  (legacy unbracketed)
+WORKLOG_AUTHOR_RE = re.compile(r"^- (?:\[[\d:. -]+\]|[\d][\d:. -]+\d)\s+\[([^\]]+)\]\s+—")
 
 
 def parse_worklog_author(line: str) -> str:
