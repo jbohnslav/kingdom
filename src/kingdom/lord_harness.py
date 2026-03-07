@@ -22,7 +22,7 @@ from pathlib import Path
 from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.state import logs_root
-from kingdom.ticket import append_worklog_entry, find_ticket, list_tickets, read_ticket
+from kingdom.ticket import Ticket, append_worklog_entry, find_ticket, list_tickets, read_ticket
 
 logger = logging.getLogger("kingdom.lord_harness")
 
@@ -74,12 +74,23 @@ def discover_epic_children(base: Path, branch: str, epic_id: str) -> list[Path]:
     return children
 
 
-def get_startable_children(base: Path, branch: str, epic_id: str) -> list[tuple[Path, str]]:
+def get_startable_children(
+    base: Path,
+    branch: str,
+    epic_id: str,
+    *,
+    children: list[Path] | None = None,
+    tickets: dict[str, Ticket] | None = None,
+) -> list[tuple[Path, str]]:
     """Find epic children that are open/ready and not assigned to a running peasant.
 
     Returns list of (ticket_path, ticket_id) for startable tickets.
+
+    If *children* / *tickets* are provided they are reused instead of
+    re-discovering from disk.
     """
-    children = discover_epic_children(base, branch, epic_id)
+    if children is None:
+        children = discover_epic_children(base, branch, epic_id)
     if not children:
         return []
 
@@ -92,7 +103,7 @@ def get_startable_children(base: Path, branch: str, epic_id: str) -> list[tuple[
 
     startable = []
     for ticket_path in children:
-        ticket = read_ticket(ticket_path)
+        ticket = tickets[ticket_path.stem] if tickets else read_ticket(ticket_path)
 
         # Skip closed, in_review, or already in_progress tickets
         if ticket.status != "open":
@@ -118,15 +129,26 @@ def get_startable_children(base: Path, branch: str, epic_id: str) -> list[tuple[
     return startable
 
 
-def get_active_peasants(base: Path, branch: str, epic_id: str) -> list[tuple[str, str, str]]:
+def get_active_peasants(
+    base: Path,
+    branch: str,
+    epic_id: str,
+    *,
+    children: list[Path] | None = None,
+    tickets: dict[str, Ticket] | None = None,
+) -> list[tuple[str, str, str]]:
     """Get peasants currently working on epic children.
 
     Returns list of (ticket_id, session_name, status).
+
+    If *children* / *tickets* are provided they are reused instead of
+    re-discovering from disk.
     """
-    children = discover_epic_children(base, branch, epic_id)
+    if children is None:
+        children = discover_epic_children(base, branch, epic_id)
     active = []
     for ticket_path in children:
-        ticket = read_ticket(ticket_path)
+        ticket = tickets[ticket_path.stem] if tickets else read_ticket(ticket_path)
         session_name = f"peasant-{ticket.id}"
         state = get_agent_state(base, branch, session_name)
         if state.status not in ("idle",):
@@ -134,18 +156,29 @@ def get_active_peasants(base: Path, branch: str, epic_id: str) -> list[tuple[str
     return active
 
 
-def get_completed_peasants(base: Path, branch: str, epic_id: str) -> list[tuple[str, str]]:
+def get_completed_peasants(
+    base: Path,
+    branch: str,
+    epic_id: str,
+    *,
+    children: list[Path] | None = None,
+    tickets: dict[str, Ticket] | None = None,
+) -> list[tuple[str, str]]:
     """Find peasants that have completed work and need lord attention.
 
     Matches session status ``needs_king_review`` (normal completion) as well as
     ``done`` with ticket ``in_review`` (diverged-state completion via peasant accept).
 
     Returns list of (ticket_id, session_name).
+
+    If *children* / *tickets* are provided they are reused instead of
+    re-discovering from disk.
     """
-    children = discover_epic_children(base, branch, epic_id)
+    if children is None:
+        children = discover_epic_children(base, branch, epic_id)
     completed = []
     for ticket_path in children:
-        ticket = read_ticket(ticket_path)
+        ticket = tickets[ticket_path.stem] if tickets else read_ticket(ticket_path)
         session_name = f"peasant-{ticket.id}"
         state = get_agent_state(base, branch, session_name)
         if state.status == "needs_king_review" or (state.status == "done" and ticket.status == "in_review"):
@@ -153,19 +186,34 @@ def get_completed_peasants(base: Path, branch: str, epic_id: str) -> list[tuple[
     return completed
 
 
-def all_children_closed(base: Path, branch: str, epic_id: str) -> bool:
+def all_children_closed(
+    base: Path,
+    branch: str,
+    epic_id: str,
+    *,
+    children: list[Path] | None = None,
+    tickets: dict[str, Ticket] | None = None,
+) -> bool:
     """Check if all children of the epic are closed."""
-    children = discover_epic_children(base, branch, epic_id)
+    if children is None:
+        children = discover_epic_children(base, branch, epic_id)
     if not children:
         return False
     for ticket_path in children:
-        ticket = read_ticket(ticket_path)
+        ticket = tickets[ticket_path.stem] if tickets else read_ticket(ticket_path)
         if ticket.status != "closed":
             return False
     return True
 
 
-def has_actionable_work(base: Path, branch: str, epic_id: str) -> bool:
+def has_actionable_work(
+    base: Path,
+    branch: str,
+    epic_id: str,
+    *,
+    children: list[Path] | None = None,
+    tickets: dict[str, Ticket] | None = None,
+) -> bool:
     """Check whether the current state has something the lord can act on.
 
     Returns True when at least one of these is true:
@@ -176,21 +224,26 @@ def has_actionable_work(base: Path, branch: str, epic_id: str) -> bool:
     Note: ``all_children_closed`` and ``stop_requested`` are checked separately
     in the loop before this function is called.
     """
-    if get_startable_children(base, branch, epic_id):
+    if children is None:
+        children = discover_epic_children(base, branch, epic_id)
+    if tickets is None:
+        tickets = {p.stem: read_ticket(p) for p in children}
+    if get_startable_children(base, branch, epic_id, children=children, tickets=tickets):
         return True
-    if get_completed_peasants(base, branch, epic_id):
+    if get_completed_peasants(base, branch, epic_id, children=children, tickets=tickets):
         return True
     # No active peasants but open work exists → stuck, lord should investigate
-    active = get_active_peasants(base, branch, epic_id)
-    if not active:
-        children = discover_epic_children(base, branch, epic_id)
-        if any(read_ticket(p).status != "closed" for p in children):
-            return True
-    return False
+    active = get_active_peasants(base, branch, epic_id, children=children, tickets=tickets)
+    return bool(not active and any(t.status != "closed" for t in tickets.values()))
 
 
 def get_children_summary(
-    base: Path, branch: str, epic_id: str
+    base: Path,
+    branch: str,
+    epic_id: str,
+    *,
+    children: list[Path] | None = None,
+    tickets: dict[str, Ticket] | None = None,
 ) -> tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...]:
     """Snapshot the state of all epic children, their peasants, and dependency statuses.
 
@@ -202,7 +255,8 @@ def get_children_summary(
     """
     from kingdom.state import branch_root
 
-    children = discover_epic_children(base, branch, epic_id)
+    if children is None:
+        children = discover_epic_children(base, branch, epic_id)
 
     # Build status map for deps (includes all tickets, not just epic children)
     tickets_dir = branch_root(base, branch) / "tickets"
@@ -211,7 +265,7 @@ def get_children_summary(
 
     summary = []
     for child_path in children:
-        ticket = read_ticket(child_path)
+        ticket = tickets[child_path.stem] if tickets else read_ticket(child_path)
         session_name = f"peasant-{ticket.id}"
         state = get_agent_state(base, branch, session_name)
         dep_statuses = tuple(sorted((d, status_by_id.get(d, "unknown")) for d in ticket.deps))
@@ -236,11 +290,14 @@ def build_lord_prompt(
     epic = read_ticket(epic_path)
     children = discover_epic_children(base, branch, epic_id)
 
+    # Parse all child tickets once and reuse across helpers
+    child_tickets: dict[str, Ticket] = {p.stem: read_ticket(p) for p in children}
+
     # Build children status summary
     child_summary_lines = []
     requeue_tracker: dict[str, int] = {}
     for child_path in children:
-        child = read_ticket(child_path)
+        child = child_tickets[child_path.stem]
         session_name = f"peasant-{child.id}"
         state = get_agent_state(base, branch, session_name)
         deps_str = f" (deps: {', '.join(child.deps)})" if child.deps else ""
@@ -252,12 +309,12 @@ def build_lord_prompt(
                 requeue_tracker[child.id] = state.review_bounce_count
         child_summary_lines.append(f"  - [{child.id}] {child.title} — {status_detail}{deps_str}")
 
-    startable = get_startable_children(base, branch, epic_id)
-    completed = get_completed_peasants(base, branch, epic_id)
-    active = get_active_peasants(base, branch, epic_id)
+    startable = get_startable_children(base, branch, epic_id, children=children, tickets=child_tickets)
+    completed = get_completed_peasants(base, branch, epic_id, children=children, tickets=child_tickets)
+    active = get_active_peasants(base, branch, epic_id, children=children, tickets=child_tickets)
 
     working_count = sum(1 for _, _, s in active if s in ("working", "awaiting_council"))
-    completed_count = sum(1 for child_path in children if read_ticket(child_path).status == "closed")
+    completed_count = sum(1 for t in child_tickets.values() if t.status == "closed")
 
     parts = []
 
