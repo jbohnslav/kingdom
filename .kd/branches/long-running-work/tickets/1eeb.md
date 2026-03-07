@@ -1,11 +1,12 @@
 ---
 id: "1eeb"
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-03-07T15:23:24Z
 type: epic
 priority: 2
+closed_at: 2026-03-07T17:00:22Z
 ---
 # Lord UX: idle detection and worklog hygiene
 
@@ -221,3 +222,6 @@ priority: 2
 - [10:48] — Cycle 95/200 — calling lord agent
 - [10:48] — 0aa6 `awaiting_council` after bounce 1 fix. 2ca9 closed. No action needed.
 - [10:48] — Cycle 96/200 — calling lord agent
+- 2026-03-07 10:49 — Accepted 0aa6 (worklog hygiene). Council: both approved after bounce 1 fix. Changes: (1) worklog hygiene prompt section guiding lord on durable-only logging, (2) harness no longer auto-appends freeform summaries to worklog — moved to logger.info for agent-live.log. Clean 18-line diff. Both epic children now closed — epic complete.
+- [10:49] — 0aa6 is `needs_king_review` — council approved after bounce 1 fix. Let me review and accept.Both council members approved. The diff is clean — 18 insertions, 3 deletions in `lord_harness.py`. Two changes: (1) worklog hygiene prompt section guiding the lord on what to log, (2) removed the harness-level unconditional summary append path (moved to `logger.info`). This composes cleanly with 2ca9's idle detection — together they eliminate both idle cycles and worklog noise.
+- [10:49] — Lord reports epic complete
