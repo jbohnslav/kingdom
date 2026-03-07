@@ -186,3 +186,38 @@ priority: 2
 - [10:42] — Cycle 78/200 — calling lord agent
 - [10:42] — 2ca9 `awaiting_council` after bounce 2 fixes. 0aa6 blocked by dep on 2ca9. No action.
 - [10:42] — Cycle 79/200 — calling lord agent
+- 2026-03-07 10:43 — Accepted 2ca9 (idle detection) after king review. Codex blocked 3x; claude approved 2x. Bounce 1: dead code fixed. Bounce 2: actionability gate added. Bounce 3: codex found done/in_review edge case — valid but cross-cutting, filed as backlog d6ce. Core implementation solid with 19 tests. Starting 0aa6 next.
+- [10:44] — 2ca9 is now `needs_king_review` after 3 council bounces (claude approved, codex kept blocking). This is the escalation point — let me review the work.Good — this is the escalation review. Let me analyze the council feedback across all 3 bounces.
+- [10:44] — Cycle 80/200 — calling lord agent
+- [10:44] — 2ca9 closed. 0aa6 peasant just started working. Let me check status.0aa6 peasant just started (<1 min). 2ca9 closed. No action needed.
+- [10:44] — Cycle 81/200 — calling lord agent
+- [10:44] — 0aa6 peasant just started working (<1 min). 2ca9 closed. No action needed.
+- [10:44] — Cycle 82/200 — calling lord agent
+- [10:44] — 0aa6 peasant actively working (<1 min). 2ca9 closed. No action needed.
+- [10:44] — Cycle 83/200 — calling lord agent
+- [10:45] — 0aa6 actively working (1 min). 2ca9 closed. No action needed.
+- [10:45] — Cycle 84/200 — calling lord agent
+- [10:45] — 0aa6 actively working (1 min). 2ca9 closed. No action needed.
+- [10:45] — Cycle 85/200 — calling lord agent
+- [10:45] — 0aa6 actively working (1 min). 2ca9 closed. No action needed.
+- [10:45] — Cycle 86/200 — calling lord agent
+- [10:45] — 0aa6 actively working (1 min). 2ca9 closed. No action needed.
+- [10:45] — Cycle 87/200 — calling lord agent
+- [10:46] — The 0aa6 worklog shows the peasant already implemented both changes — added worklog hygiene guidance to the lord prompt and redirected cycle narration to logger.info instead of the epic worklog. All 1803 tests pass. Let me check if the peasant has progressed.0aa6 is `awaiting_council` — implementation is complete, waiting for council review. The peasant made clean, focused changes: added worklog hygiene guidance to the lord prompt and redirected cycle narration to logger.info. All 1803 tests ...
+- [10:46] — Cycle 88/200 — calling lord agent
+- [10:46] — 0aa6 has moved to `awaiting_council` — implementation complete, waiting for council review. 2ca9 already closed. No action needed until council finishes reviewing 0aa6.
+- [10:46] — Cycle 89/200 — calling lord agent
+- [10:46] — 0aa6 `awaiting_council` — council reviewing the worklog hygiene changes. 2ca9 closed. No action needed.
+- [10:46] — Cycle 90/200 — calling lord agent
+- [10:47] — 0aa6 got bounced by council (bounce 1/3) — codex blocked because the harness still appends per-cycle summaries via `extract_lord_summary`. The prompt-only approach doesn't enforce worklog hygiene; the harness needs to stop writing the agent's full response to the worklog. Peasant is back to working on the fix.0aa6 peasant actively working (3 min, just active) on bounce 1 fixes. 2ca9 closed. No action needed.
+- [10:47] — Cycle 91/200 — calling lord agent
+- [10:47] — 0aa6 actively working on bounce 1 fixes (3 min, just active). Codex wants the harness to stop appending `extract_lord_summary` output to the worklog — prompt-only guidance isn't enough. 2ca9 closed. No action needed.
+- [10:47] — Cycle 92/200 — calling lord agent
+- [10:47] — 0aa6 actively working on bounce 1 fixes (3 min, just active). Codex wants the harness to enforce worklog hygiene, not just ask the agent nicely. 2ca9 closed. No action needed.
+- [10:47] — Cycle 93/200 — calling lord agent
+- [10:48] — 0aa6 is back to `awaiting_council` after addressing bounce 1 fixes (4 min, just active). The peasant likely stopped the harness from appending `extract_lord_summary` to the worklog as codex requested. Waiting for council to review the bounce 1 fix. 2ca9 closed. No action needed.
+- [10:48] — Cycle 94/200 — calling lord agent
+- [10:48] — 0aa6 `awaiting_council` after bounce 1 fix (removed unconditional `extract_lord_summary → append_lord_worklog` path). 2ca9 closed. No action needed.
+- [10:48] — Cycle 95/200 — calling lord agent
+- [10:48] — 0aa6 `awaiting_council` after bounce 1 fix. 2ca9 closed. No action needed.
+- [10:48] — Cycle 96/200 — calling lord agent
