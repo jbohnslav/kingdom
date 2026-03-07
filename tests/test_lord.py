@@ -819,7 +819,7 @@ class TestIdleDetectionInLoop:
 
         cycle_count = 0
 
-        def summary_with_transition(base, branch, epic_id):
+        def summary_with_transition(base, branch, epic_id, **kwargs):
             nonlocal cycle_count
             cycle_count += 1
             if cycle_count <= 2:
@@ -868,7 +868,7 @@ class TestIdleDetectionInLoop:
 
         call_count = 0
 
-        def changing_summary(base, branch, epic_id):
+        def changing_summary(base, branch, epic_id, **kwargs):
             nonlocal call_count
             call_count += 1
             # Return different state on calls 1 and 4 to trigger resets
@@ -936,7 +936,7 @@ class TestWaitingStatusInLoop:
         # Make each cycle see a different state so idle detection doesn't kick in
         cycle_count = 0
 
-        def unique_summary(base, branch, epic_id):
+        def unique_summary(base, branch, epic_id, **kwargs):
             nonlocal cycle_count
             cycle_count += 1
             return (("ch01", "in_progress", f"state-{cycle_count}"),)
