@@ -30,6 +30,12 @@ MAX_REQUEUE_ATTEMPTS = 3
 POLL_INTERVAL_SECONDS = 30
 MAX_PARALLEL_PEASANTS = 10
 
+# Idle detection backoff parameters
+BACKOFF_INITIAL = 5
+BACKOFF_STEPS = (5, 15, 30, 60)  # escalating delays, cap at 60s
+BACKOFF_CAP = 60
+WAITING_DELAY = 30  # delay after agent returns WAITING
+
 
 def lord_session_name(epic_id: str) -> str:
     """Return the canonical session name for a lord orchestrating *epic_id*."""
@@ -156,6 +162,50 @@ def all_children_closed(base: Path, branch: str, epic_id: str) -> bool:
         if ticket.status != "closed":
             return False
     return True
+
+
+def get_children_summary(base: Path, branch: str, epic_id: str) -> tuple[tuple[str, str, str], ...]:
+    """Snapshot the state of all epic children and their peasants.
+
+    Returns a tuple of (ticket_id, ticket_status, peasant_status) for each child,
+    sorted by ticket_id for stable comparison.
+    """
+    children = discover_epic_children(base, branch, epic_id)
+    summary = []
+    for child_path in children:
+        ticket = read_ticket(child_path)
+        session_name = f"peasant-{ticket.id}"
+        state = get_agent_state(base, branch, session_name)
+        summary.append((ticket.id, ticket.status, state.status))
+    return tuple(sorted(summary))
+
+
+def is_actionable(base: Path, branch: str, epic_id: str, stop_requested: bool) -> bool:
+    """Check if the current state has something actionable for the lord.
+
+    Actionable means at least one of:
+    - A startable child exists (open, no blocking deps)
+    - A peasant is needs_king_review
+    - All children are closed (epic complete)
+    - Stop requested
+    - No active peasants remain but open work still exists
+    """
+    if stop_requested:
+        return True
+    if all_children_closed(base, branch, epic_id):
+        return True
+    if get_startable_children(base, branch, epic_id):
+        return True
+    if get_completed_peasants(base, branch, epic_id):
+        return True
+    # No active peasants but open work exists
+    active = get_active_peasants(base, branch, epic_id)
+    if not active:
+        children = discover_epic_children(base, branch, epic_id)
+        has_open = any(read_ticket(p).status != "closed" for p in children)
+        if has_open:
+            return True
+    return False
 
 
 def build_lord_prompt(
@@ -320,6 +370,7 @@ def build_lord_prompt(
     parts.append("")
     parts.append("STATUS: DONE — All epic children are closed, epic is complete")
     parts.append("STATUS: CONTINUE — More work to do, need another cycle")
+    parts.append("STATUS: WAITING — Nothing actionable right now, all peasants working/in council review")
     parts.append("STATUS: BLOCKED — Cannot proceed, need King intervention")
     parts.append("STATUS: ESCALATE <ticket-id> — Ticket needs King attention after repeated failures")
     parts.append("STATUS: STOPPED — Stop signal received, shutting down gracefully")
@@ -335,7 +386,7 @@ def parse_lord_status(response_text: str) -> tuple[str, str | None]:
     """
     for line in reversed(response_text.strip().splitlines()):
         line = line.strip()
-        match = re.match(r"^STATUS:\s*(DONE|CONTINUE|BLOCKED|STOPPED)$", line, re.IGNORECASE)
+        match = re.match(r"^STATUS:\s*(DONE|CONTINUE|BLOCKED|STOPPED|WAITING)$", line, re.IGNORECASE)
         if match:
             return match.group(1).lower(), None
         match = re.match(r"^STATUS:\s*ESCALATE\s+(\S+)", line, re.IGNORECASE)
@@ -396,6 +447,8 @@ def run_lord_loop(
     resume_id = agent_state.resume_id
 
     final_status = "failed"
+    last_seen_states: tuple[tuple[str, str, str], ...] | None = None
+    consecutive_idle = 0
 
     for cycle in range(1, max_cycles + 1):
         # Check for stop: either SIGTERM signal or persisted "stopping" session state
@@ -417,6 +470,32 @@ def run_lord_loop(
             append_lord_worklog(epic_path, "All epic children closed — epic complete")
             logger.info("All children closed at cycle %d", cycle)
             break
+
+        # --- Idle detection: snapshot state and compare ---
+        current_states = get_children_summary(base, branch, epic_id)
+        if current_states == last_seen_states:
+            # Nothing changed — apply backoff and skip LLM call
+            consecutive_idle += 1
+            idx = min(consecutive_idle - 1, len(BACKOFF_STEPS) - 1)
+            backoff_delay = BACKOFF_STEPS[idx]
+            logger.info(
+                "Idle skip %d — no state change, sleeping %ds (cycle %d)",
+                consecutive_idle,
+                backoff_delay,
+                cycle,
+            )
+            print(
+                f"[lord-{epic_id}] idle skip {consecutive_idle} — " f"no state change, sleeping {backoff_delay}s",
+                flush=True,
+            )
+            time.sleep(backoff_delay)
+            continue
+        else:
+            # State changed — reset backoff
+            if consecutive_idle > 0:
+                logger.info("State changed after %d idle skips — resuming", consecutive_idle)
+            last_seen_states = current_states
+            consecutive_idle = 0
 
         # Update session: working
         now = datetime.now(UTC).isoformat()
@@ -511,6 +590,15 @@ def run_lord_loop(
             final_status = "stopped"
             append_lord_worklog(epic_path, "Lord stopping gracefully")
             break
+        elif status == "waiting":
+            # Agent says nothing actionable — use longer delay before next cycle
+            logger.info("Lord reports WAITING — applying %ds delay", WAITING_DELAY)
+            print(
+                f"[lord-{epic_id}] agent waiting — " f"nothing actionable, sleeping {WAITING_DELAY}s",
+                flush=True,
+            )
+            time.sleep(WAITING_DELAY)
+            continue
         # else: continue to next cycle
 
         # Brief pause between cycles to avoid hammering
@@ -541,7 +629,7 @@ def extract_lord_summary(response_text: str) -> str:
     """Extract a summary from the lord's response for the worklog."""
     lines = []
     for line in response_text.strip().splitlines():
-        if re.match(r"^STATUS:\s*(DONE|BLOCKED|CONTINUE|STOPPED|ESCALATE)", line.strip(), re.IGNORECASE):
+        if re.match(r"^STATUS:\s*(DONE|BLOCKED|CONTINUE|STOPPED|ESCALATE|WAITING)", line.strip(), re.IGNORECASE):
             break
         lines.append(line)
 
