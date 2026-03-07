@@ -162,6 +162,30 @@ def all_children_closed(base: Path, branch: str, epic_id: str) -> bool:
     return True
 
 
+def has_actionable_work(base: Path, branch: str, epic_id: str) -> bool:
+    """Check whether the current state has something the lord can act on.
+
+    Returns True when at least one of these is true:
+    - A startable child exists (open, deps met, no active peasant)
+    - A peasant is ``needs_king_review``
+    - No active peasants remain but open work still exists (stuck state)
+
+    Note: ``all_children_closed`` and ``stop_requested`` are checked separately
+    in the loop before this function is called.
+    """
+    if get_startable_children(base, branch, epic_id):
+        return True
+    if get_completed_peasants(base, branch, epic_id):
+        return True
+    # No active peasants but open work exists → stuck, lord should investigate
+    active = get_active_peasants(base, branch, epic_id)
+    if not active:
+        children = discover_epic_children(base, branch, epic_id)
+        if any(read_ticket(p).status != "closed" for p in children):
+            return True
+    return False
+
+
 def get_children_summary(
     base: Path, branch: str, epic_id: str
 ) -> tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...]:
@@ -455,10 +479,27 @@ def run_lord_loop(
             logger.info("All children closed at cycle %d", cycle)
             break
 
-        # --- Idle detection: snapshot state and compare ---
+        # --- Idle detection: snapshot state and check actionability ---
         current_states = get_children_summary(base, branch, epic_id)
-        if current_states == last_seen_states:
-            # Nothing changed — apply backoff and skip LLM call
+        if current_states != last_seen_states:
+            # State changed — update snapshot and reset backoff counter
+            if consecutive_idle > 0:
+                logger.info("State changed after %d idle skips", consecutive_idle)
+            last_seen_states = current_states
+            consecutive_idle = 0
+
+            # Even though state changed, only wake the lord if something is actionable.
+            # Non-actionable changes (e.g. working→awaiting_council) should still idle.
+            if not has_actionable_work(base, branch, epic_id):
+                logger.info("State changed but nothing actionable — idle skip (cycle %d)", cycle)
+                print(
+                    f"[lord-{epic_id}] state changed but nothing actionable — sleeping {BACKOFF_STEPS[0]}s",
+                    flush=True,
+                )
+                time.sleep(BACKOFF_STEPS[0])
+                continue
+        else:
+            # Nothing changed — apply escalating backoff and skip LLM call
             consecutive_idle += 1
             idx = min(consecutive_idle - 1, len(BACKOFF_STEPS) - 1)
             backoff_delay = BACKOFF_STEPS[idx]
@@ -469,17 +510,11 @@ def run_lord_loop(
                 cycle,
             )
             print(
-                f"[lord-{epic_id}] idle skip {consecutive_idle} — " f"no state change, sleeping {backoff_delay}s",
+                f"[lord-{epic_id}] idle skip {consecutive_idle} — no state change, sleeping {backoff_delay}s",
                 flush=True,
             )
             time.sleep(backoff_delay)
             continue
-        else:
-            # State changed — reset backoff
-            if consecutive_idle > 0:
-                logger.info("State changed after %d idle skips — resuming", consecutive_idle)
-            last_seen_states = current_states
-            consecutive_idle = 0
 
         # Update session: working
         now = datetime.now(UTC).isoformat()

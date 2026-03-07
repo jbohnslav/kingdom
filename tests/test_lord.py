@@ -20,6 +20,7 @@ from kingdom.lord_harness import (
     get_children_summary,
     get_completed_peasants,
     get_startable_children,
+    has_actionable_work,
     lord_session_name,
     parse_lord_status,
 )
@@ -614,9 +615,41 @@ class TestGetChildrenSummary:
         assert s1 == s2
 
 
+class TestHasActionableWork:
+    def test_startable_child_is_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="open")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+    def test_needs_king_review_is_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_review")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="needs_king_review")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+    def test_only_working_peasants_not_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is False
+
+    def test_awaiting_council_not_actionable(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="awaiting_council")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is False
+
+    def test_no_active_peasants_open_work_is_actionable(self, project_with_run: Path) -> None:
+        """If no peasants are running but open tickets exist, that's actionable (stuck state)."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        # peasant is idle — stuck state
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+
 class TestIdleDetectionInLoop:
-    def test_idle_skips_llm_call(self, project_with_run: Path) -> None:
-        """When state doesn't change between cycles, the LLM should not be called."""
+    def test_idle_skips_llm_when_not_actionable(self, project_with_run: Path) -> None:
+        """When only working peasants exist, the LLM should never be called."""
         from unittest.mock import MagicMock
 
         from kingdom.lord_harness import run_lord_loop
@@ -649,13 +682,52 @@ class TestIdleDetectionInLoop:
                 max_cycles=4,
             )
 
-        # Cycle 1: new state (differs from None) -> LLM call
-        # Cycles 2-4: same state -> idle skips (no LLM call)
-        # So LLM subprocess should be called exactly once
+        # All cycles idle — nothing actionable (only a working peasant)
+        # Cycle 1: new state but not actionable -> idle skip (sleep BACKOFF_STEPS[0])
+        # Cycles 2-4: unchanged state -> escalating backoff
+        assert mock_subprocess.call_count == 0
+
+    def test_calls_llm_when_actionable(self, project_with_run: Path) -> None:
+        """When a startable child exists, the LLM should be called."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        # ch01 is open with no deps and no active peasant — startable
+        make_child(project_with_run, "ch01", "epic1", status="open")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = "Started peasant.\nSTATUS: CONTINUE"
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+        ):
+            run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=2,
+            )
+
+        # Cycle 1: new state + actionable (startable child) -> LLM call
+        # ch01 is still open after the mock LLM call, so cycle 2 also has unchanged
+        # but actionable state — but state hasn't changed so it idles
         assert mock_subprocess.call_count == 1
 
     def test_backoff_increases(self, project_with_run: Path) -> None:
-        """Backoff delay should increase with consecutive idle skips."""
+        """Backoff delay should increase with consecutive idle skips (no state change)."""
         from unittest.mock import MagicMock
 
         from kingdom.lord_harness import run_lord_loop
@@ -668,10 +740,8 @@ class TestIdleDetectionInLoop:
         update_agent_state(project_with_run, BRANCH, session_name, status="working")
 
         mock_sleep = MagicMock()
-
-        # Mock the LLM call for the first cycle (state is new, LLM will be called)
         mock_proc = MagicMock()
-        mock_proc.stdout = "Monitoring peasants.\nSTATUS: CONTINUE"
+        mock_proc.stdout = ""
         mock_proc.stderr = ""
         mock_proc.returncode = 0
 
@@ -689,16 +759,70 @@ class TestIdleDetectionInLoop:
                 max_cycles=5,
             )
 
-        # Cycle 1: new state -> LLM call -> CONTINUE -> sleep(5)
-        # Cycle 2: same state -> idle skip 1 -> sleep(5)
-        # Cycle 3: same state -> idle skip 2 -> sleep(15)
-        # Cycle 4: same state -> idle skip 3 -> sleep(30)
-        # Cycle 5: same state -> idle skip 4 -> sleep(60)
+        # Cycle 1: new state but not actionable -> sleep(BACKOFF_STEPS[0])
+        # Cycle 2: same state -> idle skip 1 -> sleep(BACKOFF_STEPS[0])
+        # Cycle 3: same state -> idle skip 2 -> sleep(BACKOFF_STEPS[1])
+        # Cycle 4: same state -> idle skip 3 -> sleep(BACKOFF_STEPS[2])
+        # Cycle 5: same state -> idle skip 4 -> sleep(BACKOFF_STEPS[3])
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
-        assert sleep_calls == [5, BACKOFF_STEPS[0], BACKOFF_STEPS[1], BACKOFF_STEPS[2], BACKOFF_STEPS[3]]
+        assert sleep_calls == [
+            BACKOFF_STEPS[0],
+            BACKOFF_STEPS[0],
+            BACKOFF_STEPS[1],
+            BACKOFF_STEPS[2],
+            BACKOFF_STEPS[3],
+        ]
 
-    def test_backoff_resets_on_state_change(self, project_with_run: Path) -> None:
-        """Backoff should reset when state changes between cycles."""
+    def test_non_actionable_state_change_stays_idle(self, project_with_run: Path) -> None:
+        """A peasant moving working->awaiting_council should not wake the lord."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        cycle_count = 0
+
+        def summary_with_transition(base, branch, epic_id):
+            nonlocal cycle_count
+            cycle_count += 1
+            if cycle_count <= 2:
+                return (("ch01", "in_progress", "working", ()),)
+            # Peasant moves to awaiting_council — state changes but NOT actionable
+            return (("ch01", "in_progress", "awaiting_council", ()),)
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+            patch("kingdom.lord_harness.get_children_summary", side_effect=summary_with_transition),
+            patch("kingdom.lord_harness.has_actionable_work", return_value=False),
+        ):
+            run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=4,
+            )
+
+        # All 4 cycles should idle — the state change at cycle 3 is non-actionable
+        assert mock_subprocess.call_count == 0
+
+    def test_backoff_resets_on_actionable_state_change(self, project_with_run: Path) -> None:
+        """Backoff should reset when state changes to something actionable."""
         from unittest.mock import MagicMock
 
         from kingdom.lord_harness import run_lord_loop
@@ -732,6 +856,7 @@ class TestIdleDetectionInLoop:
             patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
             patch("kingdom.lord_harness.get_children_summary", side_effect=changing_summary),
+            patch("kingdom.lord_harness.has_actionable_work", return_value=True),
         ):
             run_lord_loop(
                 base=project_with_run,
@@ -742,11 +867,11 @@ class TestIdleDetectionInLoop:
                 max_cycles=6,
             )
 
-        # Cycle 1: call_count=1, new state "working-1" -> LLM -> sleep(5)
-        # Cycle 2: call_count=2, state "working" (differs from "working-1") -> LLM -> sleep(5)
+        # Cycle 1: call_count=1, new state "working-1", actionable -> LLM -> sleep(5)
+        # Cycle 2: call_count=2, state "working" (differs), actionable -> LLM -> sleep(5)
         # Cycle 3: call_count=3, state "working" (same) -> idle skip 1 -> sleep(5)
-        # Cycle 4: call_count=4, state "working-4" (different!) -> LLM -> sleep(5)
-        # Cycle 5: call_count=5, state "working" (differs from "working-4") -> LLM -> sleep(5)
+        # Cycle 4: call_count=4, state "working-4" (different!), actionable -> LLM -> sleep(5)
+        # Cycle 5: call_count=5, state "working" (differs), actionable -> LLM -> sleep(5)
         # Cycle 6: call_count=6, state "working" (same) -> idle skip 1 -> sleep(5)
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
         # All sleeps should be 5s (backoff resets each time state changes)
@@ -797,6 +922,7 @@ class TestWaitingStatusInLoop:
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
             patch("kingdom.lord_harness.get_children_summary", side_effect=unique_summary),
             patch("kingdom.lord_harness.parse_response", side_effect=mock_parse_response),
+            patch("kingdom.lord_harness.has_actionable_work", return_value=True),
         ):
             status = run_lord_loop(
                 base=project_with_run,
