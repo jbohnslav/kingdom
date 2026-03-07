@@ -595,10 +595,11 @@ def run_lord_loop(
         status, escalate_ticket = parse_lord_status(text)
         logger.info("Lord status: %s (escalate: %s)", status, escalate_ticket)
 
-        # Log lord's summary to worklog
+        # Log lord's summary to debug log (not the epic worklog — the lord
+        # logs durable events itself via `kd tk log`)
         summary = extract_lord_summary(text)
         if summary:
-            append_lord_worklog(epic_path, summary)
+            logger.info("Lord summary: %s", summary)
 
         # Update session timestamp
         now = datetime.now(UTC).isoformat()
