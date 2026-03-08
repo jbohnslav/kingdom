@@ -1076,3 +1076,12 @@ class TestBuildLordPromptWorklog:
         prompt = build_lord_prompt(epic_path, "epic1", project_with_run, BRANCH)
         assert "You are a lord" in prompt
         assert "Recent Worklog" not in prompt
+
+    def test_prompt_references_stdout_log_not_agent_live(self, project_with_run: Path) -> None:
+        """Prompt should reference stdout.log for narration, not agent-live.log."""
+        _, epic_path = make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1")
+
+        prompt = build_lord_prompt(epic_path, "epic1", project_with_run, BRANCH)
+        assert "stdout.log" in prompt
+        assert "agent-live.log" not in prompt

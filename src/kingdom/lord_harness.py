@@ -509,7 +509,7 @@ def build_lord_prompt(
     parts.append("- Epic completed")
     parts.append("")
     parts.append("Do NOT log idle observations, status checks, or 'nothing to do' entries.")
-    parts.append("Per-cycle narration goes to stdout (captured in agent-live.log), not the worklog.")
+    parts.append("Per-cycle narration goes to stdout (captured in stdout.log), not the worklog.")
     parts.append("")
 
     # Response format
@@ -637,10 +637,6 @@ def run_lord_loop(
             # Non-actionable changes (e.g. working→awaiting_council) should still idle.
             if not has_actionable_work(base, branch, epic_id, children=cycle_children, tickets=cycle_tickets):
                 logger.info("State changed but nothing actionable — idle skip (cycle %d)", cycle)
-                print(
-                    f"[lord-{epic_id}] state changed but nothing actionable — sleeping {BACKOFF_STEPS[0]}s",
-                    flush=True,
-                )
                 time.sleep(BACKOFF_STEPS[0])
                 continue
         else:
@@ -653,10 +649,6 @@ def run_lord_loop(
                 consecutive_idle,
                 backoff_delay,
                 cycle,
-            )
-            print(
-                f"[lord-{epic_id}] idle skip {consecutive_idle} — no state change, sleeping {backoff_delay}s",
-                flush=True,
             )
             time.sleep(backoff_delay)
             continue
@@ -762,10 +754,6 @@ def run_lord_loop(
         elif status == "waiting":
             # Agent says nothing actionable — use longer delay before next cycle
             logger.info("Lord reports WAITING — applying %ds delay", WAITING_DELAY)
-            print(
-                f"[lord-{epic_id}] agent waiting — " f"nothing actionable, sleeping {WAITING_DELAY}s",
-                flush=True,
-            )
             time.sleep(WAITING_DELAY)
             continue
         # else: continue to next cycle
