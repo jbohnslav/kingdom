@@ -20,6 +20,7 @@ from kingdom.lord_harness import (
     extract_lord_summary,
     get_children_summary,
     get_completed_peasants,
+    get_inflight_peasants,
     get_startable_children,
     has_actionable_work,
     lord_session_name,
@@ -499,6 +500,26 @@ class TestLordCLIStop:
         state = get_agent_state(cli_project, BRANCH, "lord-epic1")
         assert state.status == "stopping"
 
+    def test_stop_already_stopping(self, cli_project: Path) -> None:
+        """Second stop call when already stopping should exit 0 with friendly message."""
+        tdir = tickets_dir(cli_project)
+        tdir.mkdir(parents=True, exist_ok=True)
+        epic = Ticket(
+            id="epic1",
+            status="in_progress",
+            title="Test Epic",
+            type="epic",
+            body="",
+            created=datetime.now(UTC),
+        )
+        write_ticket(epic, tdir / "epic1.md")
+
+        update_agent_state(cli_project, BRANCH, "lord-epic1", status="stopping")
+
+        result = runner.invoke(lord_app, ["stop", "epic1"])
+        assert result.exit_code == 0
+        assert "already stopping" in result.output.lower()
+
 
 class TestLordCLIStatus:
     def test_status_no_lords(self, cli_project: Path) -> None:
@@ -671,6 +692,59 @@ class TestHasActionableWork:
         make_child(project_with_run, "ch01", "epic1", status="in_progress")
         # peasant is idle — stuck state
         assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+    def test_failed_peasant_triggers_stuck_detection(self, project_with_run: Path) -> None:
+        """A failed peasant with in_progress ticket is a stuck state — lord must act."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="failed")
+        # Failed peasant is not inflight, so open work + no inflight = actionable
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+    def test_stopped_peasant_triggers_stuck_detection(self, project_with_run: Path) -> None:
+        """A stopped peasant with in_progress ticket is a stuck state — lord must act."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="stopped")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+
+class TestGetInflightPeasants:
+    def test_includes_working(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 1
+        assert inflight[0][0] == "ch01"
+
+    def test_includes_awaiting_council(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="awaiting_council")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 1
+
+    def test_excludes_failed(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="failed")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 0
+
+    def test_excludes_stopped(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="stopped")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 0
+
+    def test_excludes_needs_king_review(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_review")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="needs_king_review")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 0
 
 
 class TestIdleDetectionInLoop:
