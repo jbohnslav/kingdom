@@ -16,11 +16,12 @@ import signal
 import subprocess
 import threading
 import time
+import types
 from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
-from kingdom.session import get_agent_state, update_agent_state
+from kingdom.session import ACTIVE_PEASANT_STATUSES, get_agent_state, update_agent_state
 from kingdom.state import logs_root
 from kingdom.ticket import (
     Ticket,
@@ -138,7 +139,7 @@ def get_startable_children(
     return startable
 
 
-def get_active_peasants(
+def get_inflight_peasants(
     base: Path,
     branch: str,
     epic_id: str,
@@ -146,13 +147,16 @@ def get_active_peasants(
     children: list[Path] | None = None,
     tickets: dict[str, Ticket] | None = None,
 ) -> list[tuple[str, str, str]]:
-    """Get peasants currently working on epic children.
+    """Get peasants in truly active statuses (working, awaiting_council).
+
+    Used for scheduling decisions — excludes terminal states (failed, stopped,
+    done) and ``needs_king_review`` (which ``get_completed_peasants`` handles).
 
     Returns list of (ticket_id, session_name, status).
-
-    If *children* / *tickets* are provided they are reused instead of
-    re-discovering from disk.
     """
+    # Scheduling-relevant: working or awaiting_council (not needs_king_review,
+    # which is handled by get_completed_peasants, and not terminal states).
+    scheduling_statuses = ACTIVE_PEASANT_STATUSES - {"needs_king_review"}
     if children is None:
         children = discover_epic_children(base, branch, epic_id)
     active = []
@@ -160,9 +164,36 @@ def get_active_peasants(
         ticket = tickets[ticket_path.stem] if tickets else read_ticket(ticket_path)
         session_name = f"peasant-{ticket.id}"
         state = get_agent_state(base, branch, session_name)
-        if state.status not in ("idle",):
+        if state.status in scheduling_statuses:
             active.append((ticket.id, session_name, state.status))
     return active
+
+
+def get_all_peasant_sessions(
+    base: Path,
+    branch: str,
+    epic_id: str,
+    *,
+    children: list[Path] | None = None,
+    tickets: dict[str, Ticket] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Get all peasants with non-idle sessions for display purposes.
+
+    Returns list of (ticket_id, session_name, status) for every peasant
+    that has been started at any point (any status except idle).
+
+    Use ``get_inflight_peasants`` for scheduling decisions instead.
+    """
+    if children is None:
+        children = discover_epic_children(base, branch, epic_id)
+    result = []
+    for ticket_path in children:
+        ticket = tickets[ticket_path.stem] if tickets else read_ticket(ticket_path)
+        session_name = f"peasant-{ticket.id}"
+        state = get_agent_state(base, branch, session_name)
+        if state.status not in ("idle",):
+            result.append((ticket.id, session_name, state.status))
+    return result
 
 
 def get_completed_peasants(
@@ -241,9 +272,9 @@ def has_actionable_work(
         return True
     if get_completed_peasants(base, branch, epic_id, children=children, tickets=tickets):
         return True
-    # No active peasants but open work exists → stuck, lord should investigate
-    active = get_active_peasants(base, branch, epic_id, children=children, tickets=tickets)
-    return bool(not active and any(t.status != "closed" for t in tickets.values()))
+    # No inflight peasants but open work exists → stuck, lord should investigate
+    inflight = get_inflight_peasants(base, branch, epic_id, children=children, tickets=tickets)
+    return bool(not inflight and any(t.status != "closed" for t in tickets.values()))
 
 
 def get_children_summary(
@@ -374,9 +405,9 @@ def build_lord_prompt(
 
     startable = get_startable_children(base, branch, epic_id, children=children, tickets=child_tickets)
     completed = get_completed_peasants(base, branch, epic_id, children=children, tickets=child_tickets)
-    active = get_active_peasants(base, branch, epic_id, children=children, tickets=child_tickets)
+    all_sessions = get_all_peasant_sessions(base, branch, epic_id, children=children, tickets=child_tickets)
 
-    working_count = sum(1 for _, _, s in active if s in ("working", "awaiting_council"))
+    working_count = sum(1 for _, _, s in all_sessions if s in ("working", "awaiting_council"))
     completed_count = sum(1 for t in child_tickets.values() if t.status == "closed")
 
     parts = []
@@ -551,11 +582,16 @@ def run_lord_loop(
     epic_id: str,
     session_name: str,
     max_cycles: int = 200,
+    max_iterations: int = 2000,
 ) -> str:
     """Run the lord orchestration loop.
 
     Each cycle: build prompt with epic state, call LLM, parse response,
     check if done/blocked/escalate, repeat.
+
+    *max_cycles* caps actual LLM agent calls (the budget that matters).
+    *max_iterations* caps total loop iterations (including idle skips)
+    as a safety net against infinite idle loops.
 
     Returns final status: done, blocked, failed, stopped, escalate.
     """
@@ -584,7 +620,7 @@ def run_lord_loop(
     # Signal handling
     stop_requested = False
 
-    def handle_signal(signum: int, frame: object) -> None:
+    def handle_signal(signum: int, frame: types.FrameType | None) -> None:
         nonlocal stop_requested
         stop_requested = True
         logger.info("Stop signal received (signal %d)", signum)
@@ -598,8 +634,9 @@ def run_lord_loop(
     final_status = "failed"
     last_seen_states: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] | None = None
     consecutive_idle = 0
+    agent_calls = 0
 
-    for cycle in range(1, max_cycles + 1):
+    for iteration in range(1, max_iterations + 1):
         # Check for stop: either SIGTERM signal or persisted "stopping" session state
         if not stop_requested:
             session_state = get_agent_state(base, branch, session_name)
@@ -610,7 +647,7 @@ def run_lord_loop(
         if stop_requested:
             final_status = "stopped"
             append_lord_worklog(epic_path, epic_id=epic_id, entry="Stop requested — shutting down gracefully")
-            logger.info("Stopping at cycle %d", cycle)
+            logger.info("Stopping at iteration %d (agent calls: %d)", iteration, agent_calls)
             break
 
         # Discover children and parse tickets once per cycle iteration
@@ -621,7 +658,7 @@ def run_lord_loop(
         if all_children_closed(base, branch, epic_id, children=cycle_children, tickets=cycle_tickets):
             final_status = "done"
             append_lord_worklog(epic_path, epic_id=epic_id, entry="All epic children closed — epic complete")
-            logger.info("All children closed at cycle %d", cycle)
+            logger.info("All children closed at iteration %d (agent calls: %d)", iteration, agent_calls)
             break
 
         # --- Idle detection: snapshot state and check actionability ---
@@ -636,7 +673,7 @@ def run_lord_loop(
             # Even though state changed, only wake the lord if something is actionable.
             # Non-actionable changes (e.g. working→awaiting_council) should still idle.
             if not has_actionable_work(base, branch, epic_id, children=cycle_children, tickets=cycle_tickets):
-                logger.info("State changed but nothing actionable — idle skip (cycle %d)", cycle)
+                logger.info("State changed but nothing actionable — idle skip (iteration %d)", iteration)
                 time.sleep(BACKOFF_STEPS[0])
                 continue
         else:
@@ -645,13 +682,23 @@ def run_lord_loop(
             idx = min(consecutive_idle - 1, len(BACKOFF_STEPS) - 1)
             backoff_delay = BACKOFF_STEPS[idx]
             logger.info(
-                "Idle skip %d — no state change, sleeping %ds (cycle %d)",
+                "Idle skip %d — no state change, sleeping %ds (iteration %d)",
                 consecutive_idle,
                 backoff_delay,
-                cycle,
+                iteration,
             )
             time.sleep(backoff_delay)
             continue
+
+        # Check agent call budget before making another LLM call
+        agent_calls += 1
+        if agent_calls > max_cycles:
+            logger.warning("Agent call budget (%d) exhausted at iteration %d", max_cycles, iteration)
+            append_lord_worklog(
+                epic_path, epic_id=epic_id, entry=f"Agent call budget ({max_cycles}) exhausted without completion"
+            )
+            final_status = "failed"
+            break
 
         # Update session: working
         now = datetime.now(UTC).isoformat()
@@ -663,7 +710,7 @@ def run_lord_loop(
             last_activity=now,
         )
 
-        logger.info("Cycle %d/%d — calling lord agent", cycle, max_cycles)
+        logger.info("Agent call %d/%d (iteration %d) — calling lord agent", agent_calls, max_cycles, iteration)
 
         # Build prompt with current state (reuse cycle's children/tickets)
         prompt = build_lord_prompt(
@@ -671,7 +718,7 @@ def run_lord_loop(
             epic_id,
             base,
             branch,
-            cycle_number=cycle,
+            cycle_number=agent_calls,
             stop_requested=stop_requested,
             children=cycle_children,
             tickets=cycle_tickets,
@@ -679,7 +726,7 @@ def run_lord_loop(
 
         # Call agent
         cmd = build_command(agent_config, prompt, resume_id, streaming=True)
-        logger.info("Calling backend for lord cycle %d", cycle)
+        logger.info("Calling backend for lord agent call %d", agent_calls)
 
         live_log_path = logs_root(base, branch) / session_name / "agent-live.log"
 
@@ -763,9 +810,11 @@ def run_lord_loop(
             time.sleep(5)
 
     else:
-        # Max cycles reached
-        logger.warning("Max cycles (%d) reached", max_cycles)
-        append_lord_worklog(epic_path, epic_id=epic_id, entry=f"Max cycles ({max_cycles}) reached without completion")
+        # Max iterations reached (safety cap)
+        logger.warning("Max iterations (%d) reached (agent calls: %d)", max_iterations, agent_calls)
+        append_lord_worklog(
+            epic_path, epic_id=epic_id, entry=f"Max iterations ({max_iterations}) reached without completion"
+        )
         final_status = "failed"
 
     # Final session update

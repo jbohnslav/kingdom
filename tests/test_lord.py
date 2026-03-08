@@ -706,11 +706,12 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=4,
+                max_iterations=4,
             )
 
-        # All cycles idle — nothing actionable (only a working peasant)
-        # Cycle 1: new state but not actionable -> idle skip (sleep BACKOFF_STEPS[0])
-        # Cycles 2-4: unchanged state -> escalating backoff
+        # All iterations idle — nothing actionable (only a working peasant)
+        # Iteration 1: new state but not actionable -> idle skip (sleep BACKOFF_STEPS[0])
+        # Iterations 2-4: unchanged state -> escalating backoff
         assert mock_subprocess.call_count == 0
 
     def test_calls_llm_when_actionable(self, project_with_run: Path) -> None:
@@ -745,10 +746,11 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=2,
+                max_iterations=2,
             )
 
-        # Cycle 1: new state + actionable (startable child) -> LLM call
-        # ch01 is still open after the mock LLM call, so cycle 2 also has unchanged
+        # Iteration 1: new state + actionable (startable child) -> LLM call
+        # ch01 is still open after the mock LLM call, so iteration 2 also has unchanged
         # but actionable state — but state hasn't changed so it idles
         assert mock_subprocess.call_count == 1
 
@@ -783,13 +785,14 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=5,
+                max_iterations=5,
             )
 
-        # Cycle 1: new state but not actionable -> sleep(BACKOFF_STEPS[0])
-        # Cycle 2: same state -> idle skip 1 -> sleep(BACKOFF_STEPS[0])
-        # Cycle 3: same state -> idle skip 2 -> sleep(BACKOFF_STEPS[1])
-        # Cycle 4: same state -> idle skip 3 -> sleep(BACKOFF_STEPS[2])
-        # Cycle 5: same state -> idle skip 4 -> sleep(BACKOFF_STEPS[3])
+        # Iteration 1: new state but not actionable -> sleep(BACKOFF_STEPS[0])
+        # Iteration 2: same state -> idle skip 1 -> sleep(BACKOFF_STEPS[0])
+        # Iteration 3: same state -> idle skip 2 -> sleep(BACKOFF_STEPS[1])
+        # Iteration 4: same state -> idle skip 3 -> sleep(BACKOFF_STEPS[2])
+        # Iteration 5: same state -> idle skip 4 -> sleep(BACKOFF_STEPS[3])
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
         assert sleep_calls == [
             BACKOFF_STEPS[0],
@@ -842,9 +845,10 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=4,
+                max_iterations=4,
             )
 
-        # All 4 cycles should idle — the state change at cycle 3 is non-actionable
+        # All 4 iterations should idle — the state change at iteration 3 is non-actionable
         assert mock_subprocess.call_count == 0
 
     def test_backoff_resets_on_actionable_state_change(self, project_with_run: Path) -> None:
@@ -891,12 +895,13 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=6,
+                max_iterations=6,
             )
 
-        # Cycle 1: call_count=1, new state "working-1", actionable -> LLM -> sleep(5)
-        # Cycle 2: call_count=2, state "working" (differs), actionable -> LLM -> sleep(5)
-        # Cycle 3: call_count=3, state "working" (same) -> idle skip 1 -> sleep(5)
-        # Cycle 4: call_count=4, state "working-4" (different!), actionable -> LLM -> sleep(5)
+        # Iteration 1: agent_call=1, new state "working-1", actionable -> LLM -> sleep(5)
+        # Iteration 2: agent_call=2, state "working" (differs), actionable -> LLM -> sleep(5)
+        # Iteration 3: idle skip 1, state "working" (same) -> sleep(5)
+        # Iteration 4: agent_call=3, state "working-4" (different!), actionable -> LLM -> sleep(5)
         # Cycle 5: call_count=5, state "working" (differs), actionable -> LLM -> sleep(5)
         # Cycle 6: call_count=6, state "working" (same) -> idle skip 1 -> sleep(5)
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
