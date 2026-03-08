@@ -20,6 +20,7 @@ import signal
 import subprocess
 import threading
 import time
+import types
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -795,7 +796,7 @@ def run_agent_loop(
     # Track whether we should stop
     stop_requested = False
 
-    def handle_signal(signum: int, frame: object) -> None:
+    def handle_signal(signum: int, frame: types.FrameType | None) -> None:
         nonlocal stop_requested
         stop_requested = True
         logger.info("Stop signal received (signal %d)", signum)

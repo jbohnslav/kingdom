@@ -672,7 +672,7 @@ def filter_worklog_lines(lines: list[str], *, show_all: bool = False) -> list[st
         return lines
 
     result: list[str] = []
-    include_current = True
+    include_current = False
 
     for line in lines:
         if line.startswith("- "):

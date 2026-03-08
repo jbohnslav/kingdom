@@ -20,6 +20,7 @@ from kingdom.lord_harness import (
     extract_lord_summary,
     get_children_summary,
     get_completed_peasants,
+    get_inflight_peasants,
     get_startable_children,
     has_actionable_work,
     lord_session_name,
@@ -499,6 +500,26 @@ class TestLordCLIStop:
         state = get_agent_state(cli_project, BRANCH, "lord-epic1")
         assert state.status == "stopping"
 
+    def test_stop_already_stopping(self, cli_project: Path) -> None:
+        """Second stop call when already stopping should exit 0 with friendly message."""
+        tdir = tickets_dir(cli_project)
+        tdir.mkdir(parents=True, exist_ok=True)
+        epic = Ticket(
+            id="epic1",
+            status="in_progress",
+            title="Test Epic",
+            type="epic",
+            body="",
+            created=datetime.now(UTC),
+        )
+        write_ticket(epic, tdir / "epic1.md")
+
+        update_agent_state(cli_project, BRANCH, "lord-epic1", status="stopping")
+
+        result = runner.invoke(lord_app, ["stop", "epic1"])
+        assert result.exit_code == 0
+        assert "already stopping" in result.output.lower()
+
 
 class TestLordCLIStatus:
     def test_status_no_lords(self, cli_project: Path) -> None:
@@ -672,6 +693,59 @@ class TestHasActionableWork:
         # peasant is idle — stuck state
         assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
 
+    def test_failed_peasant_triggers_stuck_detection(self, project_with_run: Path) -> None:
+        """A failed peasant with in_progress ticket is a stuck state — lord must act."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="failed")
+        # Failed peasant is not inflight, so open work + no inflight = actionable
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+    def test_stopped_peasant_triggers_stuck_detection(self, project_with_run: Path) -> None:
+        """A stopped peasant with in_progress ticket is a stuck state — lord must act."""
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="stopped")
+        assert has_actionable_work(project_with_run, BRANCH, "epic1") is True
+
+
+class TestGetInflightPeasants:
+    def test_includes_working(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 1
+        assert inflight[0][0] == "ch01"
+
+    def test_includes_awaiting_council(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="awaiting_council")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 1
+
+    def test_excludes_failed(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="failed")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 0
+
+    def test_excludes_stopped(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="stopped")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 0
+
+    def test_excludes_needs_king_review(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_review")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="needs_king_review")
+        inflight = get_inflight_peasants(project_with_run, BRANCH, "epic1")
+        assert len(inflight) == 0
+
 
 class TestIdleDetectionInLoop:
     def test_idle_skips_llm_when_not_actionable(self, project_with_run: Path) -> None:
@@ -706,11 +780,12 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=4,
+                max_iterations=4,
             )
 
-        # All cycles idle — nothing actionable (only a working peasant)
-        # Cycle 1: new state but not actionable -> idle skip (sleep BACKOFF_STEPS[0])
-        # Cycles 2-4: unchanged state -> escalating backoff
+        # All iterations idle — nothing actionable (only a working peasant)
+        # Iteration 1: new state but not actionable -> idle skip (sleep BACKOFF_STEPS[0])
+        # Iterations 2-4: unchanged state -> escalating backoff
         assert mock_subprocess.call_count == 0
 
     def test_calls_llm_when_actionable(self, project_with_run: Path) -> None:
@@ -745,10 +820,11 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=2,
+                max_iterations=2,
             )
 
-        # Cycle 1: new state + actionable (startable child) -> LLM call
-        # ch01 is still open after the mock LLM call, so cycle 2 also has unchanged
+        # Iteration 1: new state + actionable (startable child) -> LLM call
+        # ch01 is still open after the mock LLM call, so iteration 2 also has unchanged
         # but actionable state — but state hasn't changed so it idles
         assert mock_subprocess.call_count == 1
 
@@ -783,13 +859,14 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=5,
+                max_iterations=5,
             )
 
-        # Cycle 1: new state but not actionable -> sleep(BACKOFF_STEPS[0])
-        # Cycle 2: same state -> idle skip 1 -> sleep(BACKOFF_STEPS[0])
-        # Cycle 3: same state -> idle skip 2 -> sleep(BACKOFF_STEPS[1])
-        # Cycle 4: same state -> idle skip 3 -> sleep(BACKOFF_STEPS[2])
-        # Cycle 5: same state -> idle skip 4 -> sleep(BACKOFF_STEPS[3])
+        # Iteration 1: new state but not actionable -> sleep(BACKOFF_STEPS[0])
+        # Iteration 2: same state -> idle skip 1 -> sleep(BACKOFF_STEPS[0])
+        # Iteration 3: same state -> idle skip 2 -> sleep(BACKOFF_STEPS[1])
+        # Iteration 4: same state -> idle skip 3 -> sleep(BACKOFF_STEPS[2])
+        # Iteration 5: same state -> idle skip 4 -> sleep(BACKOFF_STEPS[3])
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
         assert sleep_calls == [
             BACKOFF_STEPS[0],
@@ -842,9 +919,10 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=4,
+                max_iterations=4,
             )
 
-        # All 4 cycles should idle — the state change at cycle 3 is non-actionable
+        # All 4 iterations should idle — the state change at iteration 3 is non-actionable
         assert mock_subprocess.call_count == 0
 
     def test_backoff_resets_on_actionable_state_change(self, project_with_run: Path) -> None:
@@ -891,12 +969,13 @@ class TestIdleDetectionInLoop:
                 epic_id="epic1",
                 session_name=session_name,
                 max_cycles=6,
+                max_iterations=6,
             )
 
-        # Cycle 1: call_count=1, new state "working-1", actionable -> LLM -> sleep(5)
-        # Cycle 2: call_count=2, state "working" (differs), actionable -> LLM -> sleep(5)
-        # Cycle 3: call_count=3, state "working" (same) -> idle skip 1 -> sleep(5)
-        # Cycle 4: call_count=4, state "working-4" (different!), actionable -> LLM -> sleep(5)
+        # Iteration 1: agent_call=1, new state "working-1", actionable -> LLM -> sleep(5)
+        # Iteration 2: agent_call=2, state "working" (differs), actionable -> LLM -> sleep(5)
+        # Iteration 3: idle skip 1, state "working" (same) -> sleep(5)
+        # Iteration 4: agent_call=3, state "working-4" (different!), actionable -> LLM -> sleep(5)
         # Cycle 5: call_count=5, state "working" (differs), actionable -> LLM -> sleep(5)
         # Cycle 6: call_count=6, state "working" (same) -> idle skip 1 -> sleep(5)
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]

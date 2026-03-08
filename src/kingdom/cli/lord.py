@@ -199,6 +199,10 @@ def stop(
 
     state = get_agent_state(base, feature, session_name)
 
+    if state.status == "stopping":
+        typer.echo(f"Lord {epic_id} is already stopping.")
+        raise typer.Exit(code=0)
+
     if state.status not in ("working", "blocked"):
         print_error(f"Lord {epic_id} is not running (status: {state.status})")
         raise typer.Exit(code=1)
