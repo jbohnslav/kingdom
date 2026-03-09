@@ -121,6 +121,7 @@ def default_config() -> KingdomConfig:
         prompts=PromptsConfig(),
         council=CouncilConfig(members=list(agents)),
         peasant=PeasantConfig(agent="claude"),
+        lord=LordConfig(agent="claude"),
     )
 
 

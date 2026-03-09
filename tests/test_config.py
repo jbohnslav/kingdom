@@ -39,8 +39,7 @@ class TestDefaultConfig:
 
     def test_lord_defaults(self) -> None:
         cfg = default_config()
-        # lord.agent falls back to peasant.agent in validate_config,
-        # but default_config() constructs directly with empty string
+        assert cfg.lord.agent == "claude"
         assert cfg.lord.max_cycles == 200
 
     def test_prompts_empty(self) -> None:
