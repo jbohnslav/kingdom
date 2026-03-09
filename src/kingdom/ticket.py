@@ -677,7 +677,7 @@ def filter_worklog_lines(lines: list[str], *, show_all: bool = False) -> list[st
     for line in lines:
         if line.startswith("- "):
             author = parse_worklog_author(line)
-            include_current = author == "unknown" or author.startswith("lord")
+            include_current = author == "unknown" or author.startswith("lord-")
         # else: continuation line — follows parent bullet's include decision
 
         if include_current:

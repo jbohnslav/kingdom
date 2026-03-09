@@ -37,6 +37,11 @@ class TestDefaultConfig:
         assert cfg.peasant.agent == "claude"
         assert cfg.peasant.max_iterations == 50
 
+    def test_lord_defaults(self) -> None:
+        cfg = default_config()
+        assert cfg.lord.agent == "claude"
+        assert cfg.lord.max_cycles == 200
+
     def test_prompts_empty(self) -> None:
         cfg = default_config()
         assert cfg.prompts.council == ""
@@ -154,6 +159,27 @@ class TestValidateConfig:
         assert cfg.peasant.agent == "codex"
         assert cfg.peasant.max_iterations == 100
 
+    def test_lord_config(self) -> None:
+        data = {"lord": {"agent": "codex", "max_cycles": 500}}
+        cfg = validate_config(data)
+        assert cfg.lord.agent == "codex"
+        assert cfg.lord.max_cycles == 500
+
+    def test_lord_agent_falls_back_to_peasant_agent(self) -> None:
+        data = {"peasant": {"agent": "codex"}}
+        cfg = validate_config(data)
+        assert cfg.lord.agent == "codex"
+
+    def test_lord_agent_falls_back_to_default_peasant_agent(self) -> None:
+        cfg = validate_config({})
+        assert cfg.lord.agent == "claude"
+
+    def test_lord_agent_overrides_peasant_agent(self) -> None:
+        data = {"peasant": {"agent": "codex"}, "lord": {"agent": "claude"}}
+        cfg = validate_config(data)
+        assert cfg.lord.agent == "claude"
+        assert cfg.peasant.agent == "codex"
+
     def test_full_config(self) -> None:
         data = {
             "agents": {
@@ -226,6 +252,30 @@ class TestValidateConfigErrors:
     def test_peasant_agent_undefined(self) -> None:
         with pytest.raises(ValueError, match=r"undefined agent 'ghost'.*Defined agents"):
             validate_config({"peasant": {"agent": "ghost"}})
+
+    def test_lord_agent_undefined(self) -> None:
+        with pytest.raises(ValueError, match=r"lord\.agent references undefined agent 'ghost'"):
+            validate_config({"lord": {"agent": "ghost"}})
+
+    def test_unknown_lord_key(self) -> None:
+        with pytest.raises(ValueError, match="Unknown keys in lord"):
+            validate_config({"lord": {"timeout": 300}})
+
+    def test_bad_lord_agent_type(self) -> None:
+        with pytest.raises(ValueError, match=r"lord\.agent must be a string"):
+            validate_config({"lord": {"agent": 123}})
+
+    def test_bad_lord_max_cycles_type(self) -> None:
+        with pytest.raises(ValueError, match=r"lord\.max_cycles must be an integer"):
+            validate_config({"lord": {"max_cycles": "many"}})
+
+    def test_lord_max_cycles_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            validate_config({"lord": {"max_cycles": 0}})
+
+    def test_bad_lord_type(self) -> None:
+        with pytest.raises(ValueError, match="lord must be an object"):
+            validate_config({"lord": "string"})
 
     def test_bad_council_timeout_type(self) -> None:
         with pytest.raises(ValueError, match="must be an integer"):

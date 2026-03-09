@@ -1770,3 +1770,14 @@ class TestFilterWorklogLines:
             "- [14:33] — second legacy",
         ]
         assert filter_worklog_lines(lines) == lines
+
+    def test_lord_prefix_requires_hyphen(self) -> None:
+        """Authors like 'lordship' should not match the lord- filter."""
+        lines = [
+            "- [14:32] [lord-4d4a] — lord entry",
+            "- [14:33] [lordship] — should be excluded",
+            "- [14:34] [lord] — also excluded (no hyphen)",
+        ]
+        result = filter_worklog_lines(lines)
+        assert len(result) == 1
+        assert "lord entry" in result[0]

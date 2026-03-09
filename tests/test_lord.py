@@ -1164,3 +1164,115 @@ class TestBuildLordPromptWorklog:
         prompt = build_lord_prompt(epic_path, "epic1", project_with_run, BRANCH)
         assert "stdout.log" in prompt
         assert "agent-live.log" not in prompt
+
+
+class TestEscalationNotLost:
+    """Escalation status must not be silently overwritten by subsequent DONE."""
+
+    def test_done_after_escalation_becomes_blocked(self, project_with_run: Path) -> None:
+        """If lord escalated a ticket then reports DONE, final status should be blocked."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        parse_call_count = 0
+
+        def mock_parse_response(agent_config, stdout, stderr, returncode):
+            nonlocal parse_call_count
+            parse_call_count += 1
+            if parse_call_count == 1:
+                return "Escalating.\nSTATUS: ESCALATE ch01", "sess1", ""
+            return "All done.\nSTATUS: DONE", "sess1", ""
+
+        cycle_count = 0
+
+        def unique_summary(base, branch, epic_id, **kwargs):
+            nonlocal cycle_count
+            cycle_count += 1
+            return (("ch01", "in_progress", f"state-{cycle_count}"),)
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+            patch("kingdom.lord_harness.get_children_summary", side_effect=unique_summary),
+            patch("kingdom.lord_harness.parse_response", side_effect=mock_parse_response),
+            patch("kingdom.lord_harness.has_actionable_work", return_value=True),
+        ):
+            status = run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=5,
+            )
+
+        # Despite DONE, escalation should make final status blocked
+        assert status == "blocked"
+
+    def test_all_children_closed_after_escalation_becomes_blocked(self, project_with_run: Path) -> None:
+        """If children close but escalation happened, final status should be blocked."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", status="in_progress")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="working")
+
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+
+        mock_sleep = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        def mock_parse_response(agent_config, stdout, stderr, returncode):
+            return "Escalating.\nSTATUS: ESCALATE ch01", "sess1", ""
+
+        cycle_count = 0
+
+        def unique_summary(base, branch, epic_id, **kwargs):
+            nonlocal cycle_count
+            cycle_count += 1
+            return (("ch01", "in_progress", f"state-{cycle_count}"),)
+
+        def close_after_escalation(base, branch, epic_id, **kwargs):
+            # On second call (after escalation), all children are closed
+            return cycle_count > 1
+
+        with (
+            patch("kingdom.lord_harness.time.sleep", mock_sleep),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.build_command", return_value=["echo"]),
+            patch("kingdom.lord_harness.get_children_summary", side_effect=unique_summary),
+            patch("kingdom.lord_harness.parse_response", side_effect=mock_parse_response),
+            patch("kingdom.lord_harness.has_actionable_work", return_value=True),
+            patch("kingdom.lord_harness.all_children_closed", side_effect=close_after_escalation),
+        ):
+            status = run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name=session_name,
+                max_cycles=5,
+            )
+
+        assert status == "blocked"

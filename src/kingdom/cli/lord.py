@@ -62,7 +62,7 @@ def start(
     # Default agent from config
     if agent is None:
         cfg = load_config(base)
-        agent = cfg.peasant.agent
+        agent = cfg.lord.agent
 
     session_name = lord_session_name(full_epic_id)
 
