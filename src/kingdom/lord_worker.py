@@ -26,11 +26,13 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stdout,
     )
 
+    from kingdom.config import load_config
     from kingdom.lord_harness import run_lord_loop
     from kingdom.state import resolve_current_run
 
     base = Path(args.base).resolve()
     feature = resolve_current_run(base)
+    cfg = load_config(base)
 
     status = run_lord_loop(
         base=base,
@@ -38,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         agent_name=args.agent,
         epic_id=args.epic_id,
         session_name=args.session,
+        max_cycles=cfg.lord.max_cycles,
     )
 
     return 0 if status in ("done", "blocked", "stopped") else 1

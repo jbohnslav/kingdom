@@ -10,6 +10,7 @@ Called by ``python -m kingdom.lord_worker`` (spawned by ``kd lord start``).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import signal
@@ -632,6 +633,7 @@ def run_lord_loop(
     resume_id = agent_state.resume_id
 
     final_status = "failed"
+    escalated_tickets: set[str] = set()
     last_seen_states: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] | None = None
     consecutive_idle = 0
     agent_calls = 0
@@ -656,8 +658,17 @@ def run_lord_loop(
 
         # Check if all children are closed
         if all_children_closed(base, branch, epic_id, children=cycle_children, tickets=cycle_tickets):
-            final_status = "done"
-            append_lord_worklog(epic_path, epic_id=epic_id, entry="All epic children closed — epic complete")
+            if escalated_tickets:
+                final_status = "blocked"
+                tickets_str = ", ".join(sorted(escalated_tickets))
+                append_lord_worklog(
+                    epic_path,
+                    epic_id=epic_id,
+                    entry=f"All children closed but {len(escalated_tickets)} ticket(s) were escalated ({tickets_str}) — marking blocked",
+                )
+            else:
+                final_status = "done"
+                append_lord_worklog(epic_path, epic_id=epic_id, entry="All epic children closed — epic complete")
             logger.info("All children closed at iteration %d (agent calls: %d)", iteration, agent_calls)
             break
 
@@ -780,14 +791,25 @@ def run_lord_loop(
         update_agent_state(base, branch, session_name, last_activity=now)
 
         if status == "done":
-            final_status = "done"
-            append_lord_worklog(epic_path, epic_id=epic_id, entry="Lord reports epic complete")
+            if escalated_tickets:
+                final_status = "blocked"
+                tickets_str = ", ".join(sorted(escalated_tickets))
+                append_lord_worklog(
+                    epic_path,
+                    epic_id=epic_id,
+                    entry=f"Lord reports done but {len(escalated_tickets)} ticket(s) were escalated ({tickets_str}) — marking blocked",
+                )
+            else:
+                final_status = "done"
+                append_lord_worklog(epic_path, epic_id=epic_id, entry="Lord reports epic complete")
             break
         elif status == "blocked":
             final_status = "blocked"
             append_lord_worklog(epic_path, epic_id=epic_id, entry="Lord reports BLOCKED — needs King intervention")
             break
         elif status == "escalate":
+            if escalate_ticket:
+                escalated_tickets.add(escalate_ticket)
             final_status = "blocked"
             msg = f"Lord ESCALATES ticket {escalate_ticket} — needs King attention"
             append_lord_worklog(epic_path, epic_id=epic_id, entry=msg)
@@ -879,14 +901,22 @@ def run_lord_streaming_subprocess(
     stderr_lines: list[str] = []
 
     def drain(stream, buf: list[str]) -> None:
-        for line in stream:
-            buf.append(line)
-            if live_log_path:
-                try:
-                    with live_log_path.open("a", encoding="utf-8") as f:
+        if live_log_path:
+            try:
+                f = live_log_path.open("a", encoding="utf-8")
+            except OSError:
+                f = None
+        else:
+            f = None
+        try:
+            for line in stream:
+                buf.append(line)
+                if f:
+                    with contextlib.suppress(OSError):
                         f.write(line)
-                except OSError:
-                    pass
+        finally:
+            if f:
+                f.close()
 
     stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_lines), daemon=True)
     stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_lines), daemon=True)
