@@ -278,6 +278,13 @@ def peasant_start(
         print_error(f"Cannot start work on {full_ticket_id}: ticket is {ticket.status}")
         raise typer.Exit(code=1)
 
+    # Block starting work on epic tickets (epics aren't atomic work units)
+    if ticket.type == "epic":
+        print_error(
+            f"Cannot start a peasant on {full_ticket_id}: epic tickets are not atomic work units. Break it into child tickets first."
+        )
+        raise typer.Exit(code=1)
+
     # Transition open → in_progress
     if ticket.status == "open":
         ticket.status = "in_progress"
@@ -415,6 +422,7 @@ WATCH_TERMINAL_STATUSES = {"done", "failed", "stopped", "needs_king_review", "bl
 @peasant_app.command("status", help="Show active peasants.")
 def peasant_status(
     show_all: Annotated[bool, typer.Option("--all", "-a", help="Include completed/stopped peasants.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Show table of active peasants: ticket, agent, status, elapsed, last activity."""
 
@@ -440,6 +448,44 @@ def peasant_status(
         peasants = [p for p in peasants if p.status not in TERMINAL_STATUSES]
         hidden = [p for p in all_peasants if p.status in TERMINAL_STATUSES]
 
+    now = datetime.now(UTC)
+
+    def peasant_to_dict(p):
+        ticket = p.ticket or p.name.replace("peasant-", "")
+        elapsed_minutes = None
+        if p.started_at:
+            try:
+                started = parse_iso_datetime(p.started_at)
+                elapsed_minutes = int((now - started).total_seconds() / 60)
+            except (ValueError, TypeError):
+                pass
+        last_activity_minutes = None
+        if p.last_activity:
+            try:
+                last_dt = parse_iso_datetime(p.last_activity)
+                last_activity_minutes = int((now - last_dt).total_seconds() / 60)
+            except (ValueError, TypeError):
+                pass
+        # Effective status: report "dead" not "working" for dead processes
+        effective_status = p.status
+        if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):
+            effective_status = "dead"
+        return {
+            "ticket": ticket,
+            "agent": p.agent_backend or None,
+            "status": effective_status,
+            "elapsed_minutes": elapsed_minutes,
+            "last_activity_minutes": last_activity_minutes,
+            "pid": p.pid,
+            "started_at": p.started_at,
+            "last_activity": p.last_activity,
+        }
+
+    if output_json:
+        data = [peasant_to_dict(p) for p in peasants]
+        typer.echo(json.dumps(data, indent=2))
+        return
+
     if not peasants:
         if hidden:
             from collections import Counter
@@ -459,35 +505,8 @@ def peasant_status(
     table.add_column("Elapsed")
     table.add_column("Last Activity")
 
-    now = datetime.now(UTC)
     for p in peasants:
-        ticket = p.ticket or p.name.replace("peasant-", "")
-
-        # Calculate elapsed
-        elapsed = ""
-        if p.started_at:
-            try:
-                started = parse_iso_datetime(p.started_at)
-                delta = now - started
-                minutes = int(delta.total_seconds() / 60)
-                elapsed = f"{minutes}m"
-            except (ValueError, TypeError):
-                elapsed = "?"
-
-        # Format last activity
-        last = ""
-        if p.last_activity:
-            try:
-                last_dt = parse_iso_datetime(p.last_activity)
-                ago = int((now - last_dt).total_seconds() / 60)
-                last = f"{ago}m ago"
-            except (ValueError, TypeError):
-                last = "?"
-
-        # Check if process is still alive
-        display_status = p.status
-        if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):
-            display_status = "dead"
+        d = peasant_to_dict(p)
 
         # Color status
         status_style = {
@@ -499,14 +518,15 @@ def peasant_status(
             "dead": "red",
             "awaiting_council": "magenta",
             "needs_king_review": "cyan",
-        }.get(display_status, "")
+        }.get(d["status"], "")
 
-        agent_display = p.agent_backend or "?"
+        elapsed = f"{d['elapsed_minutes']}m" if d["elapsed_minutes"] is not None else ""
+        last = f"{d['last_activity_minutes']}m ago" if d["last_activity_minutes"] is not None else ""
 
         table.add_row(
-            ticket,
-            agent_display,
-            f"[{status_style}]{display_status}[/{status_style}]" if status_style else display_status,
+            d["ticket"],
+            d["agent"] or "?",
+            f"[{status_style}]{d['status']}[/{status_style}]" if status_style else d["status"],
             elapsed,
             last,
         )
@@ -524,6 +544,7 @@ def peasant_status(
 @peasant_app.command("show", help="Show structured peasant history.")
 def peasant_show(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
+    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Show worklog, agent activity, and commits for a peasant."""
     from kingdom.harness import extract_worklog
@@ -536,13 +557,10 @@ def peasant_show(
 
     # --- Worklog ---
     worklog = extract_worklog(ctx.ticket_path)
-    if worklog:
-        console.print(Markdown(f"## Worklog\n\n{worklog}"))
-    else:
-        typer.echo("(no worklog entries)")
 
     # --- Agent activity from agent-live.log ---
     agent_live_log = logs_root(ctx.base, ctx.feature) / session_name / "agent-live.log"
+    activity: list[str] = []
     if agent_live_log.exists() and agent_live_log.stat().st_size > 0:
         # Resolve backend for NDJSON decoding
         agent_backend = ""
@@ -576,12 +594,6 @@ def peasant_show(
         # because they come from the same log file but are extracted by
         # different parsers — ordering within each group is chronological.
         activity = plain_lines + stream_lines
-        if activity:
-            console.print(Markdown("## Agent Activity"))
-            for line in activity:
-                console.print(f"  {line}", markup=False)
-    else:
-        typer.echo("(no agent activity log)")
 
     # --- Commits on the peasant's branch ---
     branch_name = f"ticket/{ctx.full_ticket_id}"
@@ -596,6 +608,7 @@ def peasant_show(
         st = read_json(branch_root(ctx.base, ctx.feature) / "state.json")
         git_ref = st.get("branch", ctx.feature)
         log_spec = [f"{git_ref}..{branch_name}"]
+    commits: list[str] = []
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", *log_spec],
@@ -604,13 +617,43 @@ def peasant_show(
             cwd=str(ctx.base),
             timeout=10,
         )
-        commits = result.stdout.strip()
-        if result.returncode == 0 and commits:
-            console.print(Markdown(f"## Commits\n\n```\n{commits}\n```"))
-        else:
-            typer.echo("(no commits)")
+        if result.returncode == 0 and result.stdout.strip():
+            commits = result.stdout.strip().splitlines()
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        typer.echo("(could not read commits)")
+        pass
+
+    if output_json:
+        data = {
+            "ticket_id": ctx.full_ticket_id,
+            "status": state.status,
+            "agent": state.agent_backend,
+            "pid": state.pid,
+            "started_at": state.started_at,
+            "hand_mode": state.hand_mode,
+            "worklog": worklog or None,
+            "activity": activity,
+            "commits": commits,
+        }
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    # --- Rich display ---
+    if worklog:
+        console.print(Markdown(f"## Worklog\n\n{worklog}"))
+    else:
+        typer.echo("(no worklog entries)")
+
+    if activity:
+        console.print(Markdown("## Agent Activity"))
+        for line in activity:
+            console.print(f"  {line}", markup=False)
+    elif not (agent_live_log.exists() and agent_live_log.stat().st_size > 0):
+        typer.echo("(no agent activity log)")
+
+    if commits:
+        console.print(Markdown(f"## Commits\n\n```\n{chr(10).join(commits)}\n```"))
+    else:
+        typer.echo("(no commits)")
 
 
 FLAG_VERBS: dict[str, str] = {
@@ -817,6 +860,65 @@ def poll_head_commit(worktree: Path) -> tuple[str, str] | None:
         return None
 
 
+def poll_council_status(base: Path, branch: str, thread_id: str) -> str | None:
+    """Return live council status for a specific work thread.
+
+    Peasant review runs inside the ticket's work thread, not a separate
+    branch-level council thread. Scope the status lookup to that thread so
+    stale stream files from unrelated council chats do not leak into watch.
+    """
+    from kingdom.thread import (
+        get_thread,
+        is_error_response,
+        is_timeout_response,
+        list_messages,
+        thread_dir,
+    )
+
+    try:
+        get_thread(base, branch, thread_id)
+    except FileNotFoundError:
+        return None
+
+    tdir = thread_dir(base, branch, thread_id)
+    stream_members = {
+        path.name.removeprefix(".stream-").removesuffix(".jsonl") for path in tdir.glob(".stream-*.jsonl")
+    }
+    if not stream_members:
+        return None
+
+    messages = list_messages(base, branch, thread_id)
+    last_ask_seq = 0
+    for msg in messages:
+        if msg.from_ == "king":
+            last_ask_seq = msg.sequence
+
+    response_msgs = {
+        msg.from_: msg
+        for msg in messages
+        if msg.sequence > last_ask_seq and msg.from_ not in {"king"} and not msg.from_.startswith("peasant-")
+    }
+    expected = stream_members | set(response_msgs)
+
+    parts: list[str] = []
+    for name in sorted(expected):
+        msg = response_msgs.get(name)
+        if msg:
+            if msg.status == "timeout" or is_timeout_response(msg.body):
+                parts.append(f"{name} timed_out")
+            elif msg.status in ("error", "interrupted") or is_error_response(msg.body):
+                parts.append(f"{name} errored")
+            else:
+                parts.append(f"{name} responded")
+        elif name in stream_members:
+            parts.append(f"{name} running")
+        else:
+            parts.append(f"{name} pending")
+
+    detail = ", ".join(parts) if parts else "waiting"
+    return f"Awaiting council response — {detail}"
+
+
 @peasant_app.command("watch", help="Watch peasant progress in real time.")
 def peasant_watch(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
@@ -983,12 +1085,16 @@ def peasant_watch(
                 except OSError:
                     pass
 
-            # Heartbeat: if no activity for 60s, show a "still working" line
+            # Heartbeat: if no activity for 60s, show status
             silence = now - last_activity_time
             if silence >= 60 and now - last_heartbeat_time >= 60:
                 last_heartbeat_time = now
-                elapsed_mins = int(silence / 60)
-                console.print(f"  [dim]Still working... {elapsed_mins}m since last activity[/dim]")
+                council_status = poll_council_status(ctx.base, ctx.feature, f"{ctx.full_ticket_id}-work")
+                if council_status:
+                    console.print(f"  [dim]{council_status}[/dim]")
+                else:
+                    elapsed_mins = int(silence / 60)
+                    console.print(f"  [dim]Still working... {elapsed_mins}m since last activity[/dim]")
 
             time_mod.sleep(1)
     except KeyboardInterrupt:
@@ -1050,7 +1156,7 @@ def peasant_stop(
     if state.pid:
         kill_peasant_process(state.pid, full_ticket_id)
     elif not force:
-        print_error(f"No PID found for peasant {full_ticket_id}. " "Use --force to close session state anyway.")
+        print_error(f"No PID found for peasant {full_ticket_id}. Use --force to close session state anyway.")
         raise typer.Exit(code=1)
     else:
         typer.echo(f"{full_ticket_id}: no PID found, force-closing session state")
@@ -1335,13 +1441,14 @@ def peasant_review(
         styled_echo("\nWarning: no code diff detected — peasant may not have made meaningful changes.", fg="yellow")
 
     # Prompt for action
-    can_accept = ticket.status == "in_review" and state.status == "needs_king_review"
+    can_accept = ticket.status == "in_review" and state.status in {"needs_king_review", "done"}
     if can_accept:
         typer.echo(f"\nUse `kd peasant accept {full_ticket_id}` or `kd peasant reject {full_ticket_id} 'feedback'`.")
     else:
         typer.echo(f"\nUse `kd peasant reject {full_ticket_id} 'feedback'` to send feedback.")
 
 
+@peasant_app.command("approve", help="Accept a peasant's work and close the ticket.", hidden=True)
 @peasant_app.command("accept", help="Accept a peasant's work and close the ticket.")
 def peasant_accept(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
@@ -1361,10 +1468,13 @@ def peasant_accept(
         print_error(f"Cannot accept: ticket is '{ticket.status}', expected 'in_review'.")
         raise typer.Exit(code=1)
 
-    # Gate: session must be needs_king_review
+    # Gate: session must be needs_king_review or done
+    # A peasant may close the ticket prematurely (session → done) before the
+    # normal council-review flow sets needs_king_review.  Both are acceptable.
     state = get_agent_state(base, feature, session_name)
-    if state.status != "needs_king_review":
-        print_error(f"Cannot accept: session is '{state.status}', expected 'needs_king_review'.")
+    acceptable_statuses = {"needs_king_review", "done"}
+    if state.status not in acceptable_statuses:
+        print_error(f"Cannot accept: session is '{state.status}', expected one of {sorted(acceptable_statuses)}.")
         raise typer.Exit(code=1)
 
     # Gate: must be on the feature branch for merge safety
@@ -1380,9 +1490,16 @@ def peasant_accept(
         text=True,
         cwd=str(base),
     ).stdout.strip()
-    if normalize_branch_name(current_branch) != normalize_branch_name(feature):
+    if "branch" in state_json:
+        # Original git branch name stored — compare exactly
+        branch_match = current_branch == git_branch_name
+    else:
+        # No original name stored (legacy state) — fall back to normalized comparison
+        branch_match = normalize_branch_name(current_branch) == normalize_branch_name(feature)
+    if not branch_match:
         print_error(
             f"Cannot accept: expected to be on '{git_branch_name}' but HEAD is on '{current_branch}'.\n"
+            f"  (kd branch key: {feature})\n"
             f"Run `git checkout {git_branch_name}` first, then retry."
         )
         raise typer.Exit(code=1)
@@ -1392,27 +1509,45 @@ def peasant_accept(
         typer.echo(f"Hand mode — changes already on {feature}, skipping merge")
     else:
         # Worktree mode: merge ticket branch into feature branch
-        worktree_path = worktree_path_for(base, full_ticket_id)
-        merge_result = subprocess.run(
-            ["git", "merge", branch_name, "--no-edit"],
+        # Check if already merged (idempotent re-run after manual conflict resolution)
+        already_merged = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", branch_name, "HEAD"],
             capture_output=True,
             text=True,
             cwd=str(base),
         )
-        if merge_result.returncode != 0:
-            # Integration failed — keep in_review, show recovery steps
-            merge_err = merge_result.stdout.strip()
-            if merge_result.stderr.strip():
-                merge_err += "\n" + merge_result.stderr.strip()
-            print_error("Integration failed — ticket remains in_review.")
-            error_console.print(f"\n{merge_err}\n")
-            error_console.print("Recovery steps:")
-            error_console.print(f"  1. cd {worktree_path}")
-            error_console.print(f"  2. git merge {feature} (resolve conflicts)")
-            error_console.print(f"  3. kd peasant accept {full_ticket_id} (retry)")
-            raise typer.Exit(code=1)
+        if already_merged.returncode == 0:
+            typer.echo(f"{branch_name} already merged into {feature}, skipping merge")
+        else:
+            # Check for uncommitted changes before attempting merge
+            uncommitted = check_uncommitted_changes(base)
+            if uncommitted:
+                print_error(
+                    f"Uncommitted changes on {git_branch_name} — commit or stash before accepting.\n"
+                    f"  Found {len(uncommitted)} changed file(s)."
+                )
+                raise typer.Exit(code=1)
 
-        typer.echo(f"Integrated {branch_name} into {feature}")
+            merge_result = subprocess.run(
+                ["git", "merge", branch_name, "--no-edit"],
+                capture_output=True,
+                text=True,
+                cwd=str(base),
+            )
+            if merge_result.returncode != 0:
+                # Integration failed — keep in_review, show recovery steps
+                merge_err = merge_result.stdout.strip()
+                if merge_result.stderr.strip():
+                    merge_err += "\n" + merge_result.stderr.strip()
+                print_error("Integration failed — merge conflicts detected. Ticket remains in_review.")
+                error_console.print(f"\n{merge_err}\n")
+                error_console.print("Recovery steps:")
+                error_console.print(f"  1. Resolve conflict markers in the working tree (you are on {git_branch_name})")
+                error_console.print("  2. git add <resolved files> && git commit")
+                error_console.print(f"  3. kd peasant accept {full_ticket_id}  (re-run — detects merge is done)")
+                raise typer.Exit(code=1)
+
+            typer.echo(f"Integrated {branch_name} into {feature}")
 
     ticket.status = "closed"
     write_ticket(ticket, ticket_path)

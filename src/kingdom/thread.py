@@ -28,7 +28,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.parsing import parse_frontmatter, parse_iso_datetime, serialize_frontmatter
-from kingdom.state import branch_root, ensure_dir, normalize_branch_name, read_json, write_json
+from kingdom.state import (
+    archive_root,
+    branch_root,
+    branches_root,
+    ensure_dir,
+    normalize_branch_name,
+    read_json,
+    write_json,
+)
 
 
 class AmbiguousThreadMatch(Exception):
@@ -90,6 +98,126 @@ def threads_root(base: Path, branch: str) -> Path:
 def thread_dir(base: Path, branch: str, thread_id: str) -> Path:
     normalized = normalize_branch_name(thread_id)
     return threads_root(base, branch) / normalized
+
+
+# ---------------------------------------------------------------------------
+# Cross-branch / archive thread lookup
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ThreadLocation:
+    """A thread with its source branch and archive status."""
+
+    meta: ThreadMeta
+    branch: str
+    archived: bool
+
+
+def archive_threads_root(base: Path, branch: str) -> Path:
+    return archive_root(base) / normalize_branch_name(branch) / "threads"
+
+
+def list_all_branch_names(base: Path) -> list[tuple[str, bool]]:
+    """Return all branch names with their archive status.
+
+    Returns list of (branch_name, is_archived) tuples.
+    """
+    result: list[tuple[str, bool]] = []
+    broot = branches_root(base)
+    if broot.exists():
+        for entry in sorted(broot.iterdir()):
+            if entry.is_dir():
+                result.append((entry.name, False))
+    aroot = archive_root(base)
+    if aroot.exists():
+        for entry in sorted(aroot.iterdir()):
+            if entry.is_dir() and entry.name != "backlog":
+                result.append((entry.name, True))
+    return result
+
+
+def list_threads_in_dir(troot: Path) -> list[ThreadMeta]:
+    """List threads from a threads directory path."""
+    if not troot.exists():
+        return []
+    threads: list[ThreadMeta] = []
+    for entry in sorted(troot.iterdir()):
+        if entry.is_dir():
+            meta_path = entry / "thread.json"
+            if meta_path.exists():
+                try:
+                    threads.append(read_thread_meta(entry))
+                except (KeyError, FileNotFoundError):
+                    continue
+    return threads
+
+
+def list_all_threads(base: Path, pattern: str | None = None) -> list[ThreadLocation]:
+    """List threads across all branches and archive, sorted by created_at."""
+    results: list[ThreadLocation] = []
+    for branch_name, is_archived in list_all_branch_names(base):
+        if is_archived:
+            troot = archive_threads_root(base, branch_name)
+        else:
+            troot = threads_root(base, branch_name)
+        for meta in list_threads_in_dir(troot):
+            if pattern and meta.pattern != pattern:
+                continue
+            results.append(ThreadLocation(meta=meta, branch=branch_name, archived=is_archived))
+    results.sort(key=lambda loc: loc.meta.created_at)
+    return results
+
+
+def resolve_thread_globally(
+    base: Path,
+    partial_id: str,
+    pattern: str | None = None,
+) -> ThreadLocation:
+    """Resolve a thread by ID across all branches and archive.
+
+    Tries exact match first, then prefix match. Returns the first unique match.
+
+    Raises:
+        ThreadNotFoundError: No thread matches.
+        AmbiguousThreadMatch: Multiple threads match.
+    """
+    normalized = normalize_branch_name(partial_id)
+    all_locs = list_all_threads(base, pattern=pattern)
+
+    # Exact match
+    exact = [loc for loc in all_locs if loc.meta.id == normalized]
+    if len(exact) == 1:
+        return exact[0]
+
+    # Prefix match
+    matches = [loc for loc in all_locs if loc.meta.id.startswith(normalized)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise AmbiguousThreadMatch(partial_id, [loc.meta for loc in matches])
+
+    available = [loc.meta for loc in all_locs]
+    raise ThreadNotFoundError(partial_id, available)
+
+
+def thread_dir_for_location(base: Path, loc: ThreadLocation) -> Path:
+    """Return the thread directory path for a ThreadLocation."""
+    if loc.archived:
+        return archive_threads_root(base, loc.branch) / loc.meta.id
+    return thread_dir(base, loc.branch, loc.meta.id)
+
+
+def list_messages_from_dir(tdir: Path) -> list[Message]:
+    """List all messages from a thread directory, in sequential order."""
+    messages: list[Message] = []
+    for path in sorted(tdir.glob("[0-9][0-9][0-9][0-9]-*.md")):
+        try:
+            messages.append(parse_message(path))
+        except (ValueError, FileNotFoundError):
+            continue
+    messages.sort(key=lambda m: m.sequence)
+    return messages
 
 
 # ---------------------------------------------------------------------------

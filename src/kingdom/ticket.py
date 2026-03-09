@@ -26,6 +26,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -34,6 +35,7 @@ from pathlib import Path
 from kingdom.parsing import parse_frontmatter, parse_iso_datetime, serialize_frontmatter
 
 STATUSES = {"open", "in_progress", "in_review", "closed"}
+TICKET_TYPES = {"task", "bug", "feature", "epic"}
 
 
 @dataclass
@@ -45,7 +47,7 @@ class Ticket:
     deps: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
     created: datetime = field(default_factory=lambda: datetime.now(UTC))
-    type: str = "task"  # task, bug, feature
+    type: str = "task"  # task, bug, feature, epic
     priority: int = 2  # 0-3, 0 is highest
     assignee: str | None = None
     title: str = ""
@@ -493,6 +495,7 @@ def append_worklog_entry(
     message: str,
     timestamp: datetime | None = None,
     timestamp_text: str | None = None,
+    author: str | None = None,
 ) -> str:
     """Append to the ticket's ``## Worklog`` section (created if missing).
 
@@ -506,14 +509,15 @@ def append_worklog_entry(
 
     if timestamp_text is None:
         local_ts = timestamp.astimezone()
-        timestamp_text = local_ts.strftime("%Y-%m-%d %H:%M")
+        timestamp_text = f"[{local_ts.strftime('%Y-%m-%d %H:%M')}]"
 
     # Indent continuation lines so multiline entries render as grouped bullets
     lines = message.split("\n")
     first = lines[0]
     rest = [f"  {line}" for line in lines[1:]]
     formatted = "\n".join([first, *rest])
-    entry = f"- {timestamp_text} — {formatted}"
+    author_tag = f" [{author}]" if author else ""
+    entry = f"- {timestamp_text}{author_tag} — {formatted}"
 
     content = path.read_text(encoding="utf-8")
     new_content = insert_worklog_entry(content, entry)
@@ -573,7 +577,7 @@ def filter_tickets_by_deps(
 ) -> list[Ticket]:
     """Filter tickets by dependency status (ready or blocked).
 
-    - ready: tickets with no open deps and status not in_review/closed
+    - ready: tickets with no open deps and status is open (startable, not already started)
     - blocked: tickets with at least one open dep
     """
     if not ready and not blocked:
@@ -583,7 +587,7 @@ def filter_tickets_by_deps(
         if t.status == "closed":
             continue
         has_open_dep = any(status_by_id.get(d, "unknown") != "closed" for d in t.deps)
-        if (ready and not has_open_dep and t.status not in ("in_review", "closed")) or (blocked and has_open_dep):
+        if (ready and not has_open_dep and t.status == "open") or (blocked and has_open_dep):
             result.append(t)
     return result
 
@@ -630,3 +634,53 @@ def collect_tickets_by_location(
             pairs.append(("backlog", ticket))
 
     return pairs
+
+
+# ---------------------------------------------------------------------------
+# Worklog author parsing and filtering
+# ---------------------------------------------------------------------------
+
+# Matches tagged worklog entries in both bracketed and unbracketed timestamp forms:
+#   - [HH:MM] [author] — ...
+#   - [YYYY-MM-DD HH:MM] [author] — ...
+#   - YYYY-MM-DD HH:MM [author] — ...  (legacy unbracketed)
+WORKLOG_AUTHOR_RE = re.compile(r"^- (?:\[[\d:. -]+\]|[\d][\d:. -]+\d)\s+\[([^\]]+)\]\s+—")
+
+
+def parse_worklog_author(line: str) -> str:
+    """Extract the author tag from a worklog line.
+
+    Returns the author string if present, or ``"unknown"`` for legacy
+    untagged entries.
+    """
+    m = WORKLOG_AUTHOR_RE.match(line)
+    if m:
+        return m.group(1)
+    return "unknown"
+
+
+def filter_worklog_lines(lines: list[str], *, show_all: bool = False) -> list[str]:
+    """Filter worklog lines to lord-relevant entries.
+
+    By default keeps ``lord-*`` and ``unknown`` (legacy) entries.
+    With ``show_all=True``, returns all lines unfiltered.
+
+    Continuation lines (indented, starting with spaces) follow their
+    parent bullet.
+    """
+    if show_all:
+        return lines
+
+    result: list[str] = []
+    include_current = False
+
+    for line in lines:
+        if line.startswith("- "):
+            author = parse_worklog_author(line)
+            include_current = author == "unknown" or author.startswith("lord-")
+        # else: continuation line — follows parent bullet's include decision
+
+        if include_current:
+            result.append(line)
+
+    return result

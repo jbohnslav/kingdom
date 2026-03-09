@@ -17,7 +17,7 @@ Session JSON format::
     }
 
 Agent status values: idle, working, blocked, done, failed, stopped,
-awaiting_council, needs_king_review.
+stopping, awaiting_council, needs_king_review.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ AGENT_STATUSES = frozenset(
         "done",
         "failed",
         "stopped",
+        "stopping",
         "awaiting_council",
         "needs_king_review",
     }

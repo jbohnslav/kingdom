@@ -1631,3 +1631,208 @@ class TestCouncilThreadResolution:
 
             assert result.exit_code == 0
             assert "Nothing to retry" in result.output
+
+
+class TestCouncilArchiveThreads:
+    """Tests for cross-branch and archive thread resolution."""
+
+    def setup_archive_thread(self, base: Path, branch: str, thread_id: str, messages: list[tuple[str, str]]) -> None:
+        """Create a thread in the archive directory with messages."""
+        archive_threads = base / ".kd" / "archive" / branch / "threads" / thread_id
+        archive_threads.mkdir(parents=True, exist_ok=True)
+        import json as _json
+
+        meta = {
+            "id": thread_id,
+            "members": ["king", "claude"],
+            "pattern": "council",
+            "created_at": "2026-01-15T10:00:00Z",
+        }
+        (archive_threads / "thread.json").write_text(_json.dumps(meta))
+        for i, (sender, body) in enumerate(messages, 1):
+            content = f"---\nfrom: {sender}\nto: all\ntimestamp: 2026-01-15T10:0{i}:00Z\n---\n\n{body}\n"
+            (archive_threads / f"{i:04d}-{sender}.md").write_text(content)
+
+    def test_show_finds_archived_thread(self) -> None:
+        """council show resolves threads in archive when not on current branch."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            self.setup_archive_thread(
+                base, "old-branch", "council-arch", [("king", "Archive question"), ("claude", "Archive answer")]
+            )
+
+            result = runner.invoke(council_app, ["show", "council-arch"])
+
+            assert result.exit_code == 0
+            assert "council-arch" in result.output
+            assert "archived" in result.output
+            assert "old-branch" in result.output
+            assert "Archive question" in result.output
+
+    def test_show_prefers_current_branch(self) -> None:
+        """council show uses current branch thread over archived one with same ID."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_thread(base, BRANCH, "council-dupl", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-dupl", from_="king", to="all", body="Current branch msg")
+            self.setup_archive_thread(base, "old-branch", "council-dupl", [("king", "Old archived msg")])
+
+            result = runner.invoke(council_app, ["show", "council-dupl"])
+
+            assert result.exit_code == 0
+            assert "Current branch msg" in result.output
+            assert "archived" not in result.output
+
+    def test_chat_archived_thread_read_only(self) -> None:
+        """council chat shows archived thread read-only instead of opening TUI."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            self.setup_archive_thread(
+                base, "old-branch", "council-ro01", [("king", "Read only question"), ("claude", "Read only response")]
+            )
+
+            result = runner.invoke(council_app, ["chat", "council-ro01"])
+
+            assert result.exit_code == 0
+            assert "archived" in result.output
+            assert "read-only" in result.output.lower()
+            assert "Read only question" in result.output
+
+    def test_list_all_includes_archived(self) -> None:
+        """council list --all shows threads from current branch and archive."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_thread(base, BRANCH, "council-curr", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-curr", from_="king", to="all", body="Current topic")
+            self.setup_archive_thread(base, "old-branch", "council-old1", [("king", "Archived topic")])
+
+            result = runner.invoke(council_app, ["list", "--all"])
+
+            assert result.exit_code == 0
+            assert "council-curr" in result.output
+            assert "council-old1" in result.output
+            assert "archived" in result.output
+            assert "old-branch" in result.output
+
+    def test_list_without_all_excludes_archived(self) -> None:
+        """council list without --all shows only current branch threads."""
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_thread(base, BRANCH, "council-loc1", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-loc1", from_="king", to="all", body="Local topic")
+            self.setup_archive_thread(base, "old-branch", "council-arc1", [("king", "Archived topic")])
+
+            result = runner.invoke(council_app, ["list"])
+
+            assert result.exit_code == 0
+            assert "council-loc1" in result.output
+            assert "council-arc1" not in result.output
+
+
+class TestCouncilListJson:
+    """Tests for kd council list --json."""
+
+    def test_list_json_outputs_valid_json(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-ab12", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-ab12")
+            add_message(base, BRANCH, "council-ab12", from_="king", to="all", body="Review this design")
+            add_message(base, BRANCH, "council-ab12", from_="claude", to="king", body="Looks good")
+
+            result = runner.invoke(council_app, ["list", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            thread = data[0]
+            assert thread["id"] == "council-ab12"
+            assert thread["current"] is True
+            assert thread["message_count"] == 2
+            assert "Review this design" in thread["topic"]
+            assert "claude" in thread["members"]
+            assert thread["members"]["claude"] == "responded"
+            assert "created_at" in thread
+
+    def test_list_json_empty_returns_empty_list(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(council_app, ["list", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data == []
+
+
+class TestCouncilStatusJson:
+    """Tests for kd council status --json."""
+
+    def test_status_json_outputs_valid_json(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-cd34", ["king", "claude", "codex"], "council")
+            set_current_thread(base, BRANCH, "council-cd34")
+            add_message(base, BRANCH, "council-cd34", from_="king", to="all", body="Question?")
+            add_message(base, BRANCH, "council-cd34", from_="claude", to="king", body="Answer")
+
+            result = runner.invoke(council_app, ["status", "--json", "council-cd34"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["thread_id"] == "council-cd34"
+            assert "claude" in data["responded"]
+            assert "codex" in data["pending"]
+            assert "claude" in data["members"]
+            assert data["members"]["claude"]["state"] == "responded"
+
+    def test_status_json_all_returns_list(self) -> None:
+        from kingdom.thread import add_message, create_thread
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            create_thread(base, BRANCH, "council-ef56", ["king", "claude"], "council")
+            add_message(base, BRANCH, "council-ef56", from_="king", to="all", body="Q1")
+            add_message(base, BRANCH, "council-ef56", from_="claude", to="king", body="A1")
+
+            result = runner.invoke(council_app, ["status", "--all", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["thread_id"] == "council-ef56"
+
+    def test_status_json_all_empty_returns_empty_list(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(council_app, ["status", "--all", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data == []

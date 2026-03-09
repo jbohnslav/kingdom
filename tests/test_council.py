@@ -250,6 +250,21 @@ class TestCouncilMemberQuery:
 
             assert response.error == "Error: API key not set"
 
+    def test_query_captures_codex_structured_error(self) -> None:
+        """Codex JSONL failures should surface the actual error message."""
+        member = make_member("codex")
+        stdout = (
+            '{"type":"thread.started","thread_id":"abc-123"}\n'
+            '{"type":"error","message":"Reconnecting... 5/5"}\n'
+            '{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}\n'
+        )
+        proc = mock_popen(stdout=stdout, stderr="", returncode=1)
+
+        with patch("kingdom.council.base.subprocess.Popen", return_value=proc):
+            response = member.query("test prompt", timeout=30, max_retries=0)
+
+            assert response.error == "stream disconnected before completion"
+
     def test_query_streams_to_file(self, tmp_path: Path) -> None:
         """Query should tee stdout to stream_path when provided."""
         member = make_member("claude")

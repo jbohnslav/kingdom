@@ -280,6 +280,29 @@ class TestTicketCloseArchive:
         assert restored.exists()
 
 
+class TestTicketStatus:
+    def test_status_sets_arbitrary_value(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-stat")
+
+        result = runner.invoke(ticket_app, ["status", "kin-stat", "blocked"])
+
+        assert result.exit_code == 0, result.output
+        assert "open → blocked" in result.output
+        ticket = read_ticket(branch_dir / "kin-stat.md")
+        assert ticket.status == "blocked"
+
+    def test_status_round_trip(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-rt")
+
+        runner.invoke(ticket_app, ["status", "kin-rt", "in_review"])
+        result = runner.invoke(ticket_app, ["status", "kin-rt", "waiting"])
+
+        assert result.exit_code == 0, result.output
+        assert "in_review → waiting" in result.output
+
+
 class TestTicketCloseIdempotent:
     def test_close_already_archived_ticket_is_noop(self, cli_project: Path) -> None:
         """Closing an already-closed archived ticket should not double-move."""
@@ -1036,3 +1059,91 @@ class TestTicketAddNote:
         content = (tickets_dir / "aaaa.md").read_text()
         assert "This is a note" in content
         assert "**Note (" in content
+
+
+class TestTicketParent:
+    def test_set_parent(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="epic1", status="open", title="Epic", body="", created=datetime.now(UTC)),
+            tickets_dir / "epic1.md",
+        )
+        write_ticket(
+            Ticket(id="child1", status="open", title="Child", body="", created=datetime.now(UTC)),
+            tickets_dir / "child1.md",
+        )
+
+        result = runner.invoke(ticket_app, ["parent", "child1", "epic1"])
+        assert result.exit_code == 0
+        assert "parent set to epic1" in result.output
+
+        child = read_ticket(tickets_dir / "child1.md")
+        assert child.parent == "epic1"
+
+    def test_clear_parent(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="child2", status="open", title="Child", body="", parent="epic1", created=datetime.now(UTC)),
+            tickets_dir / "child2.md",
+        )
+
+        result = runner.invoke(ticket_app, ["parent", "child2", "--clear"])
+        assert result.exit_code == 0
+        assert "parent cleared (was epic1)" in result.output
+
+        child = read_ticket(tickets_dir / "child2.md")
+        assert child.parent is None
+
+    def test_reparent(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="epic-a", status="open", title="Epic A", body="", created=datetime.now(UTC)),
+            tickets_dir / "epic-a.md",
+        )
+        write_ticket(
+            Ticket(id="epic-b", status="open", title="Epic B", body="", created=datetime.now(UTC)),
+            tickets_dir / "epic-b.md",
+        )
+        write_ticket(
+            Ticket(id="child3", status="open", title="Child", body="", parent="epic-a", created=datetime.now(UTC)),
+            tickets_dir / "child3.md",
+        )
+
+        result = runner.invoke(ticket_app, ["parent", "child3", "epic-b"])
+        assert result.exit_code == 0
+        assert "epic-a" in result.output
+        assert "epic-b" in result.output
+
+        child = read_ticket(tickets_dir / "child3.md")
+        assert child.parent == "epic-b"
+
+    def test_no_args_errors(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="child4", status="open", title="Child", body="", created=datetime.now(UTC)),
+            tickets_dir / "child4.md",
+        )
+
+        result = runner.invoke(ticket_app, ["parent", "child4"])
+        assert result.exit_code == 1
+
+    def test_self_parent_errors(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="self1", status="open", title="Self", body="", created=datetime.now(UTC)),
+            tickets_dir / "self1.md",
+        )
+
+        result = runner.invoke(ticket_app, ["parent", "self1", "self1"])
+        assert result.exit_code == 1
+        assert "cannot be its own parent" in result.output
+
+    def test_set_and_clear_conflict_errors(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="child5", status="open", title="Child", body="", created=datetime.now(UTC)),
+            tickets_dir / "child5.md",
+        )
+
+        result = runner.invoke(ticket_app, ["parent", "child5", "epic1", "--clear"])
+        assert result.exit_code == 1

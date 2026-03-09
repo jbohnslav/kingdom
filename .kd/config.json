@@ -4,12 +4,14 @@
       "backend": "claude_code"
     },
     "codex": {
-      "backend": "codex"
+      "backend": "codex",
+      "model": "gpt-5.4",
+      "reasoning_effort": "high"
     }
   },
   "council": {
     "members": ["claude", "codex"],
-    "timeout": 600
+    "timeout": 900
   },
   "peasant": {
     "agent": "claude",

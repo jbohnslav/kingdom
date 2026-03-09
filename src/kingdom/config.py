@@ -27,6 +27,7 @@ class AgentDef:
     prompt: str = ""
     prompts: dict[str, str] = field(default_factory=dict)
     extra_flags: list[str] = field(default_factory=list)
+    reasoning_effort: str = ""
 
 
 @dataclass
@@ -80,6 +81,18 @@ class PeasantConfig:
 
 
 @dataclass
+class LordConfig:
+    """Lord (epic supervisor) settings.
+
+    ``agent`` falls back to ``peasant.agent`` when unset (empty string).
+    ``max_cycles`` caps how many LLM agent calls the lord makes per run.
+    """
+
+    agent: str = ""
+    max_cycles: int = 200
+
+
+@dataclass
 class KingdomConfig:
     """Top-level configuration, loaded from .kd/config.json."""
 
@@ -87,6 +100,7 @@ class KingdomConfig:
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     council: CouncilConfig = field(default_factory=CouncilConfig)
     peasant: PeasantConfig = field(default_factory=PeasantConfig)
+    lord: LordConfig = field(default_factory=LordConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +121,7 @@ def default_config() -> KingdomConfig:
         prompts=PromptsConfig(),
         council=CouncilConfig(members=list(agents)),
         peasant=PeasantConfig(agent="claude"),
+        lord=LordConfig(agent="claude"),
     )
 
 
@@ -115,7 +130,9 @@ def default_config() -> KingdomConfig:
 # ---------------------------------------------------------------------------
 
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
-VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags"}
+VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags", "reasoning_effort"}
+VALID_REASONING_EFFORTS = {"low", "medium", "high"}
+REASONING_EFFORT_BACKENDS = {"codex"}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
 VALID_COUNCIL_KEYS = {
     "members",
@@ -130,7 +147,8 @@ VALID_ASK_KEYS = {"mode", "auto_messages"}
 VALID_CHAT_KEYS = {"mode", "auto_rounds"}
 DEPRECATED_COUNCIL_KEYS = {"auto_messages", "mode", "chat_mode", "chat_auto_rounds"}
 VALID_PEASANT_KEYS = {"agent", "max_iterations"}
-VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant"}
+VALID_LORD_KEYS = {"agent", "max_cycles"}
+VALID_TOP_KEYS = {"agents", "prompts", "council", "peasant", "lord"}
 VALID_AGENT_PROMPT_PHASES = {"council", "design", "review", "peasant"}
 
 
@@ -180,12 +198,29 @@ def validate_agent(name: str, data: dict) -> AgentDef:
         if not isinstance(flag, str):
             raise ValueError(f"agents.{name}.extra_flags[{i}] must be a string, got {type(flag).__name__}")
 
+    reasoning_effort = data.get("reasoning_effort", "")
+    if "reasoning_effort" in data:
+        if not isinstance(reasoning_effort, str):
+            raise ValueError(f"agents.{name}.reasoning_effort must be a string, got {type(reasoning_effort).__name__}")
+        if reasoning_effort and reasoning_effort not in VALID_REASONING_EFFORTS:
+            raise ValueError(
+                f"agents.{name}.reasoning_effort must be one of "
+                f"{', '.join(sorted(VALID_REASONING_EFFORTS))}, got '{reasoning_effort}'"
+            )
+        if reasoning_effort and backend not in REASONING_EFFORT_BACKENDS:
+            raise ValueError(
+                f"agents.{name}.reasoning_effort is only supported for backends: "
+                f"{', '.join(sorted(REASONING_EFFORT_BACKENDS))}. "
+                f"Agent '{name}' uses backend '{backend}'"
+            )
+
     return AgentDef(
         backend=backend,
         model=model or "",
         prompt=prompt or "",
         prompts=prompts,
         extra_flags=extra_flags,
+        reasoning_effort=reasoning_effort or "",
     )
 
 
@@ -335,6 +370,23 @@ def validate_peasant(data: dict) -> PeasantConfig:
     return PeasantConfig(agent=agent, max_iterations=max_iterations)
 
 
+def validate_lord(data: dict) -> LordConfig:
+    """Validate and construct a LordConfig from a raw dict."""
+    check_unknown_keys(data, VALID_LORD_KEYS, "lord")
+
+    agent = data.get("agent", "")
+    if not isinstance(agent, str):
+        raise ValueError(f"lord.agent must be a string, got {type(agent).__name__}")
+
+    max_cycles = data.get("max_cycles", 200)
+    if not isinstance(max_cycles, int):
+        raise ValueError(f"lord.max_cycles must be an integer, got {type(max_cycles).__name__}")
+    if max_cycles <= 0:
+        raise ValueError(f"lord.max_cycles must be positive, got {max_cycles}")
+
+    return LordConfig(agent=agent, max_cycles=max_cycles)
+
+
 def validate_config(data: dict) -> KingdomConfig:
     """Validate a raw dict and construct a KingdomConfig.
 
@@ -387,6 +439,16 @@ def validate_config(data: dict) -> KingdomConfig:
         raise ValueError(f"peasant must be an object, got {type(peasant_data).__name__}")
     peasant = validate_peasant(peasant_data)
 
+    # Lord
+    lord_data = data.get("lord", {})
+    if not isinstance(lord_data, dict):
+        raise ValueError(f"lord must be an object, got {type(lord_data).__name__}")
+    lord = validate_lord(lord_data)
+
+    # Resolve lord.agent fallback: default to peasant.agent when unset
+    if not lord.agent:
+        lord = replace(lord, agent=peasant.agent)
+
     # Cross-reference validation
     defined = set(agents)
     for member in council.members:
@@ -398,8 +460,12 @@ def validate_config(data: dict) -> KingdomConfig:
         raise ValueError(
             f"peasant.agent references undefined agent '{peasant.agent}'. Defined agents: {', '.join(sorted(defined))}"
         )
+    if lord.agent not in defined:
+        raise ValueError(
+            f"lord.agent references undefined agent '{lord.agent}'. Defined agents: {', '.join(sorted(defined))}"
+        )
 
-    return KingdomConfig(agents=agents, prompts=prompts, council=council, peasant=peasant)
+    return KingdomConfig(agents=agents, prompts=prompts, council=council, peasant=peasant, lord=lord)
 
 
 # ---------------------------------------------------------------------------

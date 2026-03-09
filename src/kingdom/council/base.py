@@ -10,6 +10,7 @@ from pathlib import Path
 
 from kingdom.agent import AgentConfig, clean_agent_env
 from kingdom.agent import build_command as agent_build_command
+from kingdom.agent import extract_error as agent_extract_error
 from kingdom.agent import parse_response as agent_parse_response
 
 
@@ -234,7 +235,9 @@ class CouncilMember:
             elapsed = time.monotonic() - start
             error = None
             if process.returncode != 0 and not text:
-                error = stderr.strip() or f"Exit code {process.returncode}"
+                error = agent_extract_error(self.config, stdout, stderr, process.returncode)
+                if not error:
+                    error = f"Exit code {process.returncode}"
             elif not text and process.returncode == 0:
                 # Process exited cleanly but produced no extractable text
                 snippet = stderr.strip()[:200] if stderr.strip() else stdout.strip()[:200]

@@ -1405,6 +1405,16 @@ class TestPeasantReview:
                     result.returncode = 0
                     result.stdout = f"{BRANCH}\n"
                     result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    # Branch not yet merged
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    # Clean working tree
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
                 else:
                     # git merge
                     result.returncode = 0
@@ -1428,6 +1438,52 @@ class TestPeasantReview:
             # Session should be done
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "done"
+
+    def test_review_accept_works_when_session_already_done(self) -> None:
+        """Accept should succeed when session is 'done' (peasant closed ticket prematurely)."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="done"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                else:
+                    result.returncode = 0
+                    result.stdout = "Already up to date."
+                    result.stderr = ""
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "accepted" in result.output
+
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
 
     def test_review_accept_wrong_branch_fails(self) -> None:
         """--accept should hard-fail if HEAD is not on the feature branch."""
@@ -1462,6 +1518,64 @@ class TestPeasantReview:
             assert result.exit_code == 1
             assert "Cannot accept" in result.output
             assert "master" in result.output
+
+    def test_accept_slash_branch_with_stored_name(self) -> None:
+        """Accept should work for branches with slashes when state.json has the original name."""
+        slash_branch = "jrb/my-feature"
+        normalized = normalize_branch_name(slash_branch)
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, slash_branch)
+            set_current_run(base, slash_branch)
+
+            # Store original branch name in state.json (like kd start does)
+            from kingdom.state import branch_root, read_json, write_json
+
+            state_path = branch_root(base, slash_branch) / "state.json"
+            state = read_json(state_path)
+            state["branch"] = slash_branch
+            write_json(state_path, state)
+
+            # Create ticket and session
+            tickets_dir = base / ".kd" / "branches" / normalized / "tickets"
+            tickets_dir.mkdir(parents=True, exist_ok=True)
+            ticket = Ticket(id="slash-test", title="Slash branch test", status="in_review")
+            write_ticket(ticket, tickets_dir / "slash-test.md")
+
+            session_name = "peasant-slash-test"
+            set_agent_state(
+                base,
+                slash_branch,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{slash_branch}\n"  # git returns original name with slash
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                else:
+                    result.returncode = 0
+                    result.stdout = "Already up to date."
+                    result.stderr = ""
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "slash-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "accepted" in result.output
 
     def test_review_accept_hand_mode_skips_merge(self) -> None:
         """In hand mode, --accept should skip merge and close ticket directly."""
@@ -1739,7 +1853,7 @@ class TestPeasantReview:
             assert "in_review" in result.output
 
     def test_review_accept_rejects_wrong_session_status(self) -> None:
-        """--accept should fail if session is not needs_king_review."""
+        """--accept should fail if session is not needs_king_review or done."""
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -1799,11 +1913,24 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
+            call_count = 0
+
             def mock_run(cmd, **kwargs):
+                nonlocal call_count
                 result = MagicMock()
                 if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
                     result.returncode = 0
                     result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    # Branch not yet merged
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    # Clean working tree
+                    result.returncode = 0
+                    result.stdout = ""
                     result.stderr = ""
                 else:
                     # git merge — simulate conflict
@@ -1819,6 +1946,105 @@ class TestPeasantReview:
             assert "Integration failed" in result.output
             assert "Recovery steps" in result.output
             assert "CONFLICT" in result.output
+            # Recovery steps should reference the feature branch, not the worktree
+            assert "Resolve conflict markers" in result.output
+            assert "git add" in result.output
+            assert "re-run" in result.output
+
+            # Ticket should still be in_review
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "in_review"
+
+    def test_review_accept_already_merged_skips_merge(self) -> None:
+        """If the ticket branch is already merged, accept should skip merge and do cleanup."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    # Branch already merged
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "already merged" in result.output
+            assert "accepted" in result.output
+
+            # Ticket should be closed
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
+
+            # Session should be done
+            state = get_agent_state(base, BRANCH, session_name)
+            assert state.status == "done"
+
+    def test_review_accept_uncommitted_changes_blocks(self) -> None:
+        """Accept should refuse to merge if there are uncommitted changes."""
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    # Branch not yet merged
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    # Dirty working tree
+                    result.returncode = 0
+                    result.stdout = " M src/foo.py\n M src/bar.py\n"
+                    result.stderr = ""
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "Uncommitted changes" in result.output
+            assert "commit or stash" in result.output
 
             # Ticket should still be in_review
             ticket_result = find_ticket(base, "kin-test")
@@ -2473,6 +2699,53 @@ class TestFilterAgentLogLines:
         assert result == []
 
 
+class TestPollCouncilStatus:
+    def test_ignores_unrelated_branch_council_threads(self) -> None:
+        from kingdom.cli.peasant import poll_council_status
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            work_thread_id = setup_work_thread(base)
+
+            create_thread(base, BRANCH, "council-stale", ["king", "claude", "codex"], "council")
+            stale_dir = thread_dir(base, BRANCH, "council-stale")
+            (stale_dir / ".stream-claude.jsonl").write_text('{"type":"event"}\n')
+            (stale_dir / ".stream-codex.jsonl").write_text('{"type":"event"}\n')
+            add_message(base, BRANCH, "council-stale", from_="king", to="all", body="hi")
+            add_message(base, BRANCH, "council-stale", from_="claude", to="king", body="ok")
+            add_message(base, BRANCH, "council-stale", from_="codex", to="king", body="*Error: Exit code 1*")
+
+            assert poll_council_status(base, BRANCH, work_thread_id) is None
+
+    def test_uses_ticket_work_thread_only(self) -> None:
+        from kingdom.cli.peasant import poll_council_status
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+            work_thread_id = setup_work_thread(base)
+            work_dir = thread_dir(base, BRANCH, work_thread_id)
+
+            add_message(base, BRANCH, work_thread_id, from_="king", to="council", body="review this")
+            add_message(base, BRANCH, work_thread_id, from_="claude", to="king", body="Looks good", status="complete")
+            (work_dir / ".stream-codex.jsonl").write_text('{"type":"event"}\n')
+
+            create_thread(base, BRANCH, "council-stale", ["king", "claude", "codex"], "council")
+            stale_dir = thread_dir(base, BRANCH, "council-stale")
+            (stale_dir / ".stream-claude.jsonl").write_text('{"type":"event"}\n')
+            (stale_dir / ".stream-codex.jsonl").write_text('{"type":"event"}\n')
+            add_message(base, BRANCH, "council-stale", from_="king", to="all", body="old question")
+            add_message(
+                base, BRANCH, "council-stale", from_="codex", to="king", body="*Error: Exit code 1*", status="error"
+            )
+
+            result = poll_council_status(base, BRANCH, work_thread_id)
+            assert result == "Awaiting council response — claude responded, codex running"
+
+
 class TestReassembleStreamText:
     """Tests for reassemble_stream_text — NDJSON delta accumulation."""
 
@@ -2836,3 +3109,125 @@ class TestFindActivePeasantBranch:
             )
             result = find_active_peasant_branch(base, "peasant-xyz")
             assert result == normalize_branch_name(BRANCH_A)
+
+
+class TestPeasantStatusJson:
+    """Tests for kd peasant status --json."""
+
+    def test_status_json_outputs_valid_json(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            now = datetime.now(UTC).isoformat()
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-042",
+                AgentState(
+                    name="peasant-kin-042",
+                    status="working",
+                    pid=99999,
+                    ticket="kin-042",
+                    agent_backend="claude",
+                    started_at=now,
+                    last_activity=now,
+                ),
+            )
+
+            with patch("os.kill"):  # Mock kill so liveness check passes
+                result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["ticket"] == "kin-042"
+            assert data[0]["status"] == "working"
+            assert data[0]["agent"] == "claude"
+            assert data[0]["pid"] == 99999
+            assert data[0]["started_at"] == now
+            assert isinstance(data[0]["elapsed_minutes"], int)
+
+    def test_status_json_reports_dead_for_dead_process(self) -> None:
+        """The most critical AC: dead processes must report 'dead', not 'working'."""
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            now = datetime.now(UTC).isoformat()
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-dead",
+                AgentState(
+                    name="peasant-kin-dead",
+                    status="working",
+                    pid=99999,
+                    ticket="kin-dead",
+                    agent_backend="claude",
+                    started_at=now,
+                    last_activity=now,
+                ),
+            )
+
+            # Don't mock os.kill — is_process_alive will raise OSError → dead
+            result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert len(data) == 1
+            assert data[0]["status"] == "dead"
+
+    def test_status_json_empty_returns_empty_list(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data == []
+
+
+class TestPeasantShowJson:
+    """Tests for kd peasant show --json."""
+
+    def test_show_json_outputs_valid_json(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base)
+
+            # Add worklog
+            content = ticket_path.read_text(encoding="utf-8")
+            content += "\n\n## Worklog\n\n- [09:00] Started work\n"
+            ticket_path.write_text(content, encoding="utf-8")
+
+            # Create agent-live.log with plain text
+            peasant_logs_dir = logs_root(base, BRANCH) / "peasant-kin-test"
+            peasant_logs_dir.mkdir(parents=True, exist_ok=True)
+            (peasant_logs_dir / "agent-live.log").write_text(
+                "Reading the source file for context\n",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(peasant_app, ["show", "--json", "kin-test"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["ticket_id"] == "kin-test"
+            assert "Started work" in data["worklog"]
+            assert isinstance(data["activity"], list)
+            assert isinstance(data["commits"], list)
+            assert "status" in data
+            assert "hand_mode" in data
