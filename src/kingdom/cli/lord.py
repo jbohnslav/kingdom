@@ -106,7 +106,7 @@ def start(
 
     if watch:
         typer.echo()
-        lord_watch(epic_id)
+        lord_watch(full_epic_id)
 
 
 def launch_lord_background(
