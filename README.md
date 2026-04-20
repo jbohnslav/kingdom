@@ -18,7 +18,7 @@ Gastown minus the polecats.
 ## Install
 
 ```bash
-uv tool install kingdom-cli
+uv tool install kingdom-cli  # add --python 3.11 if Python 3.11+ is not installed yet
 ```
 
 ## Workflow Scales
