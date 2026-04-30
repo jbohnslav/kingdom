@@ -24,6 +24,8 @@ from kingdom.parsing import parse_iso_datetime
 from kingdom.state import (
     backlog_root,
     branch_root,
+    find_git_root,
+    get_current_git_branch,
     logs_root,
     normalize_branch_name,
     resolve_current_run,
@@ -32,9 +34,9 @@ from kingdom.ticket import Ticket, move_ticket, write_ticket
 from kingdom.worktree import (
     check_uncommitted_changes,
     create_worktree,
+    existing_worktree_path_for,
     remove_worktree,
     run_init_script,
-    worktree_path_for,
 )
 
 from .display import error_console, print_error, styled_echo
@@ -58,6 +60,30 @@ class PeasantContext(NamedTuple):
     ticket_path: Path
     full_ticket_id: str
     feature: str
+    git_root: Path
+
+
+def resolve_invocation_git_root(base: Path) -> Path:
+    """Return the checkout git commands should operate on.
+
+    In the normal case ``base`` is the checkout the user invoked ``kd`` from,
+    so avoid extra git subprocesses. When ``base`` points at a sibling checkout
+    that owns ``.kd/``, fall back to git discovery for the invocation worktree.
+    """
+    cwd = Path.cwd().resolve()
+    base = base.resolve()
+
+    current = cwd
+    while True:
+        if (current / ".git").exists():
+            return current if current != base else base
+        if current == base:
+            return base
+        if current.parent == current:
+            break
+        current = current.parent
+
+    return find_git_root(cwd) or base
 
 
 def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull: bool = False) -> PeasantContext:
@@ -77,6 +103,7 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
     from kingdom.session import find_peasant_branch
 
     base = base or require_project_root()
+    git_root = resolve_invocation_git_root(base)
 
     # For non-start commands, try to find the peasant's owning branch first.
     # Resolve the full ticket ID before building the session name — the user
@@ -92,6 +119,7 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
                 ticket_path=ticket_path,
                 full_ticket_id=ticket.id,
                 feature=owning_branch,
+                git_root=git_root,
             )
 
     # Fall back to current session (required for start, fine for others)
@@ -114,6 +142,7 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
         ticket_path=ticket_path,
         full_ticket_id=full_ticket_id,
         feature=feature,
+        git_root=git_root,
     )
 
 
@@ -308,10 +337,10 @@ def peasant_start(
 
     # 0. Preflight: warn on uncommitted changes (skipped in hand mode or with --no-preflight)
     if not hand and not no_preflight:
-        uncommitted = check_uncommitted_changes(base, ignore_kd=True)
+        uncommitted = check_uncommitted_changes(ctx.git_root, ignore_kd=True)
         if uncommitted:
             error_console.print(
-                f"[yellow]Warning:[/yellow] {len(uncommitted)} uncommitted change(s) in {base}.\n"
+                f"[yellow]Warning:[/yellow] {len(uncommitted)} uncommitted change(s) in {ctx.git_root}.\n"
                 "  Worktrees are created from the last commit — uncommitted changes won't be included.\n"
                 "  Commit or stash first, or use [bold]--hand[/bold] to work in the current directory."
             )
@@ -335,11 +364,11 @@ def peasant_start(
                     f"on this checkout. Stop it first or use worktree mode."
                 )
                 raise typer.Exit(code=1)
-        worktree_path = base
-        typer.echo(f"Running in hand mode (serial) on {base}")
+        worktree_path = ctx.git_root
+        typer.echo(f"Running in hand mode (serial) on {ctx.git_root}")
     else:
         try:
-            worktree_path = create_worktree(base, full_ticket_id, log=typer.echo)
+            worktree_path = create_worktree(base, full_ticket_id, log=typer.echo, git_root=ctx.git_root)
         except RuntimeError as exc:
             print_error(str(exc))
             raise typer.Exit(code=1) from None
@@ -606,7 +635,13 @@ def peasant_show(
         from kingdom.state import read_json
 
         st = read_json(branch_root(ctx.base, ctx.feature) / "state.json")
-        git_ref = st.get("branch", ctx.feature)
+        git_ref = st.get("branch")
+        if not git_ref:
+            current_git_branch = get_current_git_branch(ctx.git_root)
+            if current_git_branch and normalize_branch_name(current_git_branch) == normalize_branch_name(ctx.feature):
+                git_ref = current_git_branch
+            else:
+                git_ref = ctx.feature
         log_spec = [f"{git_ref}..{branch_name}"]
     commits: list[str] = []
     try:
@@ -614,7 +649,7 @@ def peasant_show(
             ["git", "log", "--oneline", *log_spec],
             capture_output=True,
             text=True,
-            cwd=str(ctx.base),
+            cwd=str(ctx.git_root),
             timeout=10,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -931,7 +966,6 @@ def peasant_watch(
 
     import kingdom.cli as _cli
     from kingdom.session import get_agent_state
-    from kingdom.worktree import worktree_path_for
 
     ctx = _cli.resolve_peasant_context(ticket_id)
     session_name = peasant_session_name(ctx.full_ticket_id)
@@ -941,7 +975,11 @@ def peasant_watch(
 
     # Resolve worktree path for activity polling
     state = get_agent_state(ctx.base, ctx.feature, session_name)
-    worktree = ctx.base if state.hand_mode else worktree_path_for(ctx.base, ctx.full_ticket_id)
+    worktree = (
+        ctx.git_root
+        if state.hand_mode
+        else existing_worktree_path_for(ctx.base, ctx.full_ticket_id, feature=ctx.feature)
+    )
 
     # Resolve agent backend for NDJSON stream decoding
     agent_backend = ""
@@ -1186,7 +1224,10 @@ def peasant_clean(
         typer.confirm(f"Remove worktree for {ctx.full_ticket_id}?", abort=True)
 
     try:
-        remove_worktree(ctx.base, ctx.full_ticket_id)
+        if ctx.git_root == ctx.base:
+            remove_worktree(ctx.base, ctx.full_ticket_id)
+        else:
+            remove_worktree(ctx.base, ctx.full_ticket_id, git_root=ctx.git_root)
         typer.echo(f"{ctx.full_ticket_id}: worktree removed")
     except FileNotFoundError:
         print_error(f"No worktree found for {ctx.full_ticket_id}")
@@ -1259,7 +1300,7 @@ def peasant_sync(
         raise typer.Exit(code=1)
 
     # Find worktree
-    worktree_path = worktree_path_for(base, full_ticket_id)
+    worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
     if not worktree_path.exists():
         print_error(f"No worktree found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1)
@@ -1395,7 +1436,7 @@ def peasant_review(
         ["git", "diff", diff_spec, "--stat"],
         capture_output=True,
         text=True,
-        cwd=str(base),
+        cwd=str(ctx.git_root),
     )
     diff_output = diff_result.stdout.strip()
     diff_err = diff_result.stderr.strip()
@@ -1488,7 +1529,7 @@ def peasant_accept(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
         text=True,
-        cwd=str(base),
+        cwd=str(ctx.git_root),
     ).stdout.strip()
     if "branch" in state_json:
         # Original git branch name stored — compare exactly
@@ -1514,13 +1555,13 @@ def peasant_accept(
             ["git", "merge-base", "--is-ancestor", branch_name, "HEAD"],
             capture_output=True,
             text=True,
-            cwd=str(base),
+            cwd=str(ctx.git_root),
         )
         if already_merged.returncode == 0:
             typer.echo(f"{branch_name} already merged into {feature}, skipping merge")
         else:
             # Check for uncommitted changes before attempting merge
-            uncommitted = check_uncommitted_changes(base, ignore_kd=True)
+            uncommitted = check_uncommitted_changes(ctx.git_root, ignore_kd=True)
             if uncommitted:
                 print_error(
                     f"Uncommitted changes on {git_branch_name} — commit or stash before accepting.\n"
@@ -1532,7 +1573,7 @@ def peasant_accept(
                 ["git", "merge", branch_name, "--no-edit"],
                 capture_output=True,
                 text=True,
-                cwd=str(base),
+                cwd=str(ctx.git_root),
             )
             if merge_result.returncode != 0:
                 # Integration failed — keep in_review, show recovery steps
@@ -1642,10 +1683,10 @@ def peasant_reject(
                     "Stop it first or use --no-resume."
                 )
                 raise typer.Exit(code=1)
-        worktree_path = base
+        worktree_path = ctx.git_root
     else:
         # Worktree mode: use the ticket worktree
-        worktree_path = worktree_path_for(base, full_ticket_id)
+        worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
         if not worktree_path.exists():
             print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
             raise typer.Exit(code=1)

@@ -68,6 +68,79 @@ def state_root(base: Path) -> Path:
     return base / ".kd"
 
 
+def find_git_root(cwd: Path | None = None) -> Path | None:
+    """Return the current invocation worktree root, or None outside git."""
+    cwd = cwd or Path.cwd()
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
+def parse_worktree_list(output: str) -> list[Path]:
+    """Parse ``git worktree list --porcelain`` output into worktree paths."""
+    paths: list[Path] = []
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            paths.append(Path(line.removeprefix("worktree ")).resolve())
+    return paths
+
+
+def has_git_marker(cwd: Path | None = None) -> bool:
+    """Return True when cwd or one of its parents looks like a git checkout."""
+    current = cwd or Path.cwd()
+    while True:
+        if (current / ".git").exists():
+            return True
+        if current.parent == current:
+            return False
+        current = current.parent
+
+
+def find_kd_base_from_git_worktrees(cwd: Path | None = None) -> Path | None:
+    """Find a sibling worktree that owns ``.kd/``.
+
+    Manual long-lived worktrees may not have the tracked ``.kd/`` directory
+    checked out. Git's worktree registry lets us find the sibling checkout that
+    does without moving Kingdom state into a global home directory.
+    """
+    cwd = cwd or Path.cwd()
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    candidates = [path for path in parse_worktree_list(result.stdout) if (path / ".kd").is_dir()]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    primary_candidates = [path for path in candidates if (path / ".git").is_dir()]
+    if len(primary_candidates) == 1:
+        return primary_candidates[0]
+
+    options = "\n".join(f"  {path}" for path in candidates)
+    raise ValueError(f"Multiple git worktrees contain .kd/. Set KD_BASE to choose one explicitly:\n{options}")
+
+
 def find_project_root() -> Path:
     """Locate the Kingdom project root directory.
 
@@ -76,11 +149,13 @@ def find_project_root() -> Path:
     2. cwd (if .kd/ exists here, fast path)
     3. Walk parent directories looking for .kd/
     4. git rev-parse --show-toplevel (belt-and-suspenders fallback)
-    5. Error with clear hint to run kd init
+    5. git worktree list --porcelain sibling fallback
+    6. Error with clear hint to run kd init
 
     Raises ValueError with a descriptive message if no root is found.
     """
     root: Path | None = None
+    cwd = Path.cwd()
 
     # 1. KD_BASE env var — explicit override, fail loudly if invalid
     kd_base = os.environ.get("KD_BASE")
@@ -91,35 +166,27 @@ def find_project_root() -> Path:
         root = p
 
     # 2. cwd fast path
-    if root is None:
-        cwd = Path.cwd()
-        if (cwd / ".kd").is_dir():
-            root = cwd
+    if root is None and (cwd / ".kd").is_dir():
+        root = cwd.resolve()
 
     # 3. Walk parent directories
     if root is None:
         for parent in cwd.parents:
             if (parent / ".kd").is_dir():
-                root = parent
+                root = parent.resolve()
                 break
 
     # 4. git rev-parse fallback
     if root is None:
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                git_root = Path(result.stdout.strip())
-                if (git_root / ".kd").is_dir():
-                    root = git_root
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        git_root = find_git_root(cwd)
+        if git_root and (git_root / ".kd").is_dir():
+            root = git_root
 
-    # 5. Error
+    # 5. Manual sibling worktree fallback
+    if root is None:
+        root = find_kd_base_from_git_worktrees(cwd)
+
+    # 6. Error
     if root is None:
         raise ValueError("No .kd/ directory found. Run `kd init` to initialize.")
 
@@ -347,13 +414,15 @@ def clear_current_run(base: Path) -> None:
         current_path.unlink()
 
 
-def get_current_git_branch() -> str | None:
+def get_current_git_branch(cwd: Path | None = None) -> str | None:
     """Get the current git branch name, or None if not in a repo or detached HEAD."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
+    cwd = cwd or Path.cwd()
+    if not has_git_marker(cwd):
+        return None
+    try:
+        result = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, cwd=cwd)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
     if result.returncode != 0:
         return None
     branch = result.stdout.strip()
@@ -366,23 +435,14 @@ def resolve_current_run(base: Path) -> str:
     """Resolve the current active run/branch.
 
     Resolution order:
-    1. Explicit .kd/current file (set by ``kd start``)
-    2. Current git branch name matched against .kd/branches/
+    1. Current invocation worktree git branch matched against .kd/branches/
+    2. Explicit .kd/current file (repo default, set by ``kd start`` / ``kd switch``)
     3. Error with helpful message
     """
     current_path = state_root(base) / "current"
 
-    # 1. Explicit current file takes priority
-    if current_path.exists():
-        feature = current_path.read_text(encoding="utf-8").strip()
-        if feature:
-            branch_dir = branch_root(base, feature)
-            if branch_dir.exists():
-                return feature
-
-            # Stale pointer — fall through to git auto-detect instead of raising
-
-    # 2. Auto-detect from git branch
+    # 1. Prefer the branch of the worktree where kd was invoked. A shared
+    # .kd/current file should not force every human worktree onto one session.
     git_branch = get_current_git_branch()
     if git_branch:
         try:
@@ -393,5 +453,15 @@ def resolve_current_run(base: Path) -> str:
             branch_dir = branches_root(base) / normalized
             if branch_dir.exists():
                 return normalized
+
+    # 2. Explicit current file is a repo-wide default/fallback.
+    if current_path.exists():
+        feature = current_path.read_text(encoding="utf-8").strip()
+        if feature:
+            branch_dir = branch_root(base, feature)
+            if branch_dir.exists():
+                return feature
+
+            # Stale pointer — fall through to the helpful error below.
 
     raise RuntimeError("No active session. Use `kd start <feature>` or switch to a tracked branch.")

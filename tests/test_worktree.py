@@ -9,6 +9,7 @@ from kingdom.state import ensure_base_layout, ensure_branch_layout
 from kingdom.worktree import (
     check_uncommitted_changes,
     design_state_path,
+    existing_worktree_path_for,
     is_kd_change,
     sync_workflow_files,
     worktree_path_for,
@@ -16,10 +17,19 @@ from kingdom.worktree import (
 
 
 class TestWorktreePathFor:
-    def test_returns_canonical_path(self, tmp_path: Path) -> None:
+    def test_returns_namespaced_path_when_feature_given(self, tmp_path: Path) -> None:
         ensure_base_layout(tmp_path)
-        result = worktree_path_for(tmp_path, "kin-abcd")
-        assert result == tmp_path / ".kd" / "worktrees" / "kin-abcd"
+        result = worktree_path_for(tmp_path, "kin-abcd", feature="feature-test")
+        assert result == tmp_path / ".kd" / "worktrees" / "feature-test" / "kin-abcd"
+
+    def test_existing_worktree_accepts_legacy_path(self, tmp_path: Path) -> None:
+        ensure_base_layout(tmp_path)
+        legacy = tmp_path / ".kd" / "worktrees" / "kin-abcd"
+        legacy.mkdir(parents=True)
+
+        result = existing_worktree_path_for(tmp_path, "kin-abcd", feature="feature-test")
+
+        assert result == legacy
 
 
 class TestSyncWorkflowFiles:

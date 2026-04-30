@@ -458,6 +458,34 @@ class TestProjectRootDiscovery:
             result = runner.invoke(app, ["tk", "list"])
         assert result.exit_code == 0
 
+    def test_tk_list_from_manual_worktree_without_kd(self, tmp_path: Path) -> None:
+        """kd tk list can run from a sibling worktree whose checkout lacks .kd/."""
+        import subprocess
+
+        main = tmp_path / "main"
+        manual = tmp_path / "manual"
+        main.mkdir()
+        manual.mkdir()
+        ensure_base_layout(main)
+        ensure_branch_layout(main, "test-branch")
+        set_current_run(main, "test-branch")
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["git", "rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{manual}\n", stderr="")
+            if cmd == ["git", "worktree", "list", "--porcelain"]:
+                output = f"worktree {main}\nHEAD abc\n\nworktree {manual}\nHEAD def\n"
+                return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with (
+            patch("kingdom.state.Path.cwd", return_value=manual),
+            patch("kingdom.state.subprocess.run", side_effect=fake_run),
+        ):
+            result = runner.invoke(app, ["tk", "list"])
+
+        assert result.exit_code == 0
+
     def test_kd_base_invalid_path_shows_error(self, tmp_path: Path) -> None:
         """KD_BASE set to invalid path produces explicit error with the bad path."""
         bad = tmp_path / "bad-path"

@@ -10,12 +10,28 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from kingdom.state import read_json, resolve_current_run, state_root, write_json
+from kingdom.state import find_git_root, read_json, resolve_current_run, state_root, write_json
 
 
-def worktree_path_for(base: Path, full_ticket_id: str) -> Path:
+def worktree_path_for(base: Path, full_ticket_id: str, *, feature: str | None = None) -> Path:
     """Return the canonical worktree path for a ticket (may not exist yet)."""
-    return state_root(base) / "worktrees" / full_ticket_id
+    root = state_root(base) / "worktrees"
+    if feature:
+        return root / feature / full_ticket_id
+    return root / full_ticket_id
+
+
+def existing_worktree_path_for(base: Path, full_ticket_id: str, *, feature: str) -> Path:
+    """Return the current worktree path, accepting the legacy un-namespaced path."""
+    namespaced = worktree_path_for(base, full_ticket_id, feature=feature)
+    if namespaced.exists():
+        return namespaced
+
+    legacy = worktree_path_for(base, full_ticket_id)
+    if legacy.exists():
+        return legacy
+
+    return namespaced
 
 
 def design_state_path(base: Path, feature: str) -> Path:
@@ -108,9 +124,17 @@ def check_uncommitted_changes(base: Path, *, ignore_kd: bool = False) -> list[st
         return []
 
 
-def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] = print) -> Path:
+def create_worktree(
+    base: Path,
+    full_ticket_id: str,
+    log: Callable[[str], None] = print,
+    *,
+    git_root: Path | None = None,
+) -> Path:
     """Create a git worktree for a ticket. Returns the worktree path."""
-    worktree_path = worktree_path_for(base, full_ticket_id)
+    feature = resolve_current_run(base)
+    worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
+    git_root = git_root or find_git_root() or base
 
     if worktree_path.exists():
         return worktree_path
@@ -124,7 +148,7 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
         ["git", "rev-parse", "--verify", branch_name],
         capture_output=True,
         text=True,
-        cwd=base,
+        cwd=git_root,
     )
     branch_exists = result.returncode == 0
 
@@ -134,7 +158,7 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
             ["git", "worktree", "add", str(worktree_path), branch_name],
             capture_output=True,
             text=True,
-            cwd=base,
+            cwd=git_root,
         )
     else:
         log(f"Creating worktree with new branch {branch_name}...")
@@ -142,7 +166,7 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
             ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
             capture_output=True,
             text=True,
-            cwd=base,
+            cwd=git_root,
         )
 
     if result.returncode != 0:
@@ -152,7 +176,6 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
     sync_workflow_files(base, worktree_path, log=log)
 
     try:
-        feature = resolve_current_run(base)
         state_path = design_state_path(base, feature)
         state = read_json(state_path) if state_path.exists() else {}
         worktrees = state.get("worktrees", {})
@@ -165,9 +188,17 @@ def create_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
     return worktree_path
 
 
-def remove_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] = print) -> None:
+def remove_worktree(
+    base: Path,
+    full_ticket_id: str,
+    log: Callable[[str], None] = print,
+    *,
+    git_root: Path | None = None,
+) -> None:
     """Remove a git worktree for a ticket."""
-    worktree_path = worktree_path_for(base, full_ticket_id)
+    feature = resolve_current_run(base)
+    worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
+    git_root = git_root or find_git_root() or base
 
     if not worktree_path.exists():
         raise FileNotFoundError(f"No worktree found for {full_ticket_id}")
@@ -176,13 +207,12 @@ def remove_worktree(base: Path, full_ticket_id: str, log: Callable[[str], None] 
         ["git", "worktree", "remove", "--force", str(worktree_path)],
         capture_output=True,
         text=True,
-        cwd=base,
+        cwd=git_root,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Error removing worktree: {result.stderr.strip()}")
 
     try:
-        feature = resolve_current_run(base)
         state_path = design_state_path(base, feature)
         state = read_json(state_path) if state_path.exists() else {}
         worktrees = state.get("worktrees", {})
