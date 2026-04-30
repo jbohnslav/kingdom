@@ -359,6 +359,28 @@ class TestPeasantStart:
             assert "uncommitted" in result.output.lower()
             assert "--hand" in result.output
 
+    def test_start_ignores_kd_only_uncommitted_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]) as mock_check,
+            ):
+                result = runner.invoke(peasant_app, ["start", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "uncommitted" not in result.output.lower()
+            mock_check.assert_called_once_with(base, ignore_kd=True)
+
     def test_start_no_preflight_suppresses_warning(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -2051,6 +2073,50 @@ class TestPeasantReview:
             assert ticket_result is not None
             ticket, _ = ticket_result
             assert ticket.status == "in_review"
+
+    def test_review_accept_ignores_kd_only_uncommitted_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    result.returncode = 0
+                    result.stdout = " M .kd/branches/feature-peasant-test/tickets/kin-test.md\n"
+                    result.stderr = ""
+                else:
+                    result.returncode = 0
+                    result.stdout = "Merge made by the 'ort' strategy."
+                    result.stderr = ""
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "accepted" in result.output
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
 
     def test_review_shows_council_feedback(self) -> None:
         """Review info should include council member messages from the work thread."""

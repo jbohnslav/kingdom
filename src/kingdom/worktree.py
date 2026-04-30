@@ -66,8 +66,27 @@ def sync_workflow_files(base: Path, worktree_path: Path, log: Callable[[str], No
             log(f"Synced {rel} into worktree")
 
 
-def check_uncommitted_changes(base: Path) -> list[str]:
+def porcelain_paths(line: str) -> list[str]:
+    """Return paths from one ``git status --porcelain`` line."""
+    if len(line) < 4:
+        return []
+    payload = line[3:].strip()
+    if " -> " in payload:
+        return [part.strip() for part in payload.split(" -> ", 1)]
+    return [payload]
+
+
+def is_kd_change(line: str) -> bool:
+    """Return True when a porcelain status line only touches .kd files."""
+    paths = porcelain_paths(line)
+    return bool(paths) and all(path == ".kd" or path.startswith(".kd/") for path in paths)
+
+
+def check_uncommitted_changes(base: Path, *, ignore_kd: bool = False) -> list[str]:
     """Return list of uncommitted change descriptions, or empty list if clean.
+
+    Set ``ignore_kd`` when ticket/session bookkeeping should not count as
+    user code dirtiness.
 
     Fails open: returns an empty list if git is unavailable or errors out.
     """
@@ -82,6 +101,8 @@ def check_uncommitted_changes(base: Path) -> list[str]:
         if result.returncode != 0:
             return []
         lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if ignore_kd:
+            lines = [line for line in lines if not is_kd_change(line)]
         return lines
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

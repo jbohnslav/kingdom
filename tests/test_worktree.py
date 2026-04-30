@@ -6,7 +6,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kingdom.state import ensure_base_layout, ensure_branch_layout
-from kingdom.worktree import check_uncommitted_changes, design_state_path, sync_workflow_files, worktree_path_for
+from kingdom.worktree import (
+    check_uncommitted_changes,
+    design_state_path,
+    is_kd_change,
+    sync_workflow_files,
+    worktree_path_for,
+)
 
 
 class TestWorktreePathFor:
@@ -74,6 +80,21 @@ class TestCheckUncommittedChanges:
             changes = check_uncommitted_changes(tmp_path)
         assert len(changes) == 2
         assert " M file.py" in changes
+
+    def test_can_ignore_kd_changes(self, tmp_path: Path) -> None:
+        import subprocess
+
+        result = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=" M .kd/branches/main/tickets/abcd.md\n?? .kd/runtime/state.json\n M src/app.py\n",
+        )
+        with patch("kingdom.worktree.subprocess.run", return_value=result):
+            changes = check_uncommitted_changes(tmp_path, ignore_kd=True)
+        assert changes == [" M src/app.py"]
+
+    def test_kd_change_detects_renames_inside_kd(self) -> None:
+        assert is_kd_change("R  .kd/backlog/tickets/old.md -> .kd/branches/main/tickets/old.md")
 
     def test_returns_empty_on_clean(self, tmp_path: Path) -> None:
         import subprocess

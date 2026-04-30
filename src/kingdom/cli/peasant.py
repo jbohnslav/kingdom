@@ -308,7 +308,7 @@ def peasant_start(
 
     # 0. Preflight: warn on uncommitted changes (skipped in hand mode or with --no-preflight)
     if not hand and not no_preflight:
-        uncommitted = check_uncommitted_changes(base)
+        uncommitted = check_uncommitted_changes(base, ignore_kd=True)
         if uncommitted:
             error_console.print(
                 f"[yellow]Warning:[/yellow] {len(uncommitted)} uncommitted change(s) in {base}.\n"
@@ -1520,7 +1520,7 @@ def peasant_accept(
             typer.echo(f"{branch_name} already merged into {feature}, skipping merge")
         else:
             # Check for uncommitted changes before attempting merge
-            uncommitted = check_uncommitted_changes(base)
+            uncommitted = check_uncommitted_changes(base, ignore_kd=True)
             if uncommitted:
                 print_error(
                     f"Uncommitted changes on {git_branch_name} — commit or stash before accepting.\n"
