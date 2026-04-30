@@ -464,6 +464,20 @@ class TestTicketListTable:
         assert result.exit_code == 0
         assert "@alice" in result.output
 
+    def test_table_shows_hand_assignee_after_start(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(id="hand", status="open", title="Hand ticket", body="", created=datetime.now(UTC))
+        write_ticket(ticket, tickets_dir / "hand.md")
+
+        start_result = runner.invoke(ticket_app, ["start", "hand"])
+        assert start_result.exit_code == 0, start_result.output
+
+        result = runner.invoke(ticket_app, ["list"])
+
+        assert result.exit_code == 0, result.output
+        assert "hand" in result.output
+        assert "@hand" in result.output
+
     def test_table_shows_deps(self, cli_project: Path) -> None:
         """Dependencies should be visible in the table."""
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"

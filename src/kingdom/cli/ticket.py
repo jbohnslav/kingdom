@@ -664,13 +664,15 @@ def ticket_show(
             typer.echo(ticket_path.read_text(encoding="utf-8").rstrip())
 
 
-def update_ticket_status(ticket_id: str, new_status: str) -> None:
+def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | None = None) -> None:
     """Helper to update a ticket's status."""
     base = require_project_root()
 
     ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     old_status = ticket.status
     ticket.status = new_status
+    if assignee is not None:
+        ticket.assignee = assignee
     write_ticket(ticket, ticket_path)
 
     # Auto-archive: closing a backlog ticket moves it to archive/backlog/tickets/
@@ -699,8 +701,8 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
 def ticket_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
-    """Set ticket status to in_progress."""
-    update_ticket_status(ticket_id, "in_progress")
+    """Set ticket status to in_progress and assign it to the Hand."""
+    update_ticket_status(ticket_id, "in_progress", assignee="hand")
 
 
 @ticket_app.command("current", help="Show the in-progress ticket for this branch.")

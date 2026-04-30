@@ -279,6 +279,35 @@ class TestTicketCloseArchive:
         restored = backlog_root(cli_project) / "tickets" / "kin-strt.md"
         assert restored.exists()
 
+    def test_start_assigns_ticket_to_hand(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(branch_dir, "kin-hand")
+
+        result = runner.invoke(ticket_app, ["start", "kin-hand"])
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(ticket_path)
+        assert ticket.status == "in_progress"
+        assert ticket.assignee == "hand"
+
+    def test_start_overwrites_existing_assignee_with_hand(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-asgn",
+            status="open",
+            title="Assigned elsewhere",
+            body="",
+            assignee="alice",
+            created=datetime.now(UTC),
+        )
+        ticket_path = branch_dir / "kin-asgn.md"
+        write_ticket(ticket, ticket_path)
+
+        result = runner.invoke(ticket_app, ["start", "kin-asgn"])
+
+        assert result.exit_code == 0, result.output
+        assert read_ticket(ticket_path).assignee == "hand"
+
 
 class TestTicketStatus:
     def test_status_sets_arbitrary_value(self, cli_project: Path) -> None:

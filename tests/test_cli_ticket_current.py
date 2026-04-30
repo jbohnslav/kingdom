@@ -114,6 +114,33 @@ class TestTicketCurrent:
             assert data["priority"] == 1
             assert data["type"] == "bug"
 
+    def test_current_json_includes_hand_assignee_after_start(self) -> None:
+        with runner.isolated_filesystem():
+            import json
+
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+
+            ticket = Ticket(
+                id="hand",
+                status="open",
+                title="Hand ticket",
+                body="",
+                created=datetime.now(UTC),
+            )
+            write_ticket(ticket, tickets_dir / "hand.md")
+
+            start_result = runner.invoke(ticket_app, ["start", "hand"])
+            assert start_result.exit_code == 0, start_result.output
+
+            result = runner.invoke(ticket_app, ["current", "--json"])
+
+            assert result.exit_code == 0, result.output
+            data = json.loads(result.output)
+            assert data["id"] == "hand"
+            assert data["assignee"] == "hand"
+
     def test_current_picks_highest_priority(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
