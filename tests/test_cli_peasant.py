@@ -933,7 +933,12 @@ class TestPeasantClean:
 
             assert result.exit_code == 0
             assert "worktree removed" in result.output
-            mock_remove.assert_called_once_with(base, "kin-test")
+            mock_remove.assert_called_once_with(
+                base,
+                "kin-test",
+                git_root=base,
+                feature=BRANCH,
+            )
 
     def test_clean_confirms_before_removing(self) -> None:
         with runner.isolated_filesystem():
@@ -2073,7 +2078,12 @@ class TestPeasantReview:
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
-            mock_remove.assert_called_once_with(base, "kin-test", git_root=base)
+            mock_remove.assert_called_once_with(
+                base,
+                "kin-test",
+                git_root=base,
+                feature=normalize_branch_name(BRANCH),
+            )
             assert branch_delete_seen
             assert "Removed worktree" in result.output
             assert "Deleted branch ticket/kin-test" in result.output
@@ -3115,6 +3125,34 @@ class TestCrossBranchPeasantContext:
 
             ctx = resolve_peasant_context("nope", base=base)
             assert ctx.feature == normalize_branch_name(BRANCH_A)
+
+    def test_clean_removes_worktree_from_peasant_owning_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            ensure_branch_layout(base, BRANCH_B)
+
+            tickets_dir_a = base / ".kd" / "branches" / normalize_branch_name(BRANCH_A) / "tickets"
+            ticket = Ticket(id="abcd", status="in_review", title="Cross-branch clean", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir_a / "abcd.md")
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-abcd",
+                AgentState(name="peasant-abcd", status="needs_king_review", ticket="abcd"),
+            )
+            set_current_run(base, normalize_branch_name(BRANCH_B))
+
+            with patch("kingdom.cli.peasant.remove_worktree") as mock_remove:
+                result = runner.invoke(peasant_app, ["clean", "--force", "abcd"])
+
+            assert result.exit_code == 0, result.output
+            mock_remove.assert_called_once_with(
+                base,
+                "abcd",
+                git_root=base,
+                feature=normalize_branch_name(BRANCH_A),
+            )
 
 
 class TestFindPeasantBranch:

@@ -5,12 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from kingdom.state import ensure_base_layout, ensure_branch_layout
+from kingdom.state import ensure_base_layout, ensure_branch_layout, read_json, set_current_run, write_json
 from kingdom.worktree import (
     check_uncommitted_changes,
     design_state_path,
     existing_worktree_path_for,
     is_kd_change,
+    remove_worktree,
     sync_workflow_files,
     worktree_path_for,
 )
@@ -133,6 +134,34 @@ class TestCheckUncommittedChanges:
         with patch("kingdom.worktree.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)):
             changes = check_uncommitted_changes(tmp_path)
         assert changes == []
+
+
+class TestRemoveWorktree:
+    def test_uses_supplied_feature_instead_of_current_session(self, tmp_path: Path) -> None:
+        import subprocess
+
+        ensure_branch_layout(tmp_path, "feature-a")
+        ensure_branch_layout(tmp_path, "feature-b")
+        set_current_run(tmp_path, "feature-b")
+
+        worktree = worktree_path_for(tmp_path, "kin-abcd", feature="feature-a")
+        worktree.mkdir(parents=True)
+        state_path = design_state_path(tmp_path, "feature-a")
+        state = read_json(state_path)
+        state["worktrees"] = {"kin-abcd": str(worktree)}
+        write_json(state_path, state)
+
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch("kingdom.worktree.subprocess.run", return_value=result) as mock_run:
+            remove_worktree(tmp_path, "kin-abcd", git_root=tmp_path, feature="feature-a")
+
+        mock_run.assert_called_once_with(
+            ["git", "worktree", "remove", "--force", str(worktree)],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+        )
+        assert read_json(state_path)["worktrees"] == {}
 
 
 class TestDesignStatePath:

@@ -76,7 +76,7 @@ def resolve_invocation_git_root(base: Path) -> Path:
     current = cwd
     while True:
         if (current / ".git").exists():
-            return current if current != base else base
+            return current
         if current == base:
             return base
         if current.parent == current:
@@ -1224,10 +1224,7 @@ def peasant_clean(
         typer.confirm(f"Remove worktree for {ctx.full_ticket_id}?", abort=True)
 
     try:
-        if ctx.git_root == ctx.base:
-            remove_worktree(ctx.base, ctx.full_ticket_id)
-        else:
-            remove_worktree(ctx.base, ctx.full_ticket_id, git_root=ctx.git_root)
+        remove_worktree(ctx.base, ctx.full_ticket_id, git_root=ctx.git_root, feature=ctx.feature)
         typer.echo(f"{ctx.full_ticket_id}: worktree removed")
     except FileNotFoundError:
         print_error(f"No worktree found for {ctx.full_ticket_id}")
@@ -1607,7 +1604,7 @@ def peasant_accept(
 def cleanup_accepted_peasant(ctx: PeasantContext, branch_name: str) -> None:
     """Best-effort cleanup after accepting a peasant's work."""
     try:
-        remove_worktree(ctx.base, ctx.full_ticket_id, git_root=ctx.git_root)
+        remove_worktree(ctx.base, ctx.full_ticket_id, git_root=ctx.git_root, feature=ctx.feature)
         typer.echo(f"Removed worktree for {ctx.full_ticket_id}")
     except FileNotFoundError:
         styled_echo(f"Warning: no worktree found for {ctx.full_ticket_id}; skipping worktree cleanup.", fg="yellow")

@@ -152,7 +152,9 @@ def find_project_root() -> Path:
     5. git worktree list --porcelain sibling fallback
     6. Error with clear hint to run kd init
 
-    Raises ValueError with a descriptive message if no root is found.
+    Raises ValueError with a descriptive message if no root is found, or
+    if multiple sibling git worktrees contain .kd/ and KD_BASE is needed
+    to choose one explicitly.
     """
     root: Path | None = None
     cwd = Path.cwd()
