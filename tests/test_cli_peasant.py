@@ -2005,6 +2005,10 @@ class TestPeasantReview:
                     result.returncode = 0
                     result.stdout = ""
                     result.stderr = ""
+                elif cmd and cmd[:3] == ["git", "branch", "-D"]:
+                    result.returncode = 0
+                    result.stdout = "Deleted branch ticket/kin-test"
+                    result.stderr = ""
                 else:
                     raise AssertionError(f"Unexpected subprocess call: {cmd}")
                 return result
@@ -2025,6 +2029,97 @@ class TestPeasantReview:
             # Session should be done
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "done"
+
+    def test_review_accept_removes_worktree_and_deletes_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            branch_delete_seen = False
+
+            def mock_run(cmd, **kwargs):
+                nonlocal branch_delete_seen
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and cmd == ["git", "branch", "-D", "ticket/kin-test"]:
+                    branch_delete_seen = True
+                    result.returncode = 0
+                    result.stdout = "Deleted branch ticket/kin-test"
+                    result.stderr = ""
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with (
+                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+                patch("kingdom.cli.peasant.remove_worktree") as mock_remove,
+            ):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            mock_remove.assert_called_once_with(base, "kin-test", git_root=base)
+            assert branch_delete_seen
+            assert "Removed worktree" in result.output
+            assert "Deleted branch ticket/kin-test" in result.output
+
+    def test_review_accept_cleanup_failure_warns_but_succeeds(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and cmd == ["git", "branch", "-D", "ticket/kin-test"]:
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = "branch not found"
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with (
+                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+                patch("kingdom.cli.peasant.remove_worktree", side_effect=RuntimeError("boom")),
+            ):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "Warning: could not remove worktree" in result.output
+            assert "Warning: could not delete branch ticket/kin-test" in result.output
+            assert "accepted" in result.output
 
     def test_review_accept_uncommitted_changes_blocks(self) -> None:
         """Accept should refuse to merge if there are uncommitted changes."""

@@ -1599,7 +1599,33 @@ def peasant_accept(
         status="done",
         last_activity=datetime.now(UTC).isoformat(),
     )
+    if not state.hand_mode:
+        cleanup_accepted_peasant(ctx, branch_name)
     typer.echo(f"{full_ticket_id}: accepted — ticket closed")
+
+
+def cleanup_accepted_peasant(ctx: PeasantContext, branch_name: str) -> None:
+    """Best-effort cleanup after accepting a peasant's work."""
+    try:
+        remove_worktree(ctx.base, ctx.full_ticket_id, git_root=ctx.git_root)
+        typer.echo(f"Removed worktree for {ctx.full_ticket_id}")
+    except FileNotFoundError:
+        styled_echo(f"Warning: no worktree found for {ctx.full_ticket_id}; skipping worktree cleanup.", fg="yellow")
+    except RuntimeError as exc:
+        styled_echo(f"Warning: could not remove worktree for {ctx.full_ticket_id}: {exc}", fg="yellow")
+
+    result = subprocess.run(
+        ["git", "branch", "-D", branch_name],
+        capture_output=True,
+        text=True,
+        cwd=str(ctx.git_root),
+    )
+    if result.returncode == 0:
+        typer.echo(f"Deleted branch {branch_name}")
+        return
+
+    message = result.stderr.strip() or result.stdout.strip() or "unknown error"
+    styled_echo(f"Warning: could not delete branch {branch_name}: {message}", fg="yellow")
 
 
 @peasant_app.command("reject", help="Reject a peasant's work with feedback.")
