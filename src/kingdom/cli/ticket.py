@@ -344,10 +344,16 @@ def render_ticket_panel(
 
 @ticket_app.command("create", help="Create a new ticket.")
 def ticket_create(
-    title: Annotated[str, typer.Argument(help="Ticket title.")],
+    title: Annotated[str | None, typer.Argument(help="Ticket title.")] = None,
+    short_title_or_type: Annotated[
+        str | None,
+        typer.Option("-t", help="Ticket title. With a positional title, treated as legacy ticket type."),
+    ] = None,
+    title_option: Annotated[str | None, typer.Option("--title", help="Ticket title.")] = None,
     description: Annotated[str | None, typer.Option("-d", "--description", help="Ticket description.")] = None,
+    body_text: Annotated[str | None, typer.Option("-b", "--body", help="Ticket description/body.")] = None,
     priority: Annotated[str, typer.Option("-p", "--priority", help="Priority (0-3 or p0-p3, 0 is highest).")] = "2",
-    ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature, epic).")] = "task",
+    ticket_type: Annotated[str, typer.Option("--type", help="Ticket type (task, bug, feature, epic).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
     parent: Annotated[str | None, typer.Option("--parent", help="Parent ticket ID.")] = None,
@@ -358,6 +364,33 @@ def ticket_create(
     from kingdom.state import ensure_base_layout
 
     base = require_project_root()
+
+    if title and title_option:
+        print_error("Provide the ticket title either positionally or with --title, not both.")
+        raise typer.Exit(code=1)
+
+    if title_option and short_title_or_type:
+        print_error("Provide the ticket title with either -t or --title, not both.")
+        raise typer.Exit(code=1)
+
+    if title and short_title_or_type:
+        if ticket_type != "task":
+            print_error("Provide ticket type with either legacy -t shorthand or --type, not both.")
+            raise typer.Exit(code=1)
+        ticket_type = short_title_or_type
+    elif title_option:
+        title = title_option
+    elif short_title_or_type:
+        title = short_title_or_type
+
+    if not title:
+        print_error("Missing ticket title. Provide it positionally or with -t/--title.")
+        raise typer.Exit(code=1)
+
+    if description and body_text:
+        print_error("Provide ticket body with either --description or --body, not both.")
+        raise typer.Exit(code=1)
+    description = description or body_text
 
     # Parse and validate priority (accepts 0-3, p0-p3, P0-P3)
     from kingdom.ticket import clamp_priority
