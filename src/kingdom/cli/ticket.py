@@ -597,8 +597,12 @@ def ticket_show(
     ] = None,
     all_tickets: Annotated[bool, typer.Option("--all", "-a", help="Show all tickets on the current branch.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+    rich: Annotated[bool, typer.Option("--rich", help="Render the human-friendly Rich panel view.")] = False,
 ) -> None:
-    """Display one or more tickets by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
+    """Display one or more tickets as raw Markdown by default.
+
+    Use --rich for the framed human view. With no args, shows the ticket assigned to 'hand'.
+    """
     base = require_project_root()
 
     # Resolve tickets to show as (Ticket, Path) pairs
@@ -646,13 +650,18 @@ def ticket_show(
             ticket_to_json(ticket, detailed=True, base=base, path=ticket_path) for ticket, ticket_path in pairs
         ]
         typer.echo(json.dumps(results_json if len(results_json) > 1 else results_json[0], indent=2))
-    else:
+    elif rich:
         console = Console()
         cached_tickets = collect_all_tickets(base) if len(pairs) > 1 else None
         for i, (ticket, ticket_path) in enumerate(pairs):
             if i > 0:
                 console.print()  # separator between tickets
             console.print(render_ticket_panel(ticket, ticket_path, base, all_tickets=cached_tickets))
+    else:
+        for i, (_, ticket_path) in enumerate(pairs):
+            if i > 0:
+                typer.echo()
+            typer.echo(ticket_path.read_text(encoding="utf-8").rstrip())
 
 
 def update_ticket_status(ticket_id: str, new_status: str) -> None:

@@ -31,17 +31,18 @@ def create_ticket_in(directory: Path, ticket_id: str = "kin-t001") -> Path:
 
 
 class TestTicketShow:
-    def test_show_displays_file_path(self, cli_project: Path) -> None:
+    def test_show_outputs_raw_markdown_by_default(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-sh01")
+        ticket_path = create_ticket_in(tickets_dir, "kin-sh01")
 
         result = runner.invoke(ticket_app, ["show", "kin-sh01"])
 
         assert result.exit_code == 0, result.output
-        assert ".kd/" in result.output
-        assert "kin-sh01.md" in result.output
+        assert result.output.strip() == ticket_path.read_text(encoding="utf-8").strip()
+        assert "╭" not in result.output
+        assert "│" not in result.output
 
-    def test_show_structured_header(self, cli_project: Path) -> None:
+    def test_show_raw_markdown_includes_frontmatter(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         ticket = Ticket(
             id="ab12",
@@ -57,7 +58,30 @@ class TestTicketShow:
         result = runner.invoke(ticket_app, ["show", "ab12"])
 
         assert result.exit_code == 0
-        # Structured header — no raw frontmatter
+        assert result.output.startswith("---")
+        assert 'id: "ab12"' in result.output
+        assert "status: open" in result.output
+        assert "priority: 1" in result.output
+        assert "type: bug" in result.output
+        assert "# Fix the bug" in result.output
+        assert "Details here" in result.output
+
+    def test_show_rich_structured_header(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="ab12",
+            status="open",
+            title="Fix the bug",
+            body="Details here",
+            priority=1,
+            type="bug",
+            created=datetime.now(UTC),
+        )
+        write_ticket(ticket, tickets_dir / "ab12.md")
+
+        result = runner.invoke(ticket_app, ["show", "ab12", "--rich"])
+
+        assert result.exit_code == 0
         assert "ab12" in result.output
         assert "open" in result.output
         assert "P1" in result.output
@@ -78,7 +102,7 @@ class TestTicketShow:
         )
         write_ticket(ticket, tickets_dir / "cd34.md")
 
-        result = runner.invoke(ticket_app, ["show", "cd34"])
+        result = runner.invoke(ticket_app, ["show", "cd34", "--rich"])
 
         assert result.exit_code == 0
         assert "deps" in result.output  # structured deps display
@@ -109,7 +133,7 @@ class TestTicketShow:
         )
         write_ticket(ticket, tickets_dir / "cd34.md")
 
-        result = runner.invoke(ticket_app, ["show", "cd34"])
+        result = runner.invoke(ticket_app, ["show", "cd34", "--rich"])
 
         assert result.exit_code == 0
         assert "deps" in result.output
@@ -130,7 +154,7 @@ class TestTicketShow:
         )
         write_ticket(ticket, tickets_dir / "ef56.md")
 
-        result = runner.invoke(ticket_app, ["show", "ef56"])
+        result = runner.invoke(ticket_app, ["show", "ef56", "--rich"])
 
         assert result.exit_code == 0
         assert "deps" in result.output
@@ -156,7 +180,7 @@ class TestTicketShow:
         )
         write_ticket(ticket, tickets_dir / "cc33.md")
 
-        result = runner.invoke(ticket_app, ["show", "cc33"])
+        result = runner.invoke(ticket_app, ["show", "cc33", "--rich"])
 
         assert result.exit_code == 0
         assert "aa11" in result.output
@@ -211,7 +235,7 @@ class TestTicketShow:
         )
         write_ticket(ticket, tickets_dir / "ff99.md")
 
-        result = runner.invoke(ticket_app, ["show", "ff99"])
+        result = runner.invoke(ticket_app, ["show", "ff99", "--rich"])
 
         assert result.exit_code == 0
         output = result.output
@@ -245,7 +269,7 @@ class TestTicketShow:
         )
         write_ticket(ticket, tickets_dir / "ee88.md")
 
-        result = runner.invoke(ticket_app, ["show", "ee88"])
+        result = runner.invoke(ticket_app, ["show", "ee88", "--rich"])
 
         assert result.exit_code == 0
         assert "assignee" in result.output
@@ -263,7 +287,7 @@ class TestTicketShow:
         )
         write_ticket(ticket, tickets_dir / "dd77.md")
 
-        result = runner.invoke(ticket_app, ["show", "dd77"])
+        result = runner.invoke(ticket_app, ["show", "dd77", "--rich"])
 
         assert result.exit_code == 0
         assert "assignee" not in result.output
@@ -281,7 +305,7 @@ class TestTicketShow:
         )
         write_ticket(ticket, tickets_dir / "cc66.md")
 
-        result = runner.invoke(ticket_app, ["show", "cc66"])
+        result = runner.invoke(ticket_app, ["show", "cc66", "--rich"])
 
         assert result.exit_code == 0
         assert "links" in result.output
@@ -292,7 +316,7 @@ class TestTicketShow:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(tickets_dir, "bb55")
 
-        result = runner.invoke(ticket_app, ["show", "bb55"])
+        result = runner.invoke(ticket_app, ["show", "bb55", "--rich"])
 
         assert result.exit_code == 0
         assert "bb55.md" in result.output
@@ -312,7 +336,7 @@ class TestTicketShowRelationships:
             Ticket(id="bbbb", status="open", title="Blocked", body="", deps=["aaaa"], created=datetime.now(UTC)),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(ticket_app, ["show", "aaaa"])
+        result = runner.invoke(ticket_app, ["show", "aaaa", "--rich"])
         assert result.exit_code == 0
         assert "Blocking" in result.output
         assert "bbbb" in result.output
@@ -334,7 +358,7 @@ class TestTicketShowRelationships:
             ),
             tickets_dir / "bbbb.md",
         )
-        result = runner.invoke(ticket_app, ["show", "aaaa"])
+        result = runner.invoke(ticket_app, ["show", "aaaa", "--rich"])
         assert result.exit_code == 0
         assert "Children" in result.output
         assert "bbbb" in result.output

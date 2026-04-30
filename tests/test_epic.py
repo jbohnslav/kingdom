@@ -117,7 +117,7 @@ class TestShowChildRollup:
         for t in (parent, child1, child2, child3):
             write_ticket(t, tdir / f"{t.id}.md")
 
-        result = runner.invoke(ticket_app, ["show", "epic2"])
+        result = runner.invoke(ticket_app, ["show", "epic2", "--rich"])
         assert result.exit_code == 0, result.output
         assert "2/3 closed" in result.output
 

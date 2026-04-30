@@ -69,7 +69,7 @@ kd council ask "Should we use WebSockets or SSE for real-time updates? We need l
 
 **King says "ask the council."** Every `kd council ask` creates a new thread by default. If the conversation is a continuation of an active design discussion, use `kd council ask --continue "follow-up question"` to append to the current thread. When ambiguous, check existing threads with `kd council list` or `kd council show <thread>`, or ask the King a brief clarifying question before running the command.
 
-**King wants to note progress.** Log it against the active ticket:
+**King wants to note progress.** Update the active ticket's Markdown directly when you are already editing ticket content; use `kd tk log` for quick one-off entries:
 
 ```
 kd tk log ab12 "Finished the API refactor, all endpoint tests passing"
@@ -123,7 +123,7 @@ Use A when the King wants to be hands-on. Use B for throughput on well-scoped ti
 This applies regardless of execution mode.
 
 - **One at a time per worker**: `kd tk start <id>` → do the work → `kd tk close <id>` → commit → next ticket.
-- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go. Log what you're doing, what you found, commands and results, decisions and why. The King reads these to stay informed — don't make them ask.
+- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go. Prefer reading and editing the ticket Markdown directly when making multiple ticket updates in a turn; use `kd tk log` only for a quick one-off entry. Log what you're doing, what you found, commands and results, decisions and why. The King reads these to stay informed — don't make them ask.
 - **Acceptance criteria**: only close a ticket when all acceptance criteria are met and the full test suite is green.
 - **Decisions**: ask the King or consult the council (`kd council ask "..."`) for difficult design decisions — don't guess. Never silently resolve ambiguity on architectural, product, or UX tradeoffs.
 - **For bugs: test BEFORE you fix!** Write a test that fails in the current state, fix it, then verify.
@@ -134,13 +134,15 @@ This applies regardless of execution mode.
 
 ## Automatic Worklog Updates
 
-Proactively `kd tk log` whenever a durable state change occurs. The King should never have to say "update the worklog." Log against the active ticket without asking which ticket — you know what you're working on.
+Proactively update the ticket worklog whenever a durable state change occurs. The King should never have to say "update the worklog." Log against the active ticket without asking which ticket — you know what you're working on.
 
 The threshold is **durable state change**, not every chat turn. If future-you or another agent would need this fact, log it now.
 
-**Log before you continue.** When you discover durable information — a relevant issue, a root cause, a key finding from research — run `kd tk log` immediately, before continuing your work. The worklog survives context compaction; chat doesn't. Don't let valuable findings exist only in conversation history that will be compressed away.
+**Log before you continue.** When you discover durable information — a relevant issue, a root cause, a key finding from research — update the ticket immediately, before continuing your work. Prefer direct Markdown edits after reading the ticket file; use `kd tk log` for quick one-off entries. The worklog survives context compaction; chat doesn't. Don't let valuable findings exist only in conversation history that will be compressed away.
 
-**Edit ticket body vs worklog.** If the King changes requirements or acceptance criteria, update the ticket's markdown directly (description, AC section). The worklog is for timeline events — decisions, findings, progress, blockers. Don't stuff requirements into `kd tk log`; edit the ticket file instead.
+**Edit ticket body vs worklog.** If the King changes requirements or acceptance criteria, update the ticket's Markdown directly (description, AC section). The worklog is for timeline events — decisions, findings, progress, blockers. Don't stuff requirements into `kd tk log`; edit the ticket file instead.
+
+**LLM-friendly ticket reading.** `kd tk show <id>` prints raw ticket Markdown by default so agents can read the same file they should edit. Use `kd tk show <id> --rich` only when a framed human display is useful.
 
 **Decision made** — King says "let's go with raw TypeScript over React":
 
@@ -195,7 +197,7 @@ Rich, multi-line log entries are encouraged — a worklog entry is a place to du
 
 Decision patterns to get right:
 
-- **Default to the active ticket.** If you're working a ticket, that's the target for `kd tk log`, `kd tk close`, and status updates. Don't ask "which ticket?" when context is obvious.
+- **Default to the active ticket.** If you're working a ticket, that's the target for direct ticket Markdown edits, `kd tk log`, `kd tk close`, and status updates. Don't ask "which ticket?" when context is obvious.
 - **Move vs create.** "This work belongs somewhere else" → `kd tk move ab12 --to backlog`. "This is a separate problem I just noticed" → `kd tk create --backlog "..."`. Log is for new information about the current work; create/move is for separate work.
 - **Council follow-through.** After `kd council ask`, summarize the key perspectives and disagreements for the King, log the decision that came out of it (`kd tk log`), and move on. Don't dump the raw council response and wait for the King to synthesize.
 - **Close-out hygiene.** Before `kd tk close`: update the worklog with what changed and how it was verified, confirm tests pass. Closing is the last step after evidence is captured, not a declaration of intent.
@@ -239,11 +241,11 @@ Accept is idempotent: if the ticket branch is already merged into the feature br
 ```bash
 kd start / status / done                                # branch lifecycle
 kd design show / design approve                         # design doc
-kd tk list / show / list --ready                        # inspect tickets
+kd tk list / show / list --ready                        # inspect tickets (show prints raw Markdown)
 kd tk start <id> / close <id>                           # work a ticket
 kd tk current                                           # show active ticket
 kd tk pull <id>...                                      # pull from backlog
-kd tk log <id> "message"                                # append to worklog
+kd tk log <id> "message"                                # append a quick one-off worklog entry
 kd tk deps add/remove/tree/cycle                        # manage dependencies
 kd peasant status / watch <id>                          # monitor peasants
 kd peasant review / accept / reject                     # review cycle
