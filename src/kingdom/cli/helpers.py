@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 import typer
 
@@ -12,6 +13,8 @@ from kingdom.state import find_project_root
 from kingdom.ticket import AmbiguousTicketMatch, Ticket, find_ticket
 
 from .display import print_error
+
+SkillInstallStatus = Literal["refreshed", "skipped", "failed"]
 
 
 def verbose_echo(message: str) -> None:
@@ -117,7 +120,7 @@ def ensure_feature_branch(feature: str) -> None:
 
 
 def skill_install_targets(home: Path) -> list[Path]:
-    """Return skill install targets for agent homes present on this machine."""
+    """Return Claude's skill target, plus Cursor/Codex when their config dirs exist."""
     targets = [home / ".claude" / "skills" / "kingdom"]
     for agent_dir in (".cursor", ".codex"):
         root = home / agent_dir
@@ -126,15 +129,16 @@ def skill_install_targets(home: Path) -> list[Path]:
     return targets
 
 
-def install_skill() -> bool:
+def install_skill() -> SkillInstallStatus:
     """Install the bundled kingdom skill to supported local agent skill dirs.
 
     Copies SKILL.md and reference files from the package into Claude, and into
     Cursor/Codex when their top-level config directories already exist. Skips
     individual targets that are symlinks (dev setup).
-    Warns and continues on permission or filesystem errors.
+    Warns on permission or filesystem errors.
 
-    Returns True on success (including symlink skip), False on error.
+    Returns "refreshed" when any target was written, "skipped" when every
+    target was a symlink, and "failed" on error.
     """
     from importlib.resources import as_file, files
 
@@ -142,9 +146,12 @@ def install_skill() -> bool:
         targets = skill_install_targets(Path.home())
         skill_pkg = files("kingdom.skill")
         refs_pkg = skill_pkg / "references"
+        skipped_targets = 0
+        refreshed_targets = 0
 
         for target in targets:
             if target.is_symlink():
+                skipped_targets += 1
                 continue
 
             target.mkdir(parents=True, exist_ok=True)
@@ -157,7 +164,13 @@ def install_skill() -> bool:
                 if item.name.endswith(".md"):
                     with as_file(item) as src:
                         (refs_target / item.name).write_bytes(src.read_bytes())
+            refreshed_targets += 1
     except (OSError, RuntimeError) as exc:
         typer.echo(f"Warning: could not install skill ({exc})")
-        return False
-    return True
+        return "failed"
+
+    if refreshed_targets:
+        return "refreshed"
+    if skipped_targets:
+        return "skipped"
+    return "refreshed"

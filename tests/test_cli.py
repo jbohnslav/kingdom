@@ -522,7 +522,7 @@ class TestUpdate:
 
         with (
             patch("kingdom.cli.subprocess.run", return_value=mock_result),
-            patch("kingdom.cli.install_skill", return_value=True) as mock_skill,
+            patch("kingdom.cli.install_skill", return_value="refreshed") as mock_skill,
             patch("pathlib.Path.is_symlink", return_value=False),
         ):
             result = runner.invoke(app, ["update"])
@@ -540,7 +540,7 @@ class TestUpdate:
 
         with (
             patch("kingdom.cli.subprocess.run", return_value=mock_result),
-            patch("kingdom.cli.install_skill", return_value=True),
+            patch("kingdom.cli.install_skill", return_value="refreshed"),
             patch("pathlib.Path.is_symlink", return_value=False),
         ):
             result = runner.invoke(app, ["update"])
@@ -551,7 +551,7 @@ class TestUpdate:
         """kd update handles missing uv gracefully."""
         with (
             patch("kingdom.cli.subprocess.run", side_effect=FileNotFoundError),
-            patch("kingdom.cli.install_skill", return_value=True),
+            patch("kingdom.cli.install_skill", return_value="refreshed"),
             patch("pathlib.Path.is_symlink", return_value=False),
         ):
             result = runner.invoke(app, ["update"])
@@ -567,12 +567,28 @@ class TestUpdate:
 
         with (
             patch("kingdom.cli.subprocess.run", return_value=mock_result),
-            patch("kingdom.cli.install_skill", return_value=True) as mock_skill,
+            patch("kingdom.cli.install_skill", return_value="refreshed") as mock_skill,
         ):
             result = runner.invoke(app, ["update"])
             assert result.exit_code == 0
             assert "Skill files refreshed" in result.output
             mock_skill.assert_called_once()
+
+    def test_update_reports_skipped_when_all_skill_targets_are_dev_symlinks(self) -> None:
+        """kd update reports a skipped skill refresh when install_skill skips every target."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Nothing to upgrade"
+        mock_result.stderr = ""
+
+        with (
+            patch("kingdom.cli.subprocess.run", return_value=mock_result),
+            patch("kingdom.cli.install_skill", return_value="skipped"),
+        ):
+            result = runner.invoke(app, ["update"])
+            assert result.exit_code == 0
+            assert "Skipped (dev symlink)" in result.output
+            assert "Skills: skipped" in result.output
 
     def test_update_skill_refresh_failure(self) -> None:
         """kd update reports failure when install_skill() fails."""
@@ -583,7 +599,7 @@ class TestUpdate:
 
         with (
             patch("kingdom.cli.subprocess.run", return_value=mock_result),
-            patch("kingdom.cli.install_skill", return_value=False),
+            patch("kingdom.cli.install_skill", return_value="failed"),
             patch("pathlib.Path.is_symlink", return_value=False),
         ):
             result = runner.invoke(app, ["update"])

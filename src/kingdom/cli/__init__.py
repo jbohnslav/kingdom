@@ -531,12 +531,13 @@ def update() -> None:
 
     # Step 2: refresh skill files
     typer.echo("Refreshing skill files...")
-    if install_skill():
+    skill_status = install_skill()
+    if skill_status == "refreshed":
         styled_echo("  ✓ Skill files refreshed", fg=typer.colors.GREEN)
-        skill_status = "refreshed"
+    elif skill_status == "skipped":
+        styled_echo("  ○ Skipped (dev symlink)", fg=typer.colors.YELLOW)
     else:
         styled_echo("  ✗ Skill refresh failed (see warning above)", fg=typer.colors.RED)
-        skill_status = "failed"
 
     # Summary
     typer.echo()
