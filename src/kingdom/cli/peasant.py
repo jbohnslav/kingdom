@@ -66,12 +66,16 @@ class PeasantContext(NamedTuple):
 def resolve_invocation_git_root(base: Path) -> Path:
     """Return the checkout git commands should operate on.
 
-    In the normal case ``base`` is the checkout the user invoked ``kd`` from,
-    so avoid extra git subprocesses. When ``base`` points at a sibling checkout
-    that owns ``.kd/``, fall back to git discovery for the invocation worktree.
+    When ``kd`` is invoked under the Kingdom project root, use that root even if
+    a nested repo or submodule is closer to cwd. When ``base`` points at a
+    sibling checkout that owns ``.kd/``, fall back to git discovery for the
+    invocation worktree.
     """
     cwd = Path.cwd().resolve()
     base = base.resolve()
+
+    if cwd == base or base in cwd.parents:
+        return base
 
     current = cwd
     while True:
@@ -1616,6 +1620,7 @@ def cleanup_accepted_peasant(ctx: PeasantContext, branch_name: str) -> None:
         capture_output=True,
         text=True,
         cwd=str(ctx.git_root),
+        timeout=10,
     )
     if result.returncode == 0:
         typer.echo(f"Deleted branch {branch_name}")

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from kingdom.cli.peasant import peasant_app, resolve_peasant_context
+from kingdom.cli.peasant import peasant_app, resolve_invocation_git_root, resolve_peasant_context
 from kingdom.cli.ticket import ticket_app
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
 from kingdom.state import backlog_root, ensure_branch_layout, logs_root, normalize_branch_name, set_current_run
@@ -2063,6 +2063,7 @@ class TestPeasantReview:
                     result.stdout = ""
                     result.stderr = ""
                 elif cmd and cmd == ["git", "branch", "-D", "ticket/kin-test"]:
+                    assert kwargs["timeout"] == 10
                     branch_delete_seen = True
                     result.returncode = 0
                     result.stdout = "Deleted branch ticket/kin-test"
@@ -2113,6 +2114,7 @@ class TestPeasantReview:
                     result.stdout = ""
                     result.stderr = ""
                 elif cmd and cmd == ["git", "branch", "-D", "ticket/kin-test"]:
+                    assert kwargs["timeout"] == 10
                     result.returncode = 1
                     result.stdout = ""
                     result.stderr = "branch not found"
@@ -2621,6 +2623,17 @@ class TestPeasantNoResultsMessages:
 
 class TestProjectRootDiscovery:
     """Peasant commands resolve .kd/ state from subdirectories."""
+
+    def test_invocation_git_root_ignores_nested_git_repo_inside_project(self, tmp_path: Path) -> None:
+        setup_project(tmp_path)
+        (tmp_path / ".git").mkdir()
+
+        nested_repo = tmp_path / "vendor" / "nested"
+        nested_repo.mkdir(parents=True)
+        (nested_repo / ".git").mkdir()
+
+        with patch("kingdom.cli.peasant.Path.cwd", return_value=nested_repo):
+            assert resolve_invocation_git_root(tmp_path) == tmp_path
 
     def test_peasant_command_from_subdirectory(self, tmp_path: Path) -> None:
         """resolve_peasant_context finds .kd/ at repo root when invoked from a subdirectory."""

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from kingdom.state import ensure_base_layout, ensure_branch_layout, read_json, set_current_run, write_json
 from kingdom.worktree import (
     check_uncommitted_changes,
@@ -137,6 +139,10 @@ class TestCheckUncommittedChanges:
 
 
 class TestRemoveWorktree:
+    def test_requires_explicit_feature(self, tmp_path: Path) -> None:
+        with pytest.raises(TypeError):
+            remove_worktree(tmp_path, "kin-abcd", git_root=tmp_path)
+
     def test_uses_supplied_feature_instead_of_current_session(self, tmp_path: Path) -> None:
         import subprocess
 

@@ -25,6 +25,11 @@ kd tk create --backlog "Future improvement"             # create in backlog, not
 
 Types: `task`, `bug`, `feature`. Priorities: 0 (highest) to 3.
 
+`-t` also works as a short title flag when no positional title is provided:
+`kd tk create -t "Flag title"`. To avoid ambiguity, prefer `--title` for flag
+titles and `--type` for ticket types in new examples. The legacy form
+`kd tk create "Title" -t bug` remains supported.
+
 ## Working Tickets
 
 ```bash

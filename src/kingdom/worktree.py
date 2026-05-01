@@ -194,10 +194,9 @@ def remove_worktree(
     log: Callable[[str], None] = print,
     *,
     git_root: Path | None = None,
-    feature: str | None = None,
+    feature: str,
 ) -> None:
     """Remove a git worktree for a ticket."""
-    feature = feature or resolve_current_run(base)
     worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
     git_root = git_root or find_git_root() or base
 

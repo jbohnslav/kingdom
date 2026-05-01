@@ -440,6 +440,10 @@ def resolve_current_run(base: Path) -> str:
     1. Current invocation worktree git branch matched against .kd/branches/
     2. Explicit .kd/current file (repo default, set by ``kd start`` / ``kd switch``)
     3. Error with helpful message
+
+    The invocation branch intentionally wins over ``.kd/current`` so long-lived
+    sibling worktrees can share one ``.kd/`` directory without forcing every
+    checkout onto the same active session.
     """
     current_path = state_root(base) / "current"
 
