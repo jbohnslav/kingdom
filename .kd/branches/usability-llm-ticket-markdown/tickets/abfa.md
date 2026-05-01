@@ -1,11 +1,12 @@
 ---
 id: "abfa"
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-09T01:18:45Z
 type: bug
 priority: 2
+closed_at: 2026-04-30T15:43:07Z
 ---
 # Dirty .kd/ files shouldn't block peasant accept or start
 
@@ -30,5 +31,9 @@ Worktree-based peasants are created from the last commit. If `.kd/` files are di
 
 ## Acceptance Criteria
 
-- [ ] kd peasant accept succeeds even when .kd/ ticket files have uncommitted changes
-- [ ] kd peasant start succeeds (or auto-commits .kd/) when only .kd/ files are dirty
+- [x] kd peasant accept succeeds even when .kd/ ticket files have uncommitted changes
+- [x] kd peasant start succeeds (or auto-commits .kd/) when only .kd/ files are dirty
+
+## Worklog
+
+- [2026-04-30 15:42] Implemented `.kd/`-aware dirty filtering for peasant workflows. `check_uncommitted_changes(..., ignore_kd=True)` ignores ticket/session bookkeeping while preserving warnings/blocks for code changes. `kd peasant start` now suppresses `.kd/`-only warnings; `kd peasant accept` no longer blocks on `.kd/`-only changes before merge. Verification: focused peasant/worktree tests passed; full `uv run pytest` passed with 1860 passed, 38 skipped, 1 xfailed.

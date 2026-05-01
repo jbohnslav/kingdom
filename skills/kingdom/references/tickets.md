@@ -25,6 +25,11 @@ kd tk create --backlog "Future improvement"             # create in backlog, not
 
 Types: `task`, `bug`, `feature`. Priorities: 0 (highest) to 3.
 
+`-t` also works as a short title flag when no positional title is provided:
+`kd tk create -t "Flag title"`. To avoid ambiguity, prefer `--title` for flag
+titles and `--type` for ticket types in new examples. The legacy form
+`kd tk create "Title" -t bug` remains supported.
+
 ## Working Tickets
 
 ```bash
@@ -57,7 +62,8 @@ kd tk unassign <id>          # clear assignment
 
 ```bash
 kd tk list                   # list all tickets on current branch
-kd tk show <id>              # show ticket details
+kd tk show <id>              # print raw ticket Markdown (LLM-friendly)
+kd tk show <id> --rich       # show framed human-friendly ticket details
 kd tk move <id> --to <branch|backlog>  # move to another branch or backlog
 kd tk pull <id>...            # pull backlog tickets into current branch
 ```
@@ -71,4 +77,5 @@ The backlog at `.kd/backlog/tickets/` holds tickets not assigned to any branch. 
 - **Commit `.kd/` changes as you go** — ticket state changes, closures, and moves are tracked in git
 - **Use dependencies** to enforce ordering when tickets have prerequisites
 - **Append a work log** to the ticket body when closing — record key decisions and what was done
+- **Prefer direct Markdown edits** when agents need to update ticket body, acceptance criteria, and worklog repeatedly in one turn
 - **Use `kd tk list --ready`** to find the next unblocked ticket rather than picking arbitrarily

@@ -76,6 +76,56 @@ class TestTicketCreate:
         assert created_ticket.body == "Body from flag\n\n## Acceptance Criteria\n\n- [ ]"
         assert created_ticket.type == "bug"
 
+    def test_create_accepts_title_and_body_flags(self, cli_project: Path) -> None:
+        result = runner.invoke(
+            ticket_app,
+            ["create", "--title", "Flag title", "--body", "Body from body flag"],
+        )
+
+        assert result.exit_code == 0, result.output
+        ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
+        found = find_ticket(cli_project, ticket_id)
+        assert found is not None
+        created_ticket, _ = found
+        assert created_ticket.title == "Flag title"
+        assert created_ticket.body == "Body from body flag\n\n## Acceptance Criteria\n\n- [ ]"
+
+    def test_create_accepts_short_title_and_body_flags(self, cli_project: Path) -> None:
+        result = runner.invoke(
+            ticket_app,
+            ["create", "-t", "Short flag title", "-b", "Body from short flag"],
+        )
+
+        assert result.exit_code == 0, result.output
+        ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
+        found = find_ticket(cli_project, ticket_id)
+        assert found is not None
+        created_ticket, _ = found
+        assert created_ticket.title == "Short flag title"
+        assert created_ticket.body == "Body from short flag\n\n## Acceptance Criteria\n\n- [ ]"
+
+    def test_create_accepts_long_type_flag(self, cli_project: Path) -> None:
+        result = runner.invoke(ticket_app, ["create", "Typed ticket", "--type", "feature"])
+
+        assert result.exit_code == 0, result.output
+        ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
+        found = find_ticket(cli_project, ticket_id)
+        assert found is not None
+        created_ticket, _ = found
+        assert created_ticket.type == "feature"
+
+    def test_create_rejects_duplicate_title_sources(self, cli_project: Path) -> None:
+        result = runner.invoke(ticket_app, ["create", "Positional title", "--title", "Flag title"])
+
+        assert result.exit_code == 1
+        assert "either positionally or with --title" in result.output
+
+    def test_create_rejects_duplicate_body_sources(self, cli_project: Path) -> None:
+        result = runner.invoke(ticket_app, ["create", "Body conflict", "-d", "Description", "-b", "Body"])
+
+        assert result.exit_code == 1
+        assert "either --description or --body" in result.output
+
     def test_create_out_of_range_priority_rejects(self, cli_project: Path) -> None:
         result = runner.invoke(ticket_app, ["create", "Bad priority", "-p", "5"])
         assert result.exit_code == 1
@@ -278,6 +328,35 @@ class TestTicketCloseArchive:
         assert not archived_path.exists()
         restored = backlog_root(cli_project) / "tickets" / "kin-strt.md"
         assert restored.exists()
+
+    def test_start_assigns_ticket_to_hand(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(branch_dir, "kin-hand")
+
+        result = runner.invoke(ticket_app, ["start", "kin-hand"])
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(ticket_path)
+        assert ticket.status == "in_progress"
+        assert ticket.assignee == "hand"
+
+    def test_start_overwrites_existing_assignee_with_hand(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-asgn",
+            status="open",
+            title="Assigned elsewhere",
+            body="",
+            assignee="alice",
+            created=datetime.now(UTC),
+        )
+        ticket_path = branch_dir / "kin-asgn.md"
+        write_ticket(ticket, ticket_path)
+
+        result = runner.invoke(ticket_app, ["start", "kin-asgn"])
+
+        assert result.exit_code == 0, result.output
+        assert read_ticket(ticket_path).assignee == "hand"
 
 
 class TestTicketStatus:

@@ -31,7 +31,7 @@ Rules
 
 ## Tooling
 
-When working with Python, invoke the relevant /astral:<skill> for uv, ty, and ruff to ensure best practices are followed.
+When working with Python, invoke the relevant /astral:<skill> for uv and ruff to ensure best practices are followed.
 
 ## Workflow
 

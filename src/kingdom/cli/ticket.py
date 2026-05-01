@@ -344,10 +344,16 @@ def render_ticket_panel(
 
 @ticket_app.command("create", help="Create a new ticket.")
 def ticket_create(
-    title: Annotated[str, typer.Argument(help="Ticket title.")],
+    title: Annotated[str | None, typer.Argument(help="Ticket title.")] = None,
+    short_title_or_type: Annotated[
+        str | None,
+        typer.Option("-t", help="Ticket title. With a positional title, treated as legacy ticket type."),
+    ] = None,
+    title_option: Annotated[str | None, typer.Option("--title", help="Ticket title.")] = None,
     description: Annotated[str | None, typer.Option("-d", "--description", help="Ticket description.")] = None,
+    body_text: Annotated[str | None, typer.Option("-b", "--body", help="Ticket description/body.")] = None,
     priority: Annotated[str, typer.Option("-p", "--priority", help="Priority (0-3 or p0-p3, 0 is highest).")] = "2",
-    ticket_type: Annotated[str, typer.Option("-t", "--type", help="Ticket type (task, bug, feature, epic).")] = "task",
+    ticket_type: Annotated[str, typer.Option("--type", help="Ticket type (task, bug, feature, epic).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
     parent: Annotated[str | None, typer.Option("--parent", help="Parent ticket ID.")] = None,
@@ -358,6 +364,33 @@ def ticket_create(
     from kingdom.state import ensure_base_layout
 
     base = require_project_root()
+
+    if title and title_option:
+        print_error("Provide the ticket title either positionally or with --title, not both.")
+        raise typer.Exit(code=1)
+
+    if title_option and short_title_or_type:
+        print_error("Provide the ticket title with either -t or --title, not both.")
+        raise typer.Exit(code=1)
+
+    if title and short_title_or_type:
+        if ticket_type != "task":
+            print_error("Provide ticket type with either legacy -t shorthand or --type, not both.")
+            raise typer.Exit(code=1)
+        ticket_type = short_title_or_type
+    elif title_option:
+        title = title_option
+    elif short_title_or_type:
+        title = short_title_or_type
+
+    if not title:
+        print_error("Missing ticket title. Provide it positionally or with -t/--title.")
+        raise typer.Exit(code=1)
+
+    if description and body_text:
+        print_error("Provide ticket body with either --description or --body, not both.")
+        raise typer.Exit(code=1)
+    description = description or body_text
 
     # Parse and validate priority (accepts 0-3, p0-p3, P0-P3)
     from kingdom.ticket import clamp_priority
@@ -597,8 +630,12 @@ def ticket_show(
     ] = None,
     all_tickets: Annotated[bool, typer.Option("--all", "-a", help="Show all tickets on the current branch.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+    rich: Annotated[bool, typer.Option("--rich", help="Render the human-friendly Rich panel view.")] = False,
 ) -> None:
-    """Display one or more tickets by ID (supports partial matching). With no args, shows ticket assigned to 'hand'."""
+    """Display one or more tickets as raw Markdown by default.
+
+    Use --rich for the framed human view. With no args, shows the ticket assigned to 'hand'.
+    """
     base = require_project_root()
 
     # Resolve tickets to show as (Ticket, Path) pairs
@@ -646,22 +683,29 @@ def ticket_show(
             ticket_to_json(ticket, detailed=True, base=base, path=ticket_path) for ticket, ticket_path in pairs
         ]
         typer.echo(json.dumps(results_json if len(results_json) > 1 else results_json[0], indent=2))
-    else:
+    elif rich:
         console = Console()
         cached_tickets = collect_all_tickets(base) if len(pairs) > 1 else None
         for i, (ticket, ticket_path) in enumerate(pairs):
             if i > 0:
                 console.print()  # separator between tickets
             console.print(render_ticket_panel(ticket, ticket_path, base, all_tickets=cached_tickets))
+    else:
+        for i, (_, ticket_path) in enumerate(pairs):
+            if i > 0:
+                typer.echo()
+            typer.echo(ticket_path.read_text(encoding="utf-8").rstrip())
 
 
-def update_ticket_status(ticket_id: str, new_status: str) -> None:
+def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | None = None) -> None:
     """Helper to update a ticket's status."""
     base = require_project_root()
 
     ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     old_status = ticket.status
     ticket.status = new_status
+    if assignee is not None:
+        ticket.assignee = assignee
     write_ticket(ticket, ticket_path)
 
     # Auto-archive: closing a backlog ticket moves it to archive/backlog/tickets/
@@ -690,8 +734,8 @@ def update_ticket_status(ticket_id: str, new_status: str) -> None:
 def ticket_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
-    """Set ticket status to in_progress."""
-    update_ticket_status(ticket_id, "in_progress")
+    """Set ticket status to in_progress and assign it to the Hand."""
+    update_ticket_status(ticket_id, "in_progress", assignee="hand")
 
 
 @ticket_app.command("current", help="Show the in-progress ticket for this branch.")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from kingdom.state import (
     ensure_branch_layout,
     find_project_root,
     normalize_branch_name,
+    parse_worktree_list,
     resolve_current_run,
     set_current_run,
     state_root,
@@ -292,19 +294,20 @@ class TestEnsureBranchLayout:
 class TestResolveCurrentRun:
     """Tests for resolve_current_run with git branch auto-detection."""
 
-    def test_explicit_current_file_takes_priority(self, tmp_path: Path) -> None:
-        """When .kd/current exists and points to a valid branch, use it."""
+    def test_explicit_current_file_is_fallback(self, tmp_path: Path) -> None:
+        """When no invocation git branch matches, use valid .kd/current."""
         ensure_branch_layout(tmp_path, "my-feature")
         set_current_run(tmp_path, "my-feature")
-        assert resolve_current_run(tmp_path) == "my-feature"
+        with patch("kingdom.state.get_current_git_branch", return_value=None):
+            assert resolve_current_run(tmp_path) == "my-feature"
 
-    def test_explicit_current_file_over_git_branch(self, tmp_path: Path) -> None:
-        """Explicit current file wins even if git branch differs."""
+    def test_git_branch_takes_priority_over_current_file(self, tmp_path: Path) -> None:
+        """The invocation worktree branch wins over shared .kd/current."""
         ensure_branch_layout(tmp_path, "my-feature")
         ensure_branch_layout(tmp_path, "other-branch")
         set_current_run(tmp_path, "my-feature")
         with patch("kingdom.state.get_current_git_branch", return_value="other-branch"):
-            assert resolve_current_run(tmp_path) == "my-feature"
+            assert resolve_current_run(tmp_path) == "other-branch"
 
     def test_git_branch_fallback_when_no_current_file(self, tmp_path: Path) -> None:
         """When no .kd/current exists, detect from git branch."""
@@ -455,6 +458,95 @@ class TestFindProjectRoot:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = str(git_root) + "\n"
             assert find_project_root() == git_root
+
+    def test_parse_worktree_list(self, tmp_path: Path) -> None:
+        """Parses paths from porcelain git worktree output."""
+        output = f"""worktree {tmp_path / "main"}
+HEAD abc123
+branch refs/heads/main
+
+worktree {tmp_path / "manual"}
+HEAD def456
+branch refs/heads/feature
+"""
+        assert parse_worktree_list(output) == [(tmp_path / "main").resolve(), (tmp_path / "manual").resolve()]
+
+    def test_sibling_worktree_fallback_finds_kd_owner(self, tmp_path: Path) -> None:
+        """Finds .kd/ in a sibling worktree when invocation worktree lacks it."""
+        main = tmp_path / "main"
+        manual = tmp_path / "manual"
+        main.mkdir()
+        manual.mkdir()
+        (main / ".kd").mkdir()
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["git", "rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{manual}\n", stderr="")
+            if cmd == ["git", "worktree", "list", "--porcelain"]:
+                output = f"worktree {main}\nHEAD abc\n\nworktree {manual}\nHEAD def\n"
+                return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("kingdom.state.Path.cwd", return_value=manual),
+            patch("kingdom.state.subprocess.run", side_effect=fake_run),
+        ):
+            assert find_project_root() == main.resolve()
+
+    def test_sibling_worktree_fallback_prefers_primary_checkout(self, tmp_path: Path) -> None:
+        """When multiple siblings contain .kd/, prefer the primary checkout."""
+        main = tmp_path / "main"
+        linked = tmp_path / "linked"
+        manual = tmp_path / "manual"
+        main.mkdir()
+        linked.mkdir()
+        manual.mkdir()
+        (main / ".kd").mkdir()
+        (linked / ".kd").mkdir()
+        (main / ".git").mkdir()
+        (linked / ".git").write_text("gitdir: ../.git/worktrees/linked\n", encoding="utf-8")
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["git", "rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{manual}\n", stderr="")
+            if cmd == ["git", "worktree", "list", "--porcelain"]:
+                output = f"worktree {main}\nHEAD abc\n\nworktree {linked}\nHEAD def\n\nworktree {manual}\nHEAD ghi\n"
+                return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("kingdom.state.Path.cwd", return_value=manual),
+            patch("kingdom.state.subprocess.run", side_effect=fake_run),
+        ):
+            assert find_project_root() == main.resolve()
+
+    def test_sibling_worktree_fallback_errors_when_ambiguous(self, tmp_path: Path) -> None:
+        """Multiple .kd-owning linked worktrees require explicit KD_BASE."""
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        manual = tmp_path / "manual"
+        for path in (first, second, manual):
+            path.mkdir()
+        (first / ".kd").mkdir()
+        (second / ".kd").mkdir()
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["git", "rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{manual}\n", stderr="")
+            if cmd == ["git", "worktree", "list", "--porcelain"]:
+                output = f"worktree {first}\nHEAD abc\n\nworktree {second}\nHEAD def\n\nworktree {manual}\nHEAD ghi\n"
+                return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("kingdom.state.Path.cwd", return_value=manual),
+            patch("kingdom.state.subprocess.run", side_effect=fake_run),
+            pytest.raises(ValueError, match=r"Multiple git worktrees contain \.kd"),
+        ):
+            find_project_root()
 
 
 class TestCheckNoLegacyRuns:

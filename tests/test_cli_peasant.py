@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from kingdom.cli.peasant import peasant_app, resolve_peasant_context
+from kingdom.cli.peasant import peasant_app, resolve_invocation_git_root, resolve_peasant_context
 from kingdom.cli.ticket import ticket_app
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
 from kingdom.state import backlog_root, ensure_branch_layout, logs_root, normalize_branch_name, set_current_run
@@ -337,6 +337,74 @@ class TestPeasantStart:
             state = get_agent_state(base, BRANCH, "peasant-kin-test")
             assert state.status == "failed"
 
+    def test_start_clears_resume_id_when_agent_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(
+                    name="peasant-kin-test",
+                    status="failed",
+                    resume_id="claude-session",
+                    agent_backend="claude",
+                ),
+            )
+
+            observed_state_during_launch: list[AgentState] = []
+
+            def spy_launch(*args: object, **kwargs: object) -> int:
+                state = get_agent_state(base, BRANCH, "peasant-kin-test")
+                observed_state_during_launch.append(state)
+                return 42
+
+            with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand", "--agent", "codex"])
+
+            assert result.exit_code == 0, result.output
+            assert len(observed_state_during_launch) == 1
+            state = observed_state_during_launch[0]
+            assert state.agent_backend == "codex"
+            assert state.resume_id is None
+
+    def test_start_preserves_resume_id_when_agent_matches(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(
+                    name="peasant-kin-test",
+                    status="failed",
+                    resume_id="codex-session",
+                    agent_backend="codex",
+                ),
+            )
+
+            observed_state_during_launch: list[AgentState] = []
+
+            def spy_launch(*args: object, **kwargs: object) -> int:
+                state = get_agent_state(base, BRANCH, "peasant-kin-test")
+                observed_state_during_launch.append(state)
+                return 42
+
+            with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand", "--agent", "codex"])
+
+            assert result.exit_code == 0, result.output
+            assert len(observed_state_during_launch) == 1
+            state = observed_state_during_launch[0]
+            assert state.agent_backend == "codex"
+            assert state.resume_id == "codex-session"
+
     def test_start_warns_on_uncommitted_changes(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -358,6 +426,28 @@ class TestPeasantStart:
             assert result.exit_code == 0, result.output
             assert "uncommitted" in result.output.lower()
             assert "--hand" in result.output
+
+    def test_start_ignores_kd_only_uncommitted_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", return_value=base / ".kd" / "worktrees" / "kin-test"),
+                patch("subprocess.Popen", return_value=mock_proc),
+                patch("os.open", return_value=3),
+                patch("os.close"),
+                patch("kingdom.cli.peasant.check_uncommitted_changes", return_value=[]) as mock_check,
+            ):
+                result = runner.invoke(peasant_app, ["start", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "uncommitted" not in result.output.lower()
+            mock_check.assert_called_once_with(base, ignore_kd=True)
 
     def test_start_no_preflight_suppresses_warning(self) -> None:
         with runner.isolated_filesystem():
@@ -911,7 +1001,12 @@ class TestPeasantClean:
 
             assert result.exit_code == 0
             assert "worktree removed" in result.output
-            mock_remove.assert_called_once_with(base, "kin-test")
+            mock_remove.assert_called_once_with(
+                base,
+                "kin-test",
+                git_root=base,
+                feature=BRANCH,
+            )
 
     def test_clean_confirms_before_removing(self) -> None:
         with runner.isolated_filesystem():
@@ -1983,6 +2078,10 @@ class TestPeasantReview:
                     result.returncode = 0
                     result.stdout = ""
                     result.stderr = ""
+                elif cmd and cmd[:3] == ["git", "branch", "-D"]:
+                    result.returncode = 0
+                    result.stdout = "Deleted branch ticket/kin-test"
+                    result.stderr = ""
                 else:
                     raise AssertionError(f"Unexpected subprocess call: {cmd}")
                 return result
@@ -2003,6 +2102,104 @@ class TestPeasantReview:
             # Session should be done
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "done"
+
+    def test_review_accept_removes_worktree_and_deletes_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            branch_delete_seen = False
+
+            def mock_run(cmd, **kwargs):
+                nonlocal branch_delete_seen
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and cmd == ["git", "branch", "-D", "ticket/kin-test"]:
+                    assert kwargs["timeout"] == 10
+                    branch_delete_seen = True
+                    result.returncode = 0
+                    result.stdout = "Deleted branch ticket/kin-test"
+                    result.stderr = ""
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with (
+                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+                patch("kingdom.cli.peasant.remove_worktree") as mock_remove,
+            ):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            mock_remove.assert_called_once_with(
+                base,
+                "kin-test",
+                git_root=base,
+                feature=normalize_branch_name(BRANCH),
+            )
+            assert branch_delete_seen
+            assert "Removed worktree" in result.output
+            assert "Deleted branch ticket/kin-test" in result.output
+
+    def test_review_accept_cleanup_failure_warns_but_succeeds(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 0
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and cmd == ["git", "branch", "-D", "ticket/kin-test"]:
+                    assert kwargs["timeout"] == 10
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = "branch not found"
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with (
+                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+                patch("kingdom.cli.peasant.remove_worktree", side_effect=RuntimeError("boom")),
+            ):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "Warning: could not remove worktree" in result.output
+            assert "Warning: could not delete branch ticket/kin-test" in result.output
+            assert "accepted" in result.output
 
     def test_review_accept_uncommitted_changes_blocks(self) -> None:
         """Accept should refuse to merge if there are uncommitted changes."""
@@ -2051,6 +2248,50 @@ class TestPeasantReview:
             assert ticket_result is not None
             ticket, _ = ticket_result
             assert ticket.status == "in_review"
+
+    def test_review_accept_ignores_kd_only_uncommitted_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = f"{BRANCH}\n"
+                    result.stderr = ""
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
+                    result.returncode = 0
+                    result.stdout = " M .kd/branches/feature-peasant-test/tickets/kin-test.md\n"
+                    result.stderr = ""
+                else:
+                    result.returncode = 0
+                    result.stdout = "Merge made by the 'ort' strategy."
+                    result.stderr = ""
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "accepted" in result.output
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
 
     def test_review_shows_council_feedback(self) -> None:
         """Review info should include council member messages from the work thread."""
@@ -2450,6 +2691,17 @@ class TestPeasantNoResultsMessages:
 
 class TestProjectRootDiscovery:
     """Peasant commands resolve .kd/ state from subdirectories."""
+
+    def test_invocation_git_root_ignores_nested_git_repo_inside_project(self, tmp_path: Path) -> None:
+        setup_project(tmp_path)
+        (tmp_path / ".git").mkdir()
+
+        nested_repo = tmp_path / "vendor" / "nested"
+        nested_repo.mkdir(parents=True)
+        (nested_repo / ".git").mkdir()
+
+        with patch("kingdom.cli.peasant.Path.cwd", return_value=nested_repo):
+            assert resolve_invocation_git_root(tmp_path) == tmp_path
 
     def test_peasant_command_from_subdirectory(self, tmp_path: Path) -> None:
         """resolve_peasant_context finds .kd/ at repo root when invoked from a subdirectory."""
@@ -2954,6 +3206,34 @@ class TestCrossBranchPeasantContext:
 
             ctx = resolve_peasant_context("nope", base=base)
             assert ctx.feature == normalize_branch_name(BRANCH_A)
+
+    def test_clean_removes_worktree_from_peasant_owning_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH_A)
+            ensure_branch_layout(base, BRANCH_B)
+
+            tickets_dir_a = base / ".kd" / "branches" / normalize_branch_name(BRANCH_A) / "tickets"
+            ticket = Ticket(id="abcd", status="in_review", title="Cross-branch clean", created=datetime.now(UTC))
+            write_ticket(ticket, tickets_dir_a / "abcd.md")
+            set_agent_state(
+                base,
+                BRANCH_A,
+                "peasant-abcd",
+                AgentState(name="peasant-abcd", status="needs_king_review", ticket="abcd"),
+            )
+            set_current_run(base, normalize_branch_name(BRANCH_B))
+
+            with patch("kingdom.cli.peasant.remove_worktree") as mock_remove:
+                result = runner.invoke(peasant_app, ["clean", "--force", "abcd"])
+
+            assert result.exit_code == 0, result.output
+            mock_remove.assert_called_once_with(
+                base,
+                "abcd",
+                git_root=base,
+                feature=normalize_branch_name(BRANCH_A),
+            )
 
 
 class TestFindPeasantBranch:

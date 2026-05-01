@@ -113,8 +113,10 @@ def build_prompt(
     if ticket_id:
         parts.append(
             "Keep the ticket worklog updated as you work. Log important decisions, "
-            "tradeoffs, things you noticed, or King input using "
-            f'`kd tk log {ticket_id} "message"` or by editing the ticket file directly. '
+            "tradeoffs, things you noticed, or King input by editing the ticket "
+            f"Markdown directly after reading it. Use `kd tk show {ticket_id}` to "
+            f'print the raw ticket file; use `kd tk log {ticket_id} "message"` '
+            "only for quick one-off entries. "
             "The worklog is how the King stays informed about what you're doing and why."
         )
     else:
