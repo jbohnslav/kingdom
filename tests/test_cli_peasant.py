@@ -337,6 +337,74 @@ class TestPeasantStart:
             state = get_agent_state(base, BRANCH, "peasant-kin-test")
             assert state.status == "failed"
 
+    def test_start_clears_resume_id_when_agent_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(
+                    name="peasant-kin-test",
+                    status="failed",
+                    resume_id="claude-session",
+                    agent_backend="claude",
+                ),
+            )
+
+            observed_state_during_launch: list[AgentState] = []
+
+            def spy_launch(*args: object, **kwargs: object) -> int:
+                state = get_agent_state(base, BRANCH, "peasant-kin-test")
+                observed_state_during_launch.append(state)
+                return 42
+
+            with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand", "--agent", "codex"])
+
+            assert result.exit_code == 0, result.output
+            assert len(observed_state_during_launch) == 1
+            state = observed_state_during_launch[0]
+            assert state.agent_backend == "codex"
+            assert state.resume_id is None
+
+    def test_start_preserves_resume_id_when_agent_matches(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base)
+
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-test",
+                AgentState(
+                    name="peasant-kin-test",
+                    status="failed",
+                    resume_id="codex-session",
+                    agent_backend="codex",
+                ),
+            )
+
+            observed_state_during_launch: list[AgentState] = []
+
+            def spy_launch(*args: object, **kwargs: object) -> int:
+                state = get_agent_state(base, BRANCH, "peasant-kin-test")
+                observed_state_during_launch.append(state)
+                return 42
+
+            with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand", "--agent", "codex"])
+
+            assert result.exit_code == 0, result.output
+            assert len(observed_state_during_launch) == 1
+            state = observed_state_during_launch[0]
+            assert state.agent_backend == "codex"
+            assert state.resume_id == "codex-session"
+
     def test_start_warns_on_uncommitted_changes(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

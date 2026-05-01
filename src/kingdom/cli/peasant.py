@@ -401,18 +401,18 @@ def peasant_start(
     # The worker reads session state immediately on startup (e.g. hand_mode for
     # branch validation), so it must be initialized before the process exists.
     now = datetime.now(UTC).isoformat()
-    update_agent_state(
-        base,
-        feature,
-        session_name,
-        status="working",
-        ticket=full_ticket_id,
-        thread=thread_id,
-        agent_backend=agent,
-        started_at=now,
-        last_activity=now,
-        hand_mode=hand,
-    )
+    session_fields = {
+        "status": "working",
+        "ticket": full_ticket_id,
+        "thread": thread_id,
+        "agent_backend": agent,
+        "started_at": now,
+        "last_activity": now,
+        "hand_mode": hand,
+    }
+    if existing.resume_id and existing.agent_backend and existing.agent_backend != agent:
+        session_fields["resume_id"] = None
+    update_agent_state(base, feature, session_name, **session_fields)
 
     # 5. Launch harness
     try:
