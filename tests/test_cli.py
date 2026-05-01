@@ -558,8 +558,8 @@ class TestUpdate:
             assert result.exit_code == 1
             assert "uv not found" in result.output
 
-    def test_update_skips_skill_on_dev_symlink(self) -> None:
-        """kd update skips skill refresh when target is a dev symlink."""
+    def test_update_refreshes_skills_through_installer(self) -> None:
+        """kd update delegates symlink and multi-agent handling to install_skill."""
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "Nothing to upgrade"
@@ -567,13 +567,12 @@ class TestUpdate:
 
         with (
             patch("kingdom.cli.subprocess.run", return_value=mock_result),
-            patch("kingdom.cli.install_skill") as mock_skill,
-            patch("pathlib.Path.is_symlink", return_value=True),
+            patch("kingdom.cli.install_skill", return_value=True) as mock_skill,
         ):
             result = runner.invoke(app, ["update"])
             assert result.exit_code == 0
-            assert "dev symlink" in result.output
-            mock_skill.assert_not_called()
+            assert "Skill files refreshed" in result.output
+            mock_skill.assert_called_once()
 
     def test_update_skill_refresh_failure(self) -> None:
         """kd update reports failure when install_skill() fails."""

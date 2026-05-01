@@ -39,7 +39,7 @@ Run `kd done` before creating or merging a PR. It verifies all tickets are close
 
 ## Skills
 
-The kingdom skill lives at `skills/kingdom/SKILL.md` in this repo. `~/.claude/skills/kingdom` is a symlink to it — edit the repo copy.
+The kingdom skill lives at `skills/kingdom/SKILL.md` in this repo. `kd update` refreshes `~/.claude/skills/kingdom` and, when the top-level agent config directories already exist, `~/.cursor/skills/kingdom` and `~/.codex/skills/kingdom`. In this checkout, `~/.claude/skills/kingdom` is a symlink to the repo copy — edit the repo copy.
 
 ## Agent Timeouts
 

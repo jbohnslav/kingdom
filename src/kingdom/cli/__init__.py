@@ -503,7 +503,7 @@ def status(
 
 @app.command(help="Upgrade the CLI and refresh skill files.")
 def update() -> None:
-    """Run ``uv tool upgrade kingdom-cli`` then refresh Claude skill files."""
+    """Run ``uv tool upgrade kingdom-cli`` then refresh local agent skill files."""
     console = Console()
 
     # Step 1: uv tool upgrade kingdom-cli
@@ -531,17 +531,12 @@ def update() -> None:
 
     # Step 2: refresh skill files
     typer.echo("Refreshing skill files...")
-    skill_target = Path.home() / ".claude" / "skills" / "kingdom"
-    if skill_target.is_symlink():
-        styled_echo("  ○ Skipped (dev symlink)", fg=typer.colors.YELLOW)
-        skill_status = "skipped (dev symlink)"
+    if install_skill():
+        styled_echo("  ✓ Skill files refreshed", fg=typer.colors.GREEN)
+        skill_status = "refreshed"
     else:
-        if install_skill():
-            styled_echo("  ✓ Skill files refreshed", fg=typer.colors.GREEN)
-            skill_status = "refreshed"
-        else:
-            styled_echo("  ✗ Skill refresh failed (see warning above)", fg=typer.colors.RED)
-            skill_status = "failed"
+        styled_echo("  ✗ Skill refresh failed (see warning above)", fg=typer.colors.RED)
+        skill_status = "failed"
 
     # Summary
     typer.echo()
