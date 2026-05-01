@@ -695,6 +695,8 @@ def ticket_show(
             if i > 0:
                 typer.echo()
             typer.echo(ticket_path.read_text(encoding="utf-8").rstrip())
+            typer.echo()
+            typer.echo(f"File: {ticket_path.resolve()}")
 
 
 def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | None = None) -> None:
