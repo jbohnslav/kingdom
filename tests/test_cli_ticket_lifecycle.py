@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -1120,6 +1122,73 @@ class TestTicketPull:
         result = runner.invoke(ticket_app, ["list", "--ready", "--json"])
         assert result.exit_code == 0, result.output
         assert "kin-rdy1" in result.output
+
+
+class TestTicketFind:
+    def test_find_branch_ticket_prints_absolute_path(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(tickets_dir, "kin-find")
+
+        result = runner.invoke(ticket_app, ["find", "kin-find"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == str(ticket_path.resolve())
+
+    def test_find_backlog_ticket_prints_absolute_path(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        ticket_path = create_ticket_in(backlog_dir, "kin-back")
+
+        result = runner.invoke(ticket_app, ["find", "kin-back"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == str(ticket_path.resolve())
+
+    def test_find_archived_closed_ticket_prints_absolute_path(self, cli_project: Path) -> None:
+        archive_dir = archive_root(cli_project) / "backlog" / "tickets"
+        ticket_path = create_ticket_in(archive_dir, "kin-done")
+        ticket = read_ticket(ticket_path)
+        ticket.status = "closed"
+        write_ticket(ticket, ticket_path)
+
+        result = runner.invoke(ticket_app, ["find", "kin-done"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == str(ticket_path.resolve())
+
+    def test_find_not_found_errors(self, cli_project: Path) -> None:
+        result = runner.invoke(ticket_app, ["find", "kin-nope"])
+
+        assert result.exit_code == 1
+        assert "Ticket not found" in result.output
+        assert "kin-nope" in result.output
+
+    def test_find_from_parallel_worktree_without_kd(self, tmp_path: Path) -> None:
+        main = tmp_path / "kingdom"
+        parallel = tmp_path / "kingdom-fixes"
+        main.mkdir()
+        parallel.mkdir()
+        (parallel / ".git").write_text("gitdir: ../kingdom/.git/worktrees/kingdom-fixes\n", encoding="utf-8")
+        ensure_branch_layout(main, BRANCH)
+        ticket_path = create_ticket_in(branch_root(main, BRANCH) / "tickets", "kin-wt")
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["git", "rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{parallel}\n", stderr="")
+            if cmd == ["git", "worktree", "list", "--porcelain"]:
+                output = f"worktree {main}\nHEAD abc\n\nworktree {parallel}\nHEAD def\n"
+                return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+            if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{BRANCH}\n", stderr="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with (
+            patch("kingdom.state.Path.cwd", return_value=parallel),
+            patch("kingdom.state.subprocess.run", side_effect=fake_run),
+        ):
+            result = runner.invoke(ticket_app, ["find", "kin-wt"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == str(ticket_path.resolve())
 
 
 class TestTicketAddNote:
