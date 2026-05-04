@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 import typer
 
@@ -12,6 +13,8 @@ from kingdom.state import find_project_root
 from kingdom.ticket import AmbiguousTicketMatch, Ticket, find_ticket
 
 from .display import print_error
+
+SkillInstallStatus = Literal["refreshed", "skipped", "failed"]
 
 
 def verbose_echo(message: str) -> None:
@@ -116,38 +119,58 @@ def ensure_feature_branch(feature: str) -> None:
     typer.echo(f"Warning: current branch '{current}' does not match feature '{feature}'.")
 
 
-def install_skill() -> bool:
-    """Install the bundled kingdom skill to ~/.claude/skills/kingdom/.
+def skill_install_targets(home: Path) -> list[Path]:
+    """Return Claude's skill target, plus Cursor/Codex when their config dirs exist."""
+    targets = [home / ".claude" / "skills" / "kingdom"]
+    for agent_dir in (".cursor", ".codex"):
+        root = home / agent_dir
+        if root.is_dir():
+            targets.append(root / "skills" / "kingdom")
+    return targets
 
-    Copies SKILL.md and reference files from the package into the Claude
-    skills directory.  Skips if the target is a symlink (dev setup).
-    Warns and continues on permission or filesystem errors.
 
-    Returns True on success (including symlink skip), False on error.
+def install_skill() -> SkillInstallStatus:
+    """Install the bundled kingdom skill to supported local agent skill dirs.
+
+    Copies SKILL.md and reference files from the package into Claude, and into
+    Cursor/Codex when their top-level config directories already exist. Skips
+    individual targets that are symlinks (dev setup).
+    Warns on permission or filesystem errors.
+
+    Returns "refreshed" when any target was written, "skipped" when every
+    target was a symlink, and "failed" on error.
     """
     from importlib.resources import as_file, files
 
     try:
-        target = Path.home() / ".claude" / "skills" / "kingdom"
-
-        # Don't overwrite a dev symlink
-        if target.is_symlink():
-            return True
-
+        targets = skill_install_targets(Path.home())
         skill_pkg = files("kingdom.skill")
-
-        target.mkdir(parents=True, exist_ok=True)
-        with as_file(skill_pkg / "SKILL.md") as src:
-            (target / "SKILL.md").write_bytes(src.read_bytes())
-
-        refs_target = target / "references"
-        refs_target.mkdir(exist_ok=True)
         refs_pkg = skill_pkg / "references"
-        for item in refs_pkg.iterdir():
-            if item.name.endswith(".md"):
-                with as_file(item) as src:
-                    (refs_target / item.name).write_bytes(src.read_bytes())
+        skipped_targets = 0
+        refreshed_targets = 0
+
+        for target in targets:
+            if target.is_symlink():
+                skipped_targets += 1
+                continue
+
+            target.mkdir(parents=True, exist_ok=True)
+            with as_file(skill_pkg / "SKILL.md") as src:
+                (target / "SKILL.md").write_bytes(src.read_bytes())
+
+            refs_target = target / "references"
+            refs_target.mkdir(exist_ok=True)
+            for item in refs_pkg.iterdir():
+                if item.name.endswith(".md"):
+                    with as_file(item) as src:
+                        (refs_target / item.name).write_bytes(src.read_bytes())
+            refreshed_targets += 1
     except (OSError, RuntimeError) as exc:
         typer.echo(f"Warning: could not install skill ({exc})")
-        return False
-    return True
+        return "failed"
+
+    if refreshed_targets:
+        return "refreshed"
+    if skipped_targets:
+        return "skipped"
+    return "refreshed"

@@ -695,6 +695,18 @@ def ticket_show(
             if i > 0:
                 typer.echo()
             typer.echo(ticket_path.read_text(encoding="utf-8").rstrip())
+            typer.echo()
+            typer.echo(f"File: {ticket_path.resolve()}")
+
+
+@ticket_app.command("find", help="Find a ticket file by ID.")
+def ticket_find(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+) -> None:
+    """Print the full path to a ticket file."""
+    base = require_project_root()
+    _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    typer.echo(ticket_path.resolve())
 
 
 def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | None = None) -> None:

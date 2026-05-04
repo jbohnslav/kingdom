@@ -38,7 +38,8 @@ class TestTicketShow:
         result = runner.invoke(ticket_app, ["show", "kin-sh01"])
 
         assert result.exit_code == 0, result.output
-        assert result.output.strip() == ticket_path.read_text(encoding="utf-8").strip()
+        assert result.output.startswith(ticket_path.read_text(encoding="utf-8").strip())
+        assert result.output.rstrip().endswith(f"File: {ticket_path.resolve()}")
         assert "╭" not in result.output
         assert "│" not in result.output
 
@@ -65,6 +66,15 @@ class TestTicketShow:
         assert "type: bug" in result.output
         assert "# Fix the bug" in result.output
         assert "Details here" in result.output
+
+    def test_show_raw_markdown_ends_with_ticket_path(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(tickets_dir, "kin-path")
+
+        result = runner.invoke(ticket_app, ["show", "kin-path"])
+
+        assert result.exit_code == 0
+        assert result.output.rstrip().endswith(f"File: {ticket_path.resolve()}")
 
     def test_show_rich_structured_header(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"

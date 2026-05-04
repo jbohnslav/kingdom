@@ -142,7 +142,7 @@ The threshold is **durable state change**, not every chat turn. If future-you or
 
 **Edit ticket body vs worklog.** If the King changes requirements or acceptance criteria, update the ticket's Markdown directly (description, AC section). The worklog is for timeline events — decisions, findings, progress, blockers. Don't stuff requirements into `kd tk log`; edit the ticket file instead.
 
-**LLM-friendly ticket reading.** `kd tk show <id>` prints raw ticket Markdown by default so agents can read the same file they should edit. Use `kd tk show <id> --rich` only when a framed human display is useful.
+**LLM-friendly ticket reading.** `kd tk show <id>` prints raw ticket Markdown by default so agents can read the same file they should edit. The final `File:` line gives the ticket path; when you only need that path, use `kd tk find <id>`, which searches branch, backlog, and closed/archive tickets and prints the full file path. This also works from a sibling git worktree whose checkout does not have `.kd/`. Use `kd tk show <id> --rich` only when a framed human display is useful.
 
 **Decision made** — King says "let's go with raw TypeScript over React":
 
@@ -241,7 +241,7 @@ Accept is idempotent: if the ticket branch is already merged into the feature br
 ```bash
 kd start / status / done                                # branch lifecycle
 kd design show / design approve                         # design doc
-kd tk list / show / list --ready                        # inspect tickets (show prints raw Markdown)
+kd tk list / show / find / list --ready                 # inspect tickets; find prints the ticket file path
 kd tk start <id> / close <id>                           # work a ticket
 kd tk current                                           # show active ticket
 kd tk pull <id>...                                      # pull from backlog

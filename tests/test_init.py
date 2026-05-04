@@ -7,8 +7,16 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from kingdom.cli import app
-from kingdom.cli.helpers import install_skill
+from kingdom.cli.helpers import install_skill, skill_install_targets
 from kingdom.state import branch_root, ensure_base_layout
+
+SKILL_REFERENCE_FILES = {"council.md", "peasants.md", "tickets.md"}
+
+
+def assert_skill_files_copied(skill_dir: Path) -> None:
+    assert (skill_dir / "SKILL.md").exists()
+    reference_files = {path.name for path in (skill_dir / "references").iterdir()}
+    assert reference_files >= SKILL_REFERENCE_FILES
 
 
 def test_ensure_base_layout_creates_structure(tmp_path: Path) -> None:
@@ -183,21 +191,69 @@ def test_cli_design_prints_path_after_start() -> None:
 
 
 def test_install_skill_copies_files(tmp_path: Path) -> None:
-    """install_skill copies SKILL.md and references to ~/.claude/skills/kingdom/."""
+    """install_skill copies SKILL.md and references to Claude's skill dir."""
     fake_home = tmp_path / "home"
     fake_home.mkdir()
 
     with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
-        install_skill()
+        result = install_skill()
 
     skill_dir = fake_home / ".claude" / "skills" / "kingdom"
-    assert (skill_dir / "SKILL.md").exists()
-    assert (skill_dir / "references" / "council.md").exists()
-    assert (skill_dir / "references" / "peasants.md").exists()
-    assert (skill_dir / "references" / "tickets.md").exists()
+    assert result == "refreshed"
+    assert_skill_files_copied(skill_dir)
 
     # Verify content is non-empty
     assert len((skill_dir / "SKILL.md").read_text()) > 100
+
+
+def test_skill_install_targets_include_cursor_and_codex_when_roots_exist(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / ".cursor").mkdir()
+    (fake_home / ".codex").mkdir()
+
+    targets = skill_install_targets(fake_home)
+
+    assert fake_home / ".claude" / "skills" / "kingdom" in targets
+    assert fake_home / ".cursor" / "skills" / "kingdom" in targets
+    assert fake_home / ".codex" / "skills" / "kingdom" in targets
+
+
+def test_skill_install_targets_skip_missing_cursor_and_codex_roots(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    targets = skill_install_targets(fake_home)
+
+    assert targets == [fake_home / ".claude" / "skills" / "kingdom"]
+    assert not (fake_home / ".cursor").exists()
+    assert not (fake_home / ".codex").exists()
+
+
+def test_install_skill_copies_files_to_cursor_when_root_exists(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / ".cursor").mkdir()
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        result = install_skill()
+
+    skill_dir = fake_home / ".cursor" / "skills" / "kingdom"
+    assert result == "refreshed"
+    assert_skill_files_copied(skill_dir)
+
+
+def test_install_skill_copies_files_to_codex_when_root_exists(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / ".codex").mkdir()
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        result = install_skill()
+
+    skill_dir = fake_home / ".codex" / "skills" / "kingdom"
+    assert result == "refreshed"
+    assert_skill_files_copied(skill_dir)
 
 
 def test_install_skill_skips_symlink(tmp_path: Path) -> None:
@@ -213,11 +269,33 @@ def test_install_skill_skips_symlink(tmp_path: Path) -> None:
     skill_dir.symlink_to(real_target)
 
     with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
-        install_skill()
+        result = install_skill()
 
     # Should still be a symlink, not overwritten
+    assert result == "skipped"
     assert skill_dir.is_symlink()
     assert not (skill_dir / "SKILL.md").exists()
+
+
+def test_install_skill_installs_cursor_when_claude_target_is_symlink(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    cursor_root = fake_home / ".cursor"
+    claude_skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    cursor_root.mkdir(parents=True)
+    claude_skill_dir.mkdir(parents=True)
+
+    real_target = tmp_path / "real_skill"
+    real_target.mkdir()
+    claude_skill_dir.rmdir()
+    claude_skill_dir.symlink_to(real_target)
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        result = install_skill()
+
+    assert result == "refreshed"
+    assert claude_skill_dir.is_symlink()
+    assert not (claude_skill_dir / "SKILL.md").exists()
+    assert_skill_files_copied(fake_home / ".cursor" / "skills" / "kingdom")
 
 
 def test_install_skill_idempotent(tmp_path: Path) -> None:
@@ -226,8 +304,8 @@ def test_install_skill_idempotent(tmp_path: Path) -> None:
     fake_home.mkdir()
 
     with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
-        install_skill()
-        install_skill()
+        assert install_skill() == "refreshed"
+        assert install_skill() == "refreshed"
 
     skill_dir = fake_home / ".claude" / "skills" / "kingdom"
     assert (skill_dir / "SKILL.md").exists()
