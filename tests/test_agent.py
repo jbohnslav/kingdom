@@ -1,13 +1,18 @@
 """Tests for agent configuration and command building."""
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
+import kingdom.agent as agent_mod
 from kingdom.agent import (
     BACKEND_DEFAULTS,
+    CODEX_CLI_PATH_ENV,
     AgentConfig,
     build_command,
+    clean_agent_env,
     extract_error,
     extract_stream_text,
     parse_claude_response,
@@ -18,6 +23,14 @@ from kingdom.agent import (
     resolve_all_agents,
 )
 from kingdom.config import DEFAULT_AGENTS, AgentDef
+
+
+def make_executable(path: Path) -> Path:
+    """Create an executable test file and return its path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 class TestBackendDefaults:
@@ -110,6 +123,63 @@ def make_config(name: str) -> AgentConfig:
     if name in DEFAULT_AGENTS:
         return resolve_agent(name, DEFAULT_AGENTS[name])
     return resolve_agent(name, AgentDef(backend=name))
+
+
+class TestCleanAgentEnv:
+    def test_strips_claudecode_and_sets_role_context(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(agent_mod, "CODEX_APP_CLI_PATH", tmp_path / "missing" / "codex")
+        monkeypatch.setenv("CLAUDECODE", "1")
+
+        env = clean_agent_env(role="council", agent_name="codex", kd_base="/repo")
+
+        assert "CLAUDECODE" not in env
+        assert env["KD_ROLE"] == "council"
+        assert env["KD_AGENT_NAME"] == "codex"
+        assert env["KD_BASE"] == "/repo"
+
+    def test_prefers_explicit_codex_cli_path(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        configured = make_executable(tmp_path / "configured" / "codex")
+        app_cli = make_executable(tmp_path / "app" / "codex")
+        stale_bin = tmp_path / "stale"
+        stale_bin.mkdir()
+        monkeypatch.setattr(agent_mod, "CODEX_APP_CLI_PATH", app_cli)
+        monkeypatch.setenv(CODEX_CLI_PATH_ENV, str(configured))
+        monkeypatch.setenv("PATH", str(stale_bin))
+
+        env = clean_agent_env()
+
+        assert env[CODEX_CLI_PATH_ENV] == str(configured)
+        assert env["PATH"].split(os.pathsep)[0] == str(configured.parent)
+
+    def test_falls_back_to_app_codex_when_configured_path_is_invalid(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        app_cli = make_executable(tmp_path / "Codex.app" / "Contents" / "Resources" / "codex")
+        stale_bin = tmp_path / "stale"
+        stale_bin.mkdir()
+        monkeypatch.setattr(agent_mod, "CODEX_APP_CLI_PATH", app_cli)
+        monkeypatch.setenv(CODEX_CLI_PATH_ENV, str(tmp_path / "missing" / "codex"))
+        monkeypatch.setenv("PATH", os.pathsep.join([str(stale_bin), str(app_cli.parent)]))
+
+        env = clean_agent_env()
+        path_entries = env["PATH"].split(os.pathsep)
+
+        assert env[CODEX_CLI_PATH_ENV] == str(app_cli)
+        assert path_entries[0] == str(app_cli.parent)
+        assert path_entries.count(str(app_cli.parent)) == 1
+
+    def test_leaves_path_unchanged_when_no_codex_binary_is_found(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        old_path = os.pathsep.join([str(tmp_path / "one"), str(tmp_path / "two")])
+        monkeypatch.setattr(agent_mod, "CODEX_APP_CLI_PATH", tmp_path / "missing" / "codex")
+        monkeypatch.delenv(CODEX_CLI_PATH_ENV, raising=False)
+        monkeypatch.setenv("PATH", old_path)
+
+        env = clean_agent_env()
+
+        assert env["PATH"] == old_path
+        assert CODEX_CLI_PATH_ENV not in env
 
 
 class TestBuildCommand:
@@ -306,6 +376,11 @@ class TestBuildCommandSkipPermissions:
         cmd = build_command(make_config("codex"), "hello world", skip_permissions=False)
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         assert "disk-full-read-access" in " ".join(cmd)
+
+    def test_codex_skip_permissions_false_disables_external_tools(self) -> None:
+        cmd = build_command(make_config("codex"), "hello world", skip_permissions=False)
+        assert "mcp_servers={}" in cmd
+        assert "plugins={}" in cmd
 
     def test_cursor_skip_permissions_false(self) -> None:
         cmd = build_command(make_config("cursor"), "hello world", skip_permissions=False)

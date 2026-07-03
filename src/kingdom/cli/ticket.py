@@ -472,6 +472,11 @@ def ticket_list(
         bool, typer.Option("--include-done", help="Include tickets from done branches (with --all).")
     ] = False,
     include_closed: Annotated[bool, typer.Option("--closed", help="Include closed tickets in output.")] = False,
+    recently_closed: Annotated[
+        bool,
+        typer.Option("--recently-closed", "--recent", help="Show closed tickets ordered by most recent closure."),
+    ] = False,
+    limit: Annotated[int | None, typer.Option("--limit", "-n", help="Limit the number of tickets shown.")] = None,
     ready: Annotated[bool, typer.Option("--ready", help="Show only tickets ready to work (no open deps).")] = False,
     blocked: Annotated[bool, typer.Option("--blocked", help="Show only tickets blocked by open deps.")] = False,
     status: Annotated[
@@ -498,6 +503,14 @@ def ticket_list(
         print_error("--ready and --blocked are mutually exclusive.")
         raise typer.Exit(code=1)
 
+    if recently_closed and (ready or blocked):
+        print_error("--recently-closed cannot be combined with --ready or --blocked.")
+        raise typer.Exit(code=1)
+
+    if limit is not None and limit < 1:
+        print_error("--limit must be 1 or greater.")
+        raise typer.Exit(code=1)
+
     # --jq implies --json
     if jq_filter:
         output_json = True
@@ -508,9 +521,23 @@ def ticket_list(
             print_error(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
             raise typer.Exit(code=1)
 
+    if recently_closed:
+        if status is not None and status != "closed":
+            print_error("--recently-closed can only be combined with --status closed.")
+            raise typer.Exit(code=1)
+        status = "closed"
+        include_closed = True
+
     if priority is not None and priority not in (0, 1, 2, 3):
         print_error(f"Invalid priority {priority}. Must be 0, 1, 2, or 3.")
         raise typer.Exit(code=1)
+
+    def order_and_limit(tickets: list[Ticket]) -> list[Ticket]:
+        if recently_closed:
+            tickets = sorted(tickets, key=lambda ticket: ticket.closed_at or ticket.created, reverse=True)
+        if limit is not None:
+            tickets = tickets[:limit]
+        return tickets
 
     def apply_all_filters(tickets: list[Ticket], status_by_id: dict[str, str]) -> list[Ticket]:
         filtered = filter_tickets_by_status(tickets, status, include_closed)
@@ -518,7 +545,7 @@ def ticket_list(
         filtered = filter_tickets_by_deps(filtered, status_by_id, ready=ready, blocked=blocked)
         if resolved_parent_id:
             filtered = [t for t in filtered if t.parent == resolved_parent_id]
-        return filtered
+        return order_and_limit(filtered)
 
     def output_tickets_json(tickets: list[Ticket], location_map: dict[str, str] | None = None) -> None:
         """Output tickets as JSON, optionally piping through jq."""
@@ -558,20 +585,34 @@ def ticket_list(
 
     # Build a global status lookup for dep-based filtering and dep annotations.
     # Always include done branches so deps in done branches get correct ✓ marks.
-    all_known_tickets = collect_all_tickets(base, include_done=True)
+    all_known_tickets = collect_all_tickets(base, include_archive=recently_closed, include_done=True)
     status_by_id = {t.id: t.status for t in all_known_tickets}
 
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
-        all_backlog_tickets = list_tickets(backlog_dir) if backlog_dir.exists() else []
+        backlog_pairs: list[tuple[str, Ticket]] = []
+        if backlog_dir.exists():
+            backlog_pairs.extend(("backlog", ticket) for ticket in list_tickets(backlog_dir))
+        if recently_closed:
+            archive_backlog_dir = archive_root(base) / "backlog" / "tickets"
+            if archive_backlog_dir.exists():
+                backlog_pairs.extend(("archive:backlog", ticket) for ticket in list_tickets(archive_backlog_dir))
+        all_backlog_tickets = [ticket for _, ticket in backlog_pairs]
         tickets = apply_all_filters(all_backlog_tickets, status_by_id)
+        filtered_ids = {ticket.id for ticket in tickets}
+        location_map = {
+            ticket.id: location_name for location_name, ticket in backlog_pairs if ticket.id in filtered_ids
+        }
 
         if output_json:
-            output_tickets_json(tickets, {t.id: "backlog" for t in tickets})
+            output_tickets_json(tickets, location_map)
         else:
             if not tickets:
-                closed_count = sum(1 for t in all_backlog_tickets if t.status == "closed")
-                if closed_count and not include_closed and status is None and not ready and not blocked:
+                if recently_closed:
+                    typer.echo("No recently closed backlog tickets.")
+                elif (closed_count := sum(1 for t in all_backlog_tickets if t.status == "closed")) and (
+                    not include_closed and status is None and not ready and not blocked
+                ):
                     typer.echo(f"No open backlog tickets ({closed_count} closed). Use --closed to show them.")
                 else:
                     typer.echo('No backlog tickets. Create one with `kd tk create --backlog "title"`.')
@@ -581,7 +622,7 @@ def ticket_list(
         return
 
     if all_tickets:
-        pairs = collect_tickets_by_location(base, include_done=include_done)
+        pairs = collect_tickets_by_location(base, include_archive=recently_closed, include_done=include_done)
         all_filtered: list[Ticket] = []
         location_map: dict[str, str] = {}
         for location_name, ticket in pairs:
@@ -596,8 +637,11 @@ def ticket_list(
             output_tickets_json(all_filtered, location_map)
         else:
             if not all_filtered:
-                closed_count = sum(1 for _, t in pairs if t.status == "closed")
-                if closed_count and not include_closed and status is None and not ready and not blocked:
+                if recently_closed:
+                    typer.echo("No recently closed tickets found across any branch or backlog.")
+                elif (closed_count := sum(1 for _, t in pairs if t.status == "closed")) and (
+                    not include_closed and status is None and not ready and not blocked
+                ):
                     typer.echo(f"No open tickets ({closed_count} closed). Use --closed to show them.")
                 else:
                     typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
@@ -614,8 +658,11 @@ def ticket_list(
             output_tickets_json(tickets)
         else:
             if not tickets:
-                closed_count = sum(1 for t in all_branch_tickets if t.status == "closed")
-                if closed_count and not include_closed and status is None and not ready and not blocked:
+                if recently_closed:
+                    typer.echo("No recently closed tickets found on this branch.")
+                elif (closed_count := sum(1 for t in all_branch_tickets if t.status == "closed")) and (
+                    not include_closed and status is None and not ready and not blocked
+                ):
                     typer.echo(f"No open tickets ({closed_count} closed). Use --closed to show them.")
                 else:
                     typer.echo('No tickets found. Create one with `kd tk create "title"`.')
@@ -750,9 +797,14 @@ def ticket_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Set ticket status to in_progress and assign it to the Hand."""
-    ticket = update_ticket_status(ticket_id, "in_progress", assignee="hand")
     base = require_project_root()
-    feature = resolve_current_run(base)
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError:
+        print_error("No active session. Use `kd start` first.")
+        raise typer.Exit(code=1) from None
+
+    ticket = update_ticket_status(ticket_id, "in_progress", assignee="hand")
     record_terminal_ticket_context(base, ticket.id, feature=feature)
 
 

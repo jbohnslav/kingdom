@@ -10,13 +10,18 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from kingdom.config import AgentDef
 
 logger = logging.getLogger(__name__)
+
+CODEX_CLI_PATH_ENV = "CODEX_CLI_PATH"
+CODEX_APP_CLI_PATH = Path("/Applications/Codex.app/Contents/Resources/codex")
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +434,16 @@ def build_codex_command(
     if skip_permissions:
         parts.insert(1, "--dangerously-bypass-approvals-and-sandbox")
     else:
-        parts.extend(["-c", 'sandbox_permissions=["disk-full-read-access"]'])
+        parts.extend(
+            [
+                "-c",
+                'sandbox_permissions=["disk-full-read-access"]',
+                "-c",
+                "mcp_servers={}",
+                "-c",
+                "plugins={}",
+            ]
+        )
     if config.model:
         parts.extend(["--model", config.model])
     if config.reasoning_effort:
@@ -496,6 +510,38 @@ COMMAND_BUILDERS: dict[str, CommandBuilder] = {
 }
 
 
+def executable_file(path: Path) -> bool:
+    """Return True when path points at an executable file."""
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def find_codex_cli_path(env: dict[str, str]) -> Path | None:
+    """Find the preferred Codex CLI binary for spawned agent processes."""
+    configured = env.get(CODEX_CLI_PATH_ENV)
+    if configured and executable_file(Path(configured)):
+        return Path(configured)
+    if executable_file(CODEX_APP_CLI_PATH):
+        return CODEX_APP_CLI_PATH
+    return None
+
+
+def prepend_path_entry(path_value: str, entry: Path) -> str:
+    """Prepend entry to PATH unless it is already present."""
+    entry_text = str(entry)
+    parts = [part for part in path_value.split(os.pathsep) if part]
+    parts = [part for part in parts if part != entry_text]
+    return os.pathsep.join([entry_text, *parts])
+
+
+def prefer_codex_cli_path(env: dict[str, str]) -> None:
+    """Make plain ``codex`` resolve to the preferred Codex CLI binary."""
+    codex_cli = find_codex_cli_path(env)
+    if codex_cli is None:
+        return
+    env[CODEX_CLI_PATH_ENV] = str(codex_cli)
+    env["PATH"] = prepend_path_entry(env.get("PATH", ""), codex_cli.parent)
+
+
 def clean_agent_env(
     role: str | None = None,
     agent_name: str | None = None,
@@ -510,9 +556,8 @@ def clean_agent_env(
     ``KD_BASE`` ensures worktree agents resolve the project root against the
     main repo, not the worktree's copy of ``.kd/``.
     """
-    import os
-
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    prefer_codex_cli_path(env)
     if role:
         env["KD_ROLE"] = role
     if agent_name:

@@ -362,6 +362,20 @@ class TestTicketCloseArchive:
         assert result.exit_code == 0, result.output
         assert read_ticket(ticket_path).assignee == "hand"
 
+    def test_start_without_active_session_does_not_mutate_ticket(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            ticket_path = create_ticket_in(branch_dir, "kin-nope")
+
+            result = runner.invoke(ticket_app, ["start", "kin-nope"])
+
+            assert result.exit_code == 1
+            assert "No active session" in result.output
+            ticket = read_ticket(ticket_path)
+            assert ticket.status == "open"
+            assert ticket.assignee is None
+
     def test_start_records_terminal_ticket_context(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(branch_dir, "kin-term")

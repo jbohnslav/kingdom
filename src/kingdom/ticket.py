@@ -596,15 +596,16 @@ def collect_tickets_by_location(
     base: Path,
     *,
     include_done: bool = False,
+    include_archive: bool = False,
 ) -> list[tuple[str, Ticket]]:
     """Collect tickets from all branches and backlog with location labels.
 
     Returns a list of ``(location_label, ticket)`` pairs where location_label
-    is e.g. ``"branch:feature-foo"`` or ``"backlog"``.
+    is e.g. ``"branch:feature-foo"``, ``"backlog"``, or ``"archive:backlog"``.
     """
     import json as _json
 
-    from kingdom.state import backlog_root, branches_root
+    from kingdom.state import archive_root, backlog_root, branches_root
 
     pairs: list[tuple[str, Ticket]] = []
 
@@ -632,6 +633,18 @@ def collect_tickets_by_location(
     if backlog_tickets.exists():
         for ticket in list_tickets(backlog_tickets):
             pairs.append(("backlog", ticket))
+
+    if include_archive:
+        archive_dir = archive_root(base)
+        if archive_dir.exists():
+            for archive_item in archive_dir.iterdir():
+                if not archive_item.is_dir():
+                    continue
+                tickets_dir = archive_item / "tickets"
+                if tickets_dir.exists():
+                    label = f"archive:{archive_item.name}"
+                    for ticket in list_tickets(tickets_dir):
+                        pairs.append((label, ticket))
 
     return pairs
 

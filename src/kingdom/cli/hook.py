@@ -17,7 +17,7 @@ from pathlib import Path
 
 import typer
 
-from kingdom.state import read_terminal_ticket_context
+from kingdom.state import normalize_branch_name, read_terminal_ticket_context, resolve_current_run
 
 hook_app = typer.Typer(name="hook", help="Claude Code hook handlers (internal).")
 
@@ -81,7 +81,12 @@ def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
     base = Path(project_dir) if project_dir else Path(".")
     terminal_context = read_terminal_ticket_context(base, session_id=session_id)
     if terminal_context:
-        return terminal_context["ticket_id"]
+        try:
+            current_feature = normalize_branch_name(resolve_current_run(base))
+        except (RuntimeError, ValueError):
+            current_feature = None
+        if terminal_context.get("feature") == current_feature:
+            return terminal_context["ticket_id"]
 
     try:
         proc = subprocess.run(
