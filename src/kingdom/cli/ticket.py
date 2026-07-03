@@ -27,6 +27,7 @@ from kingdom.state import (
     branch_root,
     branches_root,
     normalize_branch_name,
+    record_terminal_ticket_context,
     resolve_current_run,
 )
 from kingdom.ticket import (
@@ -709,7 +710,7 @@ def ticket_find(
     typer.echo(ticket_path.resolve())
 
 
-def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | None = None) -> None:
+def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | None = None) -> Ticket:
     """Helper to update a ticket's status."""
     base = require_project_root()
 
@@ -741,13 +742,18 @@ def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | Non
             for t in unblocked:
                 typer.echo(f"  {t.id} [P{t.priority}] — {t.title}")
 
+    return ticket
+
 
 @ticket_app.command("start", help="Mark a ticket as in_progress.")
 def ticket_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Set ticket status to in_progress and assign it to the Hand."""
-    update_ticket_status(ticket_id, "in_progress", assignee="hand")
+    ticket = update_ticket_status(ticket_id, "in_progress", assignee="hand")
+    base = require_project_root()
+    feature = resolve_current_run(base)
+    record_terminal_ticket_context(base, ticket.id, feature=feature)
 
 
 @ticket_app.command("current", help="Show the in-progress ticket for this branch.")

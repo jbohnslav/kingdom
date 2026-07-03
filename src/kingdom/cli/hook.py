@@ -17,6 +17,8 @@ from pathlib import Path
 
 import typer
 
+from kingdom.state import read_terminal_ticket_context
+
 hook_app = typer.Typer(name="hook", help="Claude Code hook handlers (internal).")
 
 # ---------------------------------------------------------------------------
@@ -36,6 +38,7 @@ SESSION_START_BRIEF = (
 
 USER_PROMPT_REMINDER = (
     "Kingdom: keep the ticket accurate (body/AC/status/worklog)."
+    " Prefer the last ticket started in this terminal with `kd tk start` when logging."
     " Requirement or acceptance-criteria change -> edit ticket markdown now."
     " Work/findings -> kd tk log. New bug/scope -> kd tk create|move."
 )
@@ -72,6 +75,27 @@ def read_turn_state(path: Path) -> dict | None:
 
 def write_turn_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state))
+
+
+def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
+    base = Path(project_dir) if project_dir else Path(".")
+    terminal_context = read_terminal_ticket_context(base, session_id=session_id)
+    if terminal_context:
+        return terminal_context["ticket_id"]
+
+    try:
+        proc = subprocess.run(
+            ["kd", "tk", "current", "--id", "--exclude-peasant"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        ticket_id = proc.stdout.strip()
+        if proc.returncode != 0 or not ticket_id:
+            return None
+        return ticket_id
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +186,8 @@ def handle_stop(data: dict) -> str:
         return ""
 
     # Check for an active ticket (fail-open on any error).
-    try:
-        proc = subprocess.run(
-            ["kd", "tk", "current", "--id", "--exclude-peasant"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        ticket_id = proc.stdout.strip()
-        if proc.returncode != 0 or not ticket_id:
-            return ""  # No active ticket — fail open.
-    except Exception:
+    ticket_id = find_stop_ticket_id(project_dir, session_id)
+    if not ticket_id:
         return ""  # Timeout or error — fail open.
 
     result = {

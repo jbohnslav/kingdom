@@ -13,6 +13,7 @@ Example:
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import threading
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -209,6 +211,88 @@ def check_no_legacy_runs(base: Path) -> None:
 
 def worktrees_root(base: Path) -> Path:
     return state_root(base) / "worktrees"
+
+
+def runtime_root(base: Path) -> Path:
+    return state_root(base) / "runtime"
+
+
+def terminal_context_root(base: Path) -> Path:
+    return runtime_root(base) / "terminal-context"
+
+
+TERMINAL_CONTEXT_ENV_VARS = (
+    "KD_TERMINAL_ID",
+    "TERM_SESSION_ID",
+    "ITERM_SESSION_ID",
+    "TMUX_PANE",
+    "STY",
+    "KITTY_WINDOW_ID",
+    "WEZTERM_PANE",
+    "WT_SESSION",
+    "TTY",
+    "SSH_TTY",
+)
+
+
+def terminal_context_identity(session_id: str | None = None) -> str | None:
+    for name in TERMINAL_CONTEXT_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            return f"{name}:{value}"
+
+    for fd in (0, 1, 2):
+        try:
+            return f"tty:{os.ttyname(fd)}"
+        except OSError:
+            pass
+
+    if session_id:
+        return f"session:{session_id}"
+    return None
+
+
+def terminal_context_path(base: Path, session_id: str | None = None) -> Path | None:
+    identity = terminal_context_identity(session_id)
+    if identity is None:
+        return None
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return terminal_context_root(base) / f"{key}.json"
+
+
+def record_terminal_ticket_context(
+    base: Path,
+    ticket_id: str,
+    *,
+    feature: str,
+    session_id: str | None = None,
+) -> None:
+    path = terminal_context_path(base, session_id)
+    if path is None:
+        return
+    ensure_dir(path.parent)
+    write_json(
+        path,
+        {
+            "ticket_id": ticket_id,
+            "feature": normalize_branch_name(feature),
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
+def read_terminal_ticket_context(base: Path, session_id: str | None = None) -> dict[str, Any] | None:
+    path = terminal_context_path(base, session_id)
+    if path is None:
+        return None
+    try:
+        data = read_json(path)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    ticket_id = data.get("ticket_id")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        return None
+    return data
 
 
 def logs_root(base: Path, feature: str) -> Path:

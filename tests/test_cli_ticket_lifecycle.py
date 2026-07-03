@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     ensure_branch_layout,
+    read_terminal_ticket_context,
 )
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
@@ -359,6 +361,20 @@ class TestTicketCloseArchive:
 
         assert result.exit_code == 0, result.output
         assert read_ticket(ticket_path).assignee == "hand"
+
+    def test_start_records_terminal_ticket_context(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-term")
+
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "terminal-ticket-test"}):
+            result = runner.invoke(ticket_app, ["start", "kin-term"])
+
+            assert result.exit_code == 0, result.output
+            context = read_terminal_ticket_context(cli_project)
+
+        assert context is not None
+        assert context["ticket_id"] == "kin-term"
+        assert context["feature"] == "feature-ticket-test"
 
 
 class TestTicketStatus:

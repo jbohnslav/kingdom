@@ -17,6 +17,7 @@ from kingdom.cli.hook import (
     state_file_for,
     write_turn_state,
 )
+from kingdom.state import record_terminal_ticket_context
 
 runner = CliRunner()
 
@@ -247,6 +248,38 @@ class TestStopHandler:
         result = json.loads(output)
         assert result["decision"] == "block"
         assert "kd tk log 0042" in result["reason"]
+
+    def test_prefers_terminal_last_started_ticket(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path)
+        self.do_work(tmp_path)
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        with patch.dict(os.environ, env):
+            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a")
+
+        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        result = json.loads(output)
+        assert "kd tk log 7e15" in result["reason"]
+        assert "9999" not in result["reason"]
+
+    def test_terminal_ticket_context_is_isolated(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path, session_id="sess-a")
+        self.setup_session(tmp_path, session_id="sess-b")
+        self.do_work(tmp_path, session_id="sess-a")
+        self.do_work(tmp_path, session_id="sess-b")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}):
+            record_terminal_ticket_context(tmp_path, "aaaa", feature="branch-a")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-b"}):
+            record_terminal_ticket_context(tmp_path, "bbbb", feature="branch-b")
+
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}):
+            output_a = handle_stop({"hook_event_name": "Stop", "session_id": "sess-a", "stop_hook_active": False})
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-b"}):
+            output_b = handle_stop({"hook_event_name": "Stop", "session_id": "sess-b", "stop_hook_active": False})
+
+        assert "kd tk log aaaa" in json.loads(output_a)["reason"]
+        assert "kd tk log bbbb" in json.loads(output_b)["reason"]
 
     def test_allows_when_did_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
