@@ -17,7 +17,8 @@ from pathlib import Path
 
 import typer
 
-from kingdom.state import normalize_branch_name, read_terminal_ticket_context, resolve_current_run
+from kingdom.state import branch_root, normalize_branch_name, read_terminal_ticket_context, resolve_current_run
+from kingdom.ticket import read_ticket
 
 hook_app = typer.Typer(name="hook", help="Claude Code hook handlers (internal).")
 
@@ -77,6 +78,18 @@ def write_turn_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state))
 
 
+def terminal_context_ticket_is_current(base: Path, ticket_id: str, feature: str) -> bool:
+    tickets_dir = branch_root(base, feature) / "tickets"
+    candidate_paths = [tickets_dir / f"{ticket_id}.md", tickets_dir / f"kin-{ticket_id}.md"]
+    for ticket_path in candidate_paths:
+        try:
+            ticket = read_ticket(ticket_path)
+        except (FileNotFoundError, ValueError, OSError):
+            continue
+        return ticket.id == ticket_id and ticket.status == "in_progress"
+    return False
+
+
 def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
     base = Path(project_dir) if project_dir else Path(".")
     terminal_context = read_terminal_ticket_context(base, session_id=session_id)
@@ -85,8 +98,13 @@ def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
             current_feature = normalize_branch_name(resolve_current_run(base))
         except (RuntimeError, ValueError):
             current_feature = None
-        if terminal_context.get("feature") == current_feature:
-            return terminal_context["ticket_id"]
+        ticket_id = terminal_context["ticket_id"]
+        if (
+            current_feature
+            and terminal_context.get("feature") == current_feature
+            and terminal_context_ticket_is_current(base, ticket_id, current_feature)
+        ):
+            return ticket_id
 
     try:
         proc = subprocess.run(

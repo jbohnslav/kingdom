@@ -18,6 +18,7 @@ from kingdom.cli.hook import (
     write_turn_state,
 )
 from kingdom.state import ensure_branch_layout, record_terminal_ticket_context, set_current_run
+from kingdom.ticket import Ticket, write_ticket
 
 runner = CliRunner()
 
@@ -203,6 +204,20 @@ class TestPostToolUse:
 
 
 class TestStopHandler:
+    def create_ticket(
+        self,
+        tmp_path: Path,
+        feature: str,
+        ticket_id: str,
+        *,
+        status: str = "in_progress",
+    ) -> None:
+        branch_dir = ensure_branch_layout(tmp_path, feature)
+        write_ticket(
+            Ticket(id=ticket_id, status=status, title=f"Ticket {ticket_id}", body=""),
+            branch_dir / "tickets" / f"{ticket_id}.md",
+        )
+
     def setup_session(self, tmp_path: Path, session_id: str = "sess-1") -> None:
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": session_id})
@@ -252,7 +267,7 @@ class TestStopHandler:
     def test_prefers_terminal_last_started_ticket(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        ensure_branch_layout(tmp_path, "branch-a")
+        self.create_ticket(tmp_path, "branch-a", "7e15")
         set_current_run(tmp_path, "branch-a")
         env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
         with patch.dict(os.environ, env):
@@ -265,10 +280,26 @@ class TestStopHandler:
         assert "kd tk log 7e15" in result["reason"]
         assert "9999" not in result["reason"]
 
+    def test_ignores_closed_terminal_ticket_context(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path)
+        self.do_work(tmp_path)
+        self.create_ticket(tmp_path, "branch-a", "7e15", status="closed")
+        set_current_run(tmp_path, "branch-a")
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        with patch.dict(os.environ, env):
+            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a")
+
+        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        result = json.loads(output)
+        assert "kd tk log 9999" in result["reason"]
+        assert "7e15" not in result["reason"]
+
     def test_ignores_terminal_ticket_context_from_other_feature(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        ensure_branch_layout(tmp_path, "branch-a")
+        self.create_ticket(tmp_path, "branch-a", "7e15")
         ensure_branch_layout(tmp_path, "branch-b")
         set_current_run(tmp_path, "branch-b")
         env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
@@ -287,8 +318,8 @@ class TestStopHandler:
         self.setup_session(tmp_path, session_id="sess-b")
         self.do_work(tmp_path, session_id="sess-a")
         self.do_work(tmp_path, session_id="sess-b")
-        ensure_branch_layout(tmp_path, "branch-a")
-        ensure_branch_layout(tmp_path, "branch-b")
+        self.create_ticket(tmp_path, "branch-a", "aaaa")
+        self.create_ticket(tmp_path, "branch-b", "bbbb")
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}):
             record_terminal_ticket_context(tmp_path, "aaaa", feature="branch-a")
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-b"}):
