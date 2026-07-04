@@ -280,6 +280,31 @@ class TestStopHandler:
         assert "kd tk log 7e15" in result["reason"]
         assert "9999" not in result["reason"]
 
+    def test_reads_terminal_ticket_context_from_kd_base(self, tmp_path: Path) -> None:
+        kingdom_base = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        kingdom_base.mkdir()
+        worktree.mkdir()
+
+        self.setup_session(worktree)
+        self.do_work(worktree)
+        self.create_ticket(kingdom_base, "branch-a", "7e15")
+        set_current_run(kingdom_base, "branch-a")
+        env = {
+            "CLAUDE_PROJECT_DIR": str(worktree),
+            "KD_BASE": str(kingdom_base),
+            "TERM_SESSION_ID": "terminal-a",
+        }
+        with patch.dict(os.environ, env):
+            record_terminal_ticket_context(kingdom_base, "7e15", feature="branch-a")
+
+        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        result = json.loads(output)
+        assert "kd tk log 7e15" in result["reason"]
+        assert "9999" not in result["reason"]
+
     def test_ignores_closed_terminal_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)

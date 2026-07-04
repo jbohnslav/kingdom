@@ -17,7 +17,13 @@ from pathlib import Path
 
 import typer
 
-from kingdom.state import branch_root, normalize_branch_name, read_terminal_ticket_context, resolve_current_run
+from kingdom.state import (
+    branch_root,
+    find_project_root,
+    normalize_branch_name,
+    read_terminal_ticket_context,
+    resolve_current_run,
+)
 from kingdom.ticket import read_ticket
 
 hook_app = typer.Typer(name="hook", help="Claude Code hook handlers (internal).")
@@ -90,8 +96,16 @@ def terminal_context_ticket_is_current(base: Path, ticket_id: str, feature: str)
     return False
 
 
+def terminal_context_base(project_dir: str | None) -> Path:
+    fallback = Path(project_dir) if project_dir else Path(".")
+    try:
+        return find_project_root(fallback)
+    except ValueError:
+        return fallback
+
+
 def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
-    base = Path(project_dir) if project_dir else Path(".")
+    base = terminal_context_base(project_dir)
     terminal_context = read_terminal_ticket_context(base, session_id=session_id)
     if terminal_context:
         try:

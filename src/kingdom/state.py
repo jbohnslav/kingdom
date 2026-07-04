@@ -143,7 +143,7 @@ def find_kd_base_from_git_worktrees(cwd: Path | None = None) -> Path | None:
     raise ValueError(f"Multiple git worktrees contain .kd/. Set KD_BASE to choose one explicitly:\n{options}")
 
 
-def find_project_root() -> Path:
+def find_project_root(cwd: Path | None = None) -> Path:
     """Locate the Kingdom project root directory.
 
     Resolution order:
@@ -159,7 +159,7 @@ def find_project_root() -> Path:
     to choose one explicitly.
     """
     root: Path | None = None
-    cwd = Path.cwd()
+    cwd = cwd or Path.cwd()
 
     # 1. KD_BASE env var — explicit override, fail loudly if invalid
     kd_base = os.environ.get("KD_BASE")
