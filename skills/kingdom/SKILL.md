@@ -136,7 +136,17 @@ This applies regardless of execution mode.
 
 Ticket files are plain Markdown and are meant to be edited directly. Direct file edits are normal, expected, and often the best tool for ticket content changes.
 
-Use `kd` for lifecycle and discovery: create, pull, move, start, close, reopen, assign, deps, list, show, and find. Once you need to change ticket content, use `kd tk find <id>` or the `File:` line from `kd tk show <id>` to locate the file, then edit the Markdown directly.
+Use `kd` for lifecycle and discovery: create, pull, move, start, close, reopen, assign, deps, list, show, and find. For creation, prefer making a quick stub with the CLI, then immediately editing the ticket Markdown for the real content:
+
+```
+kd tk create "Short working title"
+kd tk find <id>
+# edit the printed Markdown file directly
+```
+
+Keep CLI flags minimal when creating the stub. Rich descriptions, acceptance criteria, investigation notes, and scope changes belong in the Markdown file where agents can write clearly.
+
+Once you need to change ticket content, use `kd tk find <id>` or the `File:` line from `kd tk show <id>` to locate the file, then edit the Markdown directly.
 
 Edit the Markdown file directly for:
 
