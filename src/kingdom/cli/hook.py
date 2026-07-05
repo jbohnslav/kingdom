@@ -128,7 +128,11 @@ def terminal_context_ticket_is_current(base: Path, ticket_id: str, feature: str,
             ticket = read_ticket(ticket_path)
         except (FileNotFoundError, ValueError, OSError):
             continue
-        return ticket.id == ticket_id and ticket.status == "in_progress"
+        return (
+            ticket.id == ticket_id
+            and ticket.status == "in_progress"
+            and not (ticket.assignee or "").startswith("peasant-")
+        )
     return False
 
 
