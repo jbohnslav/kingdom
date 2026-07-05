@@ -792,6 +792,25 @@ def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | Non
     return ticket
 
 
+def terminal_context_location_for_start(base: Path, ticket_path: Path) -> str:
+    backlog_tickets = (backlog_root(base) / "tickets").resolve()
+    archive_backlog_tickets = (archive_root(base) / "backlog" / "tickets").resolve()
+    ticket_parent = ticket_path.parent.resolve()
+
+    if ticket_parent in (backlog_tickets, archive_backlog_tickets):
+        return "backlog"
+
+    branches = branches_root(base).resolve()
+    try:
+        relative = ticket_parent.relative_to(branches)
+    except ValueError:
+        return f"branch:{normalize_branch_name(resolve_current_run(base))}"
+
+    if len(relative.parts) >= 2 and relative.parts[1] == "tickets":
+        return f"branch:{relative.parts[0]}"
+    return f"branch:{normalize_branch_name(resolve_current_run(base))}"
+
+
 @ticket_app.command("start", help="Mark a ticket as in_progress.")
 def ticket_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
@@ -804,8 +823,10 @@ def ticket_start(
         print_error("No active session. Use `kd start` first.")
         raise typer.Exit(code=1) from None
 
+    _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    location = terminal_context_location_for_start(base, ticket_path)
     ticket = update_ticket_status(ticket_id, "in_progress", assignee="hand")
-    record_terminal_ticket_context(base, ticket.id, feature=feature)
+    record_terminal_ticket_context(base, ticket.id, feature=feature, location=location)
 
 
 @ticket_app.command("current", help="Show the in-progress ticket for this branch.")

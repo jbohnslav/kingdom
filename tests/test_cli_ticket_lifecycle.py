@@ -326,12 +326,18 @@ class TestTicketCloseArchive:
         archived_path = archive_dir / "kin-strt.md"
         write_ticket(ticket, archived_path)
 
-        result = runner.invoke(ticket_app, ["start", "kin-strt"])
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-backlog-terminal-test"}):
+            result = runner.invoke(ticket_app, ["start", "kin-strt"])
 
-        assert result.exit_code == 0, result.output
+            assert result.exit_code == 0, result.output
+            context = read_terminal_ticket_context(cli_project)
+
         assert not archived_path.exists()
         restored = backlog_root(cli_project) / "tickets" / "kin-strt.md"
         assert restored.exists()
+        assert context is not None
+        assert context["ticket_id"] == "kin-strt"
+        assert context["location"] == "backlog"
 
     def test_start_assigns_ticket_to_hand(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -389,6 +395,22 @@ class TestTicketCloseArchive:
         assert context is not None
         assert context["ticket_id"] == "kin-term"
         assert context["feature"] == "feature-ticket-test"
+        assert context["location"] == "branch:feature-ticket-test"
+
+    def test_start_records_backlog_terminal_ticket_context_location(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        create_ticket_in(backlog_dir, "kin-bctx")
+
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "backlog-terminal-ticket-test"}):
+            result = runner.invoke(ticket_app, ["start", "kin-bctx"])
+
+            assert result.exit_code == 0, result.output
+            context = read_terminal_ticket_context(cli_project)
+
+        assert context is not None
+        assert context["ticket_id"] == "kin-bctx"
+        assert context["feature"] == "feature-ticket-test"
+        assert context["location"] == "backlog"
 
 
 class TestTicketStatus:

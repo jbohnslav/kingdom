@@ -18,6 +18,8 @@ from pathlib import Path
 import typer
 
 from kingdom.state import (
+    archive_root,
+    backlog_root,
     branch_root,
     find_project_root,
     normalize_branch_name,
@@ -84,9 +86,21 @@ def write_turn_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state))
 
 
-def terminal_context_ticket_is_current(base: Path, ticket_id: str, feature: str) -> bool:
-    tickets_dir = branch_root(base, feature) / "tickets"
-    candidate_paths = [tickets_dir / f"{ticket_id}.md", tickets_dir / f"kin-{ticket_id}.md"]
+def ticket_paths_for_terminal_context(base: Path, ticket_id: str, feature: str, location: str | None) -> list[Path]:
+    if location == "backlog":
+        tickets_dir = backlog_root(base) / "tickets"
+    elif location and location.startswith("archive:"):
+        tickets_dir = archive_root(base) / location.removeprefix("archive:") / "tickets"
+    elif location and location.startswith("branch:"):
+        tickets_dir = branch_root(base, location.removeprefix("branch:")) / "tickets"
+    else:
+        tickets_dir = branch_root(base, feature) / "tickets"
+
+    return [tickets_dir / f"{ticket_id}.md", tickets_dir / f"kin-{ticket_id}.md"]
+
+
+def terminal_context_ticket_is_current(base: Path, ticket_id: str, feature: str, location: str | None = None) -> bool:
+    candidate_paths = ticket_paths_for_terminal_context(base, ticket_id, feature, location)
     for ticket_path in candidate_paths:
         try:
             ticket = read_ticket(ticket_path)
@@ -116,7 +130,12 @@ def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
         if (
             current_feature
             and terminal_context.get("feature") == current_feature
-            and terminal_context_ticket_is_current(base, ticket_id, current_feature)
+            and terminal_context_ticket_is_current(
+                base,
+                ticket_id,
+                current_feature,
+                terminal_context.get("location"),
+            )
         ):
             return ticket_id
 

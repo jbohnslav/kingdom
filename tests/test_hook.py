@@ -17,7 +17,7 @@ from kingdom.cli.hook import (
     state_file_for,
     write_turn_state,
 )
-from kingdom.state import ensure_branch_layout, record_terminal_ticket_context, set_current_run
+from kingdom.state import backlog_root, ensure_branch_layout, record_terminal_ticket_context, set_current_run
 from kingdom.ticket import Ticket, write_ticket
 
 runner = CliRunner()
@@ -297,6 +297,28 @@ class TestStopHandler:
         }
         with patch.dict(os.environ, env):
             record_terminal_ticket_context(kingdom_base, "7e15", feature="branch-a")
+
+        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        result = json.loads(output)
+        assert "kd tk log 7e15" in result["reason"]
+        assert "9999" not in result["reason"]
+
+    def test_prefers_started_backlog_ticket_context(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path)
+        self.do_work(tmp_path)
+        backlog_tickets = backlog_root(tmp_path) / "tickets"
+        backlog_tickets.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="7e15", status="in_progress", title="Backlog ticket", body=""),
+            backlog_tickets / "7e15.md",
+        )
+        ensure_branch_layout(tmp_path, "branch-a")
+        set_current_run(tmp_path, "branch-a")
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        with patch.dict(os.environ, env):
+            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a", location="backlog")
 
         with patch.dict(os.environ, env), self.mock_kd_current("9999"):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})

@@ -265,6 +265,7 @@ def record_terminal_ticket_context(
     ticket_id: str,
     *,
     feature: str,
+    location: str | None = None,
     session_id: str | None = None,
 ) -> None:
     path = terminal_context_path(base, session_id)
@@ -276,6 +277,7 @@ def record_terminal_ticket_context(
         {
             "ticket_id": ticket_id,
             "feature": normalize_branch_name(feature),
+            "location": location or f"branch:{normalize_branch_name(feature)}",
             "updated_at": datetime.now(UTC).isoformat(),
         },
     )
