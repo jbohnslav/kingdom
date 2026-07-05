@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +23,7 @@ from kingdom.state import (
     resolve_current_run,
     set_current_run,
     state_root,
+    terminal_context_identity,
 )
 
 
@@ -153,6 +155,17 @@ class TestArchiveRoot:
         """archive_root is a child of state_root."""
         result = archive_root(tmp_path)
         assert result.parent == state_root(tmp_path)
+
+
+class TestTerminalContextIdentity:
+    def test_tmux_pane_takes_precedence_over_shared_terminal_session(self) -> None:
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "shared-terminal", "TMUX_PANE": "%1"}, clear=True):
+            pane_one = terminal_context_identity()
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "shared-terminal", "TMUX_PANE": "%2"}, clear=True):
+            pane_two = terminal_context_identity()
+
+        assert pane_one == "TMUX_PANE:%1"
+        assert pane_two == "TMUX_PANE:%2"
 
 
 class TestEnsureBaseLayout:

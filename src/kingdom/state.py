@@ -223,12 +223,12 @@ def terminal_context_root(base: Path) -> Path:
 
 TERMINAL_CONTEXT_ENV_VARS = (
     "KD_TERMINAL_ID",
-    "TERM_SESSION_ID",
-    "ITERM_SESSION_ID",
     "TMUX_PANE",
     "STY",
-    "KITTY_WINDOW_ID",
     "WEZTERM_PANE",
+    "TERM_SESSION_ID",
+    "ITERM_SESSION_ID",
+    "KITTY_WINDOW_ID",
     "WT_SESSION",
     "TTY",
     "SSH_TTY",
