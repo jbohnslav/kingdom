@@ -228,6 +228,17 @@ class TestStopHandler:
                 {"hook_event_name": "PostToolUse", "session_id": session_id, "tool_name": "Edit", "tool_input": {}}
             )
 
+    def edit_path(self, tmp_path: Path, path: Path, session_id: str = "sess-1") -> None:
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
+            handle_post_tool_use(
+                {
+                    "hook_event_name": "PostToolUse",
+                    "session_id": session_id,
+                    "tool_name": "Edit",
+                    "tool_input": {"file_path": str(path)},
+                }
+            )
+
     def do_log(self, tmp_path: Path, session_id: str = "sess-1") -> None:
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             handle_post_tool_use(
@@ -263,6 +274,30 @@ class TestStopHandler:
         result = json.loads(output)
         assert result["decision"] == "block"
         assert "kd tk log 0042" in result["reason"]
+
+    def test_ticket_markdown_only_edit_does_not_block(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path)
+        ticket_path = tmp_path / ".kd" / "branches" / "branch-a" / "tickets" / "7e15.md"
+        self.edit_path(tmp_path, ticket_path)
+
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("7e15"):
+            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        assert output == ""
+
+    def test_mixed_ticket_and_code_edit_still_blocks(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path)
+        ticket_path = tmp_path / ".kd" / "branches" / "branch-a" / "tickets" / "7e15.md"
+        code_path = tmp_path / "src" / "kingdom" / "cli" / "hook.py"
+        self.edit_path(tmp_path, ticket_path)
+        self.edit_path(tmp_path, code_path)
+
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("7e15"):
+            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        result = json.loads(output)
+        assert result["decision"] == "block"
+        assert "kd tk log 7e15" in result["reason"]
 
     def test_prefers_terminal_last_started_ticket(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)

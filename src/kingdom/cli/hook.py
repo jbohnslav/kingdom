@@ -86,6 +86,28 @@ def write_turn_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state))
 
 
+def tool_file_path(data: dict) -> str | None:
+    file_path = data.get("tool_input", {}).get("file_path")
+    if isinstance(file_path, str) and file_path:
+        return file_path
+    return None
+
+
+def is_ticket_markdown_path(file_path: str, project_dir: str | None) -> bool:
+    path = Path(file_path)
+    if not path.is_absolute():
+        base = Path(project_dir) if project_dir else Path(".")
+        path = base / path
+
+    path = path.resolve(strict=False)
+    return path.suffix == ".md" and path.parent.name == "tickets" and ".kd" in path.parts
+
+
+def is_ticket_markdown_tool_use(data: dict, project_dir: str | None) -> bool:
+    file_path = tool_file_path(data)
+    return file_path is not None and is_ticket_markdown_path(file_path, project_dir)
+
+
 def ticket_paths_for_terminal_context(base: Path, ticket_id: str, feature: str, location: str | None) -> list[Path]:
     if location == "backlog":
         tickets_dir = backlog_root(base) / "tickets"
@@ -211,7 +233,7 @@ def handle_post_tool_use(data: dict) -> str:
 
     tool = data.get("tool_name", "")
 
-    if tool in WORK_TOOLS:
+    if tool in WORK_TOOLS and not is_ticket_markdown_tool_use(data, project_dir):
         state["had_work"] = True
 
     if tool == "Bash":
