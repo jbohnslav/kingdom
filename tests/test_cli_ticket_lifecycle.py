@@ -412,6 +412,24 @@ class TestTicketCloseArchive:
         assert context["feature"] == "feature-ticket-test"
         assert context["location"] == "backlog"
 
+    def test_start_records_archived_branch_terminal_ticket_context_location(self, cli_project: Path) -> None:
+        archive_dir = archive_root(cli_project) / "old-feature" / "tickets"
+        create_ticket_in(archive_dir, "kin-actx")
+
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-branch-terminal-test"}):
+            result = runner.invoke(ticket_app, ["start", "kin-actx"])
+
+            assert result.exit_code == 0, result.output
+            context = read_terminal_ticket_context(cli_project)
+
+        ticket = read_ticket(archive_dir / "kin-actx.md")
+        assert ticket.status == "in_progress"
+        assert ticket.assignee == "hand"
+        assert context is not None
+        assert context["ticket_id"] == "kin-actx"
+        assert context["feature"] == "feature-ticket-test"
+        assert context["location"] == "archive:old-feature"
+
 
 class TestTicketStatus:
     def test_status_sets_arbitrary_value(self, cli_project: Path) -> None:

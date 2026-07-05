@@ -800,6 +800,15 @@ def terminal_context_location_for_start(base: Path, ticket_path: Path) -> str:
     if ticket_parent in (backlog_tickets, archive_backlog_tickets):
         return "backlog"
 
+    archive = archive_root(base).resolve()
+    try:
+        archived = ticket_parent.relative_to(archive)
+    except ValueError:
+        pass
+    else:
+        if len(archived.parts) >= 2 and archived.parts[1] == "tickets":
+            return f"archive:{archived.parts[0]}"
+
     branches = branches_root(base).resolve()
     try:
         relative = ticket_parent.relative_to(branches)

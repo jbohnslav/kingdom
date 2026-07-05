@@ -363,6 +363,28 @@ class TestStopHandler:
         assert "kd tk log 7e15" in result["reason"]
         assert "9999" not in result["reason"]
 
+    def test_prefers_started_archived_branch_ticket_context(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path)
+        self.do_work(tmp_path)
+        archived_tickets = tmp_path / ".kd" / "archive" / "old-feature" / "tickets"
+        archived_tickets.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="7e15", status="in_progress", title="Archived branch ticket", body=""),
+            archived_tickets / "7e15.md",
+        )
+        ensure_branch_layout(tmp_path, "branch-a")
+        set_current_run(tmp_path, "branch-a")
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        with patch.dict(os.environ, env):
+            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a", location="archive:old-feature")
+
+        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        result = json.loads(output)
+        assert "kd tk log 7e15" in result["reason"]
+        assert "9999" not in result["reason"]
+
     def test_ignores_closed_terminal_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
