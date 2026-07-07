@@ -62,6 +62,8 @@ kd tk unassign <id>          # clear assignment
 
 ```bash
 kd tk list                   # list all tickets on current branch
+kd tk list --recently-closed # show closed tickets ordered by most recent close
+kd tk list --recent --limit 10  # short alias plus result limit
 kd tk show <id>              # print raw ticket Markdown (LLM-friendly)
 kd tk show <id> --rich       # show framed human-friendly ticket details
 kd tk move <id> --to <branch|backlog>  # move to another branch or backlog
@@ -76,6 +78,8 @@ The backlog at `.kd/backlog/tickets/` holds tickets not assigned to any branch. 
 
 - **Commit `.kd/` changes as you go** — ticket state changes, closures, and moves are tracked in git
 - **Use dependencies** to enforce ordering when tickets have prerequisites
+- **Edit ticket Markdown directly** for body text, acceptance criteria, scope changes, and multi-line worklog entries
+- **Use `kd tk log` only for short one-off worklog notes**; do not contort ticket content edits through CLI commands
 - **Append a work log** to the ticket body when closing — record key decisions and what was done
-- **Prefer direct Markdown edits** when agents need to update ticket body, acceptance criteria, and worklog repeatedly in one turn
 - **Use `kd tk list --ready`** to find the next unblocked ticket rather than picking arbitrarily
+- **Use `kd tk list --recently-closed --limit 10`** when reviewing recently completed work

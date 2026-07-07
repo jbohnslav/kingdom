@@ -17,6 +17,17 @@ from pathlib import Path
 
 import typer
 
+from kingdom.state import (
+    archive_root,
+    backlog_root,
+    branch_root,
+    find_project_root,
+    normalize_branch_name,
+    read_terminal_ticket_context,
+    resolve_current_run,
+)
+from kingdom.ticket import read_ticket
+
 hook_app = typer.Typer(name="hook", help="Claude Code hook handlers (internal).")
 
 # ---------------------------------------------------------------------------
@@ -36,6 +47,7 @@ SESSION_START_BRIEF = (
 
 USER_PROMPT_REMINDER = (
     "Kingdom: keep the ticket accurate (body/AC/status/worklog)."
+    " Prefer the last ticket started in this terminal with `kd tk start` when logging."
     " Requirement or acceptance-criteria change -> edit ticket markdown now."
     " Work/findings -> kd tk log. New bug/scope -> kd tk create|move."
 )
@@ -72,6 +84,100 @@ def read_turn_state(path: Path) -> dict | None:
 
 def write_turn_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state))
+
+
+def tool_file_path(data: dict) -> str | None:
+    file_path = data.get("tool_input", {}).get("file_path")
+    if isinstance(file_path, str) and file_path:
+        return file_path
+    return None
+
+
+def is_ticket_markdown_path(file_path: str, project_dir: str | None) -> bool:
+    path = Path(file_path)
+    if not path.is_absolute():
+        base = Path(project_dir) if project_dir else Path(".")
+        path = base / path
+
+    path = path.resolve(strict=False)
+    return path.suffix == ".md" and path.parent.name == "tickets" and ".kd" in path.parts
+
+
+def is_ticket_markdown_tool_use(data: dict, project_dir: str | None) -> bool:
+    file_path = tool_file_path(data)
+    return file_path is not None and is_ticket_markdown_path(file_path, project_dir)
+
+
+def ticket_paths_for_terminal_context(base: Path, ticket_id: str, feature: str, location: str | None) -> list[Path]:
+    if location == "backlog":
+        tickets_dir = backlog_root(base) / "tickets"
+    elif location and location.startswith("archive:"):
+        tickets_dir = archive_root(base) / location.removeprefix("archive:") / "tickets"
+    elif location and location.startswith("branch:"):
+        tickets_dir = branch_root(base, location.removeprefix("branch:")) / "tickets"
+    else:
+        tickets_dir = branch_root(base, feature) / "tickets"
+
+    return [tickets_dir / f"{ticket_id}.md", tickets_dir / f"kin-{ticket_id}.md"]
+
+
+def terminal_context_ticket_is_current(base: Path, ticket_id: str, feature: str, location: str | None = None) -> bool:
+    candidate_paths = ticket_paths_for_terminal_context(base, ticket_id, feature, location)
+    for ticket_path in candidate_paths:
+        try:
+            ticket = read_ticket(ticket_path)
+        except (FileNotFoundError, ValueError, OSError):
+            continue
+        return (
+            ticket.id == ticket_id
+            and ticket.status == "in_progress"
+            and not (ticket.assignee or "").startswith("peasant-")
+        )
+    return False
+
+
+def terminal_context_base(project_dir: str | None) -> Path:
+    fallback = Path(project_dir) if project_dir else Path(".")
+    try:
+        return find_project_root(fallback)
+    except ValueError:
+        return fallback
+
+
+def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
+    base = terminal_context_base(project_dir)
+    terminal_context = read_terminal_ticket_context(base, session_id=session_id)
+    if terminal_context:
+        try:
+            current_feature = normalize_branch_name(resolve_current_run(base))
+        except (RuntimeError, ValueError):
+            current_feature = None
+        ticket_id = terminal_context["ticket_id"]
+        if (
+            current_feature
+            and terminal_context.get("feature") == current_feature
+            and terminal_context_ticket_is_current(
+                base,
+                ticket_id,
+                current_feature,
+                terminal_context.get("location"),
+            )
+        ):
+            return ticket_id
+
+    try:
+        proc = subprocess.run(
+            ["kd", "tk", "current", "--id", "--exclude-peasant"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        ticket_id = proc.stdout.strip()
+        if proc.returncode != 0 or not ticket_id:
+            return None
+        return ticket_id
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +236,13 @@ def handle_post_tool_use(data: dict) -> str:
         return ""
 
     tool = data.get("tool_name", "")
+    ticket_markdown_edit = is_ticket_markdown_tool_use(data, project_dir)
 
-    if tool in WORK_TOOLS:
+    if tool in WORK_TOOLS and not ticket_markdown_edit:
         state["had_work"] = True
+
+    if ticket_markdown_edit:
+        state["did_log"] = True
 
     if tool == "Bash":
         cmd = data.get("tool_input", {}).get("command", "")
@@ -162,17 +272,8 @@ def handle_stop(data: dict) -> str:
         return ""
 
     # Check for an active ticket (fail-open on any error).
-    try:
-        proc = subprocess.run(
-            ["kd", "tk", "current", "--id", "--exclude-peasant"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        ticket_id = proc.stdout.strip()
-        if proc.returncode != 0 or not ticket_id:
-            return ""  # No active ticket — fail open.
-    except Exception:
+    ticket_id = find_stop_ticket_id(project_dir, session_id)
+    if not ticket_id:
         return ""  # Timeout or error — fail open.
 
     result = {

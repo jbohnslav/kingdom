@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -364,6 +365,124 @@ class TestTicketListClosedCount:
         assert result.exit_code == 0
         assert "No open tickets" not in result.output
         assert "No tickets found" in result.output
+
+
+class TestTicketListRecentlyClosed:
+    def test_recently_closed_empty_branch_message_mentions_recently_closed(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="open", status="open", title="Open work", body="", created=datetime.now(UTC)),
+            tickets_dir / "open.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--recently-closed"])
+
+        assert result.exit_code == 0, result.output
+        assert "No recently closed tickets found on this branch." in result.output
+        assert "No tickets found. Create one" not in result.output
+
+    def test_recently_closed_orders_by_closed_at(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        oldest = Ticket(
+            id="old1",
+            status="closed",
+            title="Old close",
+            body="",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        newest = Ticket(
+            id="new1",
+            status="closed",
+            title="New close",
+            body="",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 4, tzinfo=UTC),
+        )
+        middle = Ticket(
+            id="mid1",
+            status="closed",
+            title="Middle close",
+            body="",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 3, tzinfo=UTC),
+        )
+        write_ticket(oldest, tickets_dir / "old1.md")
+        write_ticket(newest, tickets_dir / "new1.md")
+        write_ticket(middle, tickets_dir / "mid1.md")
+
+        result = runner.invoke(ticket_app, ["list", "--recently-closed"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.index("new1") < result.output.index("mid1") < result.output.index("old1")
+        assert "3 closed" in result.output
+
+    def test_recently_closed_limit(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        for index in range(3):
+            ticket_id = f"tk{index}"
+            write_ticket(
+                Ticket(
+                    id=ticket_id,
+                    status="closed",
+                    title=f"Closed {index}",
+                    body="",
+                    created=datetime(2026, 1, 1, tzinfo=UTC),
+                    closed_at=datetime(2026, 1, index + 1, tzinfo=UTC),
+                ),
+                tickets_dir / f"{ticket_id}.md",
+            )
+
+        result = runner.invoke(ticket_app, ["list", "--recently-closed", "--limit", "2"])
+
+        assert result.exit_code == 0, result.output
+        assert "tk2" in result.output
+        assert "tk1" in result.output
+        assert "tk0" not in result.output
+        assert "2 total" in result.output
+
+    def test_recently_closed_all_includes_archived_backlog(self, cli_project: Path) -> None:
+        archive_dir = cli_project / ".kd" / "archive" / "backlog" / "tickets"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        write_ticket(
+            Ticket(
+                id="arch",
+                status="closed",
+                title="Archived backlog close",
+                body="",
+                created=datetime(2026, 1, 1, tzinfo=UTC),
+                closed_at=datetime(2026, 1, 5, tzinfo=UTC),
+            ),
+            archive_dir / "arch.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--all", "--recently-closed"])
+
+        assert result.exit_code == 0, result.output
+        assert "arch" in result.output
+        assert "archive:backlog" in result.output
+
+    def test_recently_closed_backlog_json_labels_archived_backlog(self, cli_project: Path) -> None:
+        archive_dir = cli_project / ".kd" / "archive" / "backlog" / "tickets"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        write_ticket(
+            Ticket(
+                id="arch",
+                status="closed",
+                title="Archived backlog close",
+                body="",
+                created=datetime(2026, 1, 1, tzinfo=UTC),
+                closed_at=datetime(2026, 1, 5, tzinfo=UTC),
+            ),
+            archive_dir / "arch.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--backlog", "--recently-closed", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data[0]["id"] == "arch"
+        assert data[0]["location"] == "archive:backlog"
 
 
 class TestTicketListPriority:

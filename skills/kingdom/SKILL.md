@@ -69,7 +69,7 @@ kd council ask "Should we use WebSockets or SSE for real-time updates? We need l
 
 **King says "ask the council."** Every `kd council ask` creates a new thread by default. If the conversation is a continuation of an active design discussion, use `kd council ask --continue "follow-up question"` to append to the current thread. When ambiguous, check existing threads with `kd council list` or `kd council show <thread>`, or ask the King a brief clarifying question before running the command.
 
-**King wants to note progress.** Update the active ticket's Markdown directly when you are already editing ticket content; use `kd tk log` for quick one-off entries:
+**King wants to note progress.** Update the active ticket's Markdown directly for anything more than a short one-line note. Use `kd tk log` only for quick one-off worklog entries:
 
 ```
 kd tk log ab12 "Finished the API refactor, all endpoint tests passing"
@@ -123,7 +123,7 @@ Use A when the King wants to be hands-on. Use B for throughput on well-scoped ti
 This applies regardless of execution mode.
 
 - **One at a time per worker**: `kd tk start <id>` → do the work → `kd tk close <id>` → commit → next ticket.
-- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go. Prefer reading and editing the ticket Markdown directly when making multiple ticket updates in a turn; use `kd tk log` only for a quick one-off entry. Log what you're doing, what you found, commands and results, decisions and why. The King reads these to stay informed — don't make them ask.
+- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go. Edit the ticket Markdown file directly when making ticket updates in a turn; use `kd tk log` only for a quick one-off entry. Log what you're doing, what you found, commands and results, decisions and why. The King reads these to stay informed — don't make them ask.
 - **Acceptance criteria**: only close a ticket when all acceptance criteria are met and the full test suite is green.
 - **Decisions**: ask the King or consult the council (`kd council ask "..."`) for difficult design decisions — don't guess. Never silently resolve ambiguity on architectural, product, or UX tradeoffs.
 - **For bugs: test BEFORE you fix!** Write a test that fails in the current state, fix it, then verify.
@@ -132,17 +132,42 @@ This applies regardless of execution mode.
 - **Commit often**: commit code changes as you go. Commit `.kd/` changes (ticket state, worklogs) alongside code.
 - **One-off tests**: write a script or temp file to test an end-to-end flow with real data. Then consider if it can be an automated integration test.
 
+## Ticket Markdown Is the Source of Truth
+
+Ticket files are plain Markdown and are meant to be edited directly. Direct file edits are normal, expected, and often the best tool for ticket content changes.
+
+Use `kd` for lifecycle and discovery: create, pull, move, start, close, reopen, assign, deps, list, show, and find. For creation, prefer making a quick stub with the CLI, then immediately editing the ticket Markdown for the real content:
+
+```
+kd tk create "Short working title"
+kd tk find <id>
+# edit the printed Markdown file directly
+```
+
+Keep CLI flags minimal when creating the stub. Rich descriptions, acceptance criteria, investigation notes, and scope changes belong in the Markdown file where agents can write clearly.
+
+Once you need to change ticket content, use `kd tk find <id>` or the `File:` line from `kd tk show <id>` to locate the file, then edit the Markdown directly.
+
+Edit the Markdown file directly for:
+
+- ticket descriptions, requirements, and scope changes
+- acceptance criteria additions, rewrites, and checkbox updates
+- multi-line worklog entries with context, evidence, commands, and decisions
+- correcting stale or misleading ticket text
+
+Do not search for a CLI command to encode every Markdown edit. If you already know the ticket file path and the change belongs in the ticket body, patch the file.
+
 ## Automatic Worklog Updates
 
 Proactively update the ticket worklog whenever a durable state change occurs. The King should never have to say "update the worklog." Log against the active ticket without asking which ticket — you know what you're working on.
 
 The threshold is **durable state change**, not every chat turn. If future-you or another agent would need this fact, log it now.
 
-**Log before you continue.** When you discover durable information — a relevant issue, a root cause, a key finding from research — update the ticket immediately, before continuing your work. Prefer direct Markdown edits after reading the ticket file; use `kd tk log` for quick one-off entries. The worklog survives context compaction; chat doesn't. Don't let valuable findings exist only in conversation history that will be compressed away.
+**Log before you continue.** When you discover durable information — a relevant issue, a root cause, a key finding from research — update the ticket immediately, before continuing your work. Edit the ticket Markdown directly after reading the file; use `kd tk log` only for short one-off entries. The worklog survives context compaction; chat doesn't. Don't let valuable findings exist only in conversation history that will be compressed away.
 
 **Edit ticket body vs worklog.** If the King changes requirements or acceptance criteria, update the ticket's Markdown directly (description, AC section). The worklog is for timeline events — decisions, findings, progress, blockers. Don't stuff requirements into `kd tk log`; edit the ticket file instead.
 
-**LLM-friendly ticket reading.** `kd tk show <id>` prints raw ticket Markdown by default so agents can read the same file they should edit. The final `File:` line gives the ticket path; when you only need that path, use `kd tk find <id>`, which searches branch, backlog, and closed/archive tickets and prints the full file path. This also works from a sibling git worktree whose checkout does not have `.kd/`. Use `kd tk show <id> --rich` only when a framed human display is useful.
+**LLM-friendly ticket reading.** `kd tk show <id>` prints raw ticket Markdown by default so agents can read the same file they should edit. The final `File:` line gives the ticket path; when you only need that path, use `kd tk find <id>`, which searches branch, backlog, and closed/archive tickets and prints the full file path. After you have the path, edit that file directly for content changes. This also works from a sibling git worktree whose checkout does not have `.kd/`. Use `kd tk show <id> --rich` only when a framed human display is useful.
 
 **Decision made** — King says "let's go with raw TypeScript over React":
 
@@ -242,6 +267,7 @@ Accept is idempotent: if the ticket branch is already merged into the feature br
 kd start / status / done                                # branch lifecycle
 kd design show / design approve                         # design doc
 kd tk list / show / find / list --ready                 # inspect tickets; find prints the ticket file path
+kd tk list --recently-closed --limit 10                 # inspect recently completed work
 kd tk start <id> / close <id>                           # work a ticket
 kd tk current                                           # show active ticket
 kd tk pull <id>...                                      # pull from backlog

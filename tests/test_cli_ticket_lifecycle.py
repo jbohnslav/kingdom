@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     ensure_branch_layout,
+    read_terminal_ticket_context,
 )
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
@@ -324,12 +326,18 @@ class TestTicketCloseArchive:
         archived_path = archive_dir / "kin-strt.md"
         write_ticket(ticket, archived_path)
 
-        result = runner.invoke(ticket_app, ["start", "kin-strt"])
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-backlog-terminal-test"}):
+            result = runner.invoke(ticket_app, ["start", "kin-strt"])
 
-        assert result.exit_code == 0, result.output
+            assert result.exit_code == 0, result.output
+            context = read_terminal_ticket_context(cli_project)
+
         assert not archived_path.exists()
         restored = backlog_root(cli_project) / "tickets" / "kin-strt.md"
         assert restored.exists()
+        assert context is not None
+        assert context["ticket_id"] == "kin-strt"
+        assert context["location"] == "backlog"
 
     def test_start_assigns_ticket_to_hand(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -359,6 +367,68 @@ class TestTicketCloseArchive:
 
         assert result.exit_code == 0, result.output
         assert read_ticket(ticket_path).assignee == "hand"
+
+    def test_start_without_active_session_does_not_mutate_ticket(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            branch_dir = branch_root(base, BRANCH) / "tickets"
+            ticket_path = create_ticket_in(branch_dir, "kin-nope")
+
+            result = runner.invoke(ticket_app, ["start", "kin-nope"])
+
+            assert result.exit_code == 1
+            assert "No active session" in result.output
+            ticket = read_ticket(ticket_path)
+            assert ticket.status == "open"
+            assert ticket.assignee is None
+
+    def test_start_records_terminal_ticket_context(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-term")
+
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "terminal-ticket-test"}):
+            result = runner.invoke(ticket_app, ["start", "kin-term"])
+
+            assert result.exit_code == 0, result.output
+            context = read_terminal_ticket_context(cli_project)
+
+        assert context is not None
+        assert context["ticket_id"] == "kin-term"
+        assert context["feature"] == "feature-ticket-test"
+        assert context["location"] == "branch:feature-ticket-test"
+
+    def test_start_records_backlog_terminal_ticket_context_location(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        create_ticket_in(backlog_dir, "kin-bctx")
+
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "backlog-terminal-ticket-test"}):
+            result = runner.invoke(ticket_app, ["start", "kin-bctx"])
+
+            assert result.exit_code == 0, result.output
+            context = read_terminal_ticket_context(cli_project)
+
+        assert context is not None
+        assert context["ticket_id"] == "kin-bctx"
+        assert context["feature"] == "feature-ticket-test"
+        assert context["location"] == "backlog"
+
+    def test_start_records_archived_branch_terminal_ticket_context_location(self, cli_project: Path) -> None:
+        archive_dir = archive_root(cli_project) / "old-feature" / "tickets"
+        create_ticket_in(archive_dir, "kin-actx")
+
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-branch-terminal-test"}):
+            result = runner.invoke(ticket_app, ["start", "kin-actx"])
+
+            assert result.exit_code == 0, result.output
+            context = read_terminal_ticket_context(cli_project)
+
+        ticket = read_ticket(archive_dir / "kin-actx.md")
+        assert ticket.status == "in_progress"
+        assert ticket.assignee == "hand"
+        assert context is not None
+        assert context["ticket_id"] == "kin-actx"
+        assert context["feature"] == "feature-ticket-test"
+        assert context["location"] == "archive:old-feature"
 
 
 class TestTicketStatus:
