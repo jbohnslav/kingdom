@@ -286,19 +286,17 @@ class TestStopHandler:
 
         assert output == ""
 
-    def test_mixed_ticket_and_code_edit_still_blocks(self, tmp_path: Path) -> None:
+    def test_ticket_markdown_edit_counts_as_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         ticket_path = tmp_path / ".kd" / "branches" / "branch-a" / "tickets" / "7e15.md"
         code_path = tmp_path / "src" / "kingdom" / "cli" / "hook.py"
-        self.edit_path(tmp_path, ticket_path)
         self.edit_path(tmp_path, code_path)
+        self.edit_path(tmp_path, ticket_path)
 
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("7e15"):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
 
-        result = json.loads(output)
-        assert result["decision"] == "block"
-        assert "kd tk log 7e15" in result["reason"]
+        assert output == ""
 
     def test_prefers_terminal_last_started_ticket(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)

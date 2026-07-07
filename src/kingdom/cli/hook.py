@@ -236,9 +236,13 @@ def handle_post_tool_use(data: dict) -> str:
         return ""
 
     tool = data.get("tool_name", "")
+    ticket_markdown_edit = is_ticket_markdown_tool_use(data, project_dir)
 
-    if tool in WORK_TOOLS and not is_ticket_markdown_tool_use(data, project_dir):
+    if tool in WORK_TOOLS and not ticket_markdown_edit:
         state["had_work"] = True
+
+    if ticket_markdown_edit:
+        state["did_log"] = True
 
     if tool == "Bash":
         cmd = data.get("tool_input", {}).get("command", "")
