@@ -27,7 +27,17 @@ class AgentDef:
     prompt: str = ""
     prompts: dict[str, str] = field(default_factory=dict)
     extra_flags: list[str] = field(default_factory=list)
+    effort: str = ""
     reasoning_effort: str = ""
+
+    def __post_init__(self) -> None:
+        """Preserve the old constructor while configs migrate to ``effort``."""
+        if self.effort and self.reasoning_effort:
+            raise ValueError("AgentDef cannot set both effort and reasoning_effort")
+        if self.reasoning_effort:
+            if self.backend != "codex":
+                raise ValueError("reasoning_effort is only supported for the codex backend")
+            self.effort = self.reasoning_effort
 
 
 @dataclass
@@ -64,6 +74,7 @@ class CouncilConfig:
     """Council composition and settings."""
 
     members: list[str] = field(default_factory=list)
+    review_members: list[str] = field(default_factory=list)
     timeout: int = 600
     preamble: str = ""
     thinking_visibility: str = "auto"
@@ -119,7 +130,7 @@ def default_config() -> KingdomConfig:
     return KingdomConfig(
         agents=agents,
         prompts=PromptsConfig(),
-        council=CouncilConfig(members=list(agents)),
+        council=CouncilConfig(members=list(agents), review_members=list(agents)),
         peasant=PeasantConfig(agent="claude"),
         lord=LordConfig(agent="claude"),
     )
@@ -130,12 +141,15 @@ def default_config() -> KingdomConfig:
 # ---------------------------------------------------------------------------
 
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
-VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags", "reasoning_effort"}
-VALID_REASONING_EFFORTS = {"low", "medium", "high"}
-REASONING_EFFORT_BACKENDS = {"codex"}
+VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags", "effort", "reasoning_effort"}
+VALID_EFFORTS = {
+    "claude_code": {"low", "medium", "high", "xhigh", "max"},
+    "codex": {"low", "medium", "high", "xhigh", "max", "ultra"},
+}
 VALID_PROMPTS_KEYS = {"council", "design", "review", "peasant"}
 VALID_COUNCIL_KEYS = {
     "members",
+    "review_members",
     "timeout",
     "preamble",
     "thinking_visibility",
@@ -198,20 +212,22 @@ def validate_agent(name: str, data: dict) -> AgentDef:
         if not isinstance(flag, str):
             raise ValueError(f"agents.{name}.extra_flags[{i}] must be a string, got {type(flag).__name__}")
 
-    reasoning_effort = data.get("reasoning_effort", "")
-    if "reasoning_effort" in data:
-        if not isinstance(reasoning_effort, str):
-            raise ValueError(f"agents.{name}.reasoning_effort must be a string, got {type(reasoning_effort).__name__}")
-        if reasoning_effort and reasoning_effort not in VALID_REASONING_EFFORTS:
+    if "effort" in data and "reasoning_effort" in data:
+        raise ValueError(f"agents.{name} cannot set both effort and reasoning_effort")
+
+    effort_key = "effort" if "effort" in data else "reasoning_effort"
+    effort = data.get(effort_key, "")
+    if effort_key in data and not isinstance(effort, str):
+        raise ValueError(f"agents.{name}.{effort_key} must be a string, got {type(effort).__name__}")
+    if effort and effort_key == "reasoning_effort" and backend != "codex":
+        raise ValueError(f"agents.{name}.reasoning_effort is only supported for the codex backend")
+    if effort:
+        valid_efforts = VALID_EFFORTS.get(backend)
+        if valid_efforts is None:
+            raise ValueError(f"agents.{name}: backend '{backend}' does not support effort")
+        if effort not in valid_efforts:
             raise ValueError(
-                f"agents.{name}.reasoning_effort must be one of "
-                f"{', '.join(sorted(VALID_REASONING_EFFORTS))}, got '{reasoning_effort}'"
-            )
-        if reasoning_effort and backend not in REASONING_EFFORT_BACKENDS:
-            raise ValueError(
-                f"agents.{name}.reasoning_effort is only supported for backends: "
-                f"{', '.join(sorted(REASONING_EFFORT_BACKENDS))}. "
-                f"Agent '{name}' uses backend '{backend}'"
+                f"agents.{name}.{effort_key} must be one of {', '.join(sorted(valid_efforts))}, got '{effort}'"
             )
 
     return AgentDef(
@@ -220,7 +236,7 @@ def validate_agent(name: str, data: dict) -> AgentDef:
         prompt=prompt or "",
         prompts=prompts,
         extra_flags=extra_flags,
-        reasoning_effort=reasoning_effort or "",
+        effort=effort or "",
     )
 
 
@@ -307,6 +323,13 @@ def validate_council(data: dict) -> CouncilConfig:
         if not isinstance(m, str):
             raise ValueError(f"council.members[{i}] must be a string, got {type(m).__name__}")
 
+    review_members = data.get("review_members", [])
+    if not isinstance(review_members, list):
+        raise ValueError(f"council.review_members must be a list, got {type(review_members).__name__}")
+    for i, member in enumerate(review_members):
+        if not isinstance(member, str):
+            raise ValueError(f"council.review_members[{i}] must be a string, got {type(member).__name__}")
+
     timeout = data.get("timeout", 600)
     if not isinstance(timeout, int):
         raise ValueError(f"council.timeout must be an integer, got {type(timeout).__name__}")
@@ -344,6 +367,7 @@ def validate_council(data: dict) -> CouncilConfig:
 
     return CouncilConfig(
         members=members,
+        review_members=review_members,
         timeout=timeout,
         preamble=preamble,
         thinking_visibility=thinking_visibility,
@@ -432,6 +456,8 @@ def validate_config(data: dict) -> KingdomConfig:
     # Default council members to all agents if not specified
     if not council.members:
         council = replace(council, members=list(agents))
+    if not council.review_members:
+        council = replace(council, review_members=list(council.members))
 
     # Peasant
     peasant_data = data.get("peasant", {})
@@ -455,6 +481,12 @@ def validate_config(data: dict) -> KingdomConfig:
         if member not in defined:
             raise ValueError(
                 f"council.members references undefined agent '{member}'. Defined agents: {', '.join(sorted(defined))}"
+            )
+    for member in council.review_members:
+        if member not in defined:
+            raise ValueError(
+                "council.review_members references undefined agent "
+                f"'{member}'. Defined agents: {', '.join(sorted(defined))}"
             )
     if peasant.agent not in defined:
         raise ValueError(

@@ -12,8 +12,10 @@ import json
 import logging
 import os
 import shlex
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
 from kingdom.config import AgentDef
@@ -67,7 +69,7 @@ class AgentConfig:
     install_hint: str = ""
     model: str = ""
     extra_flags: list[str] = field(default_factory=list)
-    reasoning_effort: str = ""
+    effort: str = ""
 
 
 def resolve_agent(name: str, agent_def: AgentDef) -> AgentConfig:
@@ -91,13 +93,59 @@ def resolve_agent(name: str, agent_def: AgentDef) -> AgentConfig:
         install_hint=defaults["install_hint"],
         model=agent_def.model,
         extra_flags=list(agent_def.extra_flags),
-        reasoning_effort=agent_def.reasoning_effort,
+        effort=agent_def.effort,
     )
 
 
 def resolve_all_agents(agents: dict[str, AgentDef]) -> dict[str, AgentConfig]:
     """Resolve all agent definitions from config into runtime AgentConfigs."""
     return {name: resolve_agent(name, adef) for name, adef in agents.items()}
+
+
+def extract_model_metadata(config: AgentConfig, raw: str) -> tuple[str, str]:
+    """Return model identity and whether it was observed or configured."""
+    if config.backend == "claude_code":
+        for line in reversed(raw.splitlines()):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            model_usage = event.get("modelUsage")
+            if isinstance(model_usage, dict) and model_usage:
+                return str(next(iter(model_usage))), "observed"
+            message = event.get("message")
+            if isinstance(message, dict) and message.get("model"):
+                return str(message["model"]), "observed"
+
+    if config.model:
+        return config.model, "configured"
+    return "unknown", "provider"
+
+
+@cache
+def get_cli_version(version_command: str, path_value: str = "") -> str:
+    """Read a provider CLI version once per process."""
+    if not version_command:
+        return "unknown"
+    env = os.environ.copy()
+    if path_value:
+        env["PATH"] = path_value
+    try:
+        result = subprocess.run(
+            shlex.split(version_command),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    output = result.stdout.strip() or result.stderr.strip()
+    return output.splitlines()[0] if output else "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +456,8 @@ def build_claude_command(
         cmd.extend(["--allowedTools", "Bash", "Read", "Glob", "Grep", "WebFetch", "WebSearch"])
     if config.model:
         cmd.extend(["--model", config.model])
+    if config.effort:
+        cmd.extend(["--effort", config.effort])
     if config.extra_flags:
         cmd.extend(config.extra_flags)
     if session_id:
@@ -446,8 +496,8 @@ def build_codex_command(
         )
     if config.model:
         parts.extend(["--model", config.model])
-    if config.reasoning_effort:
-        parts.extend(["-c", f"model_reasoning_effort={config.reasoning_effort}"])
+    if config.effort:
+        parts.extend(["-c", f"model_reasoning_effort={config.effort}"])
     if config.extra_flags:
         parts.extend(config.extra_flags)
     if session_id:

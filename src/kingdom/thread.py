@@ -74,6 +74,12 @@ class Message:
     refs: list[str] = field(default_factory=list)
     sequence: int = 0  # set on read
     status: str | None = None  # complete, error, timeout, interrupted
+    backend: str | None = None
+    model: str | None = None
+    model_source: str | None = None
+    effort: str | None = None
+    effort_source: str | None = None
+    cli_version: str | None = None
 
 
 @dataclass
@@ -83,6 +89,7 @@ class ThreadMeta:
     id: str
     members: list[str]
     pattern: str  # council, work, direct
+    phase: str = "council"
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -231,6 +238,7 @@ def create_thread(
     thread_id: str,
     members: list[str],
     pattern: str,
+    phase: str = "council",
 ) -> ThreadMeta:
     """Create a new thread directory with metadata.
 
@@ -240,6 +248,7 @@ def create_thread(
         thread_id: Human-readable thread slug (will be normalized).
         members: List of agent names participating.
         pattern: Thread pattern (council, work, direct).
+        phase: Agent prompt/member-selection phase for the thread.
 
     Returns:
         ThreadMeta for the created thread.
@@ -260,6 +269,7 @@ def create_thread(
         id=normalized,
         members=members,
         pattern=pattern,
+        phase=phase,
         created_at=now,
     )
 
@@ -270,6 +280,7 @@ def create_thread(
             "id": normalized,
             "members": members,
             "pattern": pattern,
+            "phase": phase,
             "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         },
     )
@@ -292,6 +303,7 @@ def read_thread_meta(tdir: Path) -> ThreadMeta:
         id=data["id"],
         members=data.get("members", []),
         pattern=data.get("pattern", "direct"),
+        phase=data.get("phase", "council"),
         created_at=created_at,
     )
 
@@ -418,6 +430,12 @@ def add_message(
     body: str,
     refs: list[str] | None = None,
     status: str | None = None,
+    backend: str | None = None,
+    model: str | None = None,
+    model_source: str | None = None,
+    effort: str | None = None,
+    effort_source: str | None = None,
+    cli_version: str | None = None,
 ) -> Message:
     """Write the next sequential message file to a thread.
 
@@ -430,6 +448,12 @@ def add_message(
         body: Markdown message body.
         refs: Optional list of file path references.
         status: Optional status (complete, error, timeout, interrupted).
+        backend: Agent backend used for this response.
+        model: Observed model, configured selection, or ``unknown``.
+        model_source: Whether the model was observed, configured, or provider-selected.
+        effort: Configured effort or ``unknown``.
+        effort_source: Whether effort was configured or provider-selected.
+        cli_version: Provider CLI version used for the response.
 
     Returns:
         Message instance with sequence number set.
@@ -456,6 +480,12 @@ def add_message(
         refs=refs,
         sequence=seq,
         status=status,
+        backend=backend,
+        model=model,
+        model_source=model_source,
+        effort=effort,
+        effort_source=effort_source,
+        cli_version=cli_version,
     )
 
     # Build frontmatter
@@ -466,6 +496,12 @@ def add_message(
             ("timestamp", now.strftime("%Y-%m-%dT%H:%M:%SZ")),
             ("refs", refs or None),
             ("status", status),
+            ("backend", backend),
+            ("model", model),
+            ("model_source", model_source),
+            ("effort", effort),
+            ("effort_source", effort_source),
+            ("cli_version", cli_version),
         ]
     )
     lines = [fm, "", body, ""]
@@ -515,6 +551,13 @@ def parse_message(path: Path) -> Message:
     if status is not None:
         status = str(status)
 
+    backend = fm.get("backend")
+    model = fm.get("model")
+    model_source = fm.get("model_source")
+    effort = fm.get("effort")
+    effort_source = fm.get("effort_source")
+    cli_version = fm.get("cli_version")
+
     return Message(
         from_=str(fm.get("from", "")),
         to=str(fm.get("to", "")),
@@ -523,6 +566,12 @@ def parse_message(path: Path) -> Message:
         refs=refs if isinstance(refs, list) else [],
         sequence=seq,
         status=status,
+        backend=str(backend) if backend is not None else None,
+        model=str(model) if model is not None else None,
+        model_source=str(model_source) if model_source is not None else None,
+        effort=str(effort) if effort is not None else None,
+        effort_source=str(effort_source) if effort_source is not None else None,
+        cli_version=str(cli_version) if cli_version is not None else None,
     )
 
 

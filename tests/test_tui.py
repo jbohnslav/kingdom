@@ -1043,7 +1043,16 @@ class TestRunQuery:
         list(app_instance.compose())
 
         # Fake member that returns a successful response
-        fake_response = AgentResponse(name="claude", text="I think yes.")
+        fake_response = AgentResponse(
+            name="claude",
+            text="I think yes.",
+            backend="claude_code",
+            model="claude-opus-4-8",
+            model_source="observed",
+            effort="high",
+            effort_source="configured",
+            cli_version="claude-cli 2.1.123",
+        )
 
         class FakeMember:
             name = "claude"
@@ -1059,6 +1068,9 @@ class TestRunQuery:
         assert len(messages) == 1
         assert messages[0].from_ == "claude"
         assert messages[0].body == "I think yes."
+        assert messages[0].model == "claude-opus-4-8"
+        assert messages[0].model_source == "observed"
+        assert messages[0].cli_version == "claude-cli 2.1.123"
 
     def test_run_query_preserves_stream_file(self, project: Path) -> None:
         """run_query must NOT delete the stream file — poller drains it."""

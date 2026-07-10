@@ -1,20 +1,37 @@
 {
   "agents": {
     "claude": {
-      "backend": "claude_code"
+      "backend": "claude_code",
+      "model": "opus",
+      "effort": "high"
     },
     "codex": {
       "backend": "codex",
-      "model": "gpt-5.4",
-      "reasoning_effort": "high"
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    },
+    "codex_peasant": {
+      "backend": "codex",
+      "model": "gpt-5.6-terra",
+      "effort": "medium"
+    },
+    "claude_lord": {
+      "backend": "claude_code",
+      "model": "claude-sonnet-5",
+      "effort": "high"
     }
   },
   "council": {
     "members": ["claude", "codex"],
+    "review_members": ["claude", "codex"],
     "timeout": 900
   },
   "peasant": {
-    "agent": "claude",
+    "agent": "codex_peasant",
     "max_iterations": 50
+  },
+  "lord": {
+    "agent": "claude_lord",
+    "max_cycles": 200
   }
 }

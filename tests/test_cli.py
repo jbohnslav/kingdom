@@ -1,8 +1,10 @@
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 import kingdom.cli as cli_mod
@@ -12,6 +14,12 @@ from kingdom.cli.peasant import launch_work_tmux
 from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def mock_doctor_model_check():
+    with patch("kingdom.cli.check_agent_model", return_value=("unchecked", None)):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -73,18 +81,103 @@ def test_doctor_missing_cli() -> None:
         assert "npm install -g @openai/codex" in result.output
 
 
-def test_doctor_json_output() -> None:
+def test_check_cli_treats_nonzero_exit_as_failure() -> None:
+    from kingdom.cli.config import check_cli
+
+    result = subprocess.CompletedProcess(["agent", "--version"], 1, stdout="", stderr="authentication failed")
+    with patch("kingdom.cli.config.subprocess.run", return_value=result):
+        installed, error = check_cli(["agent", "--version"])
+
+    assert installed is False
+    assert error == "authentication failed"
+
+
+def test_check_agent_model_validates_codex_catalog() -> None:
+    from kingdom.agent import resolve_agent
+    from kingdom.cli.config import check_agent_model
+    from kingdom.config import AgentDef
+
+    agent = resolve_agent("worker", AgentDef(backend="codex", model="gpt-5.6-luna", effort="medium"))
+    catalog = {
+        "models": [
+            {
+                "slug": "gpt-5.6-luna",
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"}],
+            }
+        ]
+    }
+    result = subprocess.CompletedProcess(["codex", "debug", "models"], 0, stdout=json.dumps(catalog), stderr="")
+    with patch("kingdom.cli.config.subprocess.run", return_value=result):
+        status, error = check_agent_model(agent)
+
+    assert status == "available"
+    assert error is None
+
+
+def test_check_agent_model_rejects_unsupported_codex_effort() -> None:
+    from kingdom.agent import resolve_agent
+    from kingdom.cli.config import check_agent_model
+    from kingdom.config import AgentDef
+
+    agent = resolve_agent("worker", AgentDef(backend="codex", model="gpt-5.6-luna", effort="ultra"))
+    catalog = {
+        "models": [
+            {
+                "slug": "gpt-5.6-luna",
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"}],
+            }
+        ]
+    }
+    result = subprocess.CompletedProcess(["codex", "debug", "models"], 0, stdout=json.dumps(catalog), stderr="")
+    with patch("kingdom.cli.config.subprocess.run", return_value=result):
+        status, error = check_agent_model(agent)
+
+    assert status == "unavailable"
+    assert "does not support effort 'ultra'" in error
+
+
+def test_doctor_json_output(tmp_path) -> None:
     """Test doctor command with --json flag."""
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
     with (
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.cli.check_config", return_value=(True, None)),
+        patch("kingdom.config.state_root", return_value=kd_dir),
+        patch("kingdom.state.state_root", return_value=kd_dir),
     ):
         result = runner.invoke(app, ["doctor", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["agents"]["claude"]["installed"] is True
         assert data["agents"]["codex"]["installed"] is True
+        assert data["agents"]["claude"]["model"] == "inherited"
+        assert data["agents"]["claude"]["model_source"] == "provider"
+        assert data["agents"]["claude"]["effort"] == "inherited"
         assert data["config"]["valid"] is True
+
+
+def test_doctor_json_reports_pinned_model_and_effort(tmp_path) -> None:
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config = {
+        "agents": {"claude": {"backend": "claude_code", "model": "opus", "effort": "high"}},
+        "council": {"members": ["claude"]},
+    }
+    (kd_dir / "config.json").write_text(json.dumps(config))
+
+    with (
+        patch("kingdom.cli.check_cli", return_value=(True, None)),
+        patch("kingdom.config.state_root", return_value=kd_dir),
+        patch("kingdom.state.state_root", return_value=kd_dir),
+    ):
+        result = runner.invoke(app, ["doctor", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["agents"]["claude"]["model"] == "opus"
+    assert data["agents"]["claude"]["model_source"] == "configured"
+    assert data["agents"]["claude"]["effort"] == "high"
 
 
 def test_doctor_json_with_missing() -> None:
@@ -257,6 +350,21 @@ def test_config_show_indicates_sources(tmp_path) -> None:
                 break
         else:
             raise AssertionError("council.ask.mode not found in output")
+
+
+def test_config_show_marks_deprecated_reasoning_effort_as_config(tmp_path) -> None:
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config = {"agents": {"codex": {"backend": "codex", "reasoning_effort": "high"}}}
+    (kd_dir / "config.json").write_text(json.dumps(config))
+
+    with patch("kingdom.config.state_root", return_value=kd_dir):
+        result = runner.invoke(app, ["config", "show"])
+
+    assert result.exit_code == 0
+    effort_line = next(line for line in result.output.splitlines() if "agents.codex.effort" in line)
+    assert "high" in effort_line
+    assert "(config)" in effort_line
 
 
 def test_config_show_dotted_agent_name(tmp_path) -> None:

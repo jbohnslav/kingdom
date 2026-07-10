@@ -782,7 +782,15 @@ class ChatApp(App):
                 body = response.thread_body()
 
             # Always persist response to thread files (source of truth)
-            add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=body)
+            add_message(
+                self.base,
+                self.branch,
+                self.thread_id,
+                from_=member.name,
+                to="king",
+                body=body,
+                **response.thread_metadata(),
+            )
 
         except (OSError, RuntimeError, ValueError) as exc:
             # Persist the exception as an error message

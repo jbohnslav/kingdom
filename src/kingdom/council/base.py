@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from kingdom.agent import AgentConfig, clean_agent_env
+from kingdom.agent import AgentConfig, clean_agent_env, extract_model_metadata, get_cli_version
 from kingdom.agent import build_command as agent_build_command
 from kingdom.agent import extract_error as agent_extract_error
 from kingdom.agent import parse_response as agent_parse_response
@@ -23,6 +23,12 @@ class AgentResponse:
     error: str | None = None
     elapsed: float = 0.0
     raw: str = ""
+    backend: str = ""
+    model: str = ""
+    model_source: str = ""
+    effort: str = ""
+    effort_source: str = ""
+    cli_version: str = ""
 
     def thread_body(self) -> str:
         """Format response for writing to a thread message file."""
@@ -49,6 +55,18 @@ class AgentResponse:
         if self.text and ("*[Interrupted" in self.text or "*Interrupted" in self.text):
             return "interrupted"
         return "complete"
+
+    def thread_metadata(self) -> dict[str, str | None]:
+        """Return response metadata accepted by ``thread.add_message``."""
+        return {
+            "status": self.thread_status(),
+            "backend": self.backend or None,
+            "model": self.model or None,
+            "model_source": self.model_source or None,
+            "effort": self.effort or None,
+            "effort_source": self.effort_source or None,
+            "cli_version": self.cli_version or None,
+        }
 
 
 @dataclass
@@ -146,11 +164,11 @@ class CouncilMember:
         """
         response = self.query_once(prompt, timeout, stream_path)
         if not response.error or max_retries < 1:
-            return response
+            return self.add_runtime_metadata(response)
 
         # Don't retry non-retriable errors
         if any(response.error.startswith(prefix) for prefix in self.NON_RETRIABLE_PREFIXES):
-            return response
+            return self.add_runtime_metadata(response)
 
         # Retry 1: same session
         if stream_path and stream_path.exists():
@@ -158,14 +176,24 @@ class CouncilMember:
         self.log_retry(prompt, response, reset_session=False)
         response = self.query_once(prompt, timeout, stream_path)
         if not response.error or max_retries < 2:
-            return response
+            return self.add_runtime_metadata(response)
 
         # Retry 2: reset session
         if stream_path and stream_path.exists():
             stream_path.unlink()
         self.log_retry(prompt, response, reset_session=True)
         self.reset_session()
-        return self.query_once(prompt, timeout, stream_path)
+        return self.add_runtime_metadata(self.query_once(prompt, timeout, stream_path))
+
+    def add_runtime_metadata(self, response: AgentResponse) -> AgentResponse:
+        """Attach provider provenance to a completed response."""
+        response.backend = self.config.backend
+        response.model, response.model_source = extract_model_metadata(self.config, response.raw)
+        response.effort = self.config.effort or "unknown"
+        response.effort_source = "configured" if self.config.effort else "provider"
+        agent_env = clean_agent_env(role="council", agent_name=self.name)
+        response.cli_version = get_cli_version(self.config.version_command, agent_env.get("PATH", ""))
+        return response
 
     def query_once(self, prompt: str, timeout: int = 600, stream_path: Path | None = None) -> AgentResponse:
         """Execute a single query attempt and return the response."""

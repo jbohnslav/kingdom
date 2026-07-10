@@ -331,7 +331,7 @@ def council_ask(
             member_names = [to]
         else:
             member_names = [m.name for m in c.members]
-        create_thread(base, feature, thread_id, ["king", *member_names], "council")
+        create_thread(base, feature, thread_id, ["king", *member_names], "council", phase=phase)
         set_current_thread(base, feature, thread_id)
 
     tdir = thread_dir(base, feature, thread_id)
@@ -354,7 +354,7 @@ def council_ask(
                 from_=to,
                 to="king",
                 body=response.thread_body(),
-                status=response.thread_status(),
+                **response.thread_metadata(),
             )
         else:
             responses = query_with_progress(c, prompt, json_output, console)
@@ -366,7 +366,7 @@ def council_ask(
                     from_=name,
                     to="king",
                     body=resp.thread_body(),
-                    status=resp.thread_status(),
+                    **resp.thread_metadata(),
                 )
 
         c.save_sessions(base, feature)
@@ -378,6 +378,12 @@ def council_ask(
                     "text": r.text,
                     "error": r.error,
                     "elapsed": r.elapsed,
+                    "backend": r.backend,
+                    "model": r.model,
+                    "model_source": r.model_source,
+                    "effort": r.effort,
+                    "effort_source": r.effort_source,
+                    "cli_version": r.cli_version,
                 }
                 for name, r in responses.items()
             },
@@ -405,6 +411,8 @@ def council_ask(
             prompt,
             "--timeout",
             str(timeout if timeout is not None else c.timeout),
+            "--phase",
+            phase,
         ]
         if to:
             worker_cmd.extend(["--to", to])
@@ -444,7 +452,13 @@ def council_ask(
             response = member.query(prompt, timeout)
             progress.update(task, description="Done")
         add_message(
-            base, feature, thread_id, from_=to, to="king", body=response.thread_body(), status=response.thread_status()
+            base,
+            feature,
+            thread_id,
+            from_=to,
+            to="king",
+            body=response.thread_body(),
+            **response.thread_metadata(),
         )
         render_response(response, console)
     else:
@@ -1299,7 +1313,7 @@ def council_retry(
         return
 
     # Set up council filtered to failed members only
-    c = create_council(base, feature, timeout=timeout)
+    c = create_council(base, feature, timeout=timeout, phase=meta.phase)
     c.members = [m for m in c.members if m.name in failed]
 
     if not c.members:

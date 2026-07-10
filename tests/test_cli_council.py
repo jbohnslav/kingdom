@@ -44,7 +44,15 @@ def mock_council_query_to_thread(responses: dict[str, AgentResponse]):
         from kingdom.thread import add_message
 
         for name, resp in responses.items():
-            add_message(base, branch, thread_id, from_=name, to="king", body=resp.thread_body())
+            add_message(
+                base,
+                branch,
+                thread_id,
+                from_=name,
+                to="king",
+                body=resp.thread_body(),
+                **resp.thread_metadata(),
+            )
             if callback:
                 callback(name, resp)
         return responses
@@ -58,7 +66,20 @@ def mock_council_query_to_thread(responses: dict[str, AgentResponse]):
 
 def make_responses(*names: str) -> dict[str, AgentResponse]:
     """Build mock responses for given agent names."""
-    return {name: AgentResponse(name=name, text=f"Response from {name}", elapsed=1.0) for name in names}
+    return {
+        name: AgentResponse(
+            name=name,
+            text=f"Response from {name}",
+            elapsed=1.0,
+            backend="claude_code" if name == "claude" else name,
+            model=f"{name}-model",
+            model_source="observed",
+            effort="high",
+            effort_source="configured",
+            cli_version=f"{name}-cli 1.0",
+        )
+        for name in names
+    }
 
 
 class TestCouncilAsk:
@@ -217,6 +238,16 @@ class TestCouncilAsk:
             assert "thread_id" in data
             assert "responses" in data
             assert "claude" in data["responses"]
+            assert data["responses"]["claude"]["model"] == "claude-model"
+            assert data["responses"]["claude"]["model_source"] == "observed"
+            assert data["responses"]["claude"]["effort"] == "high"
+
+            current = get_current_thread(base, BRANCH)
+            messages = list_messages(base, BRANCH, current)
+            claude_message = next(message for message in messages if message.from_ == "claude")
+            assert claude_message.backend == "claude_code"
+            assert claude_message.model == "claude-model"
+            assert claude_message.cli_version == "claude-cli 1.0"
 
     def test_ask_does_not_modify_non_kd_files(self) -> None:
         """Council ask should not mutate project files outside .kd/."""
@@ -723,6 +754,7 @@ class TestCouncilAskAsync:
             cmd = mock_popen.call_args[0][0]
             assert "--to" in cmd
             assert "codex" in cmd
+            assert cmd[cmd.index("--phase") + 1] == "council"
 
 
 class TestCouncilWatch:
@@ -1300,6 +1332,27 @@ class TestCouncilReview:
 
             assert result.exit_code == 0, result.output
             assert "Thread:" in result.output
+
+    def test_async_review_passes_review_phase_to_worker(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "file.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            (base / "file.py").write_text("modified\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "change", "--no-gpg-sign"], check=True, capture_output=True)
+            setup_project(base)
+
+            with patch("kingdom.cli.council.council_ask") as mock_ask:
+                result = runner.invoke(council_app, ["review", "--base", "master", "--async", "--no-watch"])
+
+            assert result.exit_code == 0, result.output
+            assert mock_ask.call_args.kwargs["phase"] == "review"
+            assert mock_ask.call_args.kwargs["async_mode"] is True
 
 
 class TestCouncilRetry:

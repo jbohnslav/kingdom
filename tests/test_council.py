@@ -34,6 +34,12 @@ def mock_popen(stdout: str = "", stderr: str = "", returncode: int = 0):
     return proc
 
 
+@pytest.fixture(autouse=True)
+def mock_provider_cli_version():
+    with patch("kingdom.council.base.get_cli_version", return_value="test-cli 1.0"):
+        yield
+
+
 class TestCouncilMemberPermissions:
     """Council members should NOT include skip-permissions flags."""
 
@@ -163,6 +169,12 @@ class TestCouncilMemberQuery:
             assert response.text == "test response"
             assert response.error is None
             assert response.elapsed > 0
+            assert response.backend == "claude_code"
+            assert response.model == "unknown"
+            assert response.model_source == "provider"
+            assert response.effort == "unknown"
+            assert response.effort_source == "provider"
+            assert response.cli_version == "test-cli 1.0"
 
     def test_query_updates_session_id(self) -> None:
         """Query should update member's session_id from response."""
@@ -513,6 +525,17 @@ class TestCouncilCreateValidation:
         council = Council.create(base=tmp_path, phase="review")
         assert council.members[0].phase_prompt == "Review prompt."
 
+    def test_create_review_phase_uses_review_members(self, tmp_path: Path) -> None:
+        import json
+
+        kd = tmp_path / ".kd"
+        kd.mkdir(parents=True)
+        data = {"council": {"members": ["claude"], "review_members": ["codex"]}}
+        (kd / "config.json").write_text(json.dumps(data))
+
+        council = Council.create(base=tmp_path, phase="review")
+        assert [member.name for member in council.members] == ["codex"]
+
     def test_create_review_phase_agent_override(self, tmp_path: Path) -> None:
         """Agent-specific prompts.review overrides global prompts.review."""
         import json
@@ -777,7 +800,9 @@ class TestQueryToThread:
         council = Council.create(base=project)
 
         with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
-            mock_cls.side_effect = lambda *a, **kw: mock_popen(stdout='{"result": "test response"}\n')
+            mock_cls.side_effect = lambda *a, **kw: mock_popen(
+                stdout='{"result": "test response", "modelUsage": {"claude-opus-4-8": {}}}\n'
+            )
             responses = council.query_to_thread("test prompt", project, BRANCH, thread_id)
 
         assert len(responses) == 2
@@ -786,6 +811,16 @@ class TestQueryToThread:
         assert len(messages) == 2
         senders = {m.from_ for m in messages}
         assert senders == {"claude", "codex"}
+        by_sender = {message.from_: message for message in messages}
+        assert by_sender["claude"].backend == "claude_code"
+        assert by_sender["claude"].model == "claude-opus-4-8"
+        assert by_sender["claude"].model_source == "observed"
+        assert by_sender["claude"].effort == "unknown"
+        assert by_sender["claude"].effort_source == "provider"
+        assert by_sender["claude"].cli_version == "test-cli 1.0"
+        assert by_sender["codex"].backend == "codex"
+        assert by_sender["codex"].model == "unknown"
+        assert by_sender["codex"].model_source == "provider"
 
     def test_calls_callback_for_each_response(self, project: Path) -> None:
         from kingdom.thread import create_thread
@@ -892,6 +927,36 @@ class TestCouncilWorker:
         messages = list_messages(project, BRANCH, thread_id)
         assert len(messages) == 1
         assert messages[0].from_ == "codex"
+
+    def test_worker_review_phase_uses_review_members(self, project: Path) -> None:
+        import json
+
+        from kingdom.council.worker import main
+        from kingdom.thread import create_thread, list_messages
+
+        config_path = project / ".kd" / "config.json"
+        config_path.write_text(json.dumps({"council": {"members": ["claude"], "review_members": ["codex"]}}))
+        thread_id = "review-worker"
+        create_thread(project, BRANCH, thread_id, ["king", "codex"], "council", phase="review")
+
+        with patch("kingdom.council.base.subprocess.Popen") as mock_cls:
+            mock_cls.return_value = mock_popen(stdout='{"result": "reviewed"}\n')
+            main(
+                [
+                    "--base",
+                    str(project),
+                    "--feature",
+                    BRANCH,
+                    "--thread-id",
+                    thread_id,
+                    "--prompt",
+                    "review",
+                    "--phase",
+                    "review",
+                ]
+            )
+
+        assert [message.from_ for message in list_messages(project, BRANCH, thread_id)] == ["codex"]
 
     def test_worker_unknown_member_exits(self, project: Path) -> None:
         from kingdom.council.worker import main

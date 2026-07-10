@@ -14,6 +14,7 @@ from kingdom.agent import (
     build_command,
     clean_agent_env,
     extract_error,
+    extract_model_metadata,
     extract_stream_text,
     parse_claude_response,
     parse_codex_response,
@@ -57,6 +58,25 @@ class TestBackendDefaults:
         assert d["version_command"] == "agent --version"
 
 
+class TestEffectiveModel:
+    def test_claude_uses_observed_model(self) -> None:
+        config = resolve_agent("claude", AgentDef(backend="claude_code", model="opus"))
+        raw = json.dumps({"modelUsage": {"claude-opus-4-8": {"inputTokens": 1}}})
+        assert extract_model_metadata(config, raw) == ("claude-opus-4-8", "observed")
+
+    def test_explicit_model_is_fallback(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", model="gpt-5.6-sol"))
+        assert extract_model_metadata(config, '{"type":"turn.completed"}') == ("gpt-5.6-sol", "configured")
+
+    def test_unpinned_model_is_unknown(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex"))
+        assert extract_model_metadata(config, "") == ("unknown", "provider")
+
+    def test_malformed_stream_falls_back_cleanly(self) -> None:
+        config = resolve_agent("claude", AgentDef(backend="claude_code", model="opus"))
+        assert extract_model_metadata(config, "not json\n{") == ("opus", "configured")
+
+
 class TestResolveAgent:
     def test_resolve_claude(self) -> None:
         config = resolve_agent("claude", AgentDef(backend="claude_code"))
@@ -72,6 +92,10 @@ class TestResolveAgent:
     def test_resolve_with_extra_flags(self) -> None:
         config = resolve_agent("claude", AgentDef(backend="claude_code", extra_flags=["--verbose"]))
         assert config.extra_flags == ["--verbose"]
+
+    def test_legacy_reasoning_effort_constructor(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", reasoning_effort="high"))
+        assert config.effort == "high"
 
     def test_resolve_unknown_backend_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown backend 'fake'"):
@@ -99,6 +123,7 @@ class TestAgentConfig:
         assert config.version_command == ""
         assert config.install_hint == ""
         assert config.model == ""
+        assert config.effort == ""
         assert config.extra_flags == []
 
     def test_optional_fields(self) -> None:
@@ -110,11 +135,13 @@ class TestAgentConfig:
             version_command="test --version",
             install_hint="Install test",
             model="opus-4-6",
+            effort="high",
             extra_flags=["--verbose"],
         )
         assert config.version_command == "test --version"
         assert config.install_hint == "Install test"
         assert config.model == "opus-4-6"
+        assert config.effort == "high"
         assert config.extra_flags == ["--verbose"]
 
 
@@ -324,40 +351,46 @@ class TestBuildCommandExtraFlags:
         assert debug_idx < prompt_idx
 
 
-class TestBuildCommandReasoningEffort:
-    def test_codex_reasoning_effort_in_command(self) -> None:
-        config = resolve_agent("codex", AgentDef(backend="codex", model="gpt-5.4", reasoning_effort="high"))
+class TestBuildCommandEffort:
+    def test_claude_effort_in_command(self) -> None:
+        config = resolve_agent("claude", AgentDef(backend="claude_code", model="opus", effort="high"))
+        cmd = build_command(config, "hello")
+        effort_idx = cmd.index("--effort")
+        assert cmd[effort_idx + 1] == "high"
+
+    def test_codex_effort_in_command(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", model="gpt-5.6-sol", effort="high"))
         cmd = build_command(config, "hello")
         assert "-c" in cmd
         c_idx = cmd.index("-c")
         assert cmd[c_idx + 1] == "model_reasoning_effort=high"
 
-    def test_codex_reasoning_effort_low(self) -> None:
-        config = resolve_agent("codex", AgentDef(backend="codex", reasoning_effort="low"))
+    def test_codex_effort_ultra(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", effort="ultra"))
         cmd = build_command(config, "hello")
         assert "-c" in cmd
         c_idx = cmd.index("-c")
-        assert cmd[c_idx + 1] == "model_reasoning_effort=low"
+        assert cmd[c_idx + 1] == "model_reasoning_effort=ultra"
 
-    def test_codex_no_reasoning_effort_no_flag(self) -> None:
+    def test_codex_no_effort_no_flag(self) -> None:
         config = resolve_agent("codex", AgentDef(backend="codex"))
         cmd = build_command(config, "hello")
         assert "model_reasoning_effort" not in " ".join(cmd)
 
-    def test_codex_reasoning_effort_before_extra_flags(self) -> None:
-        config = resolve_agent("codex", AgentDef(backend="codex", reasoning_effort="medium", extra_flags=["--debug"]))
+    def test_codex_effort_before_extra_flags(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", effort="medium", extra_flags=["--debug"]))
         cmd = build_command(config, "hello")
         c_idx = cmd.index("-c")
         debug_idx = cmd.index("--debug")
         assert c_idx < debug_idx
 
-    def test_resolve_agent_carries_reasoning_effort(self) -> None:
-        config = resolve_agent("codex", AgentDef(backend="codex", reasoning_effort="high"))
-        assert config.reasoning_effort == "high"
+    def test_resolve_agent_carries_effort(self) -> None:
+        config = resolve_agent("codex", AgentDef(backend="codex", effort="high"))
+        assert config.effort == "high"
 
-    def test_resolve_agent_empty_reasoning_effort(self) -> None:
+    def test_resolve_agent_empty_effort(self) -> None:
         config = resolve_agent("codex", AgentDef(backend="codex"))
-        assert config.reasoning_effort == ""
+        assert config.effort == ""
 
 
 class TestBuildCommandSkipPermissions:

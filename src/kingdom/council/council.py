@@ -41,9 +41,11 @@ class Council:
         # Resolve global phase prompt
         global_phase_prompt = getattr(cfg.prompts, phase, "")
 
-        # Only include agents listed in council.members
+        member_names = cfg.council.review_members if phase == "review" else cfg.council.members
+
+        # Only include agents listed for this phase
         members: list[CouncilMember] = []
-        for name in cfg.council.members:
+        for name in member_names:
             ac = agent_configs.get(name)
             if ac is None:
                 continue
@@ -82,12 +84,14 @@ class Council:
                 member = futures[future]
                 error = future.exception()
                 if error is not None:
-                    responses[member.name] = AgentResponse(
-                        name=member.name,
-                        text="",
-                        error=str(error),
-                        elapsed=0.0,
-                        raw="",
+                    responses[member.name] = member.add_runtime_metadata(
+                        AgentResponse(
+                            name=member.name,
+                            text="",
+                            error=str(error),
+                            elapsed=0.0,
+                            raw="",
+                        )
                     )
                     continue
                 responses[member.name] = future.result()
@@ -120,7 +124,9 @@ class Council:
                 member, stream_path = futures[future]
                 error = future.exception()
                 if error is not None:
-                    response = AgentResponse(name=member.name, text="", error=str(error), elapsed=0.0, raw="")
+                    response = member.add_runtime_metadata(
+                        AgentResponse(name=member.name, text="", error=str(error), elapsed=0.0, raw="")
+                    )
                 else:
                     response = future.result()
 
@@ -134,7 +140,7 @@ class Council:
                     from_=member.name,
                     to="king",
                     body=response.thread_body(),
-                    status=response.thread_status(),
+                    **response.thread_metadata(),
                 )
 
                 # Cleanup stream file
