@@ -36,7 +36,7 @@ from kingdom.state import (
 from kingdom.ticket import Ticket, list_tickets
 from kingdom.worktree import create_worktree, remove_worktree, worktree_path_for  # noqa: F401
 
-from .config import check_cli, check_config, config_app, get_doctor_checks
+from .config import check_agent_model, check_cli, check_config, config_app, get_doctor_checks
 from .council import council_app
 from .design import design_app, get_branch_paths, get_doc_status  # noqa: F401 (re-export)
 from .display import error_console, print_error, styled_echo
@@ -590,9 +590,21 @@ def doctor(
         doctor_checks = get_doctor_checks(base)
         for check in doctor_checks:
             installed, error = check_cli(check["command"])
-            cli_results[check["name"]] = {"installed": installed, "error": error}
+            model_status, model_error = check_agent_model(check["agent"]) if installed else ("unchecked", None)
+            cli_results[check["name"]] = {
+                "installed": installed,
+                "error": error,
+                "model": check["model"],
+                "model_source": check["model_source"],
+                "effort": check["effort"],
+                "model_check": model_status,
+                "model_error": model_error,
+            }
             if not installed:
-                cli_issues.append({"name": check["name"], "hint": check["install_hint"]})
+                hint = f"{error}. {check['install_hint']}" if error else check["install_hint"]
+                cli_issues.append({"name": check["name"], "hint": hint})
+            elif model_status == "unavailable":
+                cli_issues.append({"name": check["name"], "hint": model_error or "Model unavailable"})
 
     if output_json:
         console = Console()
@@ -606,10 +618,22 @@ def doctor(
             for check in doctor_checks:
                 name = check["name"]
                 result = cli_results[name]
-                if result["installed"]:
-                    styled_echo(f"  ✓ {name:12} (installed)", fg=typer.colors.GREEN)
+                if result["installed"] and result["model_check"] == "unavailable":
+                    styled_echo(
+                        f"  ✗ {name:12} (installed; {result['model_error']})",
+                        fg=typer.colors.RED,
+                    )
+                elif result["installed"]:
+                    model = result["model"]
+                    source = result["model_source"]
+                    effort = result["effort"]
+                    model_check = result["model_check"]
+                    styled_echo(
+                        f"  ✓ {name:12} (installed; model: {model} [{source}, {model_check}]; effort: {effort})",
+                        fg=typer.colors.GREEN,
+                    )
                 else:
-                    styled_echo(f"  ✗ {name:12} (not found)", fg=typer.colors.RED)
+                    styled_echo(f"  ✗ {name:12} ({result['error']})", fg=typer.colors.RED)
 
             if cli_issues:
                 typer.echo("\nIssues found:")

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import shlex
 import subprocess
 from pathlib import Path
 
 import typer
+
+from kingdom.agent import AgentConfig, clean_agent_env
 
 from .display import styled_echo
 from .helpers import require_project_root, verbose_echo
@@ -65,7 +69,12 @@ def config_show() -> None:
                         return True
             return False
 
-        return walk(dotted_key, raw)
+        if walk(dotted_key, raw):
+            return True
+        if dotted_key.endswith(".effort"):
+            legacy_key = f"{dotted_key.rsplit('.', 1)[0]}.reasoning_effort"
+            return walk(legacy_key, raw)
+        return False
 
     effective = dataclasses.asdict(cfg)
     entries = flatten(effective)
@@ -87,25 +96,70 @@ def config_show() -> None:
 def check_cli(command: list[str]) -> tuple[bool, str | None]:
     """Check if a CLI command is available."""
     try:
-        subprocess.run(command, capture_output=True, timeout=5)
-        return (True, None)
-    except FileNotFoundError:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+    except OSError:
         return (False, "Command not found")
     except subprocess.TimeoutExpired:
         return (False, "Command timed out")
+    if result.returncode != 0:
+        error = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
+        return (False, error)
+    return (True, None)
 
 
-def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
+def check_agent_model(agent: AgentConfig) -> tuple[str, str | None]:
+    """Validate a pinned Codex model against the account-visible catalog."""
+    if agent.backend != "codex" or not agent.model:
+        return "unchecked", None
+
+    executable = shlex.split(agent.cli)[0]
+    env = clean_agent_env(role="doctor", agent_name=agent.name)
+    try:
+        result = subprocess.run(
+            [executable, "debug", "models"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+    except OSError:
+        return "unavailable", "Codex CLI not found"
+    except subprocess.TimeoutExpired:
+        return "unavailable", "Codex model catalog timed out"
+
+    if result.returncode != 0:
+        error = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
+        return "unavailable", f"Could not read Codex model catalog: {error}"
+
+    try:
+        models = json.loads(result.stdout).get("models", [])
+    except (json.JSONDecodeError, AttributeError):
+        return "unavailable", "Codex model catalog returned invalid JSON"
+
+    model = next(
+        (entry for entry in models if isinstance(entry, dict) and entry.get("slug") == agent.model),
+        None,
+    )
+    if model is None:
+        return "unavailable", f"Model '{agent.model}' is not available to this Codex account"
+
+    supported_efforts = {
+        level.get("effort") for level in model.get("supported_reasoning_levels", []) if isinstance(level, dict)
+    }
+    if agent.effort and supported_efforts and agent.effort not in supported_efforts:
+        return "unavailable", f"Model '{agent.model}' does not support effort '{agent.effort}'"
+    return "available", None
+
+
+def get_doctor_checks(base: Path) -> list[dict[str, object]]:
     """Build doctor checks from agent configs."""
-    import shlex
-
     from kingdom.agent import resolve_all_agents
     from kingdom.config import load_config
 
     cfg = load_config(base)
     agents = resolve_all_agents(cfg.agents)
 
-    checks: list[dict[str, str | list[str]]] = []
+    checks: list[dict[str, object]] = []
     for agent in agents.values():
         version_cmd = agent.version_command or f"{shlex.split(agent.cli)[0]} --version"
         checks.append(
@@ -113,6 +167,10 @@ def get_doctor_checks(base: Path) -> list[dict[str, str | list[str]]]:
                 "name": agent.name,
                 "command": shlex.split(version_cmd),
                 "install_hint": agent.install_hint or f"Install {agent.name}",
+                "model": agent.model or "inherited",
+                "model_source": "configured" if agent.model else "provider",
+                "effort": agent.effort or "inherited",
+                "agent": agent,
             }
         )
     return checks

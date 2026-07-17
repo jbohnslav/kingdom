@@ -25,6 +25,7 @@ class TestDefaultConfig:
     def test_council_defaults(self) -> None:
         cfg = default_config()
         assert set(cfg.council.members) == {"claude", "codex"}
+        assert cfg.council.review_members == cfg.council.members
         assert cfg.council.timeout == 600
         assert cfg.council.ask.auto_messages == -1
         assert cfg.council.ask.mode == "broadcast"
@@ -100,6 +101,16 @@ class TestValidateConfig:
         cfg = validate_config(data)
         assert cfg.council.members == ["claude", "codex"]
         assert cfg.council.timeout == 300
+
+    def test_council_review_members(self) -> None:
+        data = {"council": {"members": ["claude"], "review_members": ["codex"]}}
+        cfg = validate_config(data)
+        assert cfg.council.members == ["claude"]
+        assert cfg.council.review_members == ["codex"]
+
+    def test_council_review_members_default_to_members(self) -> None:
+        cfg = validate_config({"council": {"members": ["claude"]}})
+        assert cfg.council.review_members == ["claude"]
 
     def test_council_ask_auto_messages(self) -> None:
         data = {"council": {"ask": {"auto_messages": 5}}}
@@ -248,6 +259,10 @@ class TestValidateConfigErrors:
     def test_council_member_undefined_agent(self) -> None:
         with pytest.raises(ValueError, match=r"undefined agent 'ghost'.*Defined agents"):
             validate_config({"council": {"members": ["claude", "ghost"]}})
+
+    def test_council_review_member_undefined_agent(self) -> None:
+        with pytest.raises(ValueError, match=r"review_members references undefined agent 'ghost'"):
+            validate_config({"council": {"review_members": ["ghost"]}})
 
     def test_peasant_agent_undefined(self) -> None:
         with pytest.raises(ValueError, match=r"undefined agent 'ghost'.*Defined agents"):
@@ -398,36 +413,49 @@ class TestValidateConfigErrors:
         with pytest.raises(ValueError, match="must be positive"):
             validate_config({"peasant": {"max_iterations": 0}})
 
-    def test_reasoning_effort_valid_on_codex(self) -> None:
-        for effort in ("low", "medium", "high"):
-            cfg = validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": effort}}})
-            assert cfg.agents["codex"].reasoning_effort == effort
+    def test_effort_valid_on_claude(self) -> None:
+        for effort in ("low", "medium", "high", "xhigh", "max"):
+            cfg = validate_config({"agents": {"claude": {"backend": "claude_code", "effort": effort}}})
+            assert cfg.agents["claude"].effort == effort
 
-    def test_reasoning_effort_absent_defaults_empty(self) -> None:
-        cfg = validate_config({})
-        assert cfg.agents["codex"].reasoning_effort == ""
-        assert cfg.agents["claude"].reasoning_effort == ""
+    def test_effort_valid_on_codex(self) -> None:
+        for effort in ("low", "medium", "high", "xhigh", "max", "ultra"):
+            cfg = validate_config({"agents": {"codex": {"backend": "codex", "effort": effort}}})
+            assert cfg.agents["codex"].effort == effort
 
-    def test_reasoning_effort_bad_value(self) -> None:
-        with pytest.raises(ValueError, match="must be one of"):
-            validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": "turbo"}}})
+    def test_deprecated_reasoning_effort_maps_to_effort(self) -> None:
+        cfg = validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": "high"}}})
+        assert cfg.agents["codex"].effort == "high"
 
-    def test_reasoning_effort_bad_type(self) -> None:
-        with pytest.raises(ValueError, match="must be a string"):
-            validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": 3}}})
-
-    def test_reasoning_effort_falsey_bad_types_rejected(self) -> None:
-        for val in (0, False, []):
-            with pytest.raises(ValueError, match="must be a string"):
-                validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": val}}})
-
-    def test_reasoning_effort_unsupported_backend_claude(self) -> None:
-        with pytest.raises(ValueError, match="only supported for backends"):
+    def test_deprecated_reasoning_effort_remains_codex_only(self) -> None:
+        with pytest.raises(ValueError, match="reasoning_effort is only supported for the codex backend"):
             validate_config({"agents": {"claude": {"backend": "claude_code", "reasoning_effort": "high"}}})
 
-    def test_reasoning_effort_unsupported_backend_cursor(self) -> None:
-        with pytest.raises(ValueError, match="only supported for backends"):
-            validate_config({"agents": {"mycursor": {"backend": "cursor", "reasoning_effort": "low"}}})
+    def test_effort_and_reasoning_effort_are_mutually_exclusive(self) -> None:
+        with pytest.raises(ValueError, match="cannot set both effort and reasoning_effort"):
+            validate_config({"agents": {"codex": {"backend": "codex", "effort": "high", "reasoning_effort": "high"}}})
+
+    def test_effort_absent_defaults_empty(self) -> None:
+        cfg = validate_config({})
+        assert cfg.agents["codex"].effort == ""
+        assert cfg.agents["claude"].effort == ""
+
+    def test_effort_bad_value(self) -> None:
+        with pytest.raises(ValueError, match="must be one of"):
+            validate_config({"agents": {"codex": {"backend": "codex", "effort": "turbo"}}})
+
+    def test_effort_bad_type(self) -> None:
+        with pytest.raises(ValueError, match="must be a string"):
+            validate_config({"agents": {"codex": {"backend": "codex", "effort": 3}}})
+
+    def test_effort_falsey_bad_types_rejected(self) -> None:
+        for val in (0, False, []):
+            with pytest.raises(ValueError, match="must be a string"):
+                validate_config({"agents": {"codex": {"backend": "codex", "effort": val}}})
+
+    def test_effort_unsupported_backend_cursor(self) -> None:
+        with pytest.raises(ValueError, match="does not support effort"):
+            validate_config({"agents": {"mycursor": {"backend": "cursor", "effort": "low"}}})
 
 
 class TestLoadConfig:

@@ -8,7 +8,7 @@ Invoked as a subprocess by ``kd council ask`` (default async dispatch)::
         --thread-id council-abcd \\
         --prompt "the question" \\
         --timeout 120 \\
-        [--to member-name]
+        [--phase council|review] [--to member-name]
 """
 
 from __future__ import annotations
@@ -30,11 +30,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--thread-id", required=True)
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--phase", choices=("council", "review"), default="council")
     parser.add_argument("--to", default=None, dest="to_member")
     parser.add_argument("--writable", action="store_true", default=False)
     args = parser.parse_args(argv)
 
-    c = create_council(args.base, args.feature, writable=args.writable, timeout=args.timeout)
+    c = create_council(
+        args.base,
+        args.feature,
+        writable=args.writable,
+        timeout=args.timeout,
+        phase=args.phase,
+    )
 
     if args.to_member:
         from kingdom.thread import thread_dir
@@ -56,6 +63,7 @@ def main(argv: list[str] | None = None) -> None:
             from_=args.to_member,
             to="king",
             body=response.thread_body(),
+            **response.thread_metadata(),
         )
 
         if stream_path.exists():

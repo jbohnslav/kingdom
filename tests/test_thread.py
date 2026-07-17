@@ -46,6 +46,7 @@ class TestCreateThread:
         assert meta.id == "council-caching"
         assert meta.members == ["claude", "codex"]
         assert meta.pattern == "council"
+        assert meta.phase == "council"
 
         tdir = thread_dir(project, BRANCH, "council-caching")
         assert tdir.is_dir()
@@ -64,6 +65,10 @@ class TestCreateThread:
         create_thread(project, BRANCH, "My Thread", ["claude"], "direct")
         with pytest.raises(FileExistsError):
             create_thread(project, BRANCH, "my-thread", ["claude"], "direct")
+
+    def test_review_phase_roundtrips(self, project: Path) -> None:
+        create_thread(project, BRANCH, "review-thread", ["claude"], "council", phase="review")
+        assert get_thread(project, BRANCH, "review-thread").phase == "review"
 
 
 class TestGetThread:
@@ -523,6 +528,33 @@ class TestMessageStatus:
         assert msgs[0].status is None  # king message, no status
         assert msgs[1].status == "complete"
         assert msgs[2].status == "timeout"
+
+
+class TestMessageRuntimeMetadata:
+    def test_runtime_metadata_roundtrips(self, project: Path) -> None:
+        create_thread(project, BRANCH, "runtime-meta", ["king", "claude"], "council")
+        add_message(
+            project,
+            BRANCH,
+            "runtime-meta",
+            from_="claude",
+            to="king",
+            body="Answer",
+            backend="claude_code",
+            model="claude-opus-4-8",
+            model_source="observed",
+            effort="high",
+            effort_source="configured",
+            cli_version="2.1.123 (Claude Code)",
+        )
+
+        parsed = parse_message(thread_dir(project, BRANCH, "runtime-meta") / "0001-claude.md")
+        assert parsed.backend == "claude_code"
+        assert parsed.model == "claude-opus-4-8"
+        assert parsed.model_source == "observed"
+        assert parsed.effort == "high"
+        assert parsed.effort_source == "configured"
+        assert parsed.cli_version == "2.1.123 (Claude Code)"
 
 
 class TestThreadResponseStatusWithMetadata:
