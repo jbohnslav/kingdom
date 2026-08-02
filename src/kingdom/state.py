@@ -22,7 +22,8 @@ import threading
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -221,6 +222,21 @@ def terminal_context_root(base: Path) -> Path:
     return runtime_root(base) / "terminal-context"
 
 
+def execution_context_root(base: Path) -> Path:
+    return runtime_root(base) / "contexts"
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    context_id: str
+    host: str
+    session_id: str
+    parent_agent_id: str | None
+    cwd: str
+    last_seen: datetime
+    source: str
+
+
 TERMINAL_CONTEXT_ENV_VARS = (
     "KD_TERMINAL_ID",
     "TMUX_PANE",
@@ -234,18 +250,150 @@ TERMINAL_CONTEXT_ENV_VARS = (
     "SSH_TTY",
 )
 
+MAX_CONTEXT_IDENTIFIER_LENGTH = 256
 
-def terminal_context_identity(session_id: str | None = None) -> str | None:
+
+def validate_context_identifier(name: str, value: str) -> str:
+    identifier = value.strip()
+    if not identifier:
+        raise ValueError(f"{name} must not be empty")
+    if len(identifier) > MAX_CONTEXT_IDENTIFIER_LENGTH:
+        raise ValueError(f"{name} must be at most {MAX_CONTEXT_IDENTIFIER_LENGTH} characters")
+    if any(character in identifier for character in ("\n", "\r", "\0")):
+        raise ValueError(f"{name} must be a single-line identifier")
+    return identifier
+
+
+def normalize_context_host(host: str) -> str:
+    normalized = re.sub(r"[^a-z0-9-]+", "-", host.strip().lower()).strip("-")
+    if not normalized:
+        raise ValueError("context host must contain a letter or number")
+    return normalized
+
+
+def terminal_fallback_identity() -> tuple[str, str] | None:
     for name in TERMINAL_CONTEXT_ENV_VARS:
         value = os.environ.get(name)
         if value:
-            return f"{name}:{value}"
+            return name, validate_context_identifier(name, value)
 
     for fd in (0, 1, 2):
         try:
-            return f"tty:{os.ttyname(fd)}"
+            return "TTY", validate_context_identifier("TTY", os.ttyname(fd))
         except OSError:
             pass
+    return None
+
+
+def resolve_execution_context(
+    *,
+    session_id: str | None = None,
+    host: str | None = None,
+    parent_agent_id: str | None = None,
+    cwd: Path | None = None,
+    now: datetime | None = None,
+) -> ExecutionContext | None:
+    explicit_context = os.environ.get("KD_CONTEXT")
+    codex_thread = os.environ.get("CODEX_THREAD_ID")
+
+    if explicit_context:
+        stable_id = validate_context_identifier("KD_CONTEXT", explicit_context)
+        source = "KD_CONTEXT"
+        resolved_host = host or os.environ.get("KD_HOST") or "kingdom"
+    elif session_id:
+        stable_id = validate_context_identifier("session_id", session_id)
+        source = "hook"
+        resolved_host = host or os.environ.get("KD_HOST") or "hook"
+    elif codex_thread:
+        stable_id = validate_context_identifier("CODEX_THREAD_ID", codex_thread)
+        source = "CODEX_THREAD_ID"
+        resolved_host = host or "codex"
+    else:
+        terminal_identity = terminal_fallback_identity()
+        if terminal_identity is None:
+            return None
+        terminal_source, terminal_id = terminal_identity
+        stable_id = f"{terminal_source}:{terminal_id}"
+        source = terminal_source
+        resolved_host = host or "terminal"
+
+    normalized_host = normalize_context_host(resolved_host)
+    digest = hashlib.sha256(f"{normalized_host}\0{stable_id}".encode()).hexdigest()[:16]
+    validated_parent = (
+        validate_context_identifier("parent_agent_id", parent_agent_id) if parent_agent_id is not None else None
+    )
+    return ExecutionContext(
+        context_id=f"{normalized_host}:{digest}",
+        host=normalized_host,
+        session_id=stable_id,
+        parent_agent_id=validated_parent,
+        cwd=str((cwd or Path.cwd()).resolve()),
+        last_seen=now or datetime.now(UTC),
+        source=source,
+    )
+
+
+def execution_context_path(base: Path, context: ExecutionContext) -> Path:
+    digest = context.context_id.split(":", 1)[-1]
+    return execution_context_root(base) / f"{context.host}-{digest}.json"
+
+
+def record_execution_ticket_context(
+    base: Path,
+    context: ExecutionContext,
+    ticket_id: str,
+    *,
+    feature: str,
+    location: str | None = None,
+) -> None:
+    path = execution_context_path(base, context)
+    ensure_dir(path.parent)
+    write_json(
+        path,
+        {
+            "schema_version": 1,
+            "context_id": context.context_id,
+            "host": context.host,
+            "session_id": context.session_id,
+            "parent_agent_id": context.parent_agent_id,
+            "cwd": context.cwd,
+            "source": context.source,
+            "ticket_id": ticket_id,
+            "feature": normalize_branch_name(feature),
+            "location": location or f"branch:{normalize_branch_name(feature)}",
+            "last_seen": context.last_seen.isoformat(),
+        },
+    )
+
+
+def read_execution_ticket_context(base: Path, context: ExecutionContext) -> dict[str, Any] | None:
+    try:
+        data = read_json(execution_context_path(base, context))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if data.get("context_id") != context.context_id:
+        return None
+    ticket_id = data.get("ticket_id")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        return None
+    return data
+
+
+def execution_context_is_stale(
+    context: ExecutionContext,
+    *,
+    stale_after: timedelta,
+    now: datetime | None = None,
+) -> bool:
+    return (now or datetime.now(UTC)) - context.last_seen > stale_after
+
+
+def terminal_context_identity(session_id: str | None = None) -> str | None:
+    terminal_identity = terminal_fallback_identity()
+    if terminal_identity:
+        source, value = terminal_identity
+        prefix = "tty" if source == "TTY" else source
+        return f"{prefix}:{value}"
 
     if session_id:
         return f"session:{session_id}"

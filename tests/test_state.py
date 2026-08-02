@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,10 +18,15 @@ from kingdom.state import (
     check_no_legacy_runs,
     ensure_base_layout,
     ensure_branch_layout,
+    execution_context_is_stale,
+    execution_context_path,
     find_project_root,
     normalize_branch_name,
     parse_worktree_list,
+    read_execution_ticket_context,
+    record_execution_ticket_context,
     resolve_current_run,
+    resolve_execution_context,
     set_current_run,
     state_root,
     terminal_context_identity,
@@ -166,6 +172,130 @@ class TestTerminalContextIdentity:
 
         assert pane_one == "TMUX_PANE:%1"
         assert pane_two == "TMUX_PANE:%2"
+
+
+class TestExecutionContext:
+    def test_explicit_context_takes_precedence(self) -> None:
+        env = {
+            "KD_CONTEXT": "explicit-session",
+            "CODEX_THREAD_ID": "codex-thread",
+            "TERM_SESSION_ID": "terminal-session",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            context = resolve_execution_context(host="codex", session_id="hook-session")
+
+        assert context is not None
+        assert context.host == "codex"
+        assert context.session_id == "explicit-session"
+        assert context.source == "KD_CONTEXT"
+        assert context.context_id.startswith("codex:")
+
+    def test_hook_session_takes_precedence_over_codex_and_terminal(self) -> None:
+        env = {"CODEX_THREAD_ID": "codex-thread", "TERM_SESSION_ID": "terminal-session"}
+        with patch.dict(os.environ, env, clear=True):
+            context = resolve_execution_context(host="claude", session_id="hook-session")
+
+        assert context is not None
+        assert context.host == "claude"
+        assert context.session_id == "hook-session"
+        assert context.source == "hook"
+
+    def test_codex_thread_precedes_terminal_fallback(self) -> None:
+        env = {"CODEX_THREAD_ID": "codex-thread", "TERM_SESSION_ID": "terminal-session"}
+        with patch.dict(os.environ, env, clear=True):
+            context = resolve_execution_context()
+
+        assert context is not None
+        assert context.host == "codex"
+        assert context.session_id == "codex-thread"
+        assert context.source == "CODEX_THREAD_ID"
+
+    def test_terminal_identity_is_the_final_fallback(self) -> None:
+        with patch.dict(os.environ, {"TMUX_PANE": "%7"}, clear=True):
+            context = resolve_execution_context()
+
+        assert context is not None
+        assert context.host == "terminal"
+        assert context.session_id == "TMUX_PANE:%7"
+        assert context.source == "TMUX_PANE"
+
+    def test_missing_identity_returns_none(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            assert resolve_execution_context() is None
+
+    def test_rejects_prompt_like_explicit_context(self) -> None:
+        with (
+            patch.dict(os.environ, {"KD_CONTEXT": "first line\nsecond line"}, clear=True),
+            pytest.raises(ValueError, match="single-line identifier"),
+        ):
+            resolve_execution_context()
+
+    def test_records_atomic_human_readable_ticket_binding(self, tmp_path: Path) -> None:
+        ensure_base_layout(tmp_path)
+        now = datetime(2026, 8, 2, 15, 30, tzinfo=UTC)
+        with patch.dict(os.environ, {"CODEX_THREAD_ID": "thread-123"}, clear=True):
+            context = resolve_execution_context(cwd=tmp_path, now=now)
+
+        assert context is not None
+        record_execution_ticket_context(
+            tmp_path,
+            context,
+            "abcd",
+            feature="feature/context",
+            location="branch:feature-context",
+        )
+
+        path = execution_context_path(tmp_path, context)
+        assert path.name.startswith("codex-")
+        assert not list(path.parent.glob("*.tmp"))
+        assert read_execution_ticket_context(tmp_path, context) == {
+            "context_id": context.context_id,
+            "cwd": str(tmp_path),
+            "feature": "feature-context",
+            "host": "codex",
+            "last_seen": "2026-08-02T15:30:00+00:00",
+            "location": "branch:feature-context",
+            "parent_agent_id": None,
+            "schema_version": 1,
+            "session_id": "thread-123",
+            "source": "CODEX_THREAD_ID",
+            "ticket_id": "abcd",
+        }
+
+    def test_context_bindings_are_isolated(self, tmp_path: Path) -> None:
+        ensure_base_layout(tmp_path)
+        with patch.dict(os.environ, {"KD_CONTEXT": "first"}, clear=True):
+            first = resolve_execution_context(host="codex", cwd=tmp_path)
+        with patch.dict(os.environ, {"KD_CONTEXT": "second"}, clear=True):
+            second = resolve_execution_context(host="codex", cwd=tmp_path)
+
+        assert first is not None
+        assert second is not None
+        record_execution_ticket_context(tmp_path, first, "aaaa", feature="feature/context")
+        record_execution_ticket_context(tmp_path, second, "bbbb", feature="feature/context")
+
+        assert read_execution_ticket_context(tmp_path, first)["ticket_id"] == "aaaa"
+        assert read_execution_ticket_context(tmp_path, second)["ticket_id"] == "bbbb"
+
+    def test_stale_context_uses_last_seen(self) -> None:
+        last_seen = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+        with patch.dict(os.environ, {"KD_CONTEXT": "session"}, clear=True):
+            context = resolve_execution_context(now=last_seen)
+
+        assert context is not None
+        assert not execution_context_is_stale(
+            context,
+            stale_after=timedelta(hours=2),
+            now=last_seen + timedelta(minutes=90),
+        )
+        assert execution_context_is_stale(
+            context,
+            stale_after=timedelta(hours=2),
+            now=last_seen + timedelta(hours=3),
+        )
 
 
 class TestEnsureBaseLayout:
