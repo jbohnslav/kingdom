@@ -22,6 +22,7 @@ from rich.table import Table
 from rich.text import Text
 
 from kingdom.state import (
+    ExecutionContext,
     archive_root,
     backlog_root,
     branch_root,
@@ -29,6 +30,7 @@ from kingdom.state import (
     clear_ticket_execution_contexts,
     normalize_branch_name,
     read_execution_ticket_context,
+    read_terminal_ticket_context,
     record_execution_ticket_context,
     record_terminal_ticket_context,
     resolve_current_run,
@@ -866,6 +868,73 @@ def unassign_previous_context_ticket(base: Path, context_id: str, previous_ticke
     write_ticket(result.ticket, result.path)
 
 
+class AmbiguousLegacyTickets(RuntimeError):
+    def __init__(self, ticket_ids: list[str]) -> None:
+        self.ticket_ids = ticket_ids
+        super().__init__(f"Multiple legacy in-progress tickets: {', '.join(ticket_ids)}")
+
+
+def migrate_ticket_to_execution_context(
+    base: Path,
+    context: ExecutionContext,
+    ticket: Ticket,
+    ticket_path: Path,
+    *,
+    feature: str,
+    location: str,
+) -> dict[str, Any]:
+    ticket.assignee = context.context_id
+    write_ticket(ticket, ticket_path)
+    record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
+    binding = read_execution_ticket_context(base, context)
+    if binding is None:
+        raise RuntimeError(f"Failed to record execution context for ticket {ticket.id}")
+    return binding
+
+
+def migrate_legacy_execution_binding(
+    base: Path,
+    context: ExecutionContext,
+    feature: str,
+) -> dict[str, Any] | None:
+    normalized_feature = normalize_branch_name(feature)
+    legacy_binding = read_terminal_ticket_context(base)
+    if legacy_binding and legacy_binding.get("feature") == normalized_feature:
+        bound_ticket = ticket_from_execution_binding(base, legacy_binding)
+        if bound_ticket:
+            ticket, ticket_path = bound_ticket
+            if ticket.status == "in_progress" and not (ticket.assignee or "").startswith("peasant-"):
+                return migrate_ticket_to_execution_context(
+                    base,
+                    context,
+                    ticket,
+                    ticket_path,
+                    feature=feature,
+                    location=legacy_binding.get("location") or f"branch:{normalized_feature}",
+                )
+
+    tickets_dir = branch_root(base, feature) / "tickets"
+    candidates = [
+        ticket
+        for ticket in list_tickets(tickets_dir)
+        if ticket.status == "in_progress" and ticket.assignee in (None, "hand")
+    ]
+    if len(candidates) > 1:
+        raise AmbiguousLegacyTickets(sorted(ticket.id for ticket in candidates))
+    if not candidates:
+        return None
+
+    ticket = candidates[0]
+    return migrate_ticket_to_execution_context(
+        base,
+        context,
+        ticket,
+        tickets_dir / f"{ticket.id}.md",
+        feature=feature,
+        location=f"branch:{normalized_feature}",
+    )
+
+
 @ticket_app.command("start", help="Mark a ticket as in_progress.")
 def ticket_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
@@ -951,6 +1020,18 @@ def ticket_current(
             raise typer.Exit(code=1)
 
         binding = read_execution_ticket_context(base, context)
+        if binding is None:
+            try:
+                binding = migrate_legacy_execution_binding(base, context, feature)
+            except AmbiguousLegacyTickets as exc:
+                if id_only:
+                    raise typer.Exit(code=1) from None
+                ticket_list = ", ".join(exc.ticket_ids)
+                print_error(
+                    f"Multiple legacy in-progress tickets ({ticket_list}); refusing to guess. "
+                    "Run `kd tk start <id>` to bind this context explicitly."
+                )
+                raise typer.Exit(code=1) from None
         if binding is None or binding.get("feature") != normalize_branch_name(feature):
             if id_only:
                 raise typer.Exit(code=1)
