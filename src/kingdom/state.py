@@ -479,11 +479,12 @@ def prune_stale_execution_contexts(
     stale_after: timedelta = DEFAULT_CONTEXT_STALE_AFTER,
     now: datetime | None = None,
 ) -> list[str]:
-    stale_ids = {
-        context["context_id"]
+    stale_contexts = [
+        context
         for context in list_execution_contexts(base, feature=feature, stale_after=stale_after, now=now)
         if context["stale"]
-    }
+    ]
+    stale_ids = {context["context_id"] for context in stale_contexts}
     if not stale_ids:
         return []
 
@@ -499,6 +500,21 @@ def prune_stale_execution_contexts(
         path.unlink(missing_ok=True)
         (path.parent / f".{path.name}.lock").unlink(missing_ok=True)
         removed.append(context_id)
+
+    stale_legacy_bindings = {
+        (context.get("ticket_id"), context.get("feature"))
+        for context in stale_contexts
+        if context.get("ticket_id") and context.get("feature")
+    }
+    for path in terminal_context_root(base).glob("*.json"):
+        try:
+            data = read_json(path)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+        if (data.get("ticket_id"), data.get("feature")) not in stale_legacy_bindings:
+            continue
+        path.unlink(missing_ok=True)
+        (path.parent / f".{path.name}.lock").unlink(missing_ok=True)
     return sorted(removed)
 
 
