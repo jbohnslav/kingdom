@@ -379,6 +379,37 @@ def read_execution_ticket_context(base: Path, context: ExecutionContext) -> dict
     return data
 
 
+def clear_ticket_execution_contexts(
+    base: Path,
+    ticket_id: str,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    contexts_root = execution_context_root(base)
+    if not contexts_root.exists():
+        return []
+
+    timestamp = (now or datetime.now(UTC)).isoformat()
+    cleared = []
+    for path in sorted(contexts_root.glob("*.json")):
+        lock_path = path.parent / f".{path.name}.lock"
+        with flock(lock_path):
+            try:
+                data = read_json(path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            if data.get("ticket_id") != ticket_id:
+                continue
+            data["ticket_id"] = None
+            data["last_seen"] = timestamp
+            data["unbound_at"] = timestamp
+            write_json(path, data)
+            context_id = data.get("context_id")
+            if isinstance(context_id, str):
+                cleared.append(context_id)
+    return cleared
+
+
 def execution_context_is_stale(
     context: ExecutionContext,
     *,
@@ -552,6 +583,7 @@ def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, P
     if create_gitignore and not gitignore_path.exists():
         gitignore_content = """# Operational state (not tracked)
 *.json
+*.json.lock
 *.jsonl
 *.log
 *.session

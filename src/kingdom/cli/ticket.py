@@ -11,7 +11,7 @@ import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console, Group
@@ -26,9 +26,13 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     branches_root,
+    clear_ticket_execution_contexts,
     normalize_branch_name,
+    read_execution_ticket_context,
+    record_execution_ticket_context,
     record_terminal_ticket_context,
     resolve_current_run,
+    resolve_execution_context,
 )
 from kingdom.ticket import (
     STATUSES,
@@ -820,11 +824,53 @@ def terminal_context_location_for_start(base: Path, ticket_path: Path) -> str:
     return f"branch:{normalize_branch_name(resolve_current_run(base))}"
 
 
+def ticket_from_execution_binding(base: Path, binding: dict[str, Any]) -> tuple[Ticket, Path] | None:
+    ticket_id = binding.get("ticket_id")
+    location = binding.get("location")
+    feature = binding.get("feature")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        return None
+
+    if location == "backlog":
+        tickets_dir = backlog_root(base) / "tickets"
+    elif isinstance(location, str) and location.startswith("archive:"):
+        tickets_dir = archive_root(base) / location.removeprefix("archive:") / "tickets"
+    elif isinstance(location, str) and location.startswith("branch:"):
+        tickets_dir = branch_root(base, location.removeprefix("branch:")) / "tickets"
+    elif isinstance(feature, str) and feature:
+        tickets_dir = branch_root(base, feature) / "tickets"
+    else:
+        return None
+
+    for filename in (f"{ticket_id}.md", f"kin-{ticket_id}.md"):
+        ticket_path = tickets_dir / filename
+        try:
+            ticket = read_ticket(ticket_path)
+        except (FileNotFoundError, ValueError, OSError):
+            continue
+        if ticket.id == ticket_id:
+            return ticket, ticket_path
+    return None
+
+
+def unassign_previous_context_ticket(base: Path, context_id: str, previous_ticket_id: str, new_ticket_id: str) -> None:
+    if previous_ticket_id == new_ticket_id:
+        return
+    try:
+        result = find_ticket(base, previous_ticket_id)
+    except AmbiguousTicketMatch:
+        return
+    if result is None or result.ticket.assignee != context_id:
+        return
+    result.ticket.assignee = None
+    write_ticket(result.ticket, result.path)
+
+
 @ticket_app.command("start", help="Mark a ticket as in_progress.")
 def ticket_start(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
-    """Set ticket status to in_progress and assign it to the Hand."""
+    """Set ticket status to in_progress and bind it to this execution context."""
     base = require_project_root()
     try:
         feature = resolve_current_run(base)
@@ -832,21 +878,41 @@ def ticket_start(
         print_error("No active session. Use `kd start` first.")
         raise typer.Exit(code=1) from None
 
+    try:
+        context = resolve_execution_context()
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
+    if context is None:
+        print_error("No execution context detected. Set KD_CONTEXT before starting a ticket.")
+        raise typer.Exit(code=1)
+
     _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     location = terminal_context_location_for_start(base, ticket_path)
-    ticket = update_ticket_status(ticket_id, "in_progress", assignee="hand")
+    previous_binding = read_execution_ticket_context(base, context)
+    if previous_binding:
+        previous_ticket_id = previous_binding["ticket_id"]
+        unassign_previous_context_ticket(base, context.context_id, previous_ticket_id, ticket_id)
+
+    ticket = update_ticket_status(ticket_id, "in_progress", assignee=context.context_id)
+    clear_ticket_execution_contexts(base, ticket.id)
+    record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
     record_terminal_ticket_context(base, ticket.id, feature=feature, location=location)
 
 
-@ticket_app.command("current", help="Show the in-progress ticket for this branch.")
+@ticket_app.command("current", help="Show the ticket bound to this execution context.")
 def ticket_current(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
     id_only: Annotated[bool, typer.Option("--id", help="Print only the ticket ID.")] = False,
     exclude_peasant: Annotated[
         bool, typer.Option("--exclude-peasant", help="Skip peasant-assigned tickets; fall back to epic.")
     ] = False,
+    branch_fallback: Annotated[
+        bool,
+        typer.Option("--branch-fallback", help="Explicitly choose the first in-progress ticket on the branch."),
+    ] = False,
 ) -> None:
-    """Find and display the ticket currently marked as in_progress on this branch."""
+    """Find and display the ticket bound to the calling execution context."""
     base = require_project_root()
 
     try:
@@ -857,26 +923,64 @@ def ticket_current(
         print_error("No active session. Use `kd start` first.")
         raise typer.Exit(code=1) from None
 
-    tickets_dir = branch_root(base, feature) / "tickets"
-    if not tickets_dir.exists():
-        if id_only:
+    if branch_fallback:
+        tickets_dir = branch_root(base, feature) / "tickets"
+        in_progress = list_tickets(tickets_dir) if tickets_dir.exists() else []
+        in_progress = [ticket for ticket in in_progress if ticket.status == "in_progress"]
+        if exclude_peasant:
+            in_progress = [ticket for ticket in in_progress if not (ticket.assignee or "").startswith("peasant-")]
+        if not in_progress:
+            if id_only:
+                raise typer.Exit(code=1)
+            print_error("No in-progress ticket on this branch.")
             raise typer.Exit(code=1)
-        print_error("No in-progress ticket on this branch.")
-        raise typer.Exit(code=1)
-
-    in_progress = [t for t in list_tickets(tickets_dir) if t.status == "in_progress"]
-
-    if exclude_peasant:
-        in_progress = [t for t in in_progress if not (t.assignee or "").startswith("peasant-")]
-
-    if not in_progress:
-        if id_only:
+        ticket = in_progress[0]
+        ticket_path = tickets_dir / f"{ticket.id}.md"
+    else:
+        try:
+            context = resolve_execution_context()
+        except ValueError as exc:
+            if id_only:
+                raise typer.Exit(code=1) from None
+            print_error(str(exc))
+            raise typer.Exit(code=1) from None
+        if context is None:
+            if id_only:
+                raise typer.Exit(code=1)
+            print_error("No execution context detected. Set KD_CONTEXT or use --branch-fallback.")
             raise typer.Exit(code=1)
-        print_error("No in-progress ticket on this branch.")
-        raise typer.Exit(code=1)
 
-    ticket = in_progress[0]
-    ticket_path = tickets_dir / f"{ticket.id}.md"
+        binding = read_execution_ticket_context(base, context)
+        if binding is None or binding.get("feature") != normalize_branch_name(feature):
+            if id_only:
+                raise typer.Exit(code=1)
+            print_error("No ticket bound to this execution context. Run `kd tk start <id>` or use `--branch-fallback`.")
+            raise typer.Exit(code=1)
+
+        bound_ticket = ticket_from_execution_binding(base, binding)
+        if bound_ticket is None:
+            if id_only:
+                raise typer.Exit(code=1)
+            print_error(f"Bound ticket {binding['ticket_id']} cannot be found. Run `kd tk start <id>` to recover.")
+            raise typer.Exit(code=1)
+        ticket, ticket_path = bound_ticket
+        wrong_assignee = ticket.assignee != context.context_id
+        excluded = exclude_peasant and (ticket.assignee or "").startswith("peasant-")
+        if ticket.status != "in_progress" or wrong_assignee or excluded:
+            if id_only:
+                raise typer.Exit(code=1)
+            print_error(
+                f"Bound ticket {ticket.id} is no longer active for this execution context. "
+                "Run `kd tk start <id>` to recover."
+            )
+            raise typer.Exit(code=1)
+        record_execution_ticket_context(
+            base,
+            context,
+            ticket.id,
+            feature=feature,
+            location=binding.get("location"),
+        )
 
     if id_only:
         typer.echo(ticket.id)
@@ -971,6 +1075,7 @@ def ticket_close(
     ticket.status = "closed"
     ticket.closed_at = datetime.now(UTC)
     write_ticket(ticket, ticket_path)
+    clear_ticket_execution_contexts(base, ticket.id)
 
     if reason:
         from kingdom.harness import append_worklog
@@ -998,7 +1103,8 @@ def ticket_reopen(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Set ticket status back to open."""
-    update_ticket_status(ticket_id, "open")
+    ticket = update_ticket_status(ticket_id, "open")
+    clear_ticket_execution_contexts(require_project_root(), ticket.id)
 
 
 @ticket_app.command("status", help="Set a ticket's status to an arbitrary value.")
@@ -1007,7 +1113,9 @@ def ticket_status(
     status: Annotated[str, typer.Argument(help="New status (e.g. blocked, in_review, waiting).")],
 ) -> None:
     """Set ticket status to any arbitrary string."""
-    update_ticket_status(ticket_id, status)
+    ticket = update_ticket_status(ticket_id, status)
+    if status != "in_progress":
+        clear_ticket_execution_contexts(require_project_root(), ticket.id)
 
 
 @ticket_app.command("delete", help="Permanently delete a ticket file.")
@@ -1041,6 +1149,7 @@ def ticket_delete(
             raise typer.Exit(code=0)
 
     ticket_path.unlink()
+    clear_ticket_execution_contexts(base, ticket.id)
     typer.echo(f"Deleted {ticket.id} — {ticket.title}")
 
 

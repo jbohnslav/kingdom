@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -13,6 +15,7 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     ensure_branch_layout,
+    resolve_execution_context,
 )
 from kingdom.ticket import Ticket, write_ticket
 
@@ -583,19 +586,21 @@ class TestTicketListTable:
         assert result.exit_code == 0
         assert "@alice" in result.output
 
-    def test_table_shows_hand_assignee_after_start(self, cli_project: Path) -> None:
+    def test_table_shows_context_assignee_after_start(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         ticket = Ticket(id="hand", status="open", title="Hand ticket", body="", created=datetime.now(UTC))
         write_ticket(ticket, tickets_dir / "hand.md")
 
-        start_result = runner.invoke(ticket_app, ["start", "hand"])
-        assert start_result.exit_code == 0, start_result.output
-
-        result = runner.invoke(ticket_app, ["list"])
+        with patch.dict(os.environ, {"KD_CONTEXT": "list-session"}, clear=True):
+            start_result = runner.invoke(ticket_app, ["start", "hand"])
+            assert start_result.exit_code == 0, start_result.output
+            context = resolve_execution_context()
+            result = runner.invoke(ticket_app, ["list"])
 
         assert result.exit_code == 0, result.output
+        assert context is not None
         assert "hand" in result.output
-        assert "@hand" in result.output
+        assert f"@{context.context_id}" in result.output
 
     def test_table_shows_deps(self, cli_project: Path) -> None:
         """Dependencies should be visible in the table."""

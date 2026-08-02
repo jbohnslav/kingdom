@@ -354,6 +354,7 @@ class TestEnsureBaseLayout:
         assert gitignore_path.exists()
         content = gitignore_path.read_text()
         assert "**/logs/" in content
+        assert "*.json.lock" in content
 
 
 class TestEnsureBranchLayout:

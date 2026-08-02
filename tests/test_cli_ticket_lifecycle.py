@@ -16,7 +16,9 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     ensure_branch_layout,
+    read_execution_ticket_context,
     read_terminal_ticket_context,
+    resolve_execution_context,
 )
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
@@ -326,7 +328,7 @@ class TestTicketCloseArchive:
         archived_path = archive_dir / "kin-strt.md"
         write_ticket(ticket, archived_path)
 
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-backlog-terminal-test"}):
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-backlog-terminal-test"}, clear=True):
             result = runner.invoke(ticket_app, ["start", "kin-strt"])
 
             assert result.exit_code == 0, result.output
@@ -339,18 +341,21 @@ class TestTicketCloseArchive:
         assert context["ticket_id"] == "kin-strt"
         assert context["location"] == "backlog"
 
-    def test_start_assigns_ticket_to_hand(self, cli_project: Path) -> None:
+    def test_start_assigns_ticket_to_execution_context(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         ticket_path = create_ticket_in(branch_dir, "kin-hand")
 
-        result = runner.invoke(ticket_app, ["start", "kin-hand"])
+        with patch.dict(os.environ, {"KD_CONTEXT": "assignment-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["start", "kin-hand"])
+            context = resolve_execution_context()
 
         assert result.exit_code == 0, result.output
+        assert context is not None
         ticket = read_ticket(ticket_path)
         assert ticket.status == "in_progress"
-        assert ticket.assignee == "hand"
+        assert ticket.assignee == context.context_id
 
-    def test_start_overwrites_existing_assignee_with_hand(self, cli_project: Path) -> None:
+    def test_start_overwrites_existing_assignee_with_context(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         ticket = Ticket(
             id="kin-asgn",
@@ -363,10 +368,13 @@ class TestTicketCloseArchive:
         ticket_path = branch_dir / "kin-asgn.md"
         write_ticket(ticket, ticket_path)
 
-        result = runner.invoke(ticket_app, ["start", "kin-asgn"])
+        with patch.dict(os.environ, {"KD_CONTEXT": "replacement-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["start", "kin-asgn"])
+            context = resolve_execution_context()
 
         assert result.exit_code == 0, result.output
-        assert read_ticket(ticket_path).assignee == "hand"
+        assert context is not None
+        assert read_ticket(ticket_path).assignee == context.context_id
 
     def test_start_without_active_session_does_not_mutate_ticket(self) -> None:
         with runner.isolated_filesystem():
@@ -386,7 +394,7 @@ class TestTicketCloseArchive:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(branch_dir, "kin-term")
 
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "terminal-ticket-test"}):
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "terminal-ticket-test"}, clear=True):
             result = runner.invoke(ticket_app, ["start", "kin-term"])
 
             assert result.exit_code == 0, result.output
@@ -401,7 +409,7 @@ class TestTicketCloseArchive:
         backlog_dir = backlog_root(cli_project) / "tickets"
         create_ticket_in(backlog_dir, "kin-bctx")
 
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "backlog-terminal-ticket-test"}):
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "backlog-terminal-ticket-test"}, clear=True):
             result = runner.invoke(ticket_app, ["start", "kin-bctx"])
 
             assert result.exit_code == 0, result.output
@@ -416,7 +424,7 @@ class TestTicketCloseArchive:
         archive_dir = archive_root(cli_project) / "old-feature" / "tickets"
         create_ticket_in(archive_dir, "kin-actx")
 
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-branch-terminal-test"}):
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-branch-terminal-test"}, clear=True):
             result = runner.invoke(ticket_app, ["start", "kin-actx"])
 
             assert result.exit_code == 0, result.output
@@ -424,7 +432,8 @@ class TestTicketCloseArchive:
 
         ticket = read_ticket(archive_dir / "kin-actx.md")
         assert ticket.status == "in_progress"
-        assert ticket.assignee == "hand"
+        assert ticket.assignee is not None
+        assert ticket.assignee.startswith("terminal:")
         assert context is not None
         assert context["ticket_id"] == "kin-actx"
         assert context["feature"] == "feature-ticket-test"
@@ -514,6 +523,57 @@ class TestTicketCloseReason:
         assert result.exit_code == 0, result.output
         content = path.read_text()
         assert "## Worklog" not in content
+
+
+class TestTicketContextLifecycle:
+    def test_start_without_execution_context_does_not_mutate_ticket(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(branch_dir, "kin-noctx")
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            result = runner.invoke(ticket_app, ["start", "kin-noctx"])
+
+        assert result.exit_code == 1
+        assert "Set KD_CONTEXT" in result.output
+        assert read_ticket(ticket_path).status == "open"
+
+    def test_close_clears_execution_context_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-ctxc")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "close-session"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-ctxc"]).exit_code == 0
+            context = resolve_execution_context()
+            assert context is not None
+            assert read_execution_ticket_context(cli_project, context) is not None
+
+            result = runner.invoke(ticket_app, ["close", "kin-ctxc"])
+
+            assert result.exit_code == 0, result.output
+            assert read_execution_ticket_context(cli_project, context) is None
+
+            assert runner.invoke(ticket_app, ["reopen", "kin-ctxc"]).exit_code == 0
+            current = runner.invoke(ticket_app, ["current"])
+
+            assert current.exit_code == 1
+            assert "No ticket bound" in current.output
+
+    def test_start_switches_binding_and_unassigns_previous_ticket(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        first_path = create_ticket_in(branch_dir, "kin-one1")
+        second_path = create_ticket_in(branch_dir, "kin-two2")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "switch-session"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-one1"]).exit_code == 0
+            assert runner.invoke(ticket_app, ["start", "kin-two2"]).exit_code == 0
+            current = runner.invoke(ticket_app, ["current", "--id"])
+
+        assert current.output.strip() == "kin-two2"
+        assert read_ticket(first_path).assignee is None
+        assert read_ticket(second_path).assignee is not None
 
 
 class TestTicketCloseDuplicate:
