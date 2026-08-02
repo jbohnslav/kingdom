@@ -600,7 +600,9 @@ class TestTicketListTable:
         assert result.exit_code == 0, result.output
         assert context is not None
         assert "hand" in result.output
-        assert f"@{context.context_id}" in result.output
+        host, digest = context.context_id.split(":", 1)
+        assert f"@{host}:{digest[:8]}" in result.output
+        assert context.context_id not in result.output
 
     def test_table_shows_deps(self, cli_project: Path) -> None:
         """Dependencies should be visible in the table."""

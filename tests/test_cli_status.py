@@ -1,15 +1,41 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
 from kingdom.cli import app
-from kingdom.state import branch_root, ensure_branch_layout, set_current_run
+from kingdom.state import (
+    branch_root,
+    ensure_branch_layout,
+    list_execution_contexts,
+    record_execution_ticket_context,
+    resolve_execution_context,
+    set_current_run,
+)
 from kingdom.ticket import Ticket, write_ticket
 
 runner = CliRunner()
+
+
+def record_test_context(
+    base: Path,
+    feature: str,
+    ticket_id: str,
+    session_id: str,
+    *,
+    now: datetime,
+    role: str = "agent",
+) -> str:
+    with patch.dict(os.environ, {"KD_CONTEXT": session_id}, clear=True):
+        context = resolve_execution_context(host="codex", role=role, cwd=base, now=now)
+    assert context is not None
+    record_execution_ticket_context(base, context, ticket_id, feature=feature)
+    return context.context_id
 
 
 def test_status_human_readable_no_tickets() -> None:
@@ -154,3 +180,83 @@ def test_status_json_includes_identity_and_assignments() -> None:
         assert data["agent_name"] == "hand"
         assert data["assignments"]["hand"] == ["kin-0001"]
         assert data["assignments"]["peasant-kin-0002"] == ["kin-0002"]
+
+
+def test_status_json_includes_live_and_stale_execution_contexts() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+        tickets_dir = branch_root(base, feature) / "tickets"
+        now = datetime.now(UTC)
+
+        live_id = record_test_context(base, feature, "live", "live-session", now=now, role="agent")
+        stale_id = record_test_context(
+            base,
+            feature,
+            "stale",
+            "stale-session",
+            now=now - timedelta(hours=25),
+            role="subagent",
+        )
+        write_ticket(
+            Ticket(id="live", title="Live work", status="in_progress", assignee=live_id, parent="epic1"),
+            tickets_dir / "live.md",
+        )
+        write_ticket(
+            Ticket(id="stale", title="Stale work", status="in_progress", assignee=stale_id),
+            tickets_dir / "stale.md",
+        )
+
+        result = runner.invoke(app, ["status", "--json", "--stale-hours", "24"])
+
+        assert result.exit_code == 0, result.output
+        contexts = {context["ticket_id"]: context for context in json.loads(result.output)["contexts"]}
+        assert contexts["live"]["host"] == "codex"
+        assert contexts["live"]["role"] == "agent"
+        assert contexts["live"]["epic"] == "epic1"
+        assert contexts["live"]["stale"] is False
+        assert contexts["stale"]["role"] == "subagent"
+        assert contexts["stale"]["stale"] is True
+
+
+def test_status_human_readable_shows_session_assignments() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+        tickets_dir = branch_root(base, feature) / "tickets"
+        now = datetime.now(UTC)
+        context_id = record_test_context(base, feature, "ctx1", "status-session", now=now)
+        write_ticket(
+            Ticket(id="ctx1", title="Session work", status="in_progress", assignee=context_id),
+            tickets_dir / "ctx1.md",
+        )
+
+        result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0, result.output
+        assert "Sessions:" in result.output
+        assert "codex" in result.output
+        assert "agent" in result.output
+        assert "ctx1 [in_progress] Session work" in result.output
+
+
+def test_status_prune_stale_removes_only_stale_contexts() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+        now = datetime.now(UTC)
+        record_test_context(base, feature, "live", "live-session", now=now)
+        record_test_context(base, feature, "stale", "stale-session", now=now - timedelta(days=2))
+
+        result = runner.invoke(app, ["status", "--prune-stale", "--stale-hours", "24"])
+
+        assert result.exit_code == 0, result.output
+        assert "Pruned 1 stale execution context" in result.output
+        contexts = list_execution_contexts(base, feature=feature, stale_after=timedelta(hours=24), now=now)
+        assert [context["ticket_id"] for context in contexts] == ["live"]

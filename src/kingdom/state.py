@@ -230,6 +230,7 @@ def execution_context_root(base: Path) -> Path:
 class ExecutionContext:
     context_id: str
     host: str
+    role: str
     session_id: str
     parent_agent_id: str | None
     cwd: str
@@ -251,6 +252,7 @@ TERMINAL_CONTEXT_ENV_VARS = (
 )
 
 MAX_CONTEXT_IDENTIFIER_LENGTH = 256
+DEFAULT_CONTEXT_STALE_AFTER = timedelta(hours=24)
 
 
 def validate_context_identifier(name: str, value: str) -> str:
@@ -271,6 +273,13 @@ def normalize_context_host(host: str) -> str:
     return normalized
 
 
+def compact_context_id(context_id: str, digest_length: int = 8) -> str:
+    host, separator, digest = context_id.partition(":")
+    if not separator or len(digest) <= digest_length or not re.fullmatch(r"[0-9a-f]+", digest):
+        return context_id
+    return f"{host}:{digest[:digest_length]}"
+
+
 def terminal_fallback_identity() -> tuple[str, str] | None:
     for name in TERMINAL_CONTEXT_ENV_VARS:
         value = os.environ.get(name)
@@ -289,6 +298,7 @@ def resolve_execution_context(
     *,
     session_id: str | None = None,
     host: str | None = None,
+    role: str | None = None,
     parent_agent_id: str | None = None,
     cwd: Path | None = None,
     now: datetime | None = None,
@@ -318,6 +328,9 @@ def resolve_execution_context(
         resolved_host = host or "terminal"
 
     normalized_host = normalize_context_host(resolved_host)
+    resolved_role = normalize_context_host(
+        role or os.environ.get("KD_ROLE") or ("subagent" if parent_agent_id else "agent")
+    )
     digest = hashlib.sha256(f"{normalized_host}\0{stable_id}".encode()).hexdigest()[:16]
     validated_parent = (
         validate_context_identifier("parent_agent_id", parent_agent_id) if parent_agent_id is not None else None
@@ -325,6 +338,7 @@ def resolve_execution_context(
     return ExecutionContext(
         context_id=f"{normalized_host}:{digest}",
         host=normalized_host,
+        role=resolved_role,
         session_id=stable_id,
         parent_agent_id=validated_parent,
         cwd=str((cwd or Path.cwd()).resolve()),
@@ -354,6 +368,7 @@ def record_execution_ticket_context(
             "schema_version": 1,
             "context_id": context.context_id,
             "host": context.host,
+            "role": context.role,
             "session_id": context.session_id,
             "parent_agent_id": context.parent_agent_id,
             "cwd": context.cwd,
@@ -408,6 +423,83 @@ def clear_ticket_execution_contexts(
             if isinstance(context_id, str):
                 cleared.append(context_id)
     return cleared
+
+
+def parse_context_last_seen(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp
+
+
+def list_execution_contexts(
+    base: Path,
+    *,
+    feature: str | None = None,
+    stale_after: timedelta = DEFAULT_CONTEXT_STALE_AFTER,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    contexts_root = execution_context_root(base)
+    if not contexts_root.exists():
+        return []
+
+    current_time = now or datetime.now(UTC)
+    normalized_feature = normalize_branch_name(feature) if feature else None
+    records: list[tuple[datetime, dict[str, Any]]] = []
+    for path in contexts_root.glob("*.json"):
+        try:
+            data = read_json(path)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+        if normalized_feature and data.get("feature") != normalized_feature:
+            continue
+        if not isinstance(data.get("context_id"), str) or not isinstance(data.get("host"), str):
+            continue
+        last_seen = parse_context_last_seen(data.get("last_seen"))
+        if last_seen is None:
+            continue
+        record = dict(data)
+        record["role"] = data.get("role") if isinstance(data.get("role"), str) else "agent"
+        record["stale"] = current_time - last_seen > stale_after
+        records.append((last_seen, record))
+
+    records.sort(key=lambda item: item[0], reverse=True)
+    return [record for _, record in records]
+
+
+def prune_stale_execution_contexts(
+    base: Path,
+    *,
+    feature: str | None = None,
+    stale_after: timedelta = DEFAULT_CONTEXT_STALE_AFTER,
+    now: datetime | None = None,
+) -> list[str]:
+    stale_ids = {
+        context["context_id"]
+        for context in list_execution_contexts(base, feature=feature, stale_after=stale_after, now=now)
+        if context["stale"]
+    }
+    if not stale_ids:
+        return []
+
+    removed = []
+    for path in execution_context_root(base).glob("*.json"):
+        try:
+            data = read_json(path)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+        context_id = data.get("context_id")
+        if context_id not in stale_ids:
+            continue
+        path.unlink(missing_ok=True)
+        (path.parent / f".{path.name}.lock").unlink(missing_ok=True)
+        removed.append(context_id)
+    return sorted(removed)
 
 
 def execution_context_is_stale(

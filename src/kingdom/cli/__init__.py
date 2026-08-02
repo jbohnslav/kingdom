@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -22,11 +23,15 @@ from kingdom.design import ensure_design_initialized
 from kingdom.state import (
     branch_root,
     clear_current_run,
+    compact_context_id,
     ensure_base_layout,
     ensure_branch_layout,
     find_project_root,
     get_current_git_branch,
+    list_execution_contexts,
     normalize_branch_name,
+    parse_context_last_seen,
+    prune_stale_execution_contexts,
     read_json,
     resolve_current_run,
     set_current_run,
@@ -397,6 +402,14 @@ def done(
 @app.command(help="Show current branch, design doc status, and breakdown status.")
 def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
+    stale_hours: Annotated[
+        float,
+        typer.Option("--stale-hours", min=0.01, help="Hours without activity before a context is stale."),
+    ] = 24.0,
+    prune_stale: Annotated[
+        bool,
+        typer.Option("--prune-stale", help="Remove stale runtime context bindings before displaying status."),
+    ] = False,
 ) -> None:
     base = require_project_root()
     try:
@@ -430,6 +443,18 @@ def status(
     # Get ticket counts
     tickets_dir = get_tickets_dir(base)
     tickets = list_tickets(tickets_dir) if tickets_dir.exists() else []
+    now = datetime.now(UTC)
+    stale_after = timedelta(hours=stale_hours)
+    pruned_contexts = (
+        prune_stale_execution_contexts(base, feature=feature, stale_after=stale_after, now=now) if prune_stale else []
+    )
+    contexts = list_execution_contexts(base, feature=feature, stale_after=stale_after, now=now)
+    tickets_by_id = {ticket.id: ticket for ticket in tickets}
+    for context in contexts:
+        ticket = tickets_by_id.get(context.get("ticket_id"))
+        context["ticket_status"] = ticket.status if ticket else None
+        context["ticket_title"] = ticket.title if ticket else None
+        context["epic"] = ticket.parent if ticket else None
 
     # Count by status
     status_counts = {"open": 0, "in_progress": 0, "in_review": 0, "closed": 0}
@@ -460,6 +485,8 @@ def status(
         "breakdown_status": breakdown_status,
         "tickets": status_counts,
         "ready_count": ready_count,
+        "contexts": contexts,
+        "pruned_contexts": pruned_contexts,
     }
 
     # Group tickets by assignee
@@ -493,10 +520,34 @@ def status(
             f"{ready_count} ready ({total} total)"
         )
 
-        if assigned:
+        if prune_stale:
+            count = len(pruned_contexts)
+            noun = "context" if count == 1 else "contexts"
+            typer.echo(f"Pruned {count} stale execution {noun}.")
+
+        if contexts:
+            typer.echo()
+            typer.echo("Sessions:")
+            for context in contexts:
+                context_id = compact_context_id(context["context_id"])
+                stale_label = " stale" if context["stale"] else ""
+                ticket_id = context.get("ticket_id") or "—"
+                ticket_status = context.get("ticket_status") or "unbound"
+                ticket_title = context.get("ticket_title") or ""
+                epic = f" · epic {context['epic']}" if context.get("epic") else ""
+                last_seen = parse_context_last_seen(context.get("last_seen"))
+                seen = last_seen.astimezone().strftime("%Y-%m-%d %H:%M") if last_seen else "unknown"
+                typer.echo(
+                    f"  {context_id} · {context['host']} · {context['role']}{stale_label} · "
+                    f"{ticket_id} [{ticket_status}] {ticket_title}{epic} · seen {seen}"
+                )
+
+        context_ids = {context["context_id"] for context in contexts}
+        other_assignments = {assignee: items for assignee, items in assigned.items() if assignee not in context_ids}
+        if other_assignments:
             typer.echo()
             typer.echo("Assignments:")
-            for assignee, assignee_tickets in assigned.items():
+            for assignee, assignee_tickets in other_assignments.items():
                 for t in assignee_tickets:
                     typer.echo(f"  {assignee}: {t.id} [{t.status}] {t.title}")
 

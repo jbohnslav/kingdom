@@ -28,6 +28,7 @@ from kingdom.state import (
     branch_root,
     branches_root,
     clear_ticket_execution_contexts,
+    compact_context_id,
     normalize_branch_name,
     read_execution_ticket_context,
     read_terminal_ticket_context,
@@ -119,7 +120,7 @@ def format_ticket_line(ticket: Ticket, location: str | None = None) -> str:
     Returns:
         Formatted ticket line string.
     """
-    assignee_str = f" @{ticket.assignee}" if ticket.assignee else ""
+    assignee_str = f" @{compact_context_id(ticket.assignee)}" if ticket.assignee else ""
     location_str = f" ({location})" if location else ""
     dep_str = f"  <- {', '.join(ticket.deps)}" if ticket.deps else ""
     return f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}{location_str}{dep_str}"
@@ -174,7 +175,7 @@ def render_ticket_table(
     for ticket in tickets:
         status_style = STATUS_STYLES.get(ticket.status, "")
         dep_str = ", ".join(format_dep(d, dep_statuses) for d in ticket.deps) if ticket.deps else ""
-        assignee_str = f"@{ticket.assignee}" if ticket.assignee else ""
+        assignee_str = f"@{compact_context_id(ticket.assignee)}" if ticket.assignee else ""
 
         row: list[str] = [
             ticket.id,

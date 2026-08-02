@@ -259,6 +259,7 @@ class TestExecutionContext:
             "last_seen": "2026-08-02T15:30:00+00:00",
             "location": "branch:feature-context",
             "parent_agent_id": None,
+            "role": "agent",
             "schema_version": 1,
             "session_id": "thread-123",
             "source": "CODEX_THREAD_ID",
