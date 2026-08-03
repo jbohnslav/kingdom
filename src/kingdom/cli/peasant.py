@@ -527,20 +527,22 @@ def peasant_status(
 
     def peasant_to_dict(p):
         ticket = p.ticket or p.name.replace("peasant-", "")
+        last_dt = None
+        if p.last_activity:
+            with contextlib.suppress(ValueError, TypeError):
+                last_dt = parse_iso_datetime(p.last_activity)
+
         elapsed_minutes = None
         if p.started_at:
             try:
                 started = parse_iso_datetime(p.started_at)
-                elapsed_minutes = int((now - started).total_seconds() / 60)
+                elapsed_at = last_dt if p.status in TERMINAL_STATUSES and last_dt else now
+                elapsed_minutes = int((elapsed_at - started).total_seconds() / 60)
             except (ValueError, TypeError):
                 pass
         last_activity_minutes = None
-        if p.last_activity:
-            try:
-                last_dt = parse_iso_datetime(p.last_activity)
-                last_activity_minutes = int((now - last_dt).total_seconds() / 60)
-            except (ValueError, TypeError):
-                pass
+        if last_dt:
+            last_activity_minutes = int((now - last_dt).total_seconds() / 60)
         # Effective status: report "dead" not "working" for dead processes
         effective_status = p.status
         if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):

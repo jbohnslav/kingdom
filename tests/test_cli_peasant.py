@@ -531,6 +531,70 @@ class TestPeasantStatus:
             assert "working" in result.output
             assert "claude" in result.output
 
+    def test_terminal_elapsed_freezes_at_last_activity(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            for status in ("done", "failed", "stopped"):
+                set_agent_state(
+                    base,
+                    BRANCH,
+                    f"peasant-kin-{status}",
+                    AgentState(
+                        name=f"peasant-kin-{status}",
+                        status=status,
+                        ticket=f"kin-{status}",
+                        started_at="2026-08-03T12:00:00+00:00",
+                        last_activity="2026-08-03T12:30:00+00:00",
+                    ),
+                )
+
+            with patch("kingdom.cli.peasant.datetime") as clock:
+                clock.now.return_value = datetime(2026, 8, 3, 14, 0, tzinfo=UTC)
+                result = runner.invoke(peasant_app, ["status", "--all", "--json"])
+
+            assert result.exit_code == 0, result.output
+            rows = json.loads(result.output)
+            assert {row["status"]: row["elapsed_minutes"] for row in rows} == {
+                "done": 30,
+                "failed": 30,
+                "stopped": 30,
+            }
+
+    def test_active_elapsed_continues_using_current_time(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-active",
+                AgentState(
+                    name="peasant-kin-active",
+                    status="working",
+                    pid=99999,
+                    ticket="kin-active",
+                    started_at="2026-08-03T12:00:00+00:00",
+                    last_activity="2026-08-03T12:30:00+00:00",
+                ),
+            )
+
+            with (
+                patch("kingdom.cli.peasant.datetime") as clock,
+                patch("os.kill"),
+            ):
+                clock.now.return_value = datetime(2026, 8, 3, 14, 0, tzinfo=UTC)
+                result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0, result.output
+            rows = json.loads(result.output)
+            assert rows[0]["elapsed_minutes"] == 120
+
     def test_status_ignores_non_peasant_sessions(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
