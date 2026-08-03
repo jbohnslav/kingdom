@@ -1,6 +1,6 @@
 # Council Patterns and Usage
 
-The council is a group of AI models (typically claude, cursor, codex) that provide independent perspectives on design questions. Each member responds in parallel without seeing the others' answers.
+The council is a group of AI models (typically claude, cursor, codex) that provide independent perspectives on design questions. Each member responds in parallel without seeing the others' answers. The council advises and reviews; it does not own implementation or replace the ticket's owning session.
 
 ## When to Consult the Council
 
@@ -51,6 +51,16 @@ kd council watch <thread-id>      # watch for incoming responses
 
 Summarize council responses for the King when they inform the active decision. Present the main agreements, disagreements, and any recommendation, then point to the thread for full context. Preserve the tensions — don't flatten dissent into false consensus.
 
+The owning session must make or escalate the decision, then merge the durable
+outcome into the active ticket: alternatives considered, tradeoffs, the chosen
+direction, and affected acceptance criteria or follow-up work. Do not leave the
+decision only in a council thread or paste raw responses into chat and wait for
+the King to synthesize them.
+
+Peasant execution uses council review by default. Treat that review as strong
+independent evidence, then perform the owning session's integration check before
+accepting or rejecting the peasant.
+
 ## Async and Streaming
 
 Long queries can take several minutes per member. When using `--async`:
@@ -66,3 +76,12 @@ Council members maintain session state across queries on the same branch. To cle
 ```bash
 kd council reset
 ```
+
+## Recovery
+
+- A query times out or a member errors: run `kd council retry`; do not create a
+  duplicate thread with the same question.
+- To inspect an in-flight query: use `kd council show <thread-id>` or
+  `kd council watch <thread-id>`.
+- Continue the same decision with `kd council ask --continue "..."`; create a new
+  thread only for a separate decision.

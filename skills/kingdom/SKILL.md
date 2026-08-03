@@ -1,18 +1,17 @@
 ---
 name: kingdom
 description: >
-  Multi-agent design and development workflow using the kd CLI.
-  Manages design, breakdown, tickets, council consultation (multi-model
-  perspectives), and peasant workers. Use when starting a new feature
-  branch, breaking down work into tickets, consulting multiple AI models
-  for design decisions, or managing development workflow with kd commands.
-  Requires the kd CLI to be installed and on PATH.
+  Ticket-first multi-agent development workflow using the kd CLI. Resolves
+  existing context, tracks epics and tickets, preserves durable worklogs, and
+  selects direct work, native subagents, reviewed peasant workers, lords, or
+  council consultation deliberately. Use when capturing or updating development
+  work, starting a feature branch, delegating execution, or consulting multiple
+  models. Requires the kd CLI to be installed and on PATH.
 compatibility: Requires Python 3.11+, kd CLI (uv tool install kingdom-cli), git
 ---
 
-You assist the developer (the "King") using the `kd` CLI. There are two common workflows — pick the one that fits.
-
-All `kd` commands are safe to run. Use them proactively — don't wait to be told.
+You assist the developer (the "King") using the `kd` CLI. Use `kd` proactively;
+the ticket is the durable record of what the team is doing and why.
 
 ## Developing Kingdom Itself
 
@@ -22,292 +21,194 @@ command exercises working-tree code. Bare `kd ...` remains correct for normal
 installed-user projects, but may resolve to a stale installed release while
 developing Kingdom.
 
-## Ticket-First Reflex
+## The Core Loop — Follow It Every Turn
 
-Every time the King says something, your first thought should be: **does this need a ticket?**
+The reflex is not "always create." It is: **make sure the request is represented
+exactly once, then keep that ticket current.**
 
-Bug report, feature idea, UX complaint, missing behavior, scope change — if there's work to be done, capture it in a ticket *immediately*. Don't start exploring, don't start coding, don't ask follow-up questions about the implementation. Get the ticket created first, then proceed. The ticket is how work gets tracked, prioritized, and not forgotten.
+### 1. Resolve context and search first
 
-This applies even mid-conversation. If the King mentions a problem in passing while you're working on something else, create a backlog ticket on the spot (`kd tk create --backlog "..."`). If it's the main thing they're asking about, create it and start working it. Either way: ticket first, always.
+Before creating work, take a fast read-only pass:
 
-The only exception is when you genuinely don't have enough information to write a meaningful title and description — then ask clarifying questions, but only the minimum needed to create the ticket.
-
-## When to Reach for `kd`
-
-Recognize these cues in conversation and translate them into the right `kd` action.
-
-**King reports a bug with clear details.** Extract the actual vs expected behavior and open a ticket:
-
-```
-kd tk create -t bug -d "web app shows raw HTML, expected rendered markdown" "Markdown rendering broken in preview pane"
+```bash
+kd status
+kd tk current
+kd tk list
+kd tk list --recently-closed --limit 10
 ```
 
-Only include flags the King actually provided — don't invent a priority or tags if they weren't mentioned.
+Search active, backlog, archived, parent, and related ticket titles/content with
+`kd tk show <id>` and the host's file-search tools. This is context discovery,
+not implementation exploration. Stop as soon as you can answer:
 
-**King describes a problem vaguely.** "Hey, something's wrong with the backend" is not enough to create a ticket. Ask clarifying questions first:
+- Which branch, epic, and ticket owns this request?
+- Is the request already represented by active or recent work?
+- Is it a scope change to that work, or a genuinely separate unit?
 
-- What's happening? (actual behavior)
-- What should happen? (expected behavior)
-- Where? (which page, endpoint, flow)
-- Can you reproduce it?
+Do not create a duplicate umbrella ticket because the current session or epic
+was overlooked.
 
-Then structure the answers into a ticket:
+### 2. Update existing work or create a small ticket
 
-```
-kd tk create -t bug -d "Login endpoint returns 500 when email has a plus sign. Expected: normal login. Repro: try user+test@example.com" "Login fails for plus-sign emails"
-```
+- **Existing request:** use the existing ticket. Update its requirements,
+  acceptance criteria, links, or worklog immediately.
+- **Genuinely new primary request:** create a small, concrete ticket immediately,
+  before broad exploration or implementation, then start it.
+- **Separate issue noticed in passing:** capture it in the backlog and continue
+  the current ticket.
+- **Too vague to title meaningfully:** ask only the minimum questions needed to
+  represent the work accurately.
 
-**King wants to track an idea for later.** Suggest a backlog ticket:
-
-```
-kd tk create --backlog "Add dark mode support"
-```
-
-**King says work is done.** Close the ticket (after verifying acceptance criteria are met and tests pass):
-
-```
-kd tk close ab12
-```
-
-**King is stuck on a design choice.** Suggest consulting the council:
-
-```
-kd council ask "Should we use WebSockets or SSE for real-time updates? We need low latency but also need to work behind corporate proxies."
+```bash
+kd tk create "Short concrete title"
+kd tk start <id>
+kd tk create --backlog "Separate issue for later"
 ```
 
-**King says "ask the council."** Every `kd council ask` creates a new thread by default. If the conversation is a continuation of an active design discussion, use `kd council ask --continue "follow-up question"` to append to the current thread. When ambiguous, check existing threads with `kd council list` or `kd council show <thread>`, or ask the King a brief clarifying question before running the command.
+Use only priority, type, and tags the King actually supplied. Do not invent
+metadata. See [ticket lifecycle and management](references/tickets.md) for
+creation variants, search patterns, and lifecycle commands.
 
-**King wants to note progress.** Update the active ticket's Markdown directly for anything more than a short one-line note. Use `kd tk log` only for quick one-off worklog entries:
+### 3. Choose the execution level deliberately
 
-```
-kd tk log ab12 "Finished the API refactor, all endpoint tests passing"
-```
+Choose the lightest level that gives the work enough isolation and review:
 
-**King wants parallel execution.** Start a peasant worker:
+- **Direct work:** small, tightly coupled, sequential work where the owning
+  session should implement and verify the ticket itself.
+- **Native subagent:** the default for bounded host-local delegation—focused
+  research, review, or an independent implementation slice. The owning session
+  retains the ticket and must review and merge the child's findings, changes,
+  evidence, and remaining concerns into the durable ticket.
+- **Reviewed peasant:** unattended implementation of a well-scoped ticket in an
+  isolated worktree. `kd peasant start <id>` keeps peasant-to-council review as
+  the default; do not bypass that review merely for speed. Use peasants when
+  durable autonomous iteration is more valuable than host-local coordination.
+- **Lord:** epic-level supervision when several ready tickets should be scheduled,
+  reviewed, and integrated through peasants: `kd lord start <epic-id>`.
+- **Council:** independent perspectives for real ambiguity, architecture,
+  product tradeoffs, or review blind spots. It advises; it does not replace the
+  ticket owner or execution worker.
 
-```
-kd peasant start ab12
-```
+These levels can be mixed. For example, the owning session can implement one
+integration-sensitive ticket directly, delegate a bounded audit to native
+subagents, and run reviewed peasants on independent tickets.
 
-## Workflow A: New Feature (design-first)
+See [peasant workers and worktrees](references/peasants.md) and
+[council patterns](references/council.md) for the detailed workflows.
 
-```
-git checkout -b <branch>
-kd start                        # init branch
-kd design show                  # view/iterate on design doc
-# iterate with council, co-author the design with the King
-kd design approve
-# create tickets from the design (via skill or manually with kd tk create)
-# execute tickets (see below)
-kd done                         # archive branch before merging PR
-```
+### 4. Keep the ticket alive while work happens
 
-The design phase is collaborative: the King drives direction, you draft content, the council reviews. Use `kd council ask` to get multi-model feedback during design.
+The ticket is a living Markdown document, not a receipt written at the end.
+Whenever something durable changes, update it **before continuing**:
 
-## Workflow B: Backlog Sprint (execution-first)
+- New fact, root cause, decision, result, command evidence, or blocker → append
+  it to `## Worklog`.
+- Requirement, scope, acceptance criterion, dependency, or relationship changes
+  → edit the relevant ticket body/frontmatter or use the matching lifecycle
+  command.
+- Acceptance criterion is satisfied → check it off.
+- Work starts, moves, defers, reviews, closes, or reopens → update lifecycle state
+  with `kd`.
+- Native subagent returns → the owning session synthesizes its useful output into
+  the ticket. A chat response or automatic child handoff alone is not durable
+  integration.
 
-```
+Edit the ticket Markdown directly for rich or multi-line updates. Use
+`kd tk log <id> "short note"` only for a quick one-off entry. Find the canonical
+file with `kd tk find <id>` or the `File:` line from `kd tk show <id>`.
+
+The threshold is durable state, not conversational noise: if a future session,
+reviewer, or worker would need it, write it down now.
+
+### 5. Verify, record, then transition
+
+Before declaring work complete:
+
+1. Review delegated results and integrate them into the working tree and ticket.
+2. Run verification proportional to the change; for code tickets, the full test
+   suite must pass.
+3. Record changed files, commands, results, decisions, and remaining concerns in
+   the worklog.
+4. Check acceptance criteria and update ticket relationships/state.
+5. Close the ticket only after the evidence is durable, then commit the ticket
+   state with the implementation.
+
+## Non-Negotiable Working Rules
+
+- One active ticket per worker: start → work → verify → close → commit.
+- For bugs, write and run a failing regression test before the fix.
+- Do not silently decide architectural, product, or UX ambiguity; ask the King or
+  consult the council, then record the decision.
+- Do not swallow failed `kd` commands. Diagnose them and preserve blockers in the
+  ticket.
+- Commit `.kd/` state and worklogs alongside the code they explain.
+- Run `kd done` before creating or merging the PR; it verifies branch completion.
+
+## Common Routing Decisions
+
+- Existing selected work is no longer for now → `kd tk defer <id> --reason "..."`.
+- Backlog work is selected now → `kd tk pull <id>...`.
+- Branch-to-branch work → defer it, switch/check out the target, then pull it.
+- Council follow-up on the same decision → `kd council ask --continue "..."`.
+- A peasant completes → inspect `kd peasant review <id>` and council feedback,
+  then accept or reject; council approval does not remove owning-session review.
+- A native subagent completes → review its output and merge the durable parts
+  into the ticket yourself.
+- A command fails or state diverges → use the recovery section in the relevant
+  reference instead of retrying blindly.
+
+## Workflow Entry Points
+
+New feature (ticket-first default):
+
+```bash
 git checkout -b <branch>
 kd start
-kd tk pull <id> <id> ...        # pull existing backlog tickets in
-# execute tickets (see below)
+kd tk create --type epic "Concrete feature outcome"
+kd tk create --parent <epic-id> "First executable slice"
+# start directly or delegate each ready child deliberately
 kd done
 ```
 
-No design phase — tickets are already scoped. If a ticket is ambiguous, escalate to the King or ask the council. Don't guess.
-
-## Executing Tickets
-
-After either workflow produces tickets, the King (or the coding agent they're working with, sometimes called the "Hand") chooses how to work through them:
-
-**Option A: Work tickets directly.** The King and their coding agent work tickets one at a time, following the Working Tickets guidelines below.
-
-**Option B: Spin up peasants.** `kd peasant start <id>` spawns a background worker in its own worktree. Each peasant works one ticket at a time — the council reviews automatically, the peasant iterates until approved. Spin up multiple peasants for parallel throughput. The King monitors with `kd peasant status` and `kd peasant watch <id>`. See [peasant reference](references/peasants.md) for details.
-
-Use A when the King wants to be hands-on. Use B for throughput on well-scoped tickets. Both can be mixed — the King might work one tricky ticket directly while peasants handle the straightforward ones.
-
-## Working Tickets
-
-This applies regardless of execution mode.
-
-- **One at a time per worker**: `kd tk start <id>` → do the work → `kd tk close <id>` → commit → next ticket.
-- **Worklog**: append progress notes to the ticket's `## Worklog` section as you go. Edit the ticket Markdown file directly when making ticket updates in a turn; use `kd tk log` only for a quick one-off entry. Log what you're doing, what you found, commands and results, decisions and why. The King reads these to stay informed — don't make them ask.
-- **Acceptance criteria**: only close a ticket when all acceptance criteria are met and the full test suite is green.
-- **Decisions**: ask the King or consult the council (`kd council ask "..."`) for difficult design decisions — don't guess. Never silently resolve ambiguity on architectural, product, or UX tradeoffs.
-- **For bugs: test BEFORE you fix!** Write a test that fails in the current state, fix it, then verify.
-- **Bugs from this branch**: immediately write a failing test that reproduces it, then fix.
-- **Bugs from elsewhere**: if not blocking, create a backlog ticket (`kd tk create --backlog "..."`) and move on.
-- **Commit often**: commit code changes as you go. Commit `.kd/` changes (ticket state, worklogs) alongside code.
-- **One-off tests**: write a script or temp file to test an end-to-end flow with real data. Then consider if it can be an automated integration test.
-
-## Ticket Markdown Is the Source of Truth
-
-Ticket files are plain Markdown and are meant to be edited directly. Direct file edits are normal, expected, and often the best tool for ticket content changes.
-
-Use `kd` for lifecycle and discovery: create, pull, move, start, close, reopen, assign, deps, list, show, and find. For creation, prefer making a quick stub with the CLI, then immediately editing the ticket Markdown for the real content:
-
-```
-kd tk create "Short working title"
-kd tk find <id>
-# edit the printed Markdown file directly
-```
-
-Keep CLI flags minimal when creating the stub. Rich descriptions, acceptance criteria, investigation notes, and scope changes belong in the Markdown file where agents can write clearly.
-
-Once you need to change ticket content, use `kd tk find <id>` or the `File:` line from `kd tk show <id>` to locate the file, then edit the Markdown directly.
-
-Edit the Markdown file directly for:
-
-- ticket descriptions, requirements, and scope changes
-- acceptance criteria additions, rewrites, and checkbox updates
-- multi-line worklog entries with context, evidence, commands, and decisions
-- correcting stale or misleading ticket text
-
-Do not search for a CLI command to encode every Markdown edit. If you already know the ticket file path and the change belongs in the ticket body, patch the file.
-
-## Automatic Worklog Updates
-
-Proactively update the ticket worklog whenever a durable state change occurs. The King should never have to say "update the worklog." Log against the active ticket without asking which ticket — you know what you're working on.
-
-The threshold is **durable state change**, not every chat turn. If future-you or another agent would need this fact, log it now.
-
-**Log before you continue.** When you discover durable information — a relevant issue, a root cause, a key finding from research — update the ticket immediately, before continuing your work. Edit the ticket Markdown directly after reading the file; use `kd tk log` only for short one-off entries. The worklog survives context compaction; chat doesn't. Don't let valuable findings exist only in conversation history that will be compressed away.
-
-**Edit ticket body vs worklog.** If the King changes requirements or acceptance criteria, update the ticket's Markdown directly (description, AC section). The worklog is for timeline events — decisions, findings, progress, blockers. Don't stuff requirements into `kd tk log`; edit the ticket file instead.
-
-**LLM-friendly ticket reading.** `kd tk show <id>` prints raw ticket Markdown by default so agents can read the same file they should edit. The final `File:` line gives the ticket path; when you only need that path, use `kd tk find <id>`, which searches branch, backlog, and closed/archive tickets and prints the full file path. After you have the path, edit that file directly for content changes. This also works from a sibling git worktree whose checkout does not have `.kd/`. Use `kd tk show <id> --rich` only when a framed human display is useful.
-
-**Decision made** — King says "let's go with raw TypeScript over React":
-
-```
-kd tk log ab12 "Decision: raw TypeScript, not React — King's call
-
-Rationale: we want full control over the build pipeline without
-React's abstraction layer. This means we'll need to handle routing
-and state management ourselves, but the bundle size stays minimal
-and we avoid the React upgrade treadmill.
-
-Affected tickets: may need to revisit ab34 (component library choice)"
-```
-
-**Root cause discovered** — you trace a bug to an unexpected place:
-
-```
-kd tk log ab12 "Root cause: stale cache in render_template()
-
-The DB query was a red herring — render_template() caches the compiled
-template and never invalidates when the schema changes. Found by tracing
-the actual SQL output, which was correct. The fix is to add a cache key
-that includes the schema version.
-
-Affected files: src/kingdom/render.py, src/kingdom/cache.py"
-```
-
-**Scope change** — work expands or shifts mid-ticket:
-
-```
-kd tk log ab12 "Scope change: also need to update the migration script
-
-The original ticket only covered the model changes, but the migration
-script hardcodes the old column names. Without updating it, existing
-installs will break on upgrade. Adding migration updates to this ticket
-rather than splitting — it's the same logical change."
-```
-
-**Blocker cleared** — something that was stuck is now unblocked:
-
-```
-kd tk log ab12 "Unblocked: upstream API now returns correct schema
-
-Tested against staging at 14:30 — the v2 endpoint returns the
-'metadata' field we need. Removing the workaround shim and switching
-to direct parsing. This also unblocks ticket cd56 (metadata display)."
-```
-
-Rich, multi-line log entries are encouraged — a worklog entry is a place to dump everything you know in the moment, not a tweet.
-
-## Workflow Reflexes
-
-Decision patterns to get right:
-
-- **Default to the active ticket.** If you're working a ticket, that's the target for direct ticket Markdown edits, `kd tk log`, `kd tk close`, and status updates. Don't ask "which ticket?" when context is obvious.
-- **Defer vs create.** "Existing selected work is not for now" → `kd tk defer ab12 --reason "..."`. "This is a separate problem I just noticed" → `kd tk create --backlog "..."`. To re-home work across branches, defer it, switch/check out the target, then pull it. Log is for new information about the current work; create/defer is for changing what is planned now.
-- **Council follow-through.** After `kd council ask`, summarize the key perspectives and disagreements for the King, log the decision that came out of it (`kd tk log`), and move on. Don't dump the raw council response and wait for the King to synthesize.
-- **Close-out hygiene.** Before `kd tk close`: update the worklog with what changed and how it was verified, confirm tests pass. Closing is the last step after evidence is captured, not a declaration of intent.
-
-## When `kd` Says No
-
-When a command fails, diagnose before retrying. Never silently drop a failed operation.
-
-- **`kd tk close` fails — deps not met.** Inspect with `kd tk deps tree <id>`, figure out what's blocking, work the blocker or tell the King.
-- **No obvious active ticket.** Run `kd tk current` to check. Don't guess.
-- **`kd council ask` times out or errors.** Run `kd council retry` to re-query failed members. Don't re-run the same ask from scratch.
-- **`kd peasant start` fails — ticket is in_review or closed.** The ticket needs to be reopened or the review resolved before a peasant can work it. Check ticket status with `kd tk show <id>` and tell the King.
-- **Peasant seems stuck.** Check `kd peasant status` and `kd peasant show <id>` before escalating to the King.
-- **Council query sent — want to check on it.** Run `kd council show` to read the thread and see which members have responded. Don't re-run `kd council ask` with the same prompt.
-- **`kd peasant accept` fails — merge conflicts.** See "Merge Conflict Recovery" below.
-
-## Merge Conflict Recovery
-
-When `kd peasant accept <id>` hits merge conflicts, the merge happens on the **feature branch** (not in the worktree). The command leaves you in a merge state with conflict markers in your working tree.
-
-**Before accepting:** Commit or stash any uncommitted changes on the feature branch first. Accept will refuse to merge if the working tree is dirty.
-
-**Recovery steps when conflicts occur:**
-
-1. You are already on the feature branch with conflict markers in the working tree.
-2. Resolve the conflict markers in each file (combine both sides as needed).
-3. `git add <resolved files> && git commit` — this completes the merge.
-4. `kd peasant accept <id>` — re-run accept. It detects the branch is already merged and proceeds with cleanup (close ticket, update session).
-
-Accept is idempotent: if the ticket branch is already merged into the feature branch, it skips the merge step and goes straight to cleanup. This means you can safely re-run accept after manual conflict resolution.
-
-## Council
-
-- `kd council ask "prompt"` queries all members for independent perspectives.
-- Use it proactively at decision points, not just when stuck.
-- Present each member's perspective distinctly — don't flatten disagreements. Summarize the key perspectives and disagreements for the King, and preserve the tensions. Link or reference the thread for full detail.
-- See [council reference](references/council.md) for threading, async flags, and session management.
-
-## Command Quick-Ref
+Optional planning when real ambiguity or cross-cutting design warrants it:
 
 ```bash
-kd start / status / done                                # branch lifecycle
-kd design show / design approve                         # design doc
-kd tk list / show / find / list --ready                 # inspect tickets; find prints the ticket file path
-kd tk list --recently-closed --limit 10                 # inspect recently completed work
-kd tk start <id> / close <id>                           # work a ticket
-kd tk current                                           # show active ticket
-kd tk pull <id>...                                      # pull from backlog
-kd tk log <id> "message"                                # append a quick one-off worklog entry
-kd tk deps add/remove/tree/cycle                        # manage dependencies
-kd peasant status / watch <id>                          # monitor peasants
-kd peasant review / accept / reject                     # review cycle
-kd peasant msg / read                                   # communicate with peasants
-
-# ticket creation — use only the flags the King provides
-kd tk create "title"                                    # minimal
-kd tk create -t bug -d "details" "title"                # bug with description
-kd tk create -t bug -p 2 -d "details" "title"           # with priority (only if King specified it)
-kd tk create --backlog "title"                           # backlog ticket
-kd tk create --backlog --ac "criterion" "title"          # backlog with acceptance criteria
-
-# council — threading and targeting
-kd council ask "prompt"                                  # all members, new thread
-kd council ask --continue "prompt"                       # continue current thread
-kd council ask --to claude "prompt"                      # single member
-kd council list / show <thread>                          # inspect threads
-kd council retry                                         # re-query failed members
-
-# peasants — launch modes
-kd peasant start <id>                                    # worktree (parallel)
-kd peasant start <id> --hand                             # serial in cwd
+kd design show
+kd council ask "Review the unresolved tradeoffs in this feature"
+kd design approve
+# merge approved decisions and scope into the epic and child tickets
 ```
 
-Run `kd <command> --help` for flags and options not listed here.
+Backlog sprint:
+
+```bash
+git checkout -b <branch>
+kd start
+kd tk pull <id> <id> ...
+# execute and close tickets one at a time per worker
+kd done
+```
+
+Design documents, council, and autonomous workers are optional. Context resolution,
+accurate tickets, durable updates, and verified state transitions are not.
+
+## Command Quick Reference
+
+```bash
+kd status / start / done
+kd tk current / list / show / find
+kd tk list --recently-closed --limit 10
+kd tk create / start / log / close / reopen
+kd tk pull / defer / deps / link / unlink
+kd peasant start / status / watch / review / accept / reject
+kd lord start / status / watch / stop
+kd council ask / show / list / watch / retry
+```
+
+Run `kd <command> --help` for exact flags.
 
 ## References
 
-- [Council patterns and usage](references/council.md)
-- [Ticket lifecycle and management](references/tickets.md)
-- [Peasant workers and worktrees](references/peasants.md)
+- [Ticket lifecycle, direct editing, examples, and recovery](references/tickets.md)
+- [Peasant execution, council review, and merge recovery](references/peasants.md)
+- [Council selection, threading, and follow-through](references/council.md)
