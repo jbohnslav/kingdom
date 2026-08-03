@@ -1757,9 +1757,11 @@ Formatting, links, and relationships must survive exactly.
 
     def test_pull_and_start_binds_only_calling_context(self, cli_project: Path) -> None:
         backlog_dir = backlog_root(cli_project) / "tickets"
-        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        workspace_dir = branch_root(cli_project, BRANCH)
+        branch_dir = workspace_dir / "tickets"
         peer_path = create_ticket_in(branch_dir, "kin-peer")
         target_path = create_ticket_in(backlog_dir, "kin-bind")
+        assert not (workspace_dir / "design.md").exists()
 
         with patch.dict(os.environ, {"KD_CONTEXT": "peer-session"}, clear=True):
             assert runner.invoke(ticket_app, ["start", "kin-peer"]).exit_code == 0
@@ -1784,6 +1786,7 @@ Formatting, links, and relationships must survive exactly.
         assert pull_binding["location"] == f"branch:{BRANCH.replace('/', '-')}"
         assert read_execution_ticket_context(cli_project, peer_context) == peer_binding
         assert read_ticket(peer_path).assignee == peer_context.context_id
+        assert not (workspace_dir / "design.md").exists()
 
     def test_pull_and_start_without_context_does_not_move_ticket(self, cli_project: Path) -> None:
         backlog_dir = backlog_root(cli_project) / "tickets"

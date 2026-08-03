@@ -9,7 +9,7 @@ from kingdom.state import branch_root, ensure_branch_layout, set_current_run
 
 
 def test_cli_design_prints_path() -> None:
-    """kd design should print the path to the design document."""
+    """kd design should reveal an existing design without replacing it."""
     runner = CliRunner()
     with runner.isolated_filesystem():
         base = Path.cwd()
@@ -18,15 +18,17 @@ def test_cli_design_prints_path() -> None:
         set_current_run(base, feature)
 
         design_path = branch_root(base, feature) / "design.md"
-        design_path.write_text("# Design: example-feature\n", encoding="utf-8")
+        existing_design = "# Design: example-feature\n\nKeep this decision.\n"
+        design_path.write_text(existing_design, encoding="utf-8")
 
         result = runner.invoke(design_app, [])
         assert result.exit_code == 0
         assert "design.md" in result.output
+        assert design_path.read_text(encoding="utf-8") == existing_design
 
 
-def test_cli_design_fails_when_no_design() -> None:
-    """kd design should error when no design document exists."""
+def test_cli_design_creates_optional_design_on_demand() -> None:
+    """kd design should initialize the optional document when requested."""
     runner = CliRunner()
     with runner.isolated_filesystem():
         base = Path.cwd()
@@ -35,8 +37,12 @@ def test_cli_design_fails_when_no_design() -> None:
         set_current_run(base, feature)
 
         result = runner.invoke(design_app, [])
-        assert result.exit_code == 1
-        assert "No design document found" in result.output
+        assert result.exit_code == 0
+
+        design_path = branch_root(base, feature) / "design.md"
+        assert design_path.exists()
+        assert design_path.read_text(encoding="utf-8").startswith(f"# Design: {feature}\n")
+        assert str(design_path.relative_to(base)) in result.output
 
 
 def test_cli_design_show_renders_markdown() -> None:
