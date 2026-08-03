@@ -31,6 +31,8 @@ from kingdom.state import (
     clear_terminal_ticket_contexts,
     clear_ticket_execution_contexts,
     compact_context_id,
+    execution_context_path,
+    flock,
     normalize_branch_name,
     read_execution_ticket_context,
     read_terminal_ticket_context,
@@ -59,8 +61,10 @@ from kingdom.ticket import (
     list_tickets,
     move_ticket,
     read_ticket,
+    replace_ticket_assignee,
     write_ticket,
     write_ticket_assignee,
+    write_ticket_content,
 )
 
 from .display import STATUS_COLORS, STATUS_STYLES, console_width, error_console, print_error
@@ -937,13 +941,25 @@ def migrate_ticket_to_execution_context(
     *,
     feature: str,
     location: str,
-) -> dict[str, Any]:
-    ticket.assignee = context.context_id
-    write_ticket_assignee(ticket_path, context.context_id)
-    record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
+) -> dict[str, Any] | None:
+    lock_path = ticket_path.parent / f".{ticket_path.name}.lock"
+    with flock(lock_path):
+        current = read_ticket(ticket_path)
+        if current.id != ticket.id or current.status != "in_progress":
+            return None
+        if current.assignee not in (None, "hand", context.context_id):
+            return None
+
+        record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
+        content = ticket_path.read_text(encoding="utf-8")
+        updated = replace_ticket_assignee(content, context.context_id)
+        if updated != content:
+            write_ticket_content(ticket_path, updated)
+
     binding = read_execution_ticket_context(base, context)
     if binding is None:
         raise RuntimeError(f"Failed to record execution context for ticket {ticket.id}")
+    ticket.assignee = context.context_id
     return binding
 
 
@@ -969,37 +985,52 @@ def migrate_legacy_execution_binding(
                 )
 
     tickets_dir = branch_root(base, feature) / "tickets"
-    branch_tickets = list_tickets(tickets_dir)
-    exact_candidates = [
-        ticket for ticket in branch_tickets if ticket.status == "in_progress" and ticket.assignee == context.context_id
-    ]
+    branch_tickets = []
+    for ticket_path in sorted(tickets_dir.glob("*.md")):
+        try:
+            ticket = read_ticket(ticket_path)
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        branch_tickets.append((ticket, ticket_path))
+    partial_context_exists = execution_context_path(base, context).exists()
+    exact_candidates = (
+        [
+            (ticket, ticket_path)
+            for ticket, ticket_path in branch_tickets
+            if ticket.status == "in_progress" and ticket.assignee == context.context_id
+        ]
+        if partial_context_exists
+        else []
+    )
     if len(exact_candidates) > 1:
-        raise AmbiguousLegacyTickets(sorted(ticket.id for ticket in exact_candidates))
+        raise AmbiguousLegacyTickets(sorted(ticket.id for ticket, _ in exact_candidates))
     if exact_candidates:
-        ticket = exact_candidates[0]
+        ticket, ticket_path = exact_candidates[0]
         return migrate_ticket_to_execution_context(
             base,
             context,
             ticket,
-            tickets_dir / f"{ticket.id}.md",
+            ticket_path,
             feature=feature,
             location=f"branch:{normalized_feature}",
         )
 
     candidates = [
-        ticket for ticket in branch_tickets if ticket.status == "in_progress" and ticket.assignee in (None, "hand")
+        (ticket, ticket_path)
+        for ticket, ticket_path in branch_tickets
+        if ticket.status == "in_progress" and ticket.assignee in (None, "hand")
     ]
     if len(candidates) > 1:
-        raise AmbiguousLegacyTickets(sorted(ticket.id for ticket in candidates))
+        raise AmbiguousLegacyTickets(sorted(ticket.id for ticket, _ in candidates))
     if not candidates:
         return None
 
-    ticket = candidates[0]
+    ticket, ticket_path = candidates[0]
     return migrate_ticket_to_execution_context(
         base,
         context,
         ticket,
-        tickets_dir / f"{ticket.id}.md",
+        ticket_path,
         feature=feature,
         location=f"branch:{normalized_feature}",
     )
@@ -1115,6 +1146,9 @@ def ticket_current(
             print_error(f"Bound ticket {binding['ticket_id']} cannot be found. Run `kd tk start <id>` to recover.")
             raise typer.Exit(code=1)
         ticket, ticket_path = bound_ticket
+        if ticket.status == "in_progress" and ticket.assignee in (None, "hand"):
+            write_ticket_assignee(ticket_path, context.context_id)
+            ticket.assignee = context.context_id
         wrong_assignee = ticket.assignee != context.context_id
         excluded = exclude_peasant and (ticket.assignee or "").startswith("peasant-")
         if ticket.status != "in_progress" or wrong_assignee or excluded:

@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -239,8 +240,20 @@ def read_ticket(path: Path) -> Ticket:
 
 def write_ticket(ticket: Ticket, path: Path) -> None:
     content = serialize_ticket(ticket)
+    write_ticket_content(path, content)
+
+
+def write_ticket_content(path: Path, content: str) -> None:
+    """Atomically replace a ticket so an interrupted write leaves the original intact."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        if path.exists():
+            temporary.chmod(path.stat().st_mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def replace_ticket_assignee(content: str, assignee: str) -> str:
@@ -277,7 +290,7 @@ def write_ticket_assignee(path: Path, assignee: str) -> None:
         content = path.read_text(encoding="utf-8")
         updated = replace_ticket_assignee(content, assignee)
         if updated != content:
-            path.write_text(updated, encoding="utf-8")
+            write_ticket_content(path, updated)
 
 
 def list_tickets(directory: Path) -> list[Ticket]:
@@ -653,7 +666,7 @@ def append_worklog_entry(
     with flock(lock_path):
         content = path.read_text(encoding="utf-8")
         new_content = insert_worklog_entry(content, entry)
-        path.write_text(new_content, encoding="utf-8")
+        write_ticket_content(path, new_content)
     return entry
 
 

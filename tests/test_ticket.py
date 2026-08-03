@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -637,6 +638,20 @@ class TestReadWriteTicket:
         write_ticket(ticket, path)
         assert path.exists()
 
+    def test_failed_atomic_replace_preserves_existing_ticket(self, tmp_path: Path) -> None:
+        path = tmp_path / "kin-test.md"
+        path.write_text("original ticket bytes\n", encoding="utf-8")
+        ticket = Ticket(id="kin-test", status="open", title="Replacement")
+
+        with (
+            patch("kingdom.ticket.os.replace", side_effect=OSError("interrupted")),
+            pytest.raises(OSError, match="interrupted"),
+        ):
+            write_ticket(ticket, path)
+
+        assert path.read_text(encoding="utf-8") == "original ticket bytes\n"
+        assert list(tmp_path.glob("*.tmp")) == []
+
     def test_read_nonexistent(self, tmp_path: Path) -> None:
         """read_ticket raises FileNotFoundError for missing file."""
         with pytest.raises(FileNotFoundError):
@@ -1156,6 +1171,20 @@ class TestFindNewlyUnblocked:
 
 class TestAppendWorklogEntry:
     """Tests for append_worklog_entry function."""
+
+    def test_failed_atomic_replace_preserves_ticket_before_append(self, tmp_path: Path) -> None:
+        path = tmp_path / "worklog.md"
+        write_ticket(Ticket(id="work", status="in_progress", title="Work"), path)
+        before = path.read_bytes()
+
+        with (
+            patch("kingdom.ticket.os.replace", side_effect=OSError("interrupted")),
+            pytest.raises(OSError, match="interrupted"),
+        ):
+            append_worklog_entry(path, "New note")
+
+        assert path.read_bytes() == before
+        assert list(tmp_path.glob("*.tmp")) == []
 
     def test_concurrent_appends_preserve_every_entry(self, tmp_path: Path) -> None:
         path = tmp_path / "parallel.md"
