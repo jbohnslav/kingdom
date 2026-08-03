@@ -149,7 +149,12 @@ def normalize_host_event(host: Host, payload: Mapping[str, object]) -> HostEvent
 
     tool_name = optional_string(payload, "tool_name")
     agent_id = optional_string(payload, "agent_id", "subagent_id")
-    parent_agent_id = optional_string(payload, "parent_agent_id", "parent_subagent_id")
+    parent_agent_id = optional_string(
+        payload,
+        "parent_agent_id",
+        "parent_subagent_id",
+        "parent_conversation_id",
+    )
     if kind in {EventKind.SUBAGENT_START, EventKind.SUBAGENT_STOP} and agent_id and not parent_agent_id:
         # All supported hosts report the owning session on subagent events.
         parent_agent_id = session_id

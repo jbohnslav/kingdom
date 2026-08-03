@@ -44,6 +44,10 @@ For hosts or modes without a usable pre-compaction hook, run `kd tk current`, ed
 that ticket's Markdown directly, and record the same five fields before compacting
 or handing off.
 
+Cursor hook support is intentionally limited to behavior its public schema can
+guarantee. See [Cursor hook capability](docs/cursor-hooks.md) for the supported
+events and remaining attribution gaps.
+
 ## Workflow Scales
 
 `kd` scales down gracefully. You pick the parts of the workflow that fit the size of the work.

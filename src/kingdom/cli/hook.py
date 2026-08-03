@@ -245,8 +245,23 @@ def terminal_context_base(project_dir: str | None) -> Path:
         return fallback
 
 
-def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
+def find_stop_ticket_id(project_dir: str | None, session_id: str, host: str = "claude") -> str | None:
     base = terminal_context_base(project_dir)
+    context = resolve_execution_context(session_id=session_id, host=host, cwd=Path(project_dir or "."))
+    if context is not None:
+        binding = read_execution_ticket_context(base, context)
+        if binding:
+            try:
+                current_feature = normalize_branch_name(resolve_current_run(base))
+            except (RuntimeError, ValueError):
+                current_feature = None
+            feature = binding.get("feature")
+            ticket_id = binding.get("ticket_id")
+            if current_feature and feature == current_feature and isinstance(ticket_id, str):
+                result = find_ticket(base, ticket_id, branch=feature)
+                if result and result.ticket.status == "in_progress" and result.ticket.assignee == context.context_id:
+                    return ticket_id
+
     terminal_context = read_terminal_ticket_context(base, session_id=session_id)
     if terminal_context:
         try:
@@ -305,7 +320,11 @@ def subagent_contexts(event: HostEvent) -> tuple[ExecutionContext | None, Execut
     return parent, child
 
 
-def subagent_context_output(message: str) -> str:
+def subagent_context_output(event: HostEvent, message: str) -> str:
+    if event.host is Host.CURSOR:
+        # Cursor's stable schema can allow or deny creation, but cannot inject
+        # context into an allowed subagent. Record the binding and fail open.
+        return json.dumps({"permission": "allow"})
     return json.dumps(
         {
             "hookSpecificOutput": {
@@ -380,6 +399,13 @@ def handle_session_start(data: HostEvent | dict) -> str:
     checkpoint = read_checkpoint(base, event)
     if checkpoint and event.source == "compact":
         additional_context += "\n\n" + checkpoint_message(checkpoint["ticket_id"], "compact resume")
+    if event.host is Host.CURSOR:
+        return json.dumps(
+            {
+                "env": {"KD_CONTEXT": event.session_id, "KD_HOST": event.host.value},
+                "additional_context": additional_context,
+            }
+        )
     return json.dumps(
         {
             "hookSpecificOutput": {
@@ -400,7 +426,10 @@ def handle_pre_compact(data: HostEvent | dict) -> str:
     checkpoint, created = requested
     if not created:
         return ""
-    return json.dumps({"systemMessage": checkpoint_message(checkpoint["ticket_id"], "before compaction")})
+    message = checkpoint_message(checkpoint["ticket_id"], "before compaction")
+    if event.host is Host.CURSOR:
+        return json.dumps({"user_message": message})
+    return json.dumps({"systemMessage": message})
 
 
 def handle_post_compact(data: HostEvent | dict) -> str:
@@ -422,6 +451,10 @@ def handle_session_end(data: HostEvent | dict) -> str:
     if requested is None:
         return ""
     checkpoint, _ = requested
+    if event.host is Host.CURSOR:
+        # Cursor documents sessionEnd responses as fire-and-forget. Preserve
+        # checkpoint state for recovery without claiming the message is shown.
+        return ""
     return json.dumps({"systemMessage": checkpoint_message(checkpoint["ticket_id"], "session handoff")})
 
 
@@ -432,23 +465,26 @@ def handle_subagent_start(data: HostEvent | dict) -> str:
     parent, child = subagent_contexts(event)
     if parent is None or child is None:
         return subagent_context_output(
-            "Kingdom could not identify this subagent context; run kd tk start <id> explicitly."
+            event, "Kingdom could not identify this subagent context; run kd tk start <id> explicitly."
         )
 
     base = terminal_context_base(str(event.cwd))
     try:
         feature = resolve_current_run(base)
     except (RuntimeError, ValueError):
-        return subagent_context_output("Kingdom has no active feature here; run kd start before binding a ticket.")
+        return subagent_context_output(
+            event,
+            "Kingdom has no active feature here; run kd start before binding a ticket.",
+        )
 
     explicit_message = assign_explicit_subagent_ticket(base, feature, event, child)
     if explicit_message:
-        return subagent_context_output(explicit_message)
+        return subagent_context_output(event, explicit_message)
 
     parent_binding = read_execution_ticket_context(base, parent)
     if parent_binding is None or parent_binding.get("feature") != normalize_branch_name(feature):
         return subagent_context_output(
-            "Kingdom found no exact parent ticket to inherit; run kd tk start <id> explicitly."
+            event, "Kingdom found no exact parent ticket to inherit; run kd tk start <id> explicitly."
         )
 
     ticket_id = parent_binding["ticket_id"]
@@ -460,8 +496,9 @@ def handle_subagent_start(data: HostEvent | dict) -> str:
         location=parent_binding.get("location"),
     )
     return subagent_context_output(
+        event,
         f"Kingdom: inherit Kingdom ticket {ticket_id} from {compact_context_id(parent.context_id)}. "
-        "Keep its Markdown body, acceptance criteria, and worklog current; leave closure to the owning session."
+        "Keep its Markdown body, acceptance criteria, and worklog current; leave closure to the owning session.",
     )
 
 
@@ -514,6 +551,10 @@ def handle_user_prompt_submit(data: HostEvent | dict) -> str:
         except OSError:
             pass
 
+    if event.host is Host.CURSOR:
+        # Cursor only shows user_message when a prompt is blocked. Kingdom does
+        # not block merely to inject a reminder.
+        return json.dumps({"continue": True})
     return json.dumps(
         {
             "hookSpecificOutput": {
@@ -583,17 +624,18 @@ def handle_stop(data: HostEvent | dict) -> str:
         return ""
 
     # Check for an active ticket (fail-open on any error).
-    ticket_id = find_stop_ticket_id(project_dir, session_id)
+    ticket_id = find_stop_ticket_id(project_dir, session_id, event.host.value)
     if not ticket_id:
         return ""  # Timeout or error — fail open.
 
-    result = {
-        "decision": "block",
-        "reason": (
-            f"KINGDOM: You did meaningful work this turn but didn't log it."
-            f" Run: kd tk log {ticket_id} 'summary of what you did'"
-        ),
-    }
+    reason = (
+        f"KINGDOM: You did meaningful work this turn but didn't log it."
+        f" Run: kd tk log {ticket_id} 'summary of what you did'"
+    )
+    if event.host is Host.CURSOR:
+        result = {"followup_message": reason}
+    else:
+        result = {"decision": "block", "reason": reason}
     state["stop_blocked"] = True
     write_turn_state(sf, state)
     return json.dumps(result)

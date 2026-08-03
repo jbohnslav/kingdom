@@ -89,6 +89,40 @@ def test_parent_agent_and_ticket_hint_are_normalized() -> None:
     assert event.ticket_hint == "abcd"
 
 
+def test_cursor_uses_documented_parent_conversation_id() -> None:
+    event = normalize_host_event(
+        Host.CURSOR,
+        {
+            "hook_event_name": "subagentStart",
+            "conversation_id": "parent-conversation",
+            "parent_conversation_id": "parent-conversation",
+            "subagent_id": "child-1",
+            "subagent_type": "explore",
+            "workspace_roots": ["/workspace"],
+        },
+    )
+
+    assert event is not None
+    assert event.session_id == "parent-conversation"
+    assert event.agent_id == "child-1"
+    assert event.parent_agent_id == "parent-conversation"
+
+
+def test_cursor_subagent_stop_has_no_documented_instance_id() -> None:
+    event = normalize_host_event(
+        Host.CURSOR,
+        {
+            "hook_event_name": "subagentStop",
+            "conversation_id": "parent-conversation",
+            "subagent_type": "explore",
+            "workspace_roots": ["/workspace"],
+        },
+    )
+
+    assert event is not None
+    assert event.agent_id is None
+
+
 @pytest.mark.parametrize("host", [Host.CLAUDE, Host.CODEX, Host.CURSOR])
 def test_subagent_parent_defaults_to_documented_parent_session(host: Host) -> None:
     event_name = "subagentStart" if host is Host.CURSOR else "SubagentStart"

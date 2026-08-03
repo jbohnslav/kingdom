@@ -147,6 +147,91 @@ class TestSubagentLifecycle:
         assert list_execution_contexts(tmp_path) == []
 
 
+class TestCursorHookAdapter:
+    def setup_binding(self, tmp_path: Path, session_id: str = "cursor-parent") -> tuple:
+        feature = "feature/cursor-hooks"
+        branch = ensure_branch_layout(tmp_path, feature)
+        set_current_run(tmp_path, feature)
+        context = resolve_execution_context(host="cursor", session_id=session_id, cwd=tmp_path)
+        assert context is not None
+        ticket = Ticket(id="cafe", status="in_progress", title="Cursor ticket", assignee=context.context_id)
+        ticket_path = branch / "tickets" / "cafe.md"
+        write_ticket(ticket, ticket_path)
+        record_execution_ticket_context(tmp_path, context, ticket.id, feature=feature)
+        return context, ticket_path
+
+    def event(self, tmp_path: Path, name: str, **extra: object):
+        event = normalize_host_event(
+            Host.CURSOR,
+            {
+                "hook_event_name": name,
+                "conversation_id": "cursor-parent",
+                "workspace_roots": [str(tmp_path)],
+                **extra,
+            },
+        )
+        assert event is not None
+        return event
+
+    def test_session_start_uses_cursor_output_schema(self, tmp_path: Path) -> None:
+        output = json.loads(handle_session_start(self.event(tmp_path, "sessionStart", session_id="cursor-parent")))
+
+        assert "KINGDOM WORKFLOW" in output["additional_context"]
+        assert output["env"] == {"KD_CONTEXT": "cursor-parent", "KD_HOST": "cursor"}
+        assert "hookSpecificOutput" not in output
+
+    def test_prompt_submit_allows_without_claiming_context_injection(self, tmp_path: Path) -> None:
+        output = json.loads(handle_user_prompt_submit(self.event(tmp_path, "beforeSubmitPrompt")))
+
+        assert output == {"continue": True}
+
+    def test_pre_compact_uses_cursor_user_message(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+
+        output = json.loads(handle_pre_compact(self.event(tmp_path, "preCompact", trigger="auto")))
+
+        assert "ticket cafe" in output["user_message"]
+        assert "systemMessage" not in output
+
+    def test_subagent_start_records_stable_child_and_allows_spawn(self, tmp_path: Path) -> None:
+        parent, ticket_path = self.setup_binding(tmp_path)
+
+        output = json.loads(
+            handle_subagent_start(
+                self.event(
+                    tmp_path,
+                    "subagentStart",
+                    subagent_id="cursor-child",
+                    subagent_type="explore",
+                    parent_conversation_id="cursor-parent",
+                )
+            )
+        )
+
+        child = resolve_execution_context(
+            host="cursor",
+            session_id="cursor-child",
+            role="subagent",
+            parent_agent_id=parent.context_id,
+            agent_type="explore",
+            cwd=tmp_path,
+        )
+        assert child is not None
+        assert read_execution_ticket_context(tmp_path, child)["ticket_id"] == "cafe"
+        assert read_ticket(ticket_path).assignee == parent.context_id
+        assert output == {"permission": "allow"}
+
+    def test_stop_uses_exact_cursor_binding_and_followup_schema(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+        handle_user_prompt_submit(self.event(tmp_path, "beforeSubmitPrompt"))
+        handle_post_tool_use(self.event(tmp_path, "postToolUse", tool_name="Edit", tool_input={}))
+
+        output = json.loads(handle_stop(self.event(tmp_path, "stop", status="completed", loop_count=0)))
+
+        assert "kd tk log cafe" in output["followup_message"]
+        assert "decision" not in output
+
+
 class TestTicketCheckpoints:
     def setup_binding(self, tmp_path: Path, ticket_id: str = "aaaa") -> Path:
         feature = "feature/checkpoint"

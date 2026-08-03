@@ -223,7 +223,8 @@
         "conversation_id": "cursor-conversation",
         "workspace_roots": ["/workspace"],
         "subagent_id": "cursor-agent",
-        "subagent_type": "explore"
+        "subagent_type": "explore",
+        "parent_conversation_id": "cursor-conversation"
       }
     },
     {
@@ -232,7 +233,6 @@
         "hook_event_name": "subagentStop",
         "conversation_id": "cursor-conversation",
         "workspace_roots": ["/workspace"],
-        "subagent_id": "cursor-agent",
         "subagent_type": "explore",
         "task": "redacted",
         "summary": "redacted"
