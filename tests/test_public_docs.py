@@ -156,7 +156,7 @@ def test_release_notes_distinguish_pre_cut_and_final_evidence() -> None:
         "a298": Path(".kd/branches/codex-workflow-polish/tickets/a298.md"),
         "b245": Path(".kd/branches/codex-workflow-polish/tickets/b245.md"),
         "d88b": Path(".kd/branches/codex-workflow-polish/tickets/d88b.md"),
-        "50df": Path(".kd/backlog/tickets/50df.md"),
+        "50df": Path(".kd/branches/codex-workflow-polish/tickets/50df.md"),
         "2d38": Path(".kd/branches/codex-workflow-polish/tickets/2d38.md"),
         "bc0c": Path(".kd/branches/codex-workflow-polish/tickets/bc0c.md"),
         "f240": Path(".kd/backlog/tickets/f240.md"),

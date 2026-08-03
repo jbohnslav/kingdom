@@ -582,14 +582,9 @@ def status(
             status_counts[ticket.status] += 1
 
     # Count ready tickets (open with all deps closed — startable, not already started)
-    status_by_id = {t.id: t.status for t in tickets}
-    ready_count = 0
-    for ticket in tickets:
-        if ticket.status != "open":
-            continue
-        all_deps_closed = all(status_by_id.get(dep, "unknown") == "closed" for dep in ticket.deps)
-        if all_deps_closed:
-            ready_count += 1
+    all_known_tickets = collect_all_tickets(base, include_done=True)
+    status_by_id = {ticket.id: ticket.status for ticket in all_known_tickets}
+    ready_count = len(filter_tickets_by_deps(tickets, status_by_id, ready=True))
 
     # Design approved status
     design_approved = state.get("design_approved", False)

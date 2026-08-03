@@ -16,6 +16,7 @@ from kingdom.state import (
     record_execution_ticket_context,
     resolve_execution_context,
     set_current_run,
+    write_json,
 )
 from kingdom.ticket import Ticket, write_ticket
 
@@ -109,6 +110,36 @@ def test_status_counts_in_review_separately() -> None:
         data = json.loads(json_result.output)
         assert data["tickets"]["in_review"] == 1
         assert data["ready_count"] == 1  # only the open ticket is ready
+
+
+def test_status_ready_count_uses_global_dependency_state() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+
+        done_branch = ensure_branch_layout(base, "done-feature")
+        write_json(done_branch / "state.json", {"status": "done"})
+        write_ticket(
+            Ticket(id="done-dep", title="Completed elsewhere", status="closed"),
+            done_branch / "tickets" / "done-dep.md",
+        )
+        write_ticket(
+            Ticket(id="ready-work", title="Ready work", status="open", deps=["done-dep"]),
+            branch_root(base, feature) / "tickets" / "ready-work.md",
+        )
+
+        ready_result = runner.invoke(app, ["tk", "list", "--ready"])
+        human_result = runner.invoke(app, ["status"])
+        json_result = runner.invoke(app, ["status", "--json"])
+
+        assert ready_result.exit_code == 0, ready_result.output
+        assert "ready-work" in ready_result.output
+        assert human_result.exit_code == 0, human_result.output
+        assert "1 ready (1 total)" in human_result.output
+        assert json_result.exit_code == 0, json_result.output
+        assert json.loads(json_result.output)["ready_count"] == 1
 
 
 def test_status_json_still_includes_design_breakdown(monkeypatch) -> None:
