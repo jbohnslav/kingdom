@@ -33,6 +33,8 @@ class PluginInstallHost(StrEnum):
 HOOK_COMMAND = "kd hook run"
 
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
+EXTENDED_HOOK_EVENTS = ("SessionEnd", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop")
+SUPPORTED_HOOK_EVENTS = HOOK_EVENTS + EXTENDED_HOOK_EVENTS
 
 HOOK_CONFIG = {
     "matcher": "",
@@ -83,8 +85,13 @@ def has_hook_for_event(settings: dict, event: str) -> bool:
 
 
 def is_hook_installed(settings: dict) -> bool:
-    """Check if the kingdom hooks are present for all events."""
+    """Check if the legacy/core kingdom hooks are present."""
     return all(has_hook_for_event(settings, event) for event in HOOK_EVENTS)
+
+
+def has_full_hook_installation(settings: dict) -> bool:
+    """Check if the full supported Claude lifecycle hook set is installed."""
+    return all(has_hook_for_event(settings, event) for event in SUPPORTED_HOOK_EVENTS)
 
 
 def activate_codex_plugin(marketplace_name: str) -> tuple[bool, str]:
@@ -142,12 +149,12 @@ def plugin_enable() -> None:
     settings_path = git_root / ".claude" / "settings.json"
     settings = read_settings(settings_path)
 
-    if is_hook_installed(settings):
+    if has_full_hook_installation(settings):
         styled_echo("Kingdom hook is already enabled.", fg=typer.colors.YELLOW)
         return
 
     hooks = settings.setdefault("hooks", {})
-    for event in HOOK_EVENTS:
+    for event in SUPPORTED_HOOK_EVENTS:
         if not has_hook_for_event(settings, event):
             event_hooks = hooks.setdefault(event, [])
             event_hooks.append(HOOK_CONFIG)
@@ -169,11 +176,11 @@ def plugin_disable() -> None:
     settings_path = git_root / ".claude" / "settings.json"
     settings = read_settings(settings_path)
 
-    if not any(has_hook_for_event(settings, event) for event in HOOK_EVENTS):
+    if not any(has_hook_for_event(settings, event) for event in SUPPORTED_HOOK_EVENTS):
         styled_echo("Kingdom hook is not enabled.", fg=typer.colors.YELLOW)
         return
 
-    for event in HOOK_EVENTS:
+    for event in SUPPORTED_HOOK_EVENTS:
         event_hooks = settings.get("hooks", {}).get(event, [])
         filtered = [
             matcher
@@ -215,7 +222,9 @@ def plugin_status(
     settings_path = git_root / ".claude" / "settings.json"
     settings = read_settings(settings_path)
 
-    if is_hook_installed(settings):
+    if has_full_hook_installation(settings):
         styled_echo("Kingdom hook: enabled", fg=typer.colors.GREEN)
+    elif is_hook_installed(settings):
+        styled_echo("Kingdom hook: enabled (legacy lifecycle coverage)", fg=typer.colors.GREEN)
     else:
         styled_echo("Kingdom hook: disabled", fg=typer.colors.YELLOW)

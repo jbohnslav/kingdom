@@ -68,6 +68,7 @@ USER_PROMPT_REMINDER = (
 WORK_TOOLS = {"WebSearch", "WebFetch", "Edit", "Write", "apply_patch"}
 
 STALE_TTL_SECONDS = 86400  # 24 hours
+LEGACY_STOP_TICKET_FALLBACK_ENV = "KD_HOOK_LEGACY_TICKET_FALLBACK"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -97,6 +98,10 @@ def read_turn_state(path: Path) -> dict | None:
 
 def write_turn_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state))
+
+
+def fresh_turn_state() -> dict[str, bool]:
+    return {"had_work": False, "did_log": False, "stop_blocked": False}
 
 
 def is_ticket_markdown_path(file_path: str, project_dir: str | None) -> bool:
@@ -170,6 +175,9 @@ def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
             )
         ):
             return ticket_id
+
+    if os.environ.get(LEGACY_STOP_TICKET_FALLBACK_ENV) != "1":
+        return None
 
     try:
         proc = subprocess.run(
@@ -264,9 +272,12 @@ def handler_event(data: HostEvent | dict, expected: EventKind) -> HostEvent | No
     """Normalize direct legacy handler calls; the CLI normalizes before dispatch."""
     if isinstance(data, HostEvent):
         return data if data.kind is expected else None
-    if not data.get("session_id"):
+    if not data.get("hook_event_name"):
         return None
-    event = normalize_host_event(Host.CLAUDE, data)
+    try:
+        event = normalize_host_event(detect_hook_host(data), data)
+    except InvalidHostEvent:
+        return None
     return event if event and event.kind is expected else None
 
 
@@ -361,7 +372,7 @@ def handle_user_prompt_submit(data: HostEvent | dict) -> str:
     session_id = event.session_id
 
     sf = state_file_for(project_dir, session_id)
-    write_turn_state(sf, {"had_work": False, "did_log": False})
+    write_turn_state(sf, fresh_turn_state())
 
     # TTL cleanup: remove stale turn-state files.
     cutoff = time.time() - STALE_TTL_SECONDS
@@ -429,6 +440,9 @@ def handle_stop(data: HostEvent | dict) -> str:
     if state is None:
         return ""
 
+    if state.get("stop_blocked"):
+        return ""
+
     if not (state.get("had_work") and not state.get("did_log")):
         return ""
 
@@ -444,6 +458,8 @@ def handle_stop(data: HostEvent | dict) -> str:
             f" Run: kd tk log {ticket_id} 'summary of what you did'"
         ),
     }
+    state["stop_blocked"] = True
+    write_turn_state(sf, state)
     return json.dumps(result)
 
 

@@ -191,7 +191,7 @@ class TestUserPromptSubmit:
             handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"})
         sf = state_file_for(str(tmp_path), "sess-1")
         state = json.loads(sf.read_text())
-        assert state == {"had_work": False, "did_log": False}
+        assert state == {"had_work": False, "did_log": False, "stop_blocked": False}
 
     def test_resets_state(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
@@ -203,7 +203,19 @@ class TestUserPromptSubmit:
             assert json.loads(sf.read_text())["had_work"] is True
             # New submit resets.
             handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"})
-            assert json.loads(sf.read_text()) == {"had_work": False, "did_log": False}
+            assert json.loads(sf.read_text()) == {"had_work": False, "did_log": False, "stop_blocked": False}
+
+    def test_accepts_normalized_event_with_claude_project_dir(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
+            event = normalize_host_event(
+                Host.CLAUDE,
+                {"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"},
+            )
+            assert event is not None
+            handle_user_prompt_submit(event)
+
+        sf = state_file_for(str(tmp_path), "sess-1")
+        assert json.loads(sf.read_text()) == {"had_work": False, "did_log": False, "stop_blocked": False}
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +409,13 @@ class TestStopHandler:
     def test_blocks_when_had_work_no_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("0042"):
+        with (
+            patch.dict(
+                os.environ,
+                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
+            ),
+            self.mock_kd_current("0042"),
+        ):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         result = json.loads(output)
         assert result["decision"] == "block"
@@ -521,10 +539,7 @@ class TestStopHandler:
 
         with patch.dict(os.environ, env), self.mock_kd_current("9999"):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
-
-        result = json.loads(output)
-        assert "kd tk log 9999" in result["reason"]
-        assert "7e15" not in result["reason"]
+        assert output == ""
 
     def test_ignores_peasant_terminal_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
@@ -537,10 +552,7 @@ class TestStopHandler:
 
         with patch.dict(os.environ, env), self.mock_kd_current("9999"):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
-
-        result = json.loads(output)
-        assert "kd tk log 9999" in result["reason"]
-        assert "7e15" not in result["reason"]
+        assert output == ""
 
     def test_ignores_terminal_ticket_context_from_other_feature(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
@@ -554,10 +566,7 @@ class TestStopHandler:
 
         with patch.dict(os.environ, env), self.mock_kd_current("9999"):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
-
-        result = json.loads(output)
-        assert "kd tk log 9999" in result["reason"]
-        assert "7e15" not in result["reason"]
+        assert output == ""
 
     def test_terminal_ticket_context_is_isolated(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path, session_id="sess-a")
@@ -617,7 +626,13 @@ class TestStopHandler:
     def test_active_ticket_blocks_with_real_id(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("a1b2"):
+        with (
+            patch.dict(
+                os.environ,
+                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
+            ),
+            self.mock_kd_current("a1b2"),
+        ):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         result = json.loads(output)
         assert result["decision"] == "block"
@@ -627,7 +642,13 @@ class TestStopHandler:
     def test_kd_current_failure_fails_open(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current(""):
+        with (
+            patch.dict(
+                os.environ,
+                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
+            ),
+            self.mock_kd_current(""),
+        ):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         assert output == ""
 
@@ -635,7 +656,10 @@ class TestStopHandler:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         with (
-            patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}),
+            patch.dict(
+                os.environ,
+                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
+            ),
             patch("kingdom.cli.hook.subprocess.run", side_effect=Exception("timeout")),
         ):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
@@ -644,11 +668,50 @@ class TestStopHandler:
     def test_mid_turn_ticket_accept_enforces_at_stop(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("0240"):
+        with (
+            patch.dict(
+                os.environ,
+                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
+            ),
+            self.mock_kd_current("0240"),
+        ):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         result = json.loads(output)
         assert result["decision"] == "block"
         assert "kd tk log 0240" in result["reason"]
+
+    def test_explicit_legacy_fallback_uses_kd_current(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path)
+        self.do_work(tmp_path)
+
+        with (
+            patch.dict(
+                os.environ,
+                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
+            ),
+            self.mock_kd_current("9999"),
+        ):
+            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        result = json.loads(output)
+        assert "kd tk log 9999" in result["reason"]
+
+    def test_second_stop_same_turn_does_not_loop(self, tmp_path: Path) -> None:
+        self.setup_session(tmp_path)
+        self.do_work(tmp_path)
+
+        with (
+            patch.dict(
+                os.environ,
+                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
+            ),
+            self.mock_kd_current("0042"),
+        ):
+            first_output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+            second_output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+
+        assert json.loads(first_output)["decision"] == "block"
+        assert second_output == ""
 
     # --- Multi-agent isolation ---
 
@@ -661,7 +724,13 @@ class TestStopHandler:
             output_b = handle_stop({"hook_event_name": "Stop", "session_id": "sess-b", "stop_hook_active": False})
         assert output_b == ""
         # Session A's Stop should block.
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("0099"):
+        with (
+            patch.dict(
+                os.environ,
+                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
+            ),
+            self.mock_kd_current("0099"),
+        ):
             output_a = handle_stop({"hook_event_name": "Stop", "session_id": "sess-a", "stop_hook_active": False})
         result = json.loads(output_a)
         assert result["decision"] == "block"
@@ -683,8 +752,8 @@ class TestStopHandler:
             )
         sf_a = state_file_for(str(tmp_path), "sess-a")
         sf_b = state_file_for(str(tmp_path), "sess-b")
-        assert json.loads(sf_a.read_text()) == {"had_work": True, "did_log": False}
-        assert json.loads(sf_b.read_text()) == {"had_work": False, "did_log": True}
+        assert json.loads(sf_a.read_text()) == {"had_work": True, "did_log": False, "stop_blocked": False}
+        assert json.loads(sf_b.read_text()) == {"had_work": False, "did_log": True, "stop_blocked": False}
 
     def test_stale_state_does_not_block_new_session(self, tmp_path: Path) -> None:
         runtime = tmp_path / ".kd" / "runtime"
@@ -761,6 +830,37 @@ class TestHookRunCLI:
             )
         assert result.exit_code == 0
         assert result.output.strip() == ""
+
+    def test_supported_observational_lifecycle_events_are_silent(self, tmp_path: Path) -> None:
+        for event_name in ("SessionEnd", "PreCompact", "PostCompact", "SubagentStop"):
+            payload: dict[str, object] = {
+                "hook_event_name": event_name,
+                "session_id": "s1",
+                "cwd": str(tmp_path),
+            }
+            if event_name.startswith("Subagent"):
+                payload["subagent_id"] = "child-1"
+
+            result = runner.invoke(app, ["hook", "run", "--host", "claude"], input=json.dumps(payload))
+            assert result.exit_code == 0
+            assert result.output.strip() == ""
+
+    def test_subagent_start_explains_missing_parent_binding(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app,
+            ["hook", "run", "--host", "claude"],
+            input=json.dumps(
+                {
+                    "hook_event_name": "SubagentStart",
+                    "session_id": "s1",
+                    "subagent_id": "child-1",
+                    "cwd": str(tmp_path),
+                }
+            ),
+        )
+
+        assert result.exit_code == 0
+        assert "kd start" in json.loads(result.output)["hookSpecificOutput"]["additionalContext"]
 
 
 # ---------------------------------------------------------------------------
