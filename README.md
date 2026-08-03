@@ -79,13 +79,24 @@ start and own different tickets concurrently.
 Record durable findings while they are fresh, not only at the end:
 
 ```bash
+# Plain-text-only notes without shell metacharacters may be inline.
 kd tk log <id> "Root cause confirmed; regression test now passes"
 kd tk close <id>
 ```
 
-For multi-line notes, edit the ticket's `## Worklog` directly. Before closing,
-check off acceptance criteria and record changed files, decisions, verification
-commands, results, and remaining concerns.
+Send command-rich or multiline notes through stdin with a quoted delimiter so
+the shell cannot expand backticks, `$()`, variables, or quotes:
+
+```bash
+kd tk log <id> <<'WORKLOG'
+Verified `uv run pytest`; literal $HOME and $(pwd) were not expanded.
+Record the second line here.
+WORKLOG
+```
+
+Alternatively, edit the ticket's `## Worklog` as direct Markdown. Before
+closing, check off acceptance criteria and record changed files, decisions,
+verification commands, results, and remaining concerns.
 
 ### 4. Organize related work with epics
 
@@ -305,6 +316,9 @@ resolve to a separately installed release instead of the working tree.
 uv sync
 uv run pytest tests/
 uv run ruff check .
+uv run ruff format --check .
+uv run pre-commit run ruff --all-files
+uv run pre-commit run ruff-format --all-files
 uv run kd status
 ```
 

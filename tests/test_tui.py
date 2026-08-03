@@ -2013,9 +2013,9 @@ class TestAutoTurns:
         # Neither broadcast response should be persisted since generation changed
         msgs = list_messages(project, BRANCH, tid)
         member_msgs = [m for m in msgs if m.from_ != "king"]
-        assert (
-            len(member_msgs) == 0
-        ), f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
+        assert len(member_msgs) == 0, (
+            f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
+        )
 
     def test_natural_mode_follow_up_shuffled_sequential(self, project: Path) -> None:
         """natural mode follow-up: shuffled sequential only, no broadcast."""

@@ -7,6 +7,8 @@ CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE = REPO_ROOT / ".github" / "workflows" / "release.yml"
 UPGRADING = REPO_ROOT / "docs" / "upgrading.md"
 RELEASE_NOTES = REPO_ROOT / "docs" / "releases" / "1.0.0.md"
+KINGDOM_SKILL = REPO_ROOT / "skills" / "kingdom" / "SKILL.md"
+TICKET_GUIDE = REPO_ROOT / "skills" / "kingdom" / "references" / "tickets.md"
 
 
 def test_readme_leads_with_ticket_loop_before_power_tools() -> None:
@@ -26,6 +28,20 @@ def test_readme_leads_with_ticket_loop_before_power_tools() -> None:
         "kd tk create --parent",
     ):
         assert core < text.index(command) < power_tools
+
+
+def test_worklog_guidance_keeps_command_rich_notes_shell_safe() -> None:
+    for path in (README, KINGDOM_SKILL):
+        text = path.read_text()
+        normalized = " ".join(text.split())
+
+        assert "plain-text-only" in normalized.lower()
+        assert "kd tk log <id> <<'WORKLOG'" in text
+        assert "direct Markdown" in normalized
+
+    ticket_guidance = " ".join(TICKET_GUIDE.read_text().split())
+    assert "plain-text-only" in ticket_guidance.lower()
+    assert "stdin or direct Markdown" in ticket_guidance
 
 
 def test_readme_covers_execution_choices_and_optional_design() -> None:
@@ -137,9 +153,9 @@ def test_release_notes_distinguish_pre_cut_and_final_evidence() -> None:
     known_issue_links = {
         "14fa": Path(".kd/branches/codex-workflow-polish/tickets/14fa.md"),
         "063d": Path(".kd/branches/codex-workflow-polish/tickets/063d.md"),
-        "a298": Path(".kd/backlog/tickets/a298.md"),
+        "a298": Path(".kd/branches/codex-workflow-polish/tickets/a298.md"),
         "b245": Path(".kd/branches/codex-workflow-polish/tickets/b245.md"),
-        "d88b": Path(".kd/backlog/tickets/d88b.md"),
+        "d88b": Path(".kd/branches/codex-workflow-polish/tickets/d88b.md"),
         "50df": Path(".kd/backlog/tickets/50df.md"),
         "2d38": Path(".kd/backlog/tickets/2d38.md"),
         "bc0c": Path(".kd/backlog/tickets/bc0c.md"),

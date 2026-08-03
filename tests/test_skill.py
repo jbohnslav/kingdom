@@ -44,9 +44,9 @@ class TestFrontmatter:
         name = fm["name"]
         assert 1 <= len(name) <= 64
         assert name == name.lower(), "name must be lowercase"
-        assert re.fullmatch(
-            r"[a-z0-9]+(-[a-z0-9]+)*", name
-        ), f"name must be lowercase alphanumeric with single hyphens: {name}"
+        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name), (
+            f"name must be lowercase alphanumeric with single hyphens: {name}"
+        )
 
     def test_description_constraints(self) -> None:
         fm = parse_frontmatter(SKILL_MD)
@@ -133,13 +133,13 @@ class TestPackagedSkillMirrorsCanonical:
         canonical = SKILL_DIR / "SKILL.md"
         assert pkg.exists(), f"Packaged SKILL.md not found: {pkg}"
         if pkg.is_symlink():
-            assert (
-                pkg.resolve() == canonical.resolve()
-            ), f"SKILL.md symlink points to {pkg.resolve()}, expected {canonical.resolve()}"
+            assert pkg.resolve() == canonical.resolve(), (
+                f"SKILL.md symlink points to {pkg.resolve()}, expected {canonical.resolve()}"
+            )
         else:
-            assert (
-                pkg.read_text() == canonical.read_text()
-            ), "Packaged SKILL.md content differs from canonical skills/kingdom/SKILL.md"
+            assert pkg.read_text() == canonical.read_text(), (
+                "Packaged SKILL.md content differs from canonical skills/kingdom/SKILL.md"
+            )
 
     def test_reference_files_mirror_canonical(self) -> None:
         """Every .md in packaged references/ must mirror its canonical counterpart."""
@@ -152,13 +152,13 @@ class TestPackagedSkillMirrorsCanonical:
             pkg_file = pkg_refs / canonical_file.name
             assert pkg_file.exists(), f"Packaged reference {canonical_file.name} missing from {pkg_refs}"
             if pkg_file.is_symlink():
-                assert (
-                    pkg_file.resolve() == canonical_file.resolve()
-                ), f"{canonical_file.name} symlink points to {pkg_file.resolve()}, expected {canonical_file.resolve()}"
+                assert pkg_file.resolve() == canonical_file.resolve(), (
+                    f"{canonical_file.name} symlink points to {pkg_file.resolve()}, expected {canonical_file.resolve()}"
+                )
             else:
-                assert (
-                    pkg_file.read_text() == canonical_file.read_text()
-                ), f"Packaged {canonical_file.name} content differs from canonical copy"
+                assert pkg_file.read_text() == canonical_file.read_text(), (
+                    f"Packaged {canonical_file.name} content differs from canonical copy"
+                )
 
     def test_no_extra_packaged_references(self) -> None:
         """Packaged references/ should not have .md files absent from canonical."""
@@ -166,6 +166,6 @@ class TestPackagedSkillMirrorsCanonical:
         pkg_refs = PKG_SKILL_DIR / "references"
         canonical_names = {f.name for f in canonical_refs.glob("*.md")}
         for pkg_file in pkg_refs.glob("*.md"):
-            assert (
-                pkg_file.name in canonical_names
-            ), f"Extra packaged reference {pkg_file.name} not in canonical skills/kingdom/references/"
+            assert pkg_file.name in canonical_names, (
+                f"Extra packaged reference {pkg_file.name} not in canonical skills/kingdom/references/"
+            )

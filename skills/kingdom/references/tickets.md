@@ -97,8 +97,8 @@ The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `k
 
 - **Commit `.kd/` changes as you go** — ticket state changes, closures, pulls, and deferrals are tracked in git
 - **Use dependencies** to enforce ordering when tickets have prerequisites
-- **Edit ticket Markdown directly** for body text, acceptance criteria, scope changes, and multi-line worklog entries
-- **Use `kd tk log` only for short one-off worklog notes**; do not contort ticket content edits through CLI commands
+- **Edit ticket Markdown directly** for body text, acceptance criteria, scope changes, and rich worklog entries
+- **Use inline `kd tk log` only for short plain-text-only notes**; send command-rich or multiline notes through stdin or direct Markdown editing so the shell cannot expand them
 - **Append a work log** to the ticket body when closing — record key decisions and what was done
 - **Use `kd tk list --ready`** to find the next unblocked ticket rather than picking arbitrarily
 - **Use `kd tk list --recently-closed --limit 10`** when reviewing recently completed work

@@ -2094,7 +2094,9 @@ def ticket_log(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
     message: Annotated[
         str | None,
-        typer.Argument(help="Worklog message to append. Reads from stdin if omitted."),
+        typer.Argument(
+            help="Plain-text-only inline message. Omit to read command-rich or multiline text safely from stdin."
+        ),
     ] = None,
 ) -> None:
     """Append a timestamped journal entry to the ticket's Worklog section."""

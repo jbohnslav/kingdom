@@ -113,9 +113,26 @@ Whenever something durable changes, update it **before continuing**:
   the ticket. A chat response or automatic child handoff alone is not durable
   integration.
 
-Edit the ticket Markdown directly for rich or multi-line updates. Use
-`kd tk log <id> "short note"` only for a quick one-off entry. Find the canonical
-file with `kd tk find <id>` or the `File:` line from `kd tk show <id>`.
+Use the inline form only for a short plain-text-only note without shell
+metacharacters:
+
+```bash
+kd tk log <id> "short plain text note"
+```
+
+For command-rich or multiline notes, use stdin with a quoted delimiter so the
+shell cannot expand backticks, `$()`, variables, or quotes:
+
+```bash
+kd tk log <id> <<'WORKLOG'
+Verified `uv run pytest`; literal $HOME and $(pwd) were not expanded.
+Record the second line here.
+WORKLOG
+```
+
+Alternatively, edit the ticket as direct Markdown for rich updates. Find the
+canonical file with `kd tk find <id>` or the `File:` line from
+`kd tk show <id>`.
 
 The threshold is durable state, not conversational noise: if a future session,
 reviewer, or worker would need it, write it down now.

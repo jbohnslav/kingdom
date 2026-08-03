@@ -206,3 +206,12 @@ class TestTicketLog:
         assert result.exit_code == 0, result.output
         assert "add-note" not in result.output
         assert "Append a worklog entry to a ticket." in result.output
+
+    def test_log_help_routes_command_rich_messages_to_stdin(self) -> None:
+        result = runner.invoke(ticket_app, ["log", "--help"])
+
+        assert result.exit_code == 0, result.output
+        help_text = " ".join(result.output.split())
+        assert "Plain-text-only inline message" in help_text
+        assert "command-rich or multiline text safely from" in help_text
+        assert "stdin." in help_text
