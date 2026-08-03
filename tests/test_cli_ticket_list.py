@@ -488,6 +488,118 @@ class TestTicketListRecentlyClosed:
         assert data[0]["location"] == "archive:backlog"
 
 
+class TestTicketListResolution:
+    def test_resolution_filter_includes_only_matching_closed_tickets(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(
+                id="done",
+                status="closed",
+                title="Completed",
+                resolution="completed",
+                close_reason="Shipped",
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "done.md",
+        )
+        write_ticket(
+            Ticket(
+                id="nope",
+                status="closed",
+                title="Won't do",
+                resolution="wont-do",
+                close_reason="Out of scope",
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "nope.md",
+        )
+        write_ticket(
+            Ticket(id="open", status="open", title="Still open", created=datetime.now(UTC)),
+            tickets_dir / "open.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--resolution", "wont-do"])
+
+        assert result.exit_code == 0, result.output
+        assert "nope" in result.output
+        assert "wont-do" in result.output
+        assert "done" not in result.output
+        assert "open" not in result.output
+
+    def test_resolution_filter_understands_legacy_duplicates(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(
+                id="legacy",
+                status="closed",
+                title="Legacy duplicate",
+                duplicate_of="original",
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "legacy.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--resolution", "duplicate"])
+
+        assert result.exit_code == 0, result.output
+        assert "legacy" in result.output
+        assert "duplicate" in result.output
+
+    def test_list_json_includes_closure_fields(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(
+                id="done",
+                status="closed",
+                title="Completed",
+                resolution="completed",
+                close_reason="Shipped",
+                closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+                closed_context="codex:abc",
+                created=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            tickets_dir / "done.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--resolution", "completed", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data[0]["resolution"] == "completed"
+        assert data[0]["close_reason"] == "Shipped"
+        assert data[0]["closed_at"] == "2026-01-02T00:00:00+00:00"
+        assert data[0]["closed_context"] == "codex:abc"
+
+    def test_invalid_resolution_filter_lists_choices(self, cli_project: Path) -> None:
+        result = runner.invoke(ticket_app, ["list", "--resolution", "abandoned"])
+
+        assert result.exit_code == 2
+        assert "completed" in result.output
+        assert "wont-do" in result.output
+        assert "duplicate" in result.output
+        assert "superseded" in result.output
+        assert "invalid" in result.output
+
+    def test_resolution_filter_excludes_active_ticket_with_stale_metadata(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(
+                id="stale",
+                status="in_progress",
+                title="Still active",
+                resolution="wont-do",
+                close_reason="Stale reason",
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "stale.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--resolution", "wont-do"])
+
+        assert result.exit_code == 0, result.output
+        assert "stale" not in result.output
+
+
 class TestTicketListPriority:
     def test_priority_filter_branch(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"

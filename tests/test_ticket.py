@@ -16,6 +16,7 @@ from kingdom.ticket import (
     coerce_to_str_list,
     collect_all_tickets,
     collect_tickets_by_location,
+    effective_resolution,
     filter_tickets,
     filter_tickets_by_deps,
     filter_tickets_by_status,
@@ -552,12 +553,16 @@ More content.
             closed_at=datetime(2026, 2, 5, 12, 30, 0, tzinfo=UTC),
             resolution="superseded",
             closed_context="codex:abc123",
+            close_reason='Replaced by "v2":\nold path retired',
+            superseded_by="kin-v2",
         )
 
         reparsed = parse_ticket(serialize_ticket(ticket))
 
         assert reparsed.resolution == "superseded"
         assert reparsed.closed_context == "codex:abc123"
+        assert reparsed.close_reason == 'Replaced by "v2":\nold path retired'
+        assert reparsed.superseded_by == "kin-v2"
 
     def test_legacy_ticket_without_resolution_remains_readable(self) -> None:
         ticket = parse_ticket(
@@ -577,6 +582,24 @@ closed_at: 2026-02-05T12:30:00Z
 
         assert ticket.resolution is None
         assert ticket.closed_context is None
+
+    def test_legacy_unquoted_close_reason_keeps_backslashes_literal(self) -> None:
+        ticket = parse_ticket(
+            r"""---
+id: kin-old
+status: closed
+deps: []
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 2
+close_reason: legacy\new-path
+---
+# Legacy ticket
+"""
+        )
+
+        assert ticket.close_reason == r"legacy\new-path"
 
 
 class TestReadWriteTicket:
@@ -1349,6 +1372,19 @@ class TestInsertWorklogEntry:
         result = insert_worklog_entry(content, "- entry")
         assert result != content
         assert "- entry" in result
+
+
+class TestEffectiveResolution:
+    def test_non_closed_ticket_ignores_stale_terminal_metadata(self) -> None:
+        ticket = Ticket(
+            id="stale",
+            status="in_progress",
+            title="Still active",
+            resolution="wont-do",
+            duplicate_of="old-target",
+        )
+
+        assert effective_resolution(ticket) is None
 
 
 class TestFilterTicketsByStatus:

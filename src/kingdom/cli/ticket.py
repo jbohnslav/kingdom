@@ -47,12 +47,14 @@ from kingdom.ticket import (
     append_worklog_entry,
     collect_all_tickets,
     collect_tickets_by_location,
+    effective_resolution,
     filter_tickets,
     filter_tickets_by_deps,
     filter_tickets_by_status,
     find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
+    insert_markdown_section_entry,
     list_tickets,
     move_ticket,
     read_ticket,
@@ -159,6 +161,7 @@ def render_ticket_table(
     """
     has_assignee = any(t.assignee for t in tickets)
     has_deps = any(t.deps for t in tickets)
+    has_resolution = any(effective_resolution(ticket) for ticket in tickets)
     dep_statuses = status_by_id or {}
 
     console = Console(width=max(console_width(), 120))
@@ -167,6 +170,8 @@ def render_ticket_table(
     table.add_column("ID", style="cyan", no_wrap=True, min_width=4)
     table.add_column("P", justify="center", no_wrap=True, min_width=2)
     table.add_column("Status", no_wrap=True, min_width=11)
+    if has_resolution:
+        table.add_column("Resolution", no_wrap=True)
     if has_assignee:
         table.add_column("Assignee", no_wrap=True)
     table.add_column("Title")
@@ -185,6 +190,8 @@ def render_ticket_table(
             f"P{ticket.priority}",
             f"[{status_style}]{ticket.status}[/{status_style}]" if status_style else ticket.status,
         ]
+        if has_resolution:
+            row.append(effective_resolution(ticket) or "")
         if has_assignee:
             row.append(assignee_str)
         title_display = f"[dim]\\[epic][/dim] {ticket.title}" if ticket.type == "epic" else ticket.title
@@ -237,6 +244,12 @@ def ticket_to_json(t: Ticket, *, detailed: bool = False, base: Path | None = Non
         "tags": t.tags,
         "parent": t.parent,
         "created": t.created.isoformat(),
+        "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+        "resolution": effective_resolution(t),
+        "close_reason": t.close_reason,
+        "closed_context": t.closed_context,
+        "duplicate_of": t.duplicate_of,
+        "superseded_by": t.superseded_by,
     }
     if detailed:
         data["body"] = t.body
@@ -271,6 +284,20 @@ def render_ticket_panel(
 
     if ticket.assignee:
         meta.add_row("assignee", ticket.assignee)
+
+    resolution = effective_resolution(ticket)
+    if resolution:
+        meta.add_row("resolution", resolution)
+    if ticket.close_reason:
+        meta.add_row("close reason", ticket.close_reason)
+    if ticket.closed_at:
+        meta.add_row("closed", ticket.closed_at.isoformat())
+    if ticket.closed_context:
+        meta.add_row("closed context", ticket.closed_context)
+    if ticket.duplicate_of:
+        meta.add_row("duplicate of", ticket.duplicate_of)
+    if ticket.superseded_by:
+        meta.add_row("superseded by", ticket.superseded_by)
 
     if ticket.deps:
         dep_parts = []
@@ -497,6 +524,14 @@ def ticket_list(
             help="Filter by status (open, in_progress, in_review, closed).",
         ),
     ] = None,
+    resolution: Annotated[
+        str | None,
+        typer.Option(
+            "--resolution",
+            help="Filter closed tickets by resolution.",
+            click_type=click.Choice(TICKET_RESOLUTIONS),
+        ),
+    ] = None,
     priority: Annotated[
         int | None,
         typer.Option("--priority", "-p", help="Filter by priority (0-3)."),
@@ -531,6 +566,12 @@ def ticket_list(
             print_error(f"Invalid status '{status}'. Valid statuses: {', '.join(sorted(STATUSES))}")
             raise typer.Exit(code=1)
 
+    if resolution is not None:
+        if status is not None and status != "closed":
+            print_error("--resolution can only be combined with --status closed.")
+            raise typer.Exit(code=1)
+        include_closed = True
+
     if recently_closed:
         if status is not None and status != "closed":
             print_error("--recently-closed can only be combined with --status closed.")
@@ -551,6 +592,8 @@ def ticket_list(
 
     def apply_all_filters(tickets: list[Ticket], status_by_id: dict[str, str]) -> list[Ticket]:
         filtered = filter_tickets_by_status(tickets, status, include_closed)
+        if resolution:
+            filtered = [ticket for ticket in filtered if effective_resolution(ticket) == resolution]
         filtered = filter_tickets(filtered, assignee=assignee, tag=tag, priority=priority)
         filtered = filter_tickets_by_deps(filtered, status_by_id, ready=ready, blocked=blocked)
         if resolved_parent_id:
@@ -1113,6 +1156,9 @@ def ticket_close(
     duplicate_of: Annotated[
         str | None, typer.Option("--duplicate-of", help="Mark as duplicate of another ticket ID.")
     ] = None,
+    superseded_by: Annotated[
+        str | None, typer.Option("--superseded-by", help="Mark as superseded by another ticket ID.")
+    ] = None,
     resolution: Annotated[
         str | None,
         typer.Option(
@@ -1128,10 +1174,19 @@ def ticket_close(
     ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     reason = reason.strip() if reason else None
 
+    if duplicate_of and superseded_by:
+        print_error("--duplicate-of and --superseded-by are mutually exclusive.")
+        raise typer.Exit(code=1)
     if duplicate_of and resolution not in (None, "duplicate"):
         print_error(
             f"--duplicate-of requires --resolution duplicate, not {resolution}. "
             "Use --resolution duplicate or omit --resolution."
+        )
+        raise typer.Exit(code=1)
+    if superseded_by and resolution not in (None, "superseded"):
+        print_error(
+            f"--superseded-by requires --resolution superseded, not {resolution}. "
+            "Use --resolution superseded or omit --resolution."
         )
         raise typer.Exit(code=1)
 
@@ -1143,11 +1198,25 @@ def ticket_close(
             raise typer.Exit(code=1)
         duplicate_target_id = dup_ticket.id
 
-    existing_resolution = ticket.resolution or ("duplicate" if ticket.duplicate_of else "completed")
+    superseding_ticket_id = None
+    if superseded_by:
+        superseding_ticket, _ = resolve_ticket_or_exit(
+            base,
+            superseded_by,
+            not_found_label="Superseding ticket not found",
+        )
+        if superseding_ticket.id == ticket.id:
+            print_error("A ticket cannot be superseded by itself")
+            raise typer.Exit(code=1)
+        superseding_ticket_id = superseding_ticket.id
+
+    existing_resolution = effective_resolution(ticket) or "completed"
     close_resolution = resolution
     if close_resolution is None:
         if duplicate_target_id:
             close_resolution = "duplicate"
+        elif superseding_ticket_id:
+            close_resolution = "superseded"
         elif ticket.status == "closed":
             close_resolution = existing_resolution
         else:
@@ -1155,7 +1224,8 @@ def ticket_close(
 
     if ticket.status == "closed":
         changed_duplicate_target = duplicate_target_id is not None and duplicate_target_id != ticket.duplicate_of
-        if close_resolution != existing_resolution or changed_duplicate_target or reason:
+        changed_superseding_ticket = superseding_ticket_id is not None and superseding_ticket_id != ticket.superseded_by
+        if close_resolution != existing_resolution or changed_duplicate_target or changed_superseding_ticket or reason:
             print_error(
                 f"Ticket {ticket.id} is already closed with resolution {existing_resolution}. "
                 f"Run `kd tk reopen {ticket.id}` before changing its closure details."
@@ -1175,8 +1245,9 @@ def ticket_close(
             raise typer.Exit(code=1)
 
     if duplicate_target_id:
-        ticket.duplicate_of = duplicate_target_id
         reason = reason or f"Duplicate of {duplicate_target_id}"
+    if superseding_ticket_id:
+        reason = reason or f"Superseded by {superseding_ticket_id}"
 
     if close_resolution != "completed" and not reason:
         print_error(
@@ -1209,7 +1280,20 @@ def ticket_close(
     ticket.status = "closed"
     ticket.closed_at = closed_at
     ticket.resolution = close_resolution
+    ticket.close_reason = reason
     ticket.closed_context = context.context_id if context else None
+    ticket.duplicate_of = duplicate_target_id if close_resolution == "duplicate" else None
+    ticket.superseded_by = superseding_ticket_id if close_resolution == "superseded" else None
+    reference_id = ticket.duplicate_of or ticket.superseded_by
+    context_tag = f" [{ticket.closed_context}]" if ticket.closed_context else ""
+    lifecycle_details = f"closed ({close_resolution})"
+    if reference_id:
+        lifecycle_details += f" [reference: {reference_id}]"
+    if reason:
+        lifecycle_details += f": {' '.join(reason.splitlines())}"
+    lifecycle_timestamp = closed_at.isoformat().replace("+00:00", "Z")
+    lifecycle_entry = f"- {lifecycle_timestamp}{context_tag} — {lifecycle_details}"
+    ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
     write_ticket(ticket, ticket_path)
     clear_ticket_execution_contexts(base, ticket.id, now=closed_at)
 
@@ -1245,8 +1329,40 @@ def ticket_reopen(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
 ) -> None:
     """Set ticket status back to open."""
-    ticket = update_ticket_status(ticket_id, "open")
-    clear_ticket_execution_contexts(require_project_root(), ticket.id)
+    base = require_project_root()
+    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    old_status = ticket.status
+    reopened_at = datetime.now(UTC).replace(microsecond=0)
+
+    if ticket.status == "closed":
+        previous_resolution = effective_resolution(ticket) or "completed"
+        reference_id = ticket.duplicate_of or ticket.superseded_by
+        context = resolve_execution_context()
+        context_tag = f" [{context.context_id}]" if context else ""
+        lifecycle_details = f"reopened (previous: {previous_resolution})"
+        if reference_id:
+            lifecycle_details += f" [reference: {reference_id}]"
+        if ticket.close_reason:
+            lifecycle_details += f": {' '.join(ticket.close_reason.splitlines())}"
+        lifecycle_timestamp = reopened_at.isoformat().replace("+00:00", "Z")
+        lifecycle_entry = f"- {lifecycle_timestamp}{context_tag} — {lifecycle_details}"
+        ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
+
+    ticket.status = "open"
+    ticket.closed_at = None
+    ticket.resolution = None
+    ticket.close_reason = None
+    ticket.closed_context = None
+    ticket.duplicate_of = None
+    ticket.superseded_by = None
+    write_ticket(ticket, ticket_path)
+
+    archive_backlog_tickets = archive_root(base) / "backlog" / "tickets"
+    if ticket_path.parent.resolve() == archive_backlog_tickets.resolve():
+        ticket_path = move_ticket(ticket_path, backlog_root(base) / "tickets")
+
+    clear_ticket_execution_contexts(base, ticket.id, now=reopened_at)
+    typer.echo(f"{ticket.id}: {old_status} → open — {ticket.title}")
 
 
 @ticket_app.command("status", help="Set a ticket's status to an arbitrary value.")

@@ -57,6 +57,7 @@ class Ticket:
     body: str = ""
     closed_at: datetime | None = None
     resolution: str | None = None
+    close_reason: str | None = None
     # Stable execution-context ID that invoked close, when one was available.
     closed_context: str | None = None
     # Optional fields that may be present in some tickets
@@ -64,6 +65,7 @@ class Ticket:
     parent: str | None = None
     external_ref: str | None = None
     duplicate_of: str | None = None
+    superseded_by: str | None = None
 
 
 def clamp_priority(value: int | str | None) -> int:
@@ -122,6 +124,23 @@ def coerce_to_str_list(value: str | int | list[str] | None) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+def parse_close_reason(content: str, value: object) -> str | None:
+    """Decode JSON quoting only for the ticket ``close_reason`` field."""
+    if not value:
+        return None
+
+    frontmatter = content.split("---", 2)[1]
+    match = re.search(r"^close_reason:\s*(.*)$", frontmatter, flags=re.MULTILINE)
+    if match is None or not match.group(1).startswith('"'):
+        return str(value)
+
+    try:
+        decoded = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return str(value)
+    return str(decoded)
+
+
 def parse_ticket(content: str) -> Ticket:
     frontmatter_dict, body_content = parse_frontmatter(content)
 
@@ -164,6 +183,7 @@ def parse_ticket(content: str) -> Ticket:
         body=body,
         closed_at=closed_at,
         resolution=(str(frontmatter_dict.get("resolution")) if frontmatter_dict.get("resolution") else None),
+        close_reason=parse_close_reason(content, frontmatter_dict.get("close_reason")),
         closed_context=(
             str(frontmatter_dict.get("closed_context")) if frontmatter_dict.get("closed_context") else None
         ),
@@ -171,6 +191,7 @@ def parse_ticket(content: str) -> Ticket:
         parent=str(frontmatter_dict.get("parent")) if frontmatter_dict.get("parent") else None,
         external_ref=(str(frontmatter_dict.get("external-ref")) if frontmatter_dict.get("external-ref") else None),
         duplicate_of=(str(frontmatter_dict.get("duplicate-of")) if frontmatter_dict.get("duplicate-of") else None),
+        superseded_by=(str(frontmatter_dict.get("superseded-by")) if frontmatter_dict.get("superseded-by") else None),
     )
 
 
@@ -189,12 +210,14 @@ def serialize_ticket(ticket: Ticket) -> str:
             ("priority", ticket.priority),
             ("closed_at", closed_str),
             ("resolution", ticket.resolution),
+            ("close_reason", json.dumps(ticket.close_reason, ensure_ascii=False) if ticket.close_reason else None),
             ("closed_context", ticket.closed_context),
             ("assignee", ticket.assignee),
             ("external-ref", ticket.external_ref),
             ("parent", ticket.parent),
             ("tags", ticket.tags or None),
             ("duplicate-of", ticket.duplicate_of),
+            ("superseded-by", ticket.superseded_by),
         ]
     )
 
@@ -459,6 +482,41 @@ def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
     return new_path
 
 
+def insert_markdown_section_entry(content: str, section: str, entry: str) -> str:
+    """Append an entry to a second-level Markdown section, creating it if needed."""
+    heading = f"## {section}"
+    lines = content.split("\n")
+
+    section_index = None
+    for index, line in enumerate(lines):
+        if line.strip() == heading:
+            section_index = index
+            break
+
+    if section_index is not None:
+        insert_index = len(lines)
+        for index in range(section_index + 1, len(lines)):
+            if lines[index].startswith("## "):
+                insert_index = index
+                break
+
+        while insert_index > section_index + 1 and lines[insert_index - 1].strip() == "":
+            insert_index -= 1
+
+        lines.insert(insert_index, entry)
+        if insert_index + 1 < len(lines) and lines[insert_index + 1].strip() != "":
+            lines.insert(insert_index + 1, "")
+    else:
+        while lines and lines[-1].strip() == "":
+            lines.pop()
+        lines.extend(["", heading, "", entry])
+
+    if lines and lines[-1] != "":
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def insert_worklog_entry(content: str, entry: str) -> str:
     """Insert an entry into the ``## Worklog`` section of ticket markdown.
 
@@ -466,40 +524,20 @@ def insert_worklog_entry(content: str, entry: str) -> str:
     at the end of that section (before the next ``## `` heading or EOF), and
     returns the new content.  Creates the section if it doesn't exist.
     """
-    lines = content.split("\n")
+    return insert_markdown_section_entry(content, "Worklog", entry)
 
-    worklog_idx = None
-    for i, line in enumerate(lines):
-        if line.strip() == "## Worklog":
-            worklog_idx = i
-            break
 
-    if worklog_idx is not None:
-        insert_idx = len(lines)
-        for i in range(worklog_idx + 1, len(lines)):
-            if lines[i].startswith("## "):
-                insert_idx = i
-                break
-
-        actual_insert = insert_idx
-        while actual_insert > worklog_idx + 1 and lines[actual_insert - 1].strip() == "":
-            actual_insert -= 1
-
-        lines.insert(actual_insert, entry)
-        if actual_insert + 1 < len(lines) and lines[actual_insert + 1].strip() != "":
-            lines.insert(actual_insert + 1, "")
-    else:
-        while lines and lines[-1].strip() == "":
-            lines.pop()
-        lines.append("")
-        lines.append("## Worklog")
-        lines.append("")
-        lines.append(entry)
-
-    if lines and lines[-1] != "":
-        lines.append("")
-
-    return "\n".join(lines)
+def effective_resolution(ticket: Ticket) -> str | None:
+    """Return the active resolution, including legacy closed-ticket inference."""
+    if ticket.status != "closed":
+        return None
+    if ticket.resolution:
+        return ticket.resolution
+    if ticket.duplicate_of:
+        return "duplicate"
+    if ticket.superseded_by:
+        return "superseded"
+    return "completed"
 
 
 def append_worklog_entry(

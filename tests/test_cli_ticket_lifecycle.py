@@ -752,6 +752,107 @@ class TestTicketCloseResolution:
         assert context_data["unbound_at"] == ticket.closed_at.isoformat()
 
 
+class TestTicketLifecycleHistory:
+    def test_close_records_structured_reason_and_lifecycle_event(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-hist")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "lifecycle-close"}, clear=True):
+            result = runner.invoke(
+                ticket_app,
+                ["close", "kin-hist", "--resolution", "wont-do", "--reason", "Out of scope: later"],
+            )
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(path)
+        assert ticket.close_reason == "Out of scope: later"
+        assert "## Lifecycle" in ticket.body
+        assert "closed (wont-do)" in ticket.body
+        assert "Out of scope: later" in ticket.body
+        assert ticket.closed_context in ticket.body
+        content = path.read_text()
+        assert "close_reason:" in content
+        assert "## Worklog" in content
+        assert "Closed: Out of scope: later" in content
+
+    def test_close_reopen_close_history_is_append_only(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-cycle")
+        create_ticket_in(branch_dir, "kin-next")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "lifecycle-cycle"}, clear=True):
+            first_close = runner.invoke(
+                ticket_app,
+                ["close", "kin-cycle", "--resolution", "wont-do", "--reason", "First decision"],
+            )
+            reopen = runner.invoke(ticket_app, ["reopen", "kin-cycle"])
+            second_close = runner.invoke(ticket_app, ["close", "kin-cycle", "--superseded-by", "kin-next"])
+
+        assert first_close.exit_code == 0, first_close.output
+        assert reopen.exit_code == 0, reopen.output
+        assert second_close.exit_code == 0, second_close.output
+        ticket = read_ticket(path)
+        assert ticket.resolution == "superseded"
+        assert ticket.close_reason == "Superseded by kin-next"
+        assert ticket.superseded_by == "kin-next"
+        assert ticket.body.count("— closed (") == 2
+        assert ticket.body.count("— reopened") == 1
+        first_position = ticket.body.index("First decision")
+        reopen_position = ticket.body.index("— reopened")
+        second_position = ticket.body.index("Superseded by kin-next", reopen_position)
+        assert first_position < reopen_position < second_position
+
+    def test_reopen_clears_active_closure_and_preserves_legacy_history(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-open",
+            status="closed",
+            title="Reopen me",
+            body=(
+                "Legacy details\n\n## Worklog\n\n- old close note\n\n"
+                "## Lifecycle\n\n- 2026-01-01T00:00:00Z — closed (duplicate): Same work"
+            ),
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            resolution="duplicate",
+            close_reason="Same work",
+            closed_context="codex:old",
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-open.md"
+        write_ticket(ticket, path)
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "lifecycle-reopen"}, clear=True):
+            result = runner.invoke(ticket_app, ["reopen", "kin-open"])
+
+        assert result.exit_code == 0, result.output
+        reopened = read_ticket(path)
+        assert reopened.status == "open"
+        assert reopened.closed_at is None
+        assert reopened.resolution is None
+        assert reopened.close_reason is None
+        assert reopened.closed_context is None
+        assert reopened.duplicate_of is None
+        assert reopened.superseded_by is None
+        assert "Legacy details" in reopened.body
+        assert "- old close note" in reopened.body
+        assert "closed (duplicate): Same work" in reopened.body
+        assert "— reopened (previous: duplicate)" in reopened.body
+
+    def test_superseded_by_rejects_missing_target_without_mutation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-old")
+
+        result = runner.invoke(ticket_app, ["close", "kin-old", "--superseded-by", "missing"])
+
+        assert result.exit_code == 1
+        assert "Superseding ticket not found" in result.output
+        ticket = read_ticket(path)
+        assert ticket.status == "open"
+        assert ticket.resolution is None
+        assert ticket.superseded_by is None
+
+
 class TestTicketContextLifecycle:
     def test_start_without_execution_context_does_not_mutate_ticket(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -817,6 +918,8 @@ class TestTicketCloseDuplicate:
         assert ticket.status == "closed"
         assert ticket.duplicate_of == "kin-orig"
         assert ticket.resolution == "duplicate"
+        assert ticket.close_reason == "Duplicate of kin-orig"
+        assert "reference: kin-orig" in ticket.body
 
     def test_duplicate_of_accepts_matching_explicit_resolution(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"

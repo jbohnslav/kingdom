@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -99,6 +100,81 @@ class TestTicketShow:
         assert "Fix the bug" in result.output
         # Should NOT contain raw YAML delimiters
         assert "---" not in result.output
+
+    def test_show_rich_includes_structured_closure(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="done",
+            status="closed",
+            title="Closed with evidence",
+            body="## Lifecycle\n\n- close event",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            resolution="superseded",
+            close_reason="Replaced by the new flow",
+            superseded_by="next",
+        )
+        write_ticket(ticket, tickets_dir / "done.md")
+
+        result = runner.invoke(ticket_app, ["show", "done", "--rich"])
+
+        assert result.exit_code == 0, result.output
+        assert "resolution" in result.output
+        assert "superseded" in result.output
+        assert "close reason" in result.output
+        assert "Replaced by the new flow" in result.output
+        assert "superseded by" in result.output
+        assert "next" in result.output
+
+    def test_show_json_includes_structured_closure(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="done",
+            status="closed",
+            title="Closed with evidence",
+            body="## Lifecycle\n\n- close event",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            resolution="duplicate",
+            close_reason="Same as original",
+            duplicate_of="original",
+        )
+        write_ticket(ticket, tickets_dir / "done.md")
+
+        result = runner.invoke(ticket_app, ["show", "done", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["resolution"] == "duplicate"
+        assert data["close_reason"] == "Same as original"
+        assert data["duplicate_of"] == "original"
+        assert data["closed_at"] == "2026-01-02T00:00:00+00:00"
+        assert data["body"] == "## Lifecycle\n\n- close event"
+
+    def test_show_treats_stale_resolution_as_inactive_without_rewriting_markdown(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = tickets_dir / "stale.md"
+        write_ticket(
+            Ticket(
+                id="stale",
+                status="open",
+                title="Still open",
+                resolution="wont-do",
+                close_reason="Stale reason",
+                created=datetime.now(UTC),
+            ),
+            path,
+        )
+
+        json_result = runner.invoke(ticket_app, ["show", "stale", "--json"])
+        rich_result = runner.invoke(ticket_app, ["show", "stale", "--rich"])
+        raw_result = runner.invoke(ticket_app, ["show", "stale"])
+
+        assert json_result.exit_code == 0, json_result.output
+        assert json.loads(json_result.output)["resolution"] is None
+        assert "resolution" not in rich_result.output
+        assert "resolution: wont-do" in raw_result.output
+        assert path.read_text() in raw_result.output
 
     def test_show_no_raw_frontmatter(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"

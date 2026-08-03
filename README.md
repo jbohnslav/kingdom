@@ -99,9 +99,13 @@ Design docs, council sessions, and peasant workers are all optional. A branch wi
 `kd tk close <id>` records `resolution: completed` by default. The other terminal
 resolutions are `wont-do`, `duplicate`, `superseded`, and `invalid`; each requires
 a non-empty `--reason`. `--duplicate-of <id>` remains a shortcut that selects the
-`duplicate` resolution and records the target. When Kingdom can identify the
-calling execution context, its stable ID is recorded as `closed_context`; this is
-context attribution, not a separate human identity.
+`duplicate` resolution and records the target; `--superseded-by <id>` does the
+same for `superseded`. The active reason is stored as `close_reason`, and every
+close or reopen is appended to the ticket's `## Lifecycle` section. Reopening
+clears the active closure fields without erasing that history. Use
+`kd tk list --resolution <value>` to filter terminal outcomes. When Kingdom can
+identify the calling execution context, its stable ID is recorded as
+`closed_context`; this is context attribution, not a separate human identity.
 
 ## Getting Started
 
