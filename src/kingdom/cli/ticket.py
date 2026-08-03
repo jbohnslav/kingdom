@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+import click
 import typer
 from rich.console import Console, Group
 from rich.markdown import Markdown
@@ -39,9 +40,11 @@ from kingdom.state import (
 )
 from kingdom.ticket import (
     STATUSES,
+    TICKET_RESOLUTIONS,
     TICKET_TYPES,
     AmbiguousTicketMatch,
     Ticket,
+    append_worklog_entry,
     collect_all_tickets,
     collect_tickets_by_location,
     filter_tickets,
@@ -1110,11 +1113,56 @@ def ticket_close(
     duplicate_of: Annotated[
         str | None, typer.Option("--duplicate-of", help="Mark as duplicate of another ticket ID.")
     ] = None,
+    resolution: Annotated[
+        str | None,
+        typer.Option(
+            "--resolution",
+            help="Closure outcome: completed, wont-do, duplicate, superseded, or invalid.",
+            click_type=click.Choice(TICKET_RESOLUTIONS),
+        ),
+    ] = None,
 ) -> None:
-    """Set ticket status to closed."""
+    """Close a ticket with an explicit terminal outcome."""
     base = require_project_root()
 
     ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    reason = reason.strip() if reason else None
+
+    if duplicate_of and resolution not in (None, "duplicate"):
+        print_error(
+            f"--duplicate-of requires --resolution duplicate, not {resolution}. "
+            "Use --resolution duplicate or omit --resolution."
+        )
+        raise typer.Exit(code=1)
+
+    duplicate_target_id = None
+    if duplicate_of:
+        dup_ticket, _ = resolve_ticket_or_exit(base, duplicate_of, not_found_label="Duplicate target not found")
+        if dup_ticket.id == ticket.id:
+            print_error("A ticket cannot be a duplicate of itself")
+            raise typer.Exit(code=1)
+        duplicate_target_id = dup_ticket.id
+
+    existing_resolution = ticket.resolution or ("duplicate" if ticket.duplicate_of else "completed")
+    close_resolution = resolution
+    if close_resolution is None:
+        if duplicate_target_id:
+            close_resolution = "duplicate"
+        elif ticket.status == "closed":
+            close_resolution = existing_resolution
+        else:
+            close_resolution = "completed"
+
+    if ticket.status == "closed":
+        changed_duplicate_target = duplicate_target_id is not None and duplicate_target_id != ticket.duplicate_of
+        if close_resolution != existing_resolution or changed_duplicate_target or reason:
+            print_error(
+                f"Ticket {ticket.id} is already closed with resolution {existing_resolution}. "
+                f"Run `kd tk reopen {ticket.id}` before changing its closure details."
+            )
+            raise typer.Exit(code=1)
+        typer.echo(f"{ticket.id}: already closed ({existing_resolution}) — {ticket.title}")
+        return
 
     # Block closing an epic with open children
     if ticket.type == "epic":
@@ -1126,14 +1174,16 @@ def ticket_close(
                 error_console.print(f"  {child.id} ({child.status}) {child.title}")
             raise typer.Exit(code=1)
 
-    if duplicate_of:
-        # Validate target exists and is not self-referencing
-        dup_ticket, _ = resolve_ticket_or_exit(base, duplicate_of, not_found_label="Duplicate target not found")
-        if dup_ticket.id == ticket.id:
-            print_error("A ticket cannot be a duplicate of itself")
-            raise typer.Exit(code=1)
-        ticket.duplicate_of = dup_ticket.id
-        reason = reason or f"Duplicate of {dup_ticket.id}"
+    if duplicate_target_id:
+        ticket.duplicate_of = duplicate_target_id
+        reason = reason or f"Duplicate of {duplicate_target_id}"
+
+    if close_resolution != "completed" and not reason:
+        print_error(
+            f"Resolution {close_resolution} requires a non-empty --reason. "
+            f'Retry with `kd tk close {ticket.id} --resolution {close_resolution} --reason "..."`.'
+        )
+        raise typer.Exit(code=1)
 
     # Warn if an active peasant is working on this ticket
     try:
@@ -1154,15 +1204,25 @@ def ticket_close(
         pass  # no active branch — skip the check
 
     old_status = ticket.status
+    closed_at = datetime.now(UTC).replace(microsecond=0)
+    context = resolve_execution_context()
     ticket.status = "closed"
-    ticket.closed_at = datetime.now(UTC)
+    ticket.closed_at = closed_at
+    ticket.resolution = close_resolution
+    ticket.closed_context = context.context_id if context else None
     write_ticket(ticket, ticket_path)
-    clear_ticket_execution_contexts(base, ticket.id)
+    clear_ticket_execution_contexts(base, ticket.id, now=closed_at)
 
     if reason:
-        from kingdom.harness import append_worklog
+        from kingdom.harness import format_worklog_timestamp
 
-        append_worklog(ticket_path, f"Closed: {reason}")
+        append_worklog_entry(
+            ticket_path,
+            f"Closed: {reason}",
+            timestamp=closed_at,
+            timestamp_text=format_worklog_timestamp(closed_at),
+            author=ticket.closed_context,
+        )
 
     # Auto-archive: closing a backlog ticket moves it to archive/backlog/tickets/
     backlog_tickets = backlog_root(base) / "tickets"

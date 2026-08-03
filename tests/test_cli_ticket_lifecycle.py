@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from datetime import UTC, datetime
@@ -487,6 +488,144 @@ class TestTicketCloseIdempotent:
         # Should NOT be in backlog
         assert not (backlog_root(cli_project) / "tickets" / "kin-idem.md").exists()
 
+    def test_close_rejects_changing_an_existing_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-final",
+            status="closed",
+            title="Already completed",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            resolution="completed",
+        )
+        path = branch_dir / "kin-final.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(
+            ticket_app,
+            ["close", "kin-final", "--resolution", "wont-do", "--reason", "Changed our mind"],
+        )
+
+        assert result.exit_code == 1
+        assert "already closed with resolution completed" in result.output
+        assert "reopen kin-final" in result.output
+        unchanged = read_ticket(path)
+        assert unchanged.resolution == "completed"
+        assert unchanged.closed_at == ticket.closed_at
+
+    def test_close_rejects_new_reason_on_closed_ticket(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-rerun",
+            status="closed",
+            title="Already completed",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            resolution="completed",
+        )
+        path = branch_dir / "kin-rerun.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-rerun", "--reason", "New evidence"])
+
+        assert result.exit_code == 1
+        assert "already closed" in result.output
+        assert "reopen kin-rerun" in result.output
+        unchanged = read_ticket(path)
+        assert unchanged.body == "Body"
+        assert unchanged.closed_at == ticket.closed_at
+
+    def test_legacy_duplicate_infers_duplicate_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-ldup",
+            status="closed",
+            title="Legacy duplicate",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-ldup.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-ldup"])
+
+        assert result.exit_code == 0, result.output
+        assert "already closed (duplicate)" in result.output
+        unchanged = read_ticket(path)
+        assert unchanged.resolution is None
+        assert unchanged.duplicate_of == "kin-original"
+        assert unchanged.closed_at == ticket.closed_at
+
+    def test_closed_duplicate_validates_identical_duplicate_target(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-original")
+        ticket = Ticket(
+            id="kin-ldup",
+            status="closed",
+            title="Legacy duplicate",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-ldup.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-ldup", "--duplicate-of", "kin-original"])
+
+        assert result.exit_code == 0, result.output
+        assert "already closed (duplicate)" in result.output
+        assert read_ticket(path).closed_at == ticket.closed_at
+
+    def test_closed_ticket_does_not_bypass_duplicate_target_validation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-ldup",
+            status="closed",
+            title="Legacy duplicate",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-ldup.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-ldup", "--duplicate-of", "nonexistent"])
+
+        assert result.exit_code == 1
+        assert "Duplicate target not found" in result.output
+        assert read_ticket(path).closed_at == ticket.closed_at
+
+    def test_closed_duplicate_rejects_different_existing_target(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-original")
+        create_ticket_in(branch_dir, "kin-other")
+        ticket = Ticket(
+            id="kin-ldup",
+            status="closed",
+            title="Legacy duplicate",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-ldup.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-ldup", "--duplicate-of", "kin-other"])
+
+        assert result.exit_code == 1
+        assert "already closed" in result.output
+        assert "reopen kin-ldup" in result.output
+        unchanged = read_ticket(path)
+        assert unchanged.duplicate_of == "kin-original"
+        assert unchanged.closed_at == ticket.closed_at
+
 
 class TestTicketCloseReason:
     def test_close_with_reason_appends_worklog(self, cli_project: Path) -> None:
@@ -523,6 +662,94 @@ class TestTicketCloseReason:
         assert result.exit_code == 0, result.output
         content = path.read_text()
         assert "## Worklog" not in content
+
+
+class TestTicketCloseResolution:
+    def test_close_defaults_to_completed(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-done")
+
+        result = runner.invoke(ticket_app, ["close", "kin-done"])
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(path)
+        assert ticket.resolution == "completed"
+        assert ticket.closed_at is not None
+
+    def test_close_accepts_each_non_completed_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+
+        for resolution in ("wont-do", "duplicate", "superseded", "invalid"):
+            ticket_id = f"kin-{resolution[:4]}"
+            path = create_ticket_in(branch_dir, ticket_id)
+
+            result = runner.invoke(
+                ticket_app,
+                ["close", ticket_id, "--resolution", resolution, "--reason", f"Marked {resolution}"],
+            )
+
+            assert result.exit_code == 0, result.output
+            assert read_ticket(path).resolution == resolution
+
+    def test_non_completed_resolution_requires_reason_without_mutation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-nore")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "resolution-validation"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-nore"]).exit_code == 0
+            context = resolve_execution_context()
+            assert context is not None
+
+            result = runner.invoke(ticket_app, ["close", "kin-nore", "--resolution", "wont-do", "-m", "   "])
+
+            binding = read_execution_ticket_context(cli_project, context)
+
+        assert result.exit_code == 1
+        assert "requires a non-empty --reason" in result.output
+        assert "kin-nore --resolution wont-do --reason" in result.output
+        ticket = read_ticket(path)
+        assert ticket.status == "in_progress"
+        assert ticket.resolution is None
+        assert ticket.closed_at is None
+        assert binding is not None
+        assert binding["ticket_id"] == "kin-nore"
+
+    def test_invalid_resolution_lists_valid_choices(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-badr")
+
+        result = runner.invoke(ticket_app, ["close", "kin-badr", "--resolution", "abandoned", "-m", "No"])
+
+        assert result.exit_code == 2
+        assert "completed" in result.output
+        assert "wont-do" in result.output
+        assert "duplicate" in result.output
+        assert "superseded" in result.output
+        assert "invalid" in result.output
+        assert read_ticket(path).status == "open"
+
+    def test_close_records_context_and_uses_one_timestamp_for_binding_cleanup(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-attr")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "resolution-attribution"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-attr"]).exit_code == 0
+            context = resolve_execution_context()
+            assert context is not None
+
+            result = runner.invoke(ticket_app, ["close", "kin-attr"])
+
+            binding = read_execution_ticket_context(cli_project, context)
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(path)
+        assert ticket.closed_context == context.context_id
+        assert ticket.closed_at is not None
+        assert binding is None
+
+        context_path = next((cli_project / ".kd" / "runtime" / "contexts").glob("*.json"))
+        context_data = json.loads(context_path.read_text())
+        assert context_data["unbound_at"] == ticket.closed_at.isoformat()
 
 
 class TestTicketContextLifecycle:
@@ -589,6 +816,49 @@ class TestTicketCloseDuplicate:
         ticket = read_ticket(branch_dir / "kin-dup1.md")
         assert ticket.status == "closed"
         assert ticket.duplicate_of == "kin-orig"
+        assert ticket.resolution == "duplicate"
+
+    def test_duplicate_of_accepts_matching_explicit_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-dupe")
+        create_ticket_in(branch_dir, "kin-original")
+
+        result = runner.invoke(
+            ticket_app,
+            ["close", "kin-dupe", "--resolution", "duplicate", "--duplicate-of", "kin-original"],
+        )
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(branch_dir / "kin-dupe.md")
+        assert ticket.resolution == "duplicate"
+        assert ticket.duplicate_of == "kin-original"
+
+    def test_duplicate_of_rejects_conflicting_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-conf")
+        create_ticket_in(branch_dir, "kin-original")
+
+        result = runner.invoke(
+            ticket_app,
+            [
+                "close",
+                "kin-conf",
+                "--resolution",
+                "superseded",
+                "--duplicate-of",
+                "kin-original",
+                "--reason",
+                "Conflicting options",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "--duplicate-of requires --resolution duplicate" in result.output
+        assert "omit --resolution" in result.output
+        ticket = read_ticket(path)
+        assert ticket.status == "open"
+        assert ticket.resolution is None
+        assert ticket.duplicate_of is None
 
     def test_duplicate_of_adds_worklog(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"

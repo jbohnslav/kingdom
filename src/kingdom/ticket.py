@@ -37,6 +37,8 @@ from kingdom.state import flock
 
 STATUSES = {"open", "in_progress", "in_review", "closed"}
 TICKET_TYPES = {"task", "bug", "feature", "epic"}
+# Terminal outcomes written by ``kd tk close --resolution``.
+TICKET_RESOLUTIONS = ("completed", "wont-do", "duplicate", "superseded", "invalid")
 
 
 @dataclass
@@ -54,6 +56,9 @@ class Ticket:
     title: str = ""
     body: str = ""
     closed_at: datetime | None = None
+    resolution: str | None = None
+    # Stable execution-context ID that invoked close, when one was available.
+    closed_context: str | None = None
     # Optional fields that may be present in some tickets
     tags: list[str] = field(default_factory=list)
     parent: str | None = None
@@ -158,6 +163,10 @@ def parse_ticket(content: str) -> Ticket:
         title=title,
         body=body,
         closed_at=closed_at,
+        resolution=(str(frontmatter_dict.get("resolution")) if frontmatter_dict.get("resolution") else None),
+        closed_context=(
+            str(frontmatter_dict.get("closed_context")) if frontmatter_dict.get("closed_context") else None
+        ),
         tags=tags,
         parent=str(frontmatter_dict.get("parent")) if frontmatter_dict.get("parent") else None,
         external_ref=(str(frontmatter_dict.get("external-ref")) if frontmatter_dict.get("external-ref") else None),
@@ -179,6 +188,8 @@ def serialize_ticket(ticket: Ticket) -> str:
             ("type", ticket.type),
             ("priority", ticket.priority),
             ("closed_at", closed_str),
+            ("resolution", ticket.resolution),
+            ("closed_context", ticket.closed_context),
             ("assignee", ticket.assignee),
             ("external-ref", ticket.external_ref),
             ("parent", ticket.parent),

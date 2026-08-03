@@ -543,6 +543,41 @@ More content.
         assert reparsed.parent == ticket.parent
         assert reparsed.external_ref == ticket.external_ref
 
+    def test_round_trip_with_resolution_metadata(self) -> None:
+        ticket = Ticket(
+            id="kin-done",
+            status="closed",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+            title="Finished ticket",
+            closed_at=datetime(2026, 2, 5, 12, 30, 0, tzinfo=UTC),
+            resolution="superseded",
+            closed_context="codex:abc123",
+        )
+
+        reparsed = parse_ticket(serialize_ticket(ticket))
+
+        assert reparsed.resolution == "superseded"
+        assert reparsed.closed_context == "codex:abc123"
+
+    def test_legacy_ticket_without_resolution_remains_readable(self) -> None:
+        ticket = parse_ticket(
+            """---
+id: kin-old
+status: closed
+deps: []
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 2
+closed_at: 2026-02-05T12:30:00Z
+---
+# Legacy ticket
+"""
+        )
+
+        assert ticket.resolution is None
+        assert ticket.closed_context is None
+
 
 class TestReadWriteTicket:
     """Tests for read_ticket and write_ticket functions."""

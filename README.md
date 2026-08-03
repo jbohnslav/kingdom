@@ -94,6 +94,15 @@ kd done
 
 Design docs, council sessions, and peasant workers are all optional. A branch with one ticket and no design doc is a perfectly valid `kd` workflow.
 
+### Ticket closure outcomes
+
+`kd tk close <id>` records `resolution: completed` by default. The other terminal
+resolutions are `wont-do`, `duplicate`, `superseded`, and `invalid`; each requires
+a non-empty `--reason`. `--duplicate-of <id>` remains a shortcut that selects the
+`duplicate` resolution and records the target. When Kingdom can identify the
+calling execution context, its stable ID is recorded as `closed_context`; this is
+context attribution, not a separate human identity.
+
 ## Getting Started
 
 ```bash
