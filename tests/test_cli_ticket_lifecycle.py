@@ -1820,19 +1820,44 @@ class TestTicketFind:
 class TestTicketAddNote:
     """Tests for kd tk add-note."""
 
-    def test_adds_note_to_ticket(self, cli_project: Path) -> None:
+    def test_delegates_to_log_without_changing_content(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         write_ticket(
             Ticket(id="aaaa", status="open", title="Test", body="Body.", created=datetime.now(UTC)),
             tickets_dir / "aaaa.md",
         )
-        result = runner.invoke(ticket_app, ["add-note", "aaaa", "This is a note"])
-        assert result.exit_code == 0
-        assert "note added" in result.output
+        message = "This is a note\nwith $HOME & `literal` characters"
+
+        result = runner.invoke(
+            ticket_app,
+            ["add-note", "aaaa", message],
+            env={"KD_AGENT_NAME": "hand-3af0"},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert result.stderr.strip() == (
+            "Warning: `kd tk add-note` is deprecated and will be removed in v0.8.0; use `kd tk log`."
+        )
 
         content = (tickets_dir / "aaaa.md").read_text()
-        assert "This is a note" in content
-        assert "**Note (" in content
+        assert "## Worklog" in content
+        assert "[hand-3af0] — This is a note" in content
+        assert "  with $HOME & `literal` characters" in content
+        assert "**Note (" not in content
+
+    def test_preserves_stdin_compatibility(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="aaab", status="open", title="Test", body="Body.", created=datetime.now(UTC)),
+            tickets_dir / "aaab.md",
+        )
+
+        result = runner.invoke(ticket_app, ["add-note", "aaab"], input="Piped note\nsecond line\n")
+
+        assert result.exit_code == 0, result.output
+        content = (tickets_dir / "aaab.md").read_text()
+        assert "— Piped note" in content
+        assert "  second line" in content
 
 
 class TestTicketParent:

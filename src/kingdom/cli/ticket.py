@@ -1919,42 +1919,35 @@ def ticket_pull(
             typer.echo(f"Pulled {ticket.id} — {ticket.title}")
 
 
-@ticket_app.command("add-note", help="Append a timestamped note to a ticket.")
+@ticket_app.command("add-note", hidden=True)
 def ticket_add_note(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
     text: Annotated[str | None, typer.Argument(help="Note text. Reads from stdin if omitted.")] = None,
 ) -> None:
-    """Append a timestamped note to the ticket body."""
-    base = require_project_root()
-
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
-
-    if text is None:
-        text = sys.stdin.read().strip()
-        if not text:
-            print_error("No note text provided.")
-            raise typer.Exit(code=1)
-
-    now = datetime.now(UTC)
-    timestamp = now.strftime("%Y-%m-%d %H:%M")
-    note = f"\n**Note ({timestamp}):** {text}\n"
-
-    content = ticket_path.read_text(encoding="utf-8")
-    if not content.endswith("\n"):
-        content += "\n"
-    content += note
-    ticket_path.write_text(content, encoding="utf-8")
-
-    typer.echo(f"{ticket.id}: note added")
+    """Compatibility alias for ``kd tk log``."""
+    typer.echo(
+        "Warning: `kd tk add-note` is deprecated and will be removed in v0.8.0; use `kd tk log`.",
+        err=True,
+    )
+    ticket_log(ticket_id, text)
 
 
 @ticket_app.command("log", help="Append a worklog entry to a ticket.")
 def ticket_log(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
-    message: Annotated[str, typer.Argument(help="Worklog message to append.")],
+    message: Annotated[
+        str | None,
+        typer.Argument(help="Worklog message to append. Reads from stdin if omitted."),
+    ] = None,
 ) -> None:
     """Append a timestamped journal entry to the ticket's Worklog section."""
     from kingdom.ticket import append_worklog_entry
+
+    if message is None:
+        message = sys.stdin.read().strip()
+        if not message:
+            print_error("No worklog message provided.")
+            raise typer.Exit(code=1)
 
     base = require_project_root()
 

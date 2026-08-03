@@ -99,4 +99,38 @@ class TestTicketLog:
 
         result = runner.invoke(ticket_app, ["log", "kin-lg04"])
 
-        assert result.exit_code != 0
+        assert result.exit_code == 1
+        assert "No worklog message provided." in result.output
+
+    def test_log_reads_multiline_special_characters_from_stdin(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(tickets_dir, "kin-lg05")
+        message = 'First line\n"quotes" & <angles> $HOME `ticks` * [literal]\n'
+
+        result = runner.invoke(ticket_app, ["log", "kin-lg05"], input=message)
+
+        assert result.exit_code == 0, result.output
+        content = (tickets_dir / "kin-lg05.md").read_text()
+        assert "— First line" in content
+        assert '  "quotes" & <angles> $HOME `ticks` * [literal]' in content
+
+    def test_log_records_agent_attribution(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(tickets_dir, "kin-lg06")
+
+        result = runner.invoke(
+            ticket_app,
+            ["log", "kin-lg06", "Attributed entry"],
+            env={"KD_AGENT_NAME": "peasant-3af0"},
+        )
+
+        assert result.exit_code == 0, result.output
+        content = (tickets_dir / "kin-lg06.md").read_text()
+        assert "[peasant-3af0] — Attributed entry" in content
+
+    def test_primary_help_only_lists_log(self) -> None:
+        result = runner.invoke(ticket_app, ["--help"])
+
+        assert result.exit_code == 0, result.output
+        assert "add-note" not in result.output
+        assert "Append a worklog entry to a ticket." in result.output
