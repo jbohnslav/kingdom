@@ -5,6 +5,7 @@
 - Package manager: `uv`
 - Activate venv: `source .venv/bin/activate`
 - Run commands with venv active or use `uv run`
+- Canonical checkout CLI invocation: `uv run kd`. Do not use bare `kd` while developing Kingdom; it may resolve to a stale installed tool.
 
 ## Setup
 
@@ -55,4 +56,10 @@ After implementing a CLI command or changing its output, run it manually and che
 
 ## Dogfooding
 
-We use `kd` to develop `kd`. Every time you run a `kd` command, pay attention to the experience: Is the output helpful? Is anything confusing or missing? Would a different behavior be more natural? When you notice something off, immediately file a backlog ticket (`kd tk create --backlog "..."`). Don't wait to be asked — this is how we find real UX issues.
+We use `kd` to develop `kd`. In this checkout, always invoke working-tree code as
+`uv run kd`; bare `kd` may be a stale separately installed release. Every time
+you run an `uv run kd` command, pay attention to the experience: Is the output
+helpful? Is anything confusing or missing? Would a different behavior be more
+natural? When you notice something off, immediately file a backlog ticket
+(`uv run kd tk create --backlog "..."`). Don't wait to be asked — this is how we
+find real UX issues.

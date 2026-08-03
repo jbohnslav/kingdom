@@ -79,11 +79,38 @@ app = typer.Typer(
 )
 
 
+def development_checkout(cwd: Path) -> Path | None:
+    """Find the Kingdom source checkout containing cwd, if any."""
+    cwd = cwd.resolve()
+    for root in (cwd, *cwd.parents):
+        manifest = root / "pyproject.toml"
+        cli_source = root / "src" / "kingdom" / "cli" / "__init__.py"
+        if manifest.is_file() and cli_source.is_file():
+            return root
+    return None
+
+
+def development_source_warning(cwd: Path, loaded_module: Path) -> str | None:
+    """Explain when kd is not running from the Kingdom checkout containing cwd."""
+    checkout = development_checkout(cwd)
+    if checkout is None:
+        return None
+
+    expected_source = (checkout / "src" / "kingdom").resolve()
+    if loaded_module.resolve().is_relative_to(expected_source):
+        return None
+
+    return "Warning: kd is not running from this Kingdom checkout. Use `uv run kd ...` to exercise working-tree code."
+
+
 @app.callback()
 def app_callback(
     ctx: typer.Context,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Print debug output.")] = False,
 ) -> None:
+    warning = development_source_warning(Path.cwd(), Path(__file__))
+    if warning:
+        typer.echo(warning, err=True)
     ctx.ensure_object(dict)["verbose"] = verbose
 
 

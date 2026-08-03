@@ -187,10 +187,14 @@ Run `kd <command> --help` for full flags and options.
 
 ## Development
 
+Inside a Kingdom checkout, always use `uv run kd` for dogfooding. Bare `kd` may
+resolve to a separately installed release instead of the working tree.
+
 ```bash
 uv sync
-source .venv/bin/activate
-pytest tests/
+uv run pytest tests/
+uv run ruff check .
+uv run kd status
 ```
 
 ## License

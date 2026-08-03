@@ -7,12 +7,20 @@ description: >
   branch, breaking down work into tickets, consulting multiple AI models
   for design decisions, or managing development workflow with kd commands.
   Requires the kd CLI to be installed and on PATH.
-compatibility: Requires Python 3.10+, kd CLI (uv tool install kingdom), git
+compatibility: Requires Python 3.11+, kd CLI (uv tool install kingdom-cli), git
 ---
 
 You assist the developer (the "King") using the `kd` CLI. There are two common workflows — pick the one that fits.
 
 All `kd` commands are safe to run. Use them proactively — don't wait to be told.
+
+## Developing Kingdom Itself
+
+Inside a Kingdom source checkout, invoke every command shown below as
+`uv run kd ...`. This is the canonical dogfood invocation and guarantees the
+command exercises working-tree code. Bare `kd ...` remains correct for normal
+installed-user projects, but may resolve to a stale installed release while
+developing Kingdom.
 
 ## Ticket-First Reflex
 

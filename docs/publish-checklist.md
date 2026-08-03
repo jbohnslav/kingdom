@@ -4,8 +4,11 @@ Steps to release a new version of `kingdom-cli`.
 
 ## Pre-release
 
-1. All tests pass: `pytest`
-2. Lint clean: `ruff check .`
+Run checkout commands through `uv run` so release validation cannot accidentally
+exercise a stale installed `kd`.
+
+1. All tests pass: `uv run pytest`
+2. Lint clean: `uv run ruff check .`
 3. Bump version in `pyproject.toml`
 4. Update any version references (if applicable)
 5. Commit: `git commit -m "Bump version to X.Y.Z"`
@@ -46,4 +49,5 @@ pip install kingdom-cli==X.Y.Z
 kd --help
 ```
 
-Confirm the published version installs and runs.
+Confirm the published version installs and runs. Bare `kd` is intentional in
+this post-release check: it verifies the installed artifact, not checkout code.
