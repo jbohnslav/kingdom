@@ -551,6 +551,7 @@ def peasant_status(
             "ticket": ticket,
             "agent": p.agent_backend or None,
             "status": effective_status,
+            "failure_kind": p.failure_kind,
             "elapsed_minutes": elapsed_minutes,
             "last_activity_minutes": last_activity_minutes,
             "pid": p.pid,
@@ -596,6 +597,9 @@ def peasant_status(
             "awaiting_council": "magenta",
             "needs_king_review": "cyan",
         }.get(d["status"], "")
+        status_label = d["status"]
+        if d["failure_kind"]:
+            status_label += f"/{d['failure_kind']}"
 
         elapsed = f"{d['elapsed_minutes']}m" if d["elapsed_minutes"] is not None else ""
         last = f"{d['last_activity_minutes']}m ago" if d["last_activity_minutes"] is not None else ""
@@ -603,7 +607,7 @@ def peasant_status(
         table.add_row(
             d["ticket"],
             d["agent"] or "?",
-            f"[{status_style}]{d['status']}[/{status_style}]" if status_style else d["status"],
+            f"[{status_style}]{status_label}[/{status_style}]" if status_style else status_label,
             elapsed,
             last,
         )

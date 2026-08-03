@@ -168,6 +168,94 @@ def parse_status(response_text: str) -> str:
     return "continue"
 
 
+def classify_provider_failure(text: str, stderr: str, returncode: int) -> str | None:
+    """Classify provider failures that should not be treated as agent output."""
+    first_line = (text.strip() or stderr.strip()).splitlines()[0].lower() if text.strip() or stderr.strip() else ""
+    evidence = f"{text}\n{stderr}".lower()
+    authentication_markers = (
+        "authentication_error",
+        "failed to authenticate",
+        "oauth access token has expired",
+        "invalid api key",
+        "api error: 401",
+        "unauthorized",
+    )
+    authentication_prefixes = ("failed to authenticate", "api error: 401", "error: 401", "unauthorized")
+    if first_line.startswith(authentication_prefixes) or (
+        returncode != 0 and any(marker in evidence for marker in authentication_markers)
+    ):
+        return "authentication"
+
+    permanent_markers = (
+        "api error: 403",
+        "forbidden",
+        "permission denied",
+        "account disabled",
+        "billing account",
+        "insufficient credits",
+        "model not found",
+    )
+    permanent_prefixes = (
+        "api error: 403",
+        "error: 403",
+        "forbidden",
+        "permission denied",
+        "account disabled",
+        "model not found",
+    )
+    if first_line.startswith(permanent_prefixes) or (
+        returncode != 0 and any(marker in evidence for marker in permanent_markers)
+    ):
+        return "permanent"
+
+    transient_markers = (
+        "connection refused",
+        "failed to connect",
+        "connection reset",
+        "rate limit",
+        "api error: 429",
+        "temporarily unavailable",
+        "service unavailable",
+        "request timed out",
+        "timed out",
+        "bad gateway",
+        "api error: 502",
+        "api error: 503",
+        "api error: 504",
+    )
+    transient_prefixes = (
+        "connection refused",
+        "failed to connect",
+        "rate limit",
+        "api error: 429",
+        "temporarily unavailable",
+        "service unavailable",
+        "request timed out",
+    )
+    if first_line.startswith(transient_prefixes) or (
+        returncode != 0 and any(marker in evidence for marker in transient_markers)
+    ):
+        return "transient"
+    return None
+
+
+def authentication_recovery_hint(backend: str) -> str:
+    """Return the actionable authentication recovery command for a backend."""
+    hints = {
+        "claude_code": "Run `claude` to re-authenticate, then run `kd doctor`.",
+        "codex": "Run `codex login` to re-authenticate, then run `kd doctor`.",
+        "cursor": "Re-authenticate Cursor Agent, then run `kd doctor`.",
+    }
+    return hints.get(backend, "Re-authenticate the provider, then run `kd doctor`.")
+
+
+def concise_provider_error(text: str, stderr: str, returncode: int) -> str:
+    """Return one bounded provider error for logs and ticket worklogs."""
+    message = text.strip() or stderr.strip() or f"Exit code {returncode}"
+    message = " ".join(message.split())
+    return message if len(message) <= 500 else message[:497] + "..."
+
+
 def extract_worklog_entry(response_text: str) -> str:
     """Extract a concise worklog entry from the agent's response.
 
@@ -881,6 +969,8 @@ def run_agent_loop(
             logger.warning("Could not record start_sha")
 
     final_status = "failed"
+    final_failure_kind: str | None = None
+    transient_failures = 0
     last_bounce_feedback: list[str] = []  # Council feedback from last bounce (for worklog context)
 
     for iteration in range(1, max_iterations + 1):
@@ -896,6 +986,7 @@ def run_agent_loop(
             branch,
             session_name,
             status="working",
+            failure_kind=None,
             last_activity=now,
         )
 
@@ -1010,10 +1101,68 @@ def run_agent_loop(
         if proc.stderr.strip():
             logger.info("--- Agent stderr ---\n%s\n--- End agent stderr ---", proc.stderr.strip())
 
+        provider_failure = classify_provider_failure(text, proc.stderr, proc.returncode)
+        if provider_failure == "authentication":
+            error_msg = concise_provider_error(text, proc.stderr, proc.returncode)
+            recovery = authentication_recovery_hint(agent_config.backend)
+            logger.error("Authentication infrastructure failure: %s", error_msg)
+            append_worklog(
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=f"Infrastructure failure (authentication): {error_msg}\n{recovery}",
+            )
+            final_failure_kind = "authentication"
+            final_status = "failed"
+            break
+        if provider_failure == "permanent":
+            error_msg = concise_provider_error(text, proc.stderr, proc.returncode)
+            append_worklog(
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=(
+                    f"Infrastructure failure (provider configuration): {error_msg}\n"
+                    "Run `kd doctor` and inspect provider account, model, and permission settings."
+                ),
+            )
+            final_failure_kind = "provider"
+            final_status = "failed"
+            break
+        if provider_failure == "transient":
+            transient_failures += 1
+            error_msg = concise_provider_error(text, proc.stderr, proc.returncode)
+            if transient_failures >= 3:
+                append_worklog(
+                    ticket_path,
+                    ticket_id=ticket_id,
+                    entry=(
+                        f"Infrastructure failure (provider retries exhausted {transient_failures}/3): {error_msg}\n"
+                        "Run `kd doctor` and retry after provider connectivity recovers."
+                    ),
+                )
+                final_failure_kind = "provider"
+                final_status = "failed"
+                break
+            delay = transient_failures
+            append_worklog(
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=(
+                    f"Transient provider failure (attempt {transient_failures}/3); retrying in {delay}s: {error_msg}"
+                ),
+            )
+            time.sleep(delay)
+            continue
+        transient_failures = 0
+
         if not text and proc.returncode != 0:
             error_msg = proc.stderr.strip() or f"Exit code {proc.returncode}"
             logger.error("Backend error: %s", error_msg)
-            append_worklog(ticket_path, ticket_id=ticket_id, entry=f"Backend error: {error_msg}")
+            append_worklog(
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=f"Infrastructure failure (backend): {error_msg}\nRun `kd doctor` and inspect the provider CLI.",
+            )
+            final_failure_kind = "provider"
             final_status = "failed"
             break
 
@@ -1185,6 +1334,7 @@ def run_agent_loop(
         branch,
         session_name,
         status=final_status,
+        failure_kind=final_failure_kind,
         last_activity=now,
     )
 

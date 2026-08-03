@@ -509,7 +509,7 @@ class TestRunAgentLoop:
 
         mock_result = MagicMock()
         mock_result.stdout = ""
-        mock_result.stderr = "Connection refused"
+        mock_result.stderr = "Unexpected backend exit"
         mock_result.returncode = 1
 
         with patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result):
@@ -530,6 +530,134 @@ class TestRunAgentLoop:
         assert "Run metrics: agent cycles: 1; council review cycles: 0" in ticket.body
         assert "reported agent tokens: unavailable" in ticket.body
         assert "elapsed" in ticket.body
+
+    def test_loop_fails_fast_on_expired_authentication(self, project: Path, ticket_path: Path) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        auth_result = MagicMock(
+            stdout=json.dumps(
+                {
+                    "result": (
+                        'Failed to authenticate. API Error: 401 {"error":'
+                        '{"type":"authentication_error","message":"OAuth access token has expired."}}'
+                    )
+                }
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+        with patch("kingdom.harness.run_streaming_subprocess", return_value=auth_result) as backend:
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "failed"
+        assert backend.call_count == 1
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.status == "failed"
+        assert state.failure_kind == "authentication"
+        body = read_ticket(ticket_path).body
+        assert "Infrastructure failure (authentication)" in body
+        assert "re-authenticate" in body
+        assert "kd doctor" in body
+
+    def test_loop_fails_fast_on_permanent_provider_rejection(self, project: Path, ticket_path: Path) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        rejected = MagicMock(
+            stdout='{"result": "API Error: 403 Forbidden: account disabled"}',
+            stderr="",
+            returncode=0,
+        )
+
+        with patch("kingdom.harness.run_streaming_subprocess", return_value=rejected) as backend:
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "failed"
+        assert backend.call_count == 1
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.failure_kind == "provider"
+        body = read_ticket(ticket_path).body
+        assert "Infrastructure failure (provider configuration)" in body
+        assert "kd doctor" in body
+
+    def test_loop_retries_transient_provider_failures_with_bounded_backoff(
+        self,
+        project: Path,
+        ticket_path: Path,
+    ) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        transient = MagicMock(stdout="", stderr="Connection refused", returncode=1)
+        completed = MagicMock(
+            stdout='{"result": "Recovered.\\n\\nSTATUS: DONE", "session_id": "s1"}',
+            stderr="",
+            returncode=0,
+        )
+
+        with (
+            patch("kingdom.harness.run_streaming_subprocess", side_effect=[transient, transient, completed]) as backend,
+            patch("kingdom.harness.time.sleep") as sleep,
+            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.has_code_changes", return_value=True),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "needs_king_review"
+        assert backend.call_count == 3
+        assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.failure_kind is None
+        body = read_ticket(ticket_path).body
+        assert "Transient provider failure (attempt 1/3)" in body
+        assert "Transient provider failure (attempt 2/3)" in body
+
+    def test_loop_stops_after_three_transient_provider_failures(self, project: Path, ticket_path: Path) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        transient = MagicMock(stdout="", stderr="Connection refused", returncode=1)
+
+        with (
+            patch("kingdom.harness.run_streaming_subprocess", return_value=transient) as backend,
+            patch("kingdom.harness.time.sleep") as sleep,
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "failed"
+        assert backend.call_count == 3
+        assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.failure_kind == "provider"
+        body = read_ticket(ticket_path).body
+        assert "Infrastructure failure (provider retries exhausted 3/3)" in body
+        assert "kd doctor" in body
 
     def test_loop_writes_to_thread(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)

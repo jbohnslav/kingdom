@@ -595,6 +595,32 @@ class TestPeasantStatus:
             rows = json.loads(result.output)
             assert rows[0]["elapsed_minutes"] == 120
 
+    def test_failed_status_exposes_infrastructure_failure_kind(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-auth",
+                AgentState(
+                    name="peasant-kin-auth",
+                    status="failed",
+                    failure_kind="authentication",
+                    ticket="kin-auth",
+                ),
+            )
+
+            json_result = runner.invoke(peasant_app, ["status", "--all", "--json"])
+            human_result = runner.invoke(peasant_app, ["status", "--all"])
+
+            assert json_result.exit_code == 0, json_result.output
+            assert json.loads(json_result.output)[0]["failure_kind"] == "authentication"
+            assert human_result.exit_code == 0, human_result.output
+            assert "failed/authentication" in human_result.output
+
     def test_status_ignores_non_peasant_sessions(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
