@@ -19,15 +19,27 @@ import typer
 
 from kingdom.lifecycle import EventKind, Host, HostEvent, InvalidHostEvent, normalize_host_event
 from kingdom.state import (
+    ExecutionContext,
     archive_root,
     backlog_root,
     branch_root,
+    compact_context_id,
     find_project_root,
+    finish_execution_context,
     normalize_branch_name,
+    read_execution_ticket_context,
     read_terminal_ticket_context,
+    record_execution_ticket_context,
     resolve_current_run,
+    resolve_execution_context,
 )
-from kingdom.ticket import read_ticket
+from kingdom.ticket import (
+    AmbiguousTicketMatch,
+    append_worklog_entry,
+    find_ticket,
+    read_ticket,
+    write_ticket,
+)
 
 hook_app = typer.Typer(name="hook", help="Agent-host hook handlers (internal).")
 
@@ -174,6 +186,75 @@ def find_stop_ticket_id(project_dir: str | None, session_id: str) -> str | None:
         return None
 
 
+def subagent_contexts(event: HostEvent) -> tuple[ExecutionContext | None, ExecutionContext | None]:
+    if not event.agent_id or not event.parent_agent_id:
+        return None, None
+    parent = resolve_execution_context(
+        session_id=event.parent_agent_id,
+        host=event.host.value,
+        cwd=event.cwd,
+    )
+    if parent is None:
+        return None, None
+    child = resolve_execution_context(
+        session_id=event.agent_id,
+        host=event.host.value,
+        role="subagent",
+        parent_agent_id=parent.context_id,
+        agent_type=event.agent_type,
+        cwd=event.cwd,
+    )
+    return parent, child
+
+
+def subagent_context_output(message: str) -> str:
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SubagentStart",
+                "additionalContext": message,
+            }
+        }
+    )
+
+
+def assign_explicit_subagent_ticket(
+    base: Path,
+    feature: str,
+    event: HostEvent,
+    child: ExecutionContext,
+) -> str | None:
+    if not event.ticket_hint:
+        return None
+    try:
+        result = find_ticket(base, event.ticket_hint, branch=feature)
+    except AmbiguousTicketMatch:
+        return f"Kingdom could not resolve explicit ticket {event.ticket_hint}; run kd tk start <id>."
+    if result is None:
+        return f"Kingdom could not find explicit ticket {event.ticket_hint}; run kd tk start <id>."
+
+    ticket = result.ticket
+    if ticket.status not in {"open", "in_progress"}:
+        return f"Kingdom ticket {ticket.id} is {ticket.status}; run kd tk start <id> for another ticket."
+    if ticket.assignee and ticket.assignee != child.context_id:
+        return f"Kingdom ticket {ticket.id} already has an owner; run kd tk start <id> explicitly if reassignment is intended."
+
+    ticket.status = "in_progress"
+    ticket.assignee = child.context_id
+    write_ticket(ticket, result.path)
+    record_execution_ticket_context(
+        base,
+        child,
+        ticket.id,
+        feature=feature,
+        location=result.location,
+    )
+    return (
+        f"Kingdom assigned you ticket {ticket.id}. Keep its Markdown body, acceptance criteria, and worklog current; "
+        "do not close it unless your parent asked you to own completion."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Event handlers — each consumes normalized events and returns hook output.
 # ---------------------------------------------------------------------------
@@ -201,6 +282,75 @@ def handle_session_start(data: HostEvent | dict) -> str:
             }
         }
     )
+
+
+def handle_subagent_start(data: HostEvent | dict) -> str:
+    event = handler_event(data, EventKind.SUBAGENT_START)
+    if event is None:
+        return ""
+    parent, child = subagent_contexts(event)
+    if parent is None or child is None:
+        return subagent_context_output(
+            "Kingdom could not identify this subagent context; run kd tk start <id> explicitly."
+        )
+
+    base = terminal_context_base(str(event.cwd))
+    try:
+        feature = resolve_current_run(base)
+    except (RuntimeError, ValueError):
+        return subagent_context_output("Kingdom has no active feature here; run kd start before binding a ticket.")
+
+    explicit_message = assign_explicit_subagent_ticket(base, feature, event, child)
+    if explicit_message:
+        return subagent_context_output(explicit_message)
+
+    parent_binding = read_execution_ticket_context(base, parent)
+    if parent_binding is None or parent_binding.get("feature") != normalize_branch_name(feature):
+        return subagent_context_output(
+            "Kingdom found no exact parent ticket to inherit; run kd tk start <id> explicitly."
+        )
+
+    ticket_id = parent_binding["ticket_id"]
+    record_execution_ticket_context(
+        base,
+        child,
+        ticket_id,
+        feature=feature,
+        location=parent_binding.get("location"),
+    )
+    return subagent_context_output(
+        f"Kingdom: inherit Kingdom ticket {ticket_id} from {compact_context_id(parent.context_id)}. "
+        "Keep its Markdown body, acceptance criteria, and worklog current; leave closure to the owning session."
+    )
+
+
+def handle_subagent_stop(data: HostEvent | dict) -> str:
+    event = handler_event(data, EventKind.SUBAGENT_STOP)
+    if event is None:
+        return ""
+    parent, child = subagent_contexts(event)
+    if parent is None or child is None:
+        return ""
+
+    base = terminal_context_base(str(event.cwd))
+    binding = read_execution_ticket_context(base, child)
+    if binding:
+        feature = binding.get("feature")
+        ticket_id = binding.get("ticket_id")
+        if isinstance(feature, str) and isinstance(ticket_id, str):
+            result = find_ticket(base, ticket_id, branch=feature)
+            if result:
+                agent_type = child.agent_type or "worker"
+                append_worklog_entry(
+                    result.path,
+                    (
+                        f"Native subagent {agent_type} completed; handoff returned to owning session "
+                        f"{compact_context_id(parent.context_id)}."
+                    ),
+                    author=compact_context_id(child.context_id),
+                )
+    finish_execution_context(base, child)
+    return ""
 
 
 def handle_user_prompt_submit(data: HostEvent | dict) -> str:
@@ -300,6 +450,8 @@ def handle_stop(data: HostEvent | dict) -> str:
 # Map event names to handlers.
 HANDLERS = {
     EventKind.SESSION_START: handle_session_start,
+    EventKind.SUBAGENT_START: handle_subagent_start,
+    EventKind.SUBAGENT_STOP: handle_subagent_stop,
     EventKind.PROMPT_SUBMIT: handle_user_prompt_submit,
     EventKind.POST_TOOL_USE: handle_post_tool_use,
     EventKind.STOP: handle_stop,

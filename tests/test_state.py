@@ -252,6 +252,8 @@ class TestExecutionContext:
         assert path.name.startswith("codex-")
         assert not list(path.parent.glob("*.tmp"))
         assert read_execution_ticket_context(tmp_path, context) == {
+            "active": True,
+            "agent_type": None,
             "context_id": context.context_id,
             "cwd": str(tmp_path),
             "feature": "feature-context",

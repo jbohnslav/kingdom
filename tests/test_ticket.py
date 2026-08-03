@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1097,6 +1098,18 @@ class TestFindNewlyUnblocked:
 
 class TestAppendWorklogEntry:
     """Tests for append_worklog_entry function."""
+
+    def test_concurrent_appends_preserve_every_entry(self, tmp_path: Path) -> None:
+        path = tmp_path / "parallel.md"
+        write_ticket(Ticket(id="para", status="in_progress", title="Parallel work"), path)
+
+        messages = [f"worker {index}" for index in range(24)]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda message: append_worklog_entry(path, message), messages))
+
+        content = path.read_text(encoding="utf-8")
+        for message in messages:
+            assert content.count(f"— {message}\n") == 1
 
     def test_creates_worklog_section_when_missing(self, tmp_path: Path) -> None:
         """Creates ## Worklog section if it doesn't exist."""

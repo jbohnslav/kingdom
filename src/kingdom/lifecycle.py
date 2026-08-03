@@ -148,13 +148,19 @@ def normalize_host_event(host: Host, payload: Mapping[str, object]) -> HostEvent
         raise InvalidHostEvent("missing required cwd")
 
     tool_name = optional_string(payload, "tool_name")
+    agent_id = optional_string(payload, "agent_id", "subagent_id")
+    parent_agent_id = optional_string(payload, "parent_agent_id", "parent_subagent_id")
+    if kind in {EventKind.SUBAGENT_START, EventKind.SUBAGENT_STOP} and agent_id and not parent_agent_id:
+        # All supported hosts report the owning session on subagent events.
+        parent_agent_id = session_id
+
     return HostEvent(
         host=host,
         kind=kind,
         session_id=session_id,
         cwd=Path(cwd),
-        agent_id=optional_string(payload, "agent_id", "subagent_id"),
-        parent_agent_id=optional_string(payload, "parent_agent_id", "parent_subagent_id"),
+        agent_id=agent_id,
+        parent_agent_id=parent_agent_id,
         agent_type=optional_string(payload, "agent_type", "subagent_type"),
         ticket_hint=optional_string(payload, "ticket_hint", "ticket_id"),
         source=optional_string(payload, "source"),

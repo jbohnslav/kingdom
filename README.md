@@ -21,6 +21,16 @@ Gastown minus the polecats.
 uv tool install kingdom-cli  # add --python 3.11 if Python 3.11+ is not installed yet
 ```
 
+Codex users can install the Kingdom skill and lifecycle hooks as one local plugin:
+
+```bash
+kd plugin install codex
+```
+
+Start a new Codex task after installation, then use `/hooks` to review and trust
+the Kingdom hooks. Later `kd update` runs refresh an existing plugin along with
+the CLI and skill files; they do not install the Codex plugin unless you opted in.
+
 ## Workflow Scales
 
 `kd` scales down gracefully. You pick the parts of the workflow that fit the size of the work.
@@ -120,6 +130,7 @@ No database. No server. Just files on disk.
 | `kd ticket` (alias `kd tk`) | Ticket management — `create`, `list`, `show`, `start`, `close`, `deps`, and more |
 | `kd peasant` | Worker agents — `start`, `stop`, `review`, `accept`, `reject`, `msg`, `read`, `watch` |
 | `kd config` | View and manage configuration |
+| `kd plugin` | Install and inspect host integrations for Claude Code and Codex |
 | `kd doctor` | Check config and agent CLIs |
 
 Run `kd <command> --help` for full flags and options.

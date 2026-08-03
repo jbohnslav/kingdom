@@ -12,15 +12,135 @@ from kingdom.cli.hook import (
     handle_post_tool_use,
     handle_session_start,
     handle_stop,
+    handle_subagent_start,
+    handle_subagent_stop,
     handle_user_prompt_submit,
     read_turn_state,
     state_file_for,
     write_turn_state,
 )
-from kingdom.state import backlog_root, ensure_branch_layout, record_terminal_ticket_context, set_current_run
-from kingdom.ticket import Ticket, write_ticket
+from kingdom.lifecycle import Host, normalize_host_event
+from kingdom.state import (
+    backlog_root,
+    compact_context_id,
+    ensure_branch_layout,
+    list_execution_contexts,
+    read_execution_ticket_context,
+    record_execution_ticket_context,
+    record_terminal_ticket_context,
+    resolve_execution_context,
+    set_current_run,
+)
+from kingdom.ticket import Ticket, read_ticket, write_ticket
 
 runner = CliRunner()
+
+
+class TestSubagentLifecycle:
+    def setup_parent(self, tmp_path: Path) -> tuple:
+        feature = "feature/native-agents"
+        branch = ensure_branch_layout(tmp_path, feature)
+        set_current_run(tmp_path, feature)
+        parent = resolve_execution_context(host="codex", session_id="parent-session", cwd=tmp_path)
+        assert parent is not None
+        ticket = Ticket(
+            id="aaaa",
+            status="in_progress",
+            title="Owner ticket",
+            assignee=parent.context_id,
+        )
+        path = branch / "tickets" / "aaaa.md"
+        write_ticket(ticket, path)
+        record_execution_ticket_context(tmp_path, parent, ticket.id, feature=feature)
+        return parent, path
+
+    def event(self, tmp_path: Path, name: str, **extra: str):
+        payload = {
+            "hook_event_name": name,
+            "session_id": "parent-session",
+            "cwd": str(tmp_path),
+            "agent_id": "child-1",
+            "agent_type": "explorer",
+            **extra,
+        }
+        event = normalize_host_event(Host.CODEX, payload)
+        assert event is not None
+        return event
+
+    def test_subagent_inherits_parent_ticket_without_taking_ownership(self, tmp_path: Path) -> None:
+        parent, ticket_path = self.setup_parent(tmp_path)
+
+        output = json.loads(handle_subagent_start(self.event(tmp_path, "SubagentStart")))
+
+        child = resolve_execution_context(
+            host="codex",
+            session_id="child-1",
+            role="subagent",
+            parent_agent_id=parent.context_id,
+            agent_type="explorer",
+            cwd=tmp_path,
+        )
+        assert child is not None
+        binding = read_execution_ticket_context(tmp_path, child)
+        assert binding is not None
+        assert binding["ticket_id"] == "aaaa"
+        assert binding["parent_agent_id"] == parent.context_id
+        assert binding["agent_type"] == "explorer"
+        assert read_ticket(ticket_path).assignee == parent.context_id
+        assert "inherit Kingdom ticket aaaa" in output["hookSpecificOutput"]["additionalContext"]
+
+    def test_explicit_subagent_ticket_is_assigned_to_child(self, tmp_path: Path) -> None:
+        parent, _ = self.setup_parent(tmp_path)
+        branch = ensure_branch_layout(tmp_path, "feature/native-agents")
+        child_path = branch / "tickets" / "bbbb.md"
+        write_ticket(Ticket(id="bbbb", status="open", title="Child ticket"), child_path)
+
+        handle_subagent_start(self.event(tmp_path, "SubagentStart", ticket_id="bbbb"))
+
+        child = resolve_execution_context(
+            host="codex",
+            session_id="child-1",
+            role="subagent",
+            parent_agent_id=parent.context_id,
+            agent_type="explorer",
+            cwd=tmp_path,
+        )
+        assert child is not None
+        ticket = read_ticket(child_path)
+        assert ticket.status == "in_progress"
+        assert ticket.assignee == child.context_id
+        assert read_execution_ticket_context(tmp_path, child)["ticket_id"] == "bbbb"
+
+    def test_subagent_stop_appends_handoff_and_marks_child_complete(self, tmp_path: Path) -> None:
+        parent, ticket_path = self.setup_parent(tmp_path)
+        handle_subagent_start(self.event(tmp_path, "SubagentStart"))
+
+        assert handle_subagent_stop(self.event(tmp_path, "SubagentStop")) == ""
+
+        child = resolve_execution_context(
+            host="codex",
+            session_id="child-1",
+            role="subagent",
+            parent_agent_id=parent.context_id,
+            agent_type="explorer",
+            cwd=tmp_path,
+        )
+        assert child is not None
+        content = ticket_path.read_text(encoding="utf-8")
+        assert f"[{compact_context_id(child.context_id)}]" in content
+        assert "Native subagent explorer completed" in content
+        context = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == child.context_id)
+        assert context["active"] is False
+        assert read_ticket(ticket_path).status == "in_progress"
+
+    def test_missing_parent_binding_prompts_for_explicit_start_without_guessing(self, tmp_path: Path) -> None:
+        ensure_branch_layout(tmp_path, "feature/native-agents")
+        set_current_run(tmp_path, "feature/native-agents")
+
+        output = json.loads(handle_subagent_start(self.event(tmp_path, "SubagentStart")))
+
+        assert "kd tk start <id>" in output["hookSpecificOutput"]["additionalContext"]
+        assert list_execution_contexts(tmp_path) == []
 
 
 # ---------------------------------------------------------------------------

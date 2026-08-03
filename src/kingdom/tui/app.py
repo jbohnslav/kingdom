@@ -140,10 +140,18 @@ def build_branch_context(base: Path, branch: str) -> str:
     if contexts:
         lines.append("Sessions:")
         for context in contexts:
-            stale = " stale" if context["stale"] else ""
+            states = []
+            if context["stale"]:
+                states.append("stale")
+            if not context["active"]:
+                states.append("completed")
+            state = f" ({', '.join(states)})" if states else ""
+            agent_type = f"/{context['agent_type']}" if context.get("agent_type") else ""
+            parent = context.get("parent_agent_id")
+            parent_label = f" child-of:{compact_context_id(parent)}" if isinstance(parent, str) else ""
             lines.append(
                 f"  {compact_context_id(context['context_id'])}  "
-                f"{context['host']}/{context['role']}{stale}  {context['ticket_id']}"
+                f"{context['host']}/{context['role']}{agent_type}{state}{parent_label}  {context['ticket_id']}"
             )
 
     return "\n".join(lines) + "\n\n"

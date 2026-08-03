@@ -1721,6 +1721,11 @@ def ticket_log(
     role = os.environ.get("KD_ROLE", "")
     agent_name = os.environ.get("KD_AGENT_NAME", "")
     author = agent_name or role or None
+    if author is None:
+        with contextlib.suppress(ValueError):
+            context = resolve_execution_context()
+            if context:
+                author = compact_context_id(context.context_id)
 
     entry = append_worklog_entry(ticket_path, message, author=author)
     typer.echo(f"{ticket.id}: {entry}")

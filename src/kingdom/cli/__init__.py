@@ -18,6 +18,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
+from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_plugin
 from kingdom.council import Council, create_council  # noqa: F401 (Council used by tests)
 from kingdom.design import ensure_design_initialized
 from kingdom.state import (
@@ -55,7 +56,7 @@ from .peasant import (  # noqa: F401
     peasant_app,
     resolve_peasant_context,
 )
-from .plugin import plugin_app
+from .plugin import activate_codex_plugin, plugin_app
 from .ticket import format_ticket_line, format_ticket_summary, get_tickets_dir, ticket_app  # noqa: F401
 
 NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
@@ -530,7 +531,15 @@ def status(
             typer.echo("Sessions:")
             for context in contexts:
                 context_id = compact_context_id(context["context_id"])
-                stale_label = " stale" if context["stale"] else ""
+                state_labels = []
+                if context["stale"]:
+                    state_labels.append("stale")
+                if not context["active"]:
+                    state_labels.append("completed")
+                state_label = f" ({', '.join(state_labels)})" if state_labels else ""
+                agent_type = f"/{context['agent_type']}" if context.get("agent_type") else ""
+                parent = context.get("parent_agent_id")
+                parent_label = f" · child of {compact_context_id(parent)}" if isinstance(parent, str) else ""
                 ticket_id = context.get("ticket_id") or "—"
                 ticket_status = context.get("ticket_status") or "unbound"
                 ticket_title = context.get("ticket_title") or ""
@@ -538,7 +547,7 @@ def status(
                 last_seen = parse_context_last_seen(context.get("last_seen"))
                 seen = last_seen.astimezone().strftime("%Y-%m-%d %H:%M") if last_seen else "unknown"
                 typer.echo(
-                    f"  {context_id} · {context['host']} · {context['role']}{stale_label} · "
+                    f"  {context_id} · {context['host']} · {context['role']}{agent_type}{state_label}{parent_label} · "
                     f"{ticket_id} [{ticket_status}] {ticket_title}{epic} · seen {seen}"
                 )
 
@@ -552,9 +561,9 @@ def status(
                     typer.echo(f"  {assignee}: {t.id} [{t.status}] {t.title}")
 
 
-@app.command(help="Upgrade the CLI and refresh skill files.")
+@app.command(help="Upgrade the CLI and refresh installed agent integrations.")
 def update() -> None:
-    """Run ``uv tool upgrade kingdom-cli`` then refresh local agent skill files."""
+    """Upgrade the CLI, refresh skills, and update an existing Codex plugin."""
     console = Console()
 
     # Step 1: uv tool upgrade kingdom-cli
@@ -590,18 +599,36 @@ def update() -> None:
     else:
         styled_echo("  ✗ Skill refresh failed (see warning above)", fg=typer.colors.RED)
 
+    # Step 3: refresh Codex plugin only when the user already configured it.
+    plugin_status = "not configured"
+    plugin_ok = True
+    if codex_plugin_install_detected(Path.home()):
+        typer.echo("Refreshing Codex plugin...")
+        try:
+            plugin_result = install_codex_plugin(Path.home())
+            plugin_ok, plugin_message = activate_codex_plugin(plugin_result.marketplace_name)
+        except (OSError, RuntimeError, ValueError) as exc:
+            plugin_ok = False
+            plugin_message = str(exc)
+        if plugin_ok:
+            plugin_status = plugin_result.status
+            styled_echo(f"  ✓ Codex plugin {plugin_status}", fg=typer.colors.GREEN)
+        else:
+            plugin_status = "failed"
+            styled_echo(f"  ✗ {plugin_message}", fg=typer.colors.RED)
+
     # Summary
     typer.echo()
     upgrade_summary = "upgraded" if upgrade_ok else "failed"
     console.print(
         Panel(
-            f"CLI: {upgrade_summary}  |  Skills: {skill_status}",
+            f"CLI: {upgrade_summary}  |  Skills: {skill_status}  |  Codex plugin: {plugin_status}",
             title="[bold]kd update[/bold]",
             border_style="green" if upgrade_ok else "yellow",
         )
     )
 
-    if not upgrade_ok or skill_status == "failed":
+    if not upgrade_ok or skill_status == "failed" or not plugin_ok:
         raise typer.Exit(code=1)
 
 

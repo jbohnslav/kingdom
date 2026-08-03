@@ -233,6 +233,7 @@ class ExecutionContext:
     role: str
     session_id: str
     parent_agent_id: str | None
+    agent_type: str | None
     cwd: str
     last_seen: datetime
     source: str
@@ -300,6 +301,7 @@ def resolve_execution_context(
     host: str | None = None,
     role: str | None = None,
     parent_agent_id: str | None = None,
+    agent_type: str | None = None,
     cwd: Path | None = None,
     now: datetime | None = None,
 ) -> ExecutionContext | None:
@@ -341,6 +343,7 @@ def resolve_execution_context(
         role=resolved_role,
         session_id=stable_id,
         parent_agent_id=validated_parent,
+        agent_type=normalize_context_host(agent_type) if agent_type else None,
         cwd=str((cwd or Path.cwd()).resolve()),
         last_seen=now or datetime.now(UTC),
         source=source,
@@ -371,14 +374,39 @@ def record_execution_ticket_context(
             "role": context.role,
             "session_id": context.session_id,
             "parent_agent_id": context.parent_agent_id,
+            "agent_type": context.agent_type,
             "cwd": context.cwd,
             "source": context.source,
             "ticket_id": ticket_id,
             "feature": normalize_branch_name(feature),
             "location": location or f"branch:{normalize_branch_name(feature)}",
             "last_seen": context.last_seen.isoformat(),
+            "active": True,
         },
     )
+
+
+def finish_execution_context(
+    base: Path,
+    context: ExecutionContext,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    path = execution_context_path(base, context)
+    if not path.exists():
+        return None
+
+    timestamp = (now or datetime.now(UTC)).isoformat()
+
+    def finish(data: dict[str, Any]) -> dict[str, Any]:
+        if data.get("context_id") != context.context_id:
+            return data
+        data["active"] = False
+        data["completed_at"] = timestamp
+        data["last_seen"] = timestamp
+        return data
+
+    return locked_json_update(path, finish)
 
 
 def read_execution_ticket_context(base: Path, context: ExecutionContext) -> dict[str, Any] | None:
@@ -465,6 +493,7 @@ def list_execution_contexts(
             continue
         record = dict(data)
         record["role"] = data.get("role") if isinstance(data.get("role"), str) else "agent"
+        record["active"] = data.get("active") is not False
         record["stale"] = current_time - last_seen > stale_after
         records.append((last_seen, record))
 
@@ -692,6 +721,7 @@ def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, P
         gitignore_content = """# Operational state (not tracked)
 *.json
 *.json.lock
+.*.lock
 *.jsonl
 *.log
 *.session

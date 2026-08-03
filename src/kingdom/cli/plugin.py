@@ -4,13 +4,31 @@ from __future__ import annotations
 
 import json
 import subprocess
+from enum import StrEnum
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
+from kingdom.codex_plugin import install_codex_plugin, is_codex_plugin_configured
+
 from .display import print_error, styled_echo
 
-plugin_app = typer.Typer(name="plugin", help="Manage Claude Code hooks plugin.")
+plugin_app = typer.Typer(name="plugin", help="Manage Kingdom agent-host integrations.")
+
+
+class PluginHost(StrEnum):
+    """Agent hosts whose plugin state Kingdom can inspect."""
+
+    CLAUDE = "claude"
+    CODEX = "codex"
+
+
+class PluginInstallHost(StrEnum):
+    """Hosts with an explicit plugin-package installer."""
+
+    CODEX = "codex"
+
 
 HOOK_COMMAND = "kd hook run"
 
@@ -67,6 +85,49 @@ def has_hook_for_event(settings: dict, event: str) -> bool:
 def is_hook_installed(settings: dict) -> bool:
     """Check if the kingdom hooks are present for all events."""
     return all(has_hook_for_event(settings, event) for event in HOOK_EVENTS)
+
+
+def activate_codex_plugin(marketplace_name: str) -> tuple[bool, str]:
+    """Install the refreshed Kingdom source through Codex's marketplace CLI."""
+    try:
+        result = subprocess.run(
+            ["codex", "plugin", "add", f"kingdom@{marketplace_name}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError:
+        return False, "Codex CLI was not found; install it, then rerun this command."
+    except subprocess.TimeoutExpired:
+        return False, "Codex plugin installation timed out."
+    output = result.stdout.strip() or result.stderr.strip()
+    if result.returncode != 0:
+        return False, output or "Codex plugin installation failed."
+    return True, output or "Codex plugin activated."
+
+
+@plugin_app.command("install", help="Install a Kingdom integration for an agent host.")
+def plugin_install(host: PluginInstallHost) -> None:
+    """Install the Codex plugin source, marketplace entry, skill, and hooks."""
+    try:
+        result = install_codex_plugin(Path.home())
+    except (OSError, RuntimeError, ValueError) as exc:
+        print_error(f"Could not install the Codex plugin: {exc}")
+        raise typer.Exit(code=1) from None
+
+    activated, activation_message = activate_codex_plugin(result.marketplace_name)
+    if not activated:
+        print_error(activation_message)
+        typer.echo(f"Plugin source remains available at {result.plugin_root}")
+        raise typer.Exit(code=1)
+
+    styled_echo(f"Kingdom Codex plugin {result.status}.", fg=typer.colors.GREEN)
+    typer.echo(f"  Plugin: {result.plugin_root}")
+    typer.echo(f"  Marketplace: {result.marketplace_path}")
+    typer.echo("  Preserved other marketplace entries and Codex configuration.")
+    if activation_message:
+        typer.echo(f"  Codex: {activation_message}")
+    typer.echo("Start a new Codex task, open `/hooks`, and trust the Kingdom hooks when prompted.")
 
 
 @plugin_app.command("enable", help="Install the kingdom workflow hook into Claude Code.")
@@ -133,9 +194,18 @@ def plugin_disable() -> None:
     styled_echo("Kingdom workflow hook disabled.", fg=typer.colors.GREEN)
 
 
-@plugin_app.command("status", help="Check if the kingdom workflow hook is installed.")
-def plugin_status() -> None:
+@plugin_app.command("status", help="Check whether a Kingdom host integration is configured.")
+def plugin_status(
+    host: Annotated[PluginHost, typer.Option("--host", help="Agent host to inspect.")] = PluginHost.CLAUDE,
+) -> None:
     """Show whether the kingdom hook is currently enabled."""
+    if host is PluginHost.CODEX:
+        if is_codex_plugin_configured(Path.home()):
+            styled_echo("Kingdom Codex plugin: configured", fg=typer.colors.GREEN)
+        else:
+            styled_echo("Kingdom Codex plugin: not configured", fg=typer.colors.YELLOW)
+        return
+
     try:
         git_root = find_git_root()
     except (ValueError, subprocess.TimeoutExpired) as exc:

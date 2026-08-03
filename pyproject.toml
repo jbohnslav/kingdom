@@ -42,6 +42,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "kingdom.skill" = ["*.md", "references/*.md"]
+"kingdom.codex_plugin" = [".codex-plugin/*.json", "hooks/*.json"]
 "kingdom.tui" = ["*.tcss"]
 
 [dependency-groups]

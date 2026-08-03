@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.parsing import parse_frontmatter, parse_iso_datetime, serialize_frontmatter
+from kingdom.state import flock
 
 STATUSES = {"open", "in_progress", "in_review", "closed"}
 TICKET_TYPES = {"task", "bug", "feature", "epic"}
@@ -519,9 +520,11 @@ def append_worklog_entry(
     author_tag = f" [{author}]" if author else ""
     entry = f"- {timestamp_text}{author_tag} — {formatted}"
 
-    content = path.read_text(encoding="utf-8")
-    new_content = insert_worklog_entry(content, entry)
-    path.write_text(new_content, encoding="utf-8")
+    lock_path = path.parent / f".{path.name}.lock"
+    with flock(lock_path):
+        content = path.read_text(encoding="utf-8")
+        new_content = insert_worklog_entry(content, entry)
+        path.write_text(new_content, encoding="utf-8")
     return entry
 
 

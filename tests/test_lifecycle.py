@@ -89,6 +89,23 @@ def test_parent_agent_and_ticket_hint_are_normalized() -> None:
     assert event.ticket_hint == "abcd"
 
 
+@pytest.mark.parametrize("host", [Host.CLAUDE, Host.CODEX, Host.CURSOR])
+def test_subagent_parent_defaults_to_documented_parent_session(host: Host) -> None:
+    event_name = "subagentStart" if host is Host.CURSOR else "SubagentStart"
+    event = normalize_host_event(
+        host,
+        {
+            "hook_event_name": event_name,
+            "session_id": "parent-session",
+            "cwd": "/workspace",
+            "agent_id": "child-1",
+        },
+    )
+
+    assert event is not None
+    assert event.parent_agent_id == "parent-session"
+
+
 @pytest.mark.parametrize("missing", ["session_id", "cwd"])
 def test_missing_required_field_fails_loudly(missing: str) -> None:
     payload = {
