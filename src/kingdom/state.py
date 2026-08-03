@@ -423,6 +423,35 @@ def read_execution_ticket_context(base: Path, context: ExecutionContext) -> dict
     return data
 
 
+def refresh_execution_context_activity(
+    base: Path,
+    context: ExecutionContext,
+    ticket_id: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Refresh an active context only when it is still bound to *ticket_id*."""
+    path = execution_context_path(base, context)
+    if not path.exists():
+        return False
+
+    lock_path = path.parent / f".{path.name}.lock"
+    with flock(lock_path):
+        try:
+            data = read_json(path)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return False
+        if (
+            data.get("context_id") != context.context_id
+            or data.get("ticket_id") != ticket_id
+            or data.get("active") is False
+        ):
+            return False
+        data["last_seen"] = (now or datetime.now(UTC)).isoformat()
+        write_json(path, data)
+    return True
+
+
 def clear_ticket_execution_contexts(
     base: Path,
     ticket_id: str,

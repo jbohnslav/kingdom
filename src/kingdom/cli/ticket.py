@@ -38,6 +38,7 @@ from kingdom.state import (
     read_terminal_ticket_context,
     record_execution_ticket_context,
     record_terminal_ticket_context,
+    refresh_execution_context_activity,
     resolve_current_run,
     resolve_execution_context,
 )
@@ -2109,17 +2110,20 @@ def ticket_log(
 
     ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
 
+    context = None
+    with contextlib.suppress(ValueError):
+        context = resolve_execution_context()
+
     # Infer author from environment
     role = os.environ.get("KD_ROLE", "")
     agent_name = os.environ.get("KD_AGENT_NAME", "")
     author = agent_name or role or None
-    if author is None:
-        with contextlib.suppress(ValueError):
-            context = resolve_execution_context()
-            if context:
-                author = compact_context_id(context.context_id)
+    if author is None and context:
+        author = compact_context_id(context.context_id)
 
     entry = append_worklog_entry(ticket_path, message, author=author)
+    if context and ticket.assignee == context.context_id:
+        refresh_execution_context_activity(base, context, ticket.id)
     typer.echo(f"{ticket.id}: {entry}")
 
 
