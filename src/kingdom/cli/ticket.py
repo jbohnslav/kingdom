@@ -28,6 +28,7 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     branches_root,
+    clear_terminal_ticket_contexts,
     clear_ticket_execution_contexts,
     compact_context_id,
     normalize_branch_name,
@@ -1714,7 +1715,94 @@ def ticket_parent(
             typer.echo(f"{ticket.id}: parent set to {parent_ticket.id}")
 
 
-@ticket_app.command("move", help="Move a ticket to another branch.")
+@ticket_app.command("defer", help="Return branch work to the backlog for later.")
+def ticket_defer(
+    ticket_ids: Annotated[list[str], typer.Argument(help="Ticket ID(s) (full or partial).")],
+    reason: Annotated[str, typer.Option("--reason", "-m", help="Why this work is being deferred.")],
+) -> None:
+    """Reset branch work to open/unassigned and return it to backlog."""
+    from kingdom.session import find_active_peasant_branch
+
+    base = require_project_root()
+    reason = " ".join(reason.splitlines()).strip()
+    if not reason:
+        print_error("--reason must be non-empty")
+        raise typer.Exit(code=1)
+
+    try:
+        context = resolve_execution_context()
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
+    context_id = context.context_id if context else None
+    backlog_tickets = backlog_root(base) / "tickets"
+
+    validated: list[tuple[Ticket, Path, str]] = []
+    already_backlogged: list[Ticket] = []
+    seen_ids: set[str] = set()
+    for ticket_id in ticket_ids:
+        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        if ticket.id in seen_ids:
+            continue
+        seen_ids.add(ticket.id)
+
+        location = terminal_context_location_for_start(base, ticket_path)
+        if location == "backlog":
+            already_backlogged.append(ticket)
+            continue
+        if location.startswith("archive:"):
+            print_error(f"Ticket {ticket.id} is archived and cannot be deferred.")
+            raise typer.Exit(code=1)
+        if ticket.status == "closed":
+            print_error(f"Ticket {ticket.id} is closed and cannot be deferred.")
+            raise typer.Exit(code=1)
+
+        session_name = peasant_session_name(ticket.id)
+        owning_branch = find_active_peasant_branch(base, session_name)
+        if owning_branch:
+            print_error(
+                f"Ticket {ticket.id} has an active peasant session on branch '{owning_branch}'.\n"
+                f"Stop the peasant first: `kd peasant stop {ticket.id}`"
+            )
+            raise typer.Exit(code=1)
+
+        assignee = ticket.assignee or ""
+        native_owner = ":" in assignee and not assignee.startswith("peasant-")
+        if ticket.status == "in_progress" and native_owner and assignee != context_id:
+            print_error(f"Ticket {ticket.id} is owned by another execution context ({compact_context_id(assignee)}).")
+            raise typer.Exit(code=1)
+
+        destination = backlog_tickets / ticket_path.name
+        if destination.exists():
+            print_error(f"Ticket {ticket.id} already has a conflicting backlog file: {destination}")
+            raise typer.Exit(code=1)
+        validated.append((ticket, ticket_path, location))
+
+    deferred_at = datetime.now(UTC).replace(microsecond=0)
+    timestamp = deferred_at.isoformat().replace("+00:00", "Z")
+    actor = context_id or "unavailable"
+    for ticket, ticket_path, location in validated:
+        previous_status = ticket.status
+        previous_assignee = ticket.assignee or "unassigned"
+        lifecycle_entry = (
+            f"- {timestamp} [{actor}] — deferred "
+            f"[source: {location}] [previous status: {previous_status}] "
+            f"[previous assignee: {previous_assignee}]: {reason}"
+        )
+        ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
+        ticket.status = "open"
+        ticket.assignee = None
+        write_ticket(ticket, ticket_path)
+        clear_ticket_execution_contexts(base, ticket.id, now=deferred_at)
+        clear_terminal_ticket_contexts(base, ticket.id, now=deferred_at)
+        move_ticket(ticket_path, backlog_tickets)
+        typer.echo(f"Deferred {ticket.id} to backlog — {ticket.title}")
+
+    for ticket in already_backlogged:
+        typer.echo(f"Ticket {ticket.id} is already in backlog")
+
+
+@ticket_app.command("move", help="Move a ticket to another branch (deprecated; removed in v1.0.0).")
 def ticket_move(
     ticket_ids: Annotated[list[str], typer.Argument(help="Ticket ID(s) (full or partial).")],
     to_target: Annotated[str | None, typer.Option("--to", help="Target branch name or 'backlog'.")] = None,
@@ -1730,6 +1818,12 @@ def ticket_move(
     """
     from kingdom.session import find_active_peasant_branch
 
+    typer.echo(
+        "Warning: `kd tk move` is deprecated and will be removed in v1.0.0. "
+        "Use `kd tk pull` for backlog→work, `kd tk defer --reason` for work→backlog, "
+        "and defer/switch/pull for branch→branch.",
+        err=True,
+    )
     base = require_project_root()
 
     target = to_target
@@ -1794,6 +1888,12 @@ def ticket_move(
             print_error(
                 f"Ticket {ticket.id} has an active peasant session on branch '{owning_branch}'.\n"
                 f"Stop the peasant first: `kd peasant stop {ticket.id}`"
+            )
+            raise typer.Exit(code=1)
+        if ticket.status == "in_progress":
+            print_error(
+                f"Ticket {ticket.id} is active work and cannot be moved. "
+                "Use `kd tk defer --reason` before relocating it."
             )
             raise typer.Exit(code=1)
 

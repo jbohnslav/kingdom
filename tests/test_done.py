@@ -471,7 +471,7 @@ def test_done_blocks_when_branch_has_open_tickets() -> None:
         assert "Open ticket" in result.output
         assert "kin-prog1" in result.output
         assert "In progress ticket" in result.output
-        assert "Close tickets, move them to backlog with `kd tk move`, or use --force." in result.output
+        assert "Close tickets, defer them with `kd tk defer`, or use --force." in result.output
 
         state = read_json(branch_dir / "state.json")
         assert state.get("status") != "done"

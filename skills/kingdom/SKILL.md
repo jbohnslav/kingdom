@@ -223,7 +223,7 @@ Rich, multi-line log entries are encouraged — a worklog entry is a place to du
 Decision patterns to get right:
 
 - **Default to the active ticket.** If you're working a ticket, that's the target for direct ticket Markdown edits, `kd tk log`, `kd tk close`, and status updates. Don't ask "which ticket?" when context is obvious.
-- **Move vs create.** "This work belongs somewhere else" → `kd tk move ab12 --to backlog`. "This is a separate problem I just noticed" → `kd tk create --backlog "..."`. Log is for new information about the current work; create/move is for separate work.
+- **Defer vs create.** "Existing selected work is not for now" → `kd tk defer ab12 --reason "..."`. "This is a separate problem I just noticed" → `kd tk create --backlog "..."`. To re-home work across branches, defer it, switch/check out the target, then pull it. Log is for new information about the current work; create/defer is for changing what is planned now.
 - **Council follow-through.** After `kd council ask`, summarize the key perspectives and disagreements for the King, log the decision that came out of it (`kd tk log`), and move on. Don't dump the raw council response and wait for the King to synthesize.
 - **Close-out hygiene.** Before `kd tk close`: update the worklog with what changed and how it was verified, confirm tests pass. Closing is the last step after evidence is captured, not a declaration of intent.
 

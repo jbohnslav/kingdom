@@ -66,17 +66,17 @@ kd tk list --recently-closed # show closed tickets ordered by most recent close
 kd tk list --recent --limit 10  # short alias plus result limit
 kd tk show <id>              # print raw ticket Markdown (LLM-friendly)
 kd tk show <id> --rich       # show framed human-friendly ticket details
-kd tk move <id> --to <branch|backlog>  # move to another branch or backlog
-kd tk pull <id>...            # pull backlog tickets into current branch
+kd tk defer <id>... --reason "..."  # return selected work to backlog
+kd tk pull <id>...                  # select backlog work for current branch
 ```
 
 ## Backlog
 
-The backlog at `.kd/backlog/tickets/` holds tickets not assigned to any branch. Use `kd tk create --backlog` to add to it, and `kd tk pull <id>...` to bring tickets into the current branch.
+The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `kd tk create --backlog` to add new work, `kd tk pull <id>...` to select it for the current branch, and `kd tk defer <id>... --reason "..."` to return selected work with lifecycle history. `kd tk move` is deprecated and will be removed in v1.0.0; migrate branch-to-branch use to defer, switch/check out the target branch, then pull.
 
 ## Best Practices
 
-- **Commit `.kd/` changes as you go** — ticket state changes, closures, and moves are tracked in git
+- **Commit `.kd/` changes as you go** — ticket state changes, closures, pulls, and deferrals are tracked in git
 - **Use dependencies** to enforce ordering when tickets have prerequisites
 - **Edit ticket Markdown directly** for body text, acceptance criteria, scope changes, and multi-line worklog entries
 - **Use `kd tk log` only for short one-off worklog notes**; do not contort ticket content edits through CLI commands

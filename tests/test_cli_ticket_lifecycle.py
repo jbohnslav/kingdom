@@ -19,6 +19,8 @@ from kingdom.state import (
     ensure_branch_layout,
     read_execution_ticket_context,
     read_terminal_ticket_context,
+    record_execution_ticket_context,
+    record_terminal_ticket_context,
     resolve_execution_context,
 )
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
@@ -1370,6 +1372,10 @@ class TestTicketMove:
         # Verify actual file state, not just CLI output
         assert not (tickets_dir / "kin-mv04.md").exists(), "Source ticket should be removed"
         assert (backlog_root(cli_project) / "tickets" / "kin-mv04.md").exists(), "Ticket should exist in backlog"
+        assert result.stderr.count("Warning: `kd tk move` is deprecated") == 1
+        assert "removed in v1.0.0" in result.stderr
+        assert "tk pull" in result.stderr
+        assert "tk defer" in result.stderr
 
     def test_move_already_in_destination(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -1498,6 +1504,191 @@ class TestTicketMove:
             assert "Moved" in result.output
             assert not (tickets_dir / "kin-mv09.md").exists()
             assert (branch_root(base, "feature/other") / "tickets" / "kin-mv09.md").exists()
+
+    def test_move_blocks_active_native_context(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(tickets_dir, "kin-native")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "native-owner"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-native"]).exit_code == 0
+            result = runner.invoke(ticket_app, ["move", "kin-native", "--to", "backlog"])
+
+        assert result.exit_code == 1
+        assert "active work" in result.output
+        assert "tk defer" in result.output
+        assert ticket_path.exists()
+
+
+class TestTicketDefer:
+    def test_requires_nonempty_reason_before_moving(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(tickets_dir, "kin-rsn1")
+
+        missing = runner.invoke(ticket_app, ["defer", "kin-rsn1"])
+        blank = runner.invoke(ticket_app, ["defer", "kin-rsn1", "--reason", "   "])
+
+        assert missing.exit_code != 0
+        assert blank.exit_code == 1
+        assert "non-empty" in blank.output
+        assert ticket_path.exists()
+
+    def test_batch_preflight_prevents_partial_defer(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        first_path = create_ticket_in(tickets_dir, "kin-first")
+        closed_path = tickets_dir / "kin-done1.md"
+        write_ticket(
+            Ticket(id="kin-done1", status="closed", title="Closed", body="", created=datetime.now(UTC)),
+            closed_path,
+        )
+
+        result = runner.invoke(
+            ticket_app,
+            ["defer", "kin-first", "kin-done1", "--reason", "Not this sprint"],
+        )
+
+        assert result.exit_code == 1
+        assert "closed" in result.output
+        assert first_path.exists()
+        assert closed_path.exists()
+        assert not (backlog_root(cli_project) / "tickets" / first_path.name).exists()
+
+    def test_rejects_archived_ticket(self, cli_project: Path) -> None:
+        archive_path = archive_root(cli_project) / "old-feature" / "tickets" / "kin-arch.md"
+        write_ticket(
+            Ticket(id="kin-arch", status="closed", title="Archived", body="", created=datetime.now(UTC)),
+            archive_path,
+        )
+
+        result = runner.invoke(ticket_app, ["defer", "kin-arch", "--reason", "Later"])
+
+        assert result.exit_code == 1
+        assert "archived" in result.output
+        assert archive_path.exists()
+
+    def test_defers_ticket_from_another_live_branch(self, cli_project: Path) -> None:
+        other_branch = "feature/other"
+        other_dir = ensure_branch_layout(cli_project, other_branch) / "tickets"
+        source_path = create_ticket_in(other_dir, "kin-other")
+
+        result = runner.invoke(ticket_app, ["defer", "kin-other", "--reason", "Move to another sprint"])
+
+        assert result.exit_code == 0, result.output
+        assert not source_path.exists()
+        destination = backlog_root(cli_project) / "tickets" / source_path.name
+        assert destination.exists()
+        assert f"source: branch:{other_branch.replace('/', '-')}" in read_ticket(destination).body
+
+    def test_rejects_active_peasant(self, cli_project: Path) -> None:
+        from kingdom.session import AgentState, set_agent_state
+
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(tickets_dir, "kin-peas")
+        set_agent_state(
+            cli_project,
+            BRANCH,
+            "peasant-kin-peas",
+            AgentState(name="peasant-kin-peas", status="working", ticket="kin-peas"),
+        )
+
+        result = runner.invoke(ticket_app, ["defer", "kin-peas", "--reason", "Later"])
+
+        assert result.exit_code == 1
+        assert "active peasant" in result.output
+        assert ticket_path.exists()
+
+    def test_rejects_another_execution_context_owner(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(tickets_dir, "kin-owned")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "other-owner"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-owned"]).exit_code == 0
+            owner = resolve_execution_context()
+            assert owner is not None
+            binding = read_execution_ticket_context(cli_project, owner)
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "caller"}, clear=True):
+            result = runner.invoke(ticket_app, ["defer", "kin-owned", "--reason", "Later"])
+
+        assert result.exit_code == 1
+        assert "owned by another execution context" in result.output
+        assert ticket_path.exists()
+        assert read_execution_ticket_context(cli_project, owner) == binding
+
+    def test_defer_resets_and_preserves_ticket_with_lifecycle_history(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        source_path = tickets_dir / "kin-def1.md"
+        write_ticket(
+            Ticket(
+                id="kin-def1",
+                status="open",
+                title="Deferred ticket",
+                body="Original body.\n\n## Worklog\n\n- Existing history",
+                deps=["dep1"],
+                links=["link1"],
+                parent="epic1",
+                created=datetime.now(UTC),
+            ),
+            source_path,
+        )
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "ticket-owner"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-def1"]).exit_code == 0
+            owner = resolve_execution_context()
+            assert owner is not None
+
+        peer = resolve_execution_context(session_id="peer-session", host="hook", cwd=cli_project)
+        assert peer is not None
+        record_execution_ticket_context(cli_project, peer, "kin-def1", feature=BRANCH)
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            record_terminal_ticket_context(cli_project, "kin-def1", feature=BRANCH, session_id="legacy-one")
+            record_terminal_ticket_context(cli_project, "kin-def1", feature=BRANCH, session_id="legacy-two")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "ticket-owner"}, clear=True):
+            result = runner.invoke(
+                ticket_app,
+                ["defer", "kin-def1", "--reason", "Waiting for upstream"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Deferred kin-def1 to backlog" in result.output
+        assert not source_path.exists()
+        destination = backlog_root(cli_project) / "tickets" / source_path.name
+        ticket = read_ticket(destination)
+        assert ticket.status == "open"
+        assert ticket.assignee is None
+        assert ticket.deps == ["dep1"]
+        assert ticket.links == ["link1"]
+        assert ticket.parent == "epic1"
+        assert "Original body." in ticket.body
+        assert "- Existing history" in ticket.body
+        assert "## Lifecycle" in ticket.body
+        assert owner.context_id in ticket.body
+        assert f"source: branch:{BRANCH.replace('/', '-')}" in ticket.body
+        assert "previous status: in_progress" in ticket.body
+        assert f"previous assignee: {owner.context_id}" in ticket.body
+        assert "Waiting for upstream" in ticket.body
+        assert read_execution_ticket_context(cli_project, owner) is None
+        assert read_execution_ticket_context(cli_project, peer) is None
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            assert read_terminal_ticket_context(cli_project, session_id="legacy-one") is None
+            assert read_terminal_ticket_context(cli_project, session_id="legacy-two") is None
+
+    def test_already_backlogged_is_idempotent_without_history(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        ticket_path = create_ticket_in(backlog_dir, "kin-later")
+        before = ticket_path.read_bytes()
+
+        result = runner.invoke(ticket_app, ["defer", "kin-later", "--reason", "Still later"])
+
+        assert result.exit_code == 0, result.output
+        assert "already in backlog" in result.output
+        assert ticket_path.read_bytes() == before
 
 
 class TestTicketPull:

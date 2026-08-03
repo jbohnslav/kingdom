@@ -613,6 +613,35 @@ def read_terminal_ticket_context(base: Path, session_id: str | None = None) -> d
     return data
 
 
+def clear_terminal_ticket_contexts(
+    base: Path,
+    ticket_id: str,
+    *,
+    now: datetime | None = None,
+) -> int:
+    contexts_root = terminal_context_root(base)
+    if not contexts_root.exists():
+        return 0
+
+    timestamp = (now or datetime.now(UTC)).isoformat()
+    cleared = 0
+    for path in sorted(contexts_root.glob("*.json")):
+        lock_path = path.parent / f".{path.name}.lock"
+        with flock(lock_path):
+            try:
+                data = read_json(path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            if data.get("ticket_id") != ticket_id:
+                continue
+            data["ticket_id"] = None
+            data["updated_at"] = timestamp
+            data["unbound_at"] = timestamp
+            write_json(path, data)
+            cleared += 1
+    return cleared
+
+
 def logs_root(base: Path, feature: str) -> Path:
     return branch_root(base, feature) / "logs"
 

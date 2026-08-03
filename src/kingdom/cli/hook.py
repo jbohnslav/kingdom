@@ -56,15 +56,16 @@ SESSION_START_BRIEF = (
     " ticket? Bug, idea, complaint, scope change → kd tk create immediately.\n"
     " 2. LOG PROACTIVELY — Decision made, root cause found, scope changed,"
     " work completed → kd tk log. The King should never have to ask.\n"
-    " 3. MOVE vs CREATE — Work belongs elsewhere → kd tk move. New problem"
-    " noticed → kd tk create --backlog."
+    " 3. DEFER vs CREATE — Existing work is not for now → kd tk defer --reason."
+    " New problem noticed → kd tk create --backlog."
 )
 
 USER_PROMPT_REMINDER = (
     "Kingdom: keep the ticket accurate (body/AC/status/worklog)."
     " Prefer the last ticket started in this terminal with `kd tk start` when logging."
     " Requirement or acceptance-criteria change -> edit ticket markdown now."
-    " Work/findings -> kd tk log. New bug/scope -> kd tk create|move."
+    " Work/findings -> kd tk log. Existing work not for now -> kd tk defer --reason."
+    " New bug/scope -> kd tk create --backlog."
 )
 
 WORK_TOOLS = {"WebSearch", "WebFetch", "Edit", "Write", "apply_patch"}

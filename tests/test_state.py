@@ -16,6 +16,7 @@ from kingdom.state import (
     branch_root,
     branches_root,
     check_no_legacy_runs,
+    clear_terminal_ticket_contexts,
     ensure_base_layout,
     ensure_branch_layout,
     execution_context_is_stale,
@@ -24,7 +25,9 @@ from kingdom.state import (
     normalize_branch_name,
     parse_worktree_list,
     read_execution_ticket_context,
+    read_terminal_ticket_context,
     record_execution_ticket_context,
+    record_terminal_ticket_context,
     resolve_current_run,
     resolve_execution_context,
     set_current_run,
@@ -172,6 +175,22 @@ class TestTerminalContextIdentity:
 
         assert pane_one == "TMUX_PANE:%1"
         assert pane_two == "TMUX_PANE:%2"
+
+
+class TestClearTerminalTicketContexts:
+    def test_clears_every_matching_legacy_binding(self, tmp_path: Path) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            record_terminal_ticket_context(tmp_path, "target", feature="main", session_id="one")
+            record_terminal_ticket_context(tmp_path, "target", feature="main", session_id="two")
+            record_terminal_ticket_context(tmp_path, "other", feature="main", session_id="three")
+
+            assert clear_terminal_ticket_contexts(tmp_path, "target") == 2
+            assert read_terminal_ticket_context(tmp_path, session_id="one") is None
+            assert read_terminal_ticket_context(tmp_path, session_id="two") is None
+            assert read_terminal_ticket_context(tmp_path, session_id="three")["ticket_id"] == "other"
 
 
 class TestExecutionContext:

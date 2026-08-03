@@ -330,6 +330,8 @@ class TestSessionStart:
         assert "KINGDOM WORKFLOW" in hso["additionalContext"]
         assert "TICKET FIRST" in hso["additionalContext"]
         assert "LOG PROACTIVELY" in hso["additionalContext"]
+        assert "kd tk defer" in hso["additionalContext"]
+        assert "kd tk move" not in hso["additionalContext"]
 
     def test_emits_on_resume(self) -> None:
         output = handle_session_start(
@@ -358,6 +360,8 @@ class TestUserPromptSubmit:
         assert hso["hookEventName"] == "UserPromptSubmit"
         assert "Kingdom:" in hso["additionalContext"]
         assert "kd tk create" in hso["additionalContext"]
+        assert "kd tk defer" in hso["additionalContext"]
+        assert "kd tk move" not in hso["additionalContext"]
 
     def test_creates_state_file(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):

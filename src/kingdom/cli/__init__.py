@@ -355,7 +355,7 @@ def done(
             print_error(f"{len(open_tickets)} open ticket(s) on '{feature}':")
             for t in open_tickets:
                 error_console.print(f"  {t.id} \\[{t.status}] {t.title}")
-            error_console.print("\nClose tickets, move them to backlog with `kd tk move`, or use --force.")
+            error_console.print("\nClose tickets, defer them with `kd tk defer`, or use --force.")
             raise typer.Exit(code=1)
 
     invalid_tickets = [

@@ -75,6 +75,8 @@ Pull tickets into a branch, work them directly or with peasants. No design phase
 kd start
 kd tk pull <id> <id>       # pull backlog tickets onto this branch
 kd tk start <id>           # work tickets one at a time
+# if selected work is no longer for now:
+kd tk defer <id> --reason "Waiting for upstream"
 kd tk close <id>
 kd done
 ```
@@ -93,6 +95,20 @@ kd done
 ```
 
 Design docs, council sessions, and peasant workers are all optional. A branch with one ticket and no design doc is a perfectly valid `kd` workflow.
+
+### Deferring work and `tk move` migration
+
+`kd tk defer <id>... --reason "..."` is the supported way to return selected
+branch work to backlog. It records the source, previous status and assignee,
+reason, time, and calling context in ticket lifecycle history, then resets the
+ticket to open/unassigned and clears active bindings. Pull it again when the work
+is timely.
+
+`kd tk move` is deprecated and will be removed in v1.0.0. Replace backlog→work
+movement with `kd tk pull`, work→backlog movement with `kd tk defer --reason`,
+and branch→branch movement with defer, switch/check out the target branch, then
+pull. The internal file-move primitive remains an implementation detail used by
+pull, defer, archive/restore, and peasant workflows.
 
 ### Ticket closure outcomes
 
