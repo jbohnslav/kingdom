@@ -31,6 +31,9 @@ Start a new Codex task after installation, then use `/hooks` to review and trust
 the Kingdom hooks. Later `kd update` runs refresh an existing plugin along with
 the CLI and skill files; they do not install the Codex plugin unless you opted in.
 
+See the dated [supported host integration matrix](docs/support-matrix.md) for
+verified versions, evidence levels, and known Claude, Codex, and Cursor limits.
+
 ## Core ticket loop
 
 The everyday workflow is create or find, select and start, keep the worklog

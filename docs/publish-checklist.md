@@ -10,9 +10,16 @@ exercise a stale installed `kd`.
 1. All tests pass: `uv run pytest`
 2. Lint clean: `uv run ruff check .`
 3. Documented CLI workflow passes: `bash scripts/smoke.sh`
-4. Bump version in `pyproject.toml`
-5. Update any version references (if applicable)
-6. Commit: `git commit -m "Bump version to X.Y.Z"`
+4. Refresh the dated [supported host integration matrix](support-matrix.md):
+   - capture `claude --version`, `codex --version`, and
+     `cursor-agent --version` without starting interactive sessions;
+   - use `cursor --version` only when recording desktop-specific evidence;
+   - run `uv run pytest tests/test_host_integration_matrix.py`;
+   - label fixture/CLI evidence Contract and reserve Live for real host checks;
+   - preserve the documented Cursor limits instead of assuming host parity.
+5. Bump version in `pyproject.toml`
+6. Update any version references (if applicable)
+7. Commit: `git commit -m "Bump version to X.Y.Z"`
 
 ## Build & Validate
 
