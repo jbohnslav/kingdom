@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -694,15 +695,31 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 @contextmanager
-def flock(lock_path: Path) -> Iterator[None]:
-    """Hold an exclusive advisory lock on *lock_path* for the duration of the block."""
+def flock(lock_path: Path, *, timeout_seconds: float | None = None) -> Iterator[None]:
+    """Hold an exclusive advisory lock, optionally failing after a timeout."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fp = open(lock_path, "a+b")  # noqa: SIM115
+    acquired = False
     try:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        if timeout_seconds is None:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            acquired = True
+        else:
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                try:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"Timed out waiting for lock: {lock_path}") from None
+                    time.sleep(min(0.05, remaining))
         yield
     finally:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        if acquired:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
         fp.close()
 
 

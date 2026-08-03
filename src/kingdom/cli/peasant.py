@@ -25,12 +25,13 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     find_git_root,
+    flock,
     get_current_git_branch,
     logs_root,
     normalize_branch_name,
     resolve_current_run,
 )
-from kingdom.ticket import Ticket, move_ticket, write_ticket
+from kingdom.ticket import Ticket, list_tickets, move_ticket, read_ticket, write_ticket
 from kingdom.worktree import (
     check_uncommitted_changes,
     create_worktree,
@@ -50,6 +51,8 @@ from .helpers import (
 )
 
 peasant_app = typer.Typer(name="peasant", help="Manage peasant agents.")
+
+PEASANT_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 class PeasantContext(NamedTuple):
@@ -298,12 +301,47 @@ def peasant_start(
     no_preflight: Annotated[bool, typer.Option("--no-preflight", help="Skip uncommitted-changes warning.")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
+    ctx = resolve_peasant_context(ticket_id, auto_pull=True)
+    start_peasant(ctx, agent=agent, hand=hand, tmux=tmux, no_preflight=no_preflight)
+
+    if watch:
+        typer.echo()
+        peasant_watch(ticket_id)
+
+
+def start_peasant(
+    ctx: PeasantContext,
+    *,
+    agent: str | None,
+    hand: bool,
+    tmux: bool,
+    no_preflight: bool,
+) -> None:
+    """Launch one peasant after serializing starts for its ticket."""
+    lock_path = ctx.ticket_path.parent / f".{ctx.ticket_path.name}.start.lock"
+    try:
+        with flock(lock_path, timeout_seconds=PEASANT_LOCK_TIMEOUT_SECONDS):
+            fresh_ctx = ctx._replace(ticket=read_ticket(ctx.ticket_path))
+            launch_peasant(fresh_ctx, agent=agent, hand=hand, tmux=tmux, no_preflight=no_preflight)
+    except TimeoutError:
+        print_error(f"Another start for {ctx.full_ticket_id} is still running. Retry shortly.")
+        raise typer.Exit(code=1) from None
+
+
+def launch_peasant(
+    ctx: PeasantContext,
+    *,
+    agent: str | None,
+    hand: bool,
+    tmux: bool,
+    no_preflight: bool,
+) -> None:
+    """Create one peasant's worktree, session, thread, and worker process."""
     import kingdom.cli as _cli
     from kingdom.config import load_config
     from kingdom.session import update_agent_state
     from kingdom.thread import create_thread
 
-    ctx = resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
 
     # Block starting work on tickets that are in_review or closed
@@ -318,10 +356,13 @@ def peasant_start(
         )
         raise typer.Exit(code=1)
 
-    # Transition open → in_progress
-    if ticket.status == "open":
-        ticket.status = "in_progress"
-        write_ticket(ticket, ctx.ticket_path)
+    tickets_dir = branch_root(base, feature) / "tickets"
+    status_by_id = {candidate.id: candidate.status for candidate in list_tickets(tickets_dir)}
+    blockers = [(dep, status_by_id.get(dep, "unknown")) for dep in ticket.deps if status_by_id.get(dep) != "closed"]
+    if blockers:
+        details = ", ".join(f"{dep} ({status})" for dep, status in blockers)
+        print_error(f"Cannot start work on {full_ticket_id}: blocked by {details}")
+        raise typer.Exit(code=1)
 
     # Default agent from config if not specified on CLI
     if agent is None:
@@ -338,6 +379,11 @@ def peasant_start(
     if existing.status == "working" and existing.pid and is_process_alive(existing.pid):
         print_error(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
         raise typer.Exit(code=1)
+
+    # Transition open → in_progress only after every launch gate passes.
+    if ticket.status == "open":
+        ticket.status = "in_progress"
+        write_ticket(ticket, ctx.ticket_path)
 
     # 0. Preflight: warn on uncommitted changes (skipped in hand mode or with --no-preflight)
     if not hand and not no_preflight:
@@ -442,10 +488,6 @@ def peasant_start(
     verbose_echo(f"ticket path: {ctx.ticket_path}")
     verbose_echo(f"thread dir: {tdir}")
     verbose_echo(f"hand mode: {hand}")
-
-    if watch:
-        typer.echo()
-        peasant_watch(ticket_id)
 
 
 TERMINAL_STATUSES = {"done", "failed", "stopped"}
@@ -1496,10 +1538,22 @@ def peasant_accept(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
 ) -> None:
     """Accept a peasant's completed work: merge changes and close the ticket."""
+    ctx = resolve_peasant_context(ticket_id)
+    lock_path = branch_root(ctx.base, ctx.feature) / ".peasant-accept.lock"
+    try:
+        with flock(lock_path, timeout_seconds=PEASANT_LOCK_TIMEOUT_SECONDS):
+            accept_peasant(ctx)
+    except TimeoutError:
+        print_error("Another peasant acceptance is still running. Retry shortly.")
+        raise typer.Exit(code=1) from None
+
+
+def accept_peasant(ctx: PeasantContext) -> None:
+    """Integrate one reviewed peasant while holding the branch accept lock."""
     from kingdom.session import get_agent_state, update_agent_state
 
-    ctx = resolve_peasant_context(ticket_id)
-    base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
+    base, ticket_path = ctx.base, ctx.ticket_path
+    ticket = read_ticket(ticket_path)
     full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
 
     session_name = peasant_session_name(full_ticket_id)

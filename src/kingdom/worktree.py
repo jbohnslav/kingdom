@@ -10,7 +10,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from kingdom.state import find_git_root, read_json, resolve_current_run, state_root, write_json
+from kingdom.state import find_git_root, locked_json_update, resolve_current_run, state_root
 
 
 def worktree_path_for(base: Path, full_ticket_id: str, *, feature: str | None = None) -> Path:
@@ -39,6 +39,21 @@ def design_state_path(base: Path, feature: str) -> Path:
     from kingdom.state import branch_root
 
     return branch_root(base, feature) / "state.json"
+
+
+def update_worktree_state(base: Path, feature: str, ticket_id: str, worktree_path: Path | None) -> None:
+    """Update one worktree record without losing concurrent changes."""
+    state_path = design_state_path(base, feature)
+
+    def update(state: dict) -> dict:
+        worktrees = dict(state.get("worktrees", {}))
+        if worktree_path is None:
+            worktrees.pop(ticket_id, None)
+        else:
+            worktrees[ticket_id] = str(worktree_path)
+        return {**state, "worktrees": worktrees}
+
+    locked_json_update(state_path, update)
 
 
 def run_init_script(
@@ -176,12 +191,7 @@ def create_worktree(
     sync_workflow_files(base, worktree_path, log=log)
 
     try:
-        state_path = design_state_path(base, feature)
-        state = read_json(state_path) if state_path.exists() else {}
-        worktrees = state.get("worktrees", {})
-        worktrees[full_ticket_id] = str(worktree_path)
-        state["worktrees"] = worktrees
-        write_json(state_path, state)
+        update_worktree_state(base, feature, full_ticket_id, worktree_path)
     except RuntimeError as exc:
         log(f"Warning: could not record worktree in state.json: {exc}")
 
@@ -213,11 +223,6 @@ def remove_worktree(
         raise RuntimeError(f"Error removing worktree: {result.stderr.strip()}")
 
     try:
-        state_path = design_state_path(base, feature)
-        state = read_json(state_path) if state_path.exists() else {}
-        worktrees = state.get("worktrees", {})
-        worktrees.pop(full_ticket_id, None)
-        state["worktrees"] = worktrees
-        write_json(state_path, state)
+        update_worktree_state(base, feature, full_ticket_id, None)
     except RuntimeError as exc:
         log(f"Warning: could not update state.json worktree map: {exc}")
