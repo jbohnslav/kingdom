@@ -1,11 +1,15 @@
 ---
 id: "2aed"
-status: open
+status: closed
 deps: [cbbd]
 links: [029e, d3a5, 48dd, 329d, c759]
 created: 2026-08-02T13:31:56Z
 type: task
 priority: 2
+closed_at: 2026-08-03T19:29:30Z
+resolution: completed
+closed_context: codex:a775e0448cdb5a76
+assignee: codex:a775e0448cdb5a76
 ---
 # Reorient Kingdom around session-scoped persistent tickets
 
@@ -38,13 +42,13 @@ Epics are useful and have largely replaced the original design-doc workflow.
 
 ## Acceptance Criteria
 
-- [ ] A skeptical product/code audit identifies what to keep, fix, demote, and remove.
-- [ ] Active-ticket state is correctly isolated across concurrent terminal/agent sessions.
-- [ ] Automatic ticket logging resolves the session's assigned ticket deterministically.
-- [ ] The default skill workflow centers tickets and epics, with design docs optional.
-- [ ] Peasant council review remains the default and its token/cycle costs are visible.
-- [ ] The skill explicitly supports native subagents alongside direct and worker execution.
-- [ ] Any new multi-agent features are justified by observed use, not framework ambition.
+- [x] A skeptical product/code audit identifies what to keep, fix, demote, and remove.
+- [x] Active-ticket state is correctly isolated across concurrent terminal/agent sessions.
+- [x] Automatic ticket logging resolves the session's assigned ticket deterministically.
+- [x] The default skill workflow centers tickets and epics, with design docs optional.
+- [x] Peasant council review remains the default and its token/cycle costs are visible.
+- [x] The skill explicitly supports native subagents alongside direct and worker execution.
+- [x] Any new multi-agent features are justified by observed use, not framework ambition.
 
 ## Worklog
 
@@ -121,6 +125,7 @@ Epics are useful and have largely replaced the original design-doc workflow.
   but children are strictly direct-per-epic, no test runs two epics/lords, and a
   lord finishing does not close its epic ticket. Filed `4e2f`; replaced all
   epic-ID release dependencies with explicit leaf gates until this is proven.
+- [2026-08-03 15:29] [codex:a775e044] — Umbrella objective completed after all five roadmap epics closed: 029e isolated active tickets across concurrent execution contexts; d3a5 normalized host lifecycle, subagent attribution, and compaction durability; 48dd added typed closure and canonical pull/defer flows; 329d centered the skill/CLI/docs on tickets and epics while retaining TUI and optional reviewed autonomy; c759 proved migration, dogfood, host support, release evidence, and the non-publishing 1.0.0 cut. The original skeptical audit's keep/fix/demote/remove decisions are now represented in shipped behavior and tests rather than new framework layers. Final integrated gates: 2,168 passed, 38 skipped, 1 expected xfail; clean Ruff/format/pre-commit; isolated smoke kd done; clean wheel install and doctor; no publication. Closing this umbrella allows the required live branch kd done to run without force.
 
 ## Roadmap
 
@@ -129,3 +134,7 @@ Epics are useful and have largely replaced the original design-doc workflow.
 - `48dd` — explicit closure and a simpler backlog lifecycle
 - `329d` — ticket-first skill, CLI, docs, and retained TUI
 - `c759` — migration, real dogfooding, and release gates
+
+## Lifecycle
+
+- 2026-08-03T19:29:30Z [codex:a775e0448cdb5a76] — closed (completed)
