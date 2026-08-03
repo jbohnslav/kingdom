@@ -131,7 +131,7 @@ def test_status_json_still_includes_design_breakdown(monkeypatch) -> None:
         assert data["assignments"] == {}
 
 
-def test_status_human_readable_shows_assignments_section() -> None:
+def test_status_human_assignments_exclude_closed_tickets() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
@@ -148,15 +148,25 @@ def test_status_human_readable_shows_assignments_section() -> None:
             Ticket(id="kin-0002", title="Unassigned", status="open"),
             tickets_dir / "kin-0002.md",
         )
+        write_ticket(
+            Ticket(id="kin-0003", title="Active work", status="in_progress", assignee="hand"),
+            tickets_dir / "kin-0003.md",
+        )
+        write_ticket(
+            Ticket(id="kin-0004", title="Historical work", status="closed", assignee="hand"),
+            tickets_dir / "kin-0004.md",
+        )
 
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
         assert "Assignments:" in result.output
         assert "hand: kin-0001 [open] Assigned" in result.output
+        assert "hand: kin-0003 [in_progress] Active work" in result.output
         assert "hand: kin-0002" not in result.output
+        assert "kin-0004" not in result.output
 
 
-def test_status_json_includes_identity_and_assignments() -> None:
+def test_status_json_assignments_exclude_closed_tickets() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
@@ -172,6 +182,14 @@ def test_status_json_includes_identity_and_assignments() -> None:
         write_ticket(
             Ticket(id="kin-0002", title="Assigned to peasant", status="in_progress", assignee="peasant-kin-0002"),
             tickets_dir / "kin-0002.md",
+        )
+        write_ticket(
+            Ticket(id="kin-0003", title="Historical hand work", status="closed", assignee="hand"),
+            tickets_dir / "kin-0003.md",
+        )
+        write_ticket(
+            Ticket(id="kin-0004", title="Historical peasant work", status="closed", assignee="peasant-kin-0002"),
+            tickets_dir / "kin-0004.md",
         )
 
         result = runner.invoke(

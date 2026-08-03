@@ -612,7 +612,7 @@ def status(
 
     assigned: dict[str, list[Ticket]] = {}
     for ticket in tickets:
-        if ticket.assignee:
+        if ticket.assignee and ticket.status != "closed":
             assigned.setdefault(ticket.assignee, []).append(ticket)
 
     output["role"] = role
