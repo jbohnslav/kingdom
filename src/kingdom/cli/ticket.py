@@ -165,7 +165,7 @@ def render_ticket_table(
     has_resolution = any(effective_resolution(ticket) for ticket in tickets)
     dep_statuses = status_by_id or {}
 
-    console = Console(width=max(console_width(), 120))
+    console = Console(width=console_width())
     table = Table(show_header=True, header_style="bold", padding=(0, 1))
 
     table.add_column("ID", style="cyan", no_wrap=True, min_width=4)
@@ -175,11 +175,11 @@ def render_ticket_table(
         table.add_column("Resolution", no_wrap=True)
     if has_assignee:
         table.add_column("Assignee", no_wrap=True)
-    table.add_column("Title")
+    table.add_column("Title", min_width=8, ratio=3)
     if has_deps:
-        table.add_column("Deps", style="dim", no_wrap=True)
+        table.add_column("Deps", style="dim", min_width=4, ratio=2)
     if show_location:
-        table.add_column("Location", no_wrap=True)
+        table.add_column("Location", no_wrap=True, max_width=24, overflow="ellipsis")
 
     for ticket in tickets:
         status_style = STATUS_STYLES.get(ticket.status, "")
@@ -700,7 +700,13 @@ def ticket_list(
                 else:
                     typer.echo('No tickets found across any branch or backlog. Create one with `kd tk create "title"`.')
                 return
-            render_ticket_table(all_filtered, show_location=True, locations=location_map, status_by_id=status_by_id)
+            show_location = not resolved_parent_id or len(set(location_map.values())) > 1
+            render_ticket_table(
+                all_filtered,
+                show_location=show_location,
+                locations=location_map,
+                status_by_id=status_by_id,
+            )
             typer.echo(format_ticket_summary(all_filtered))
     else:
         # List tickets for current branch only

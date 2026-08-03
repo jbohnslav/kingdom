@@ -658,6 +658,113 @@ class TestTicketListPriority:
 class TestTicketListTable:
     """Tests for Rich table formatting in tk list."""
 
+    def test_parent_table_preserves_six_child_hierarchy_at_common_widths(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        parent = Ticket(
+            id="c759",
+            status="open",
+            title="Migration, dogfood, and release safety",
+            body="",
+            type="epic",
+            created=datetime.now(UTC),
+        )
+        children = [
+            Ticket(
+                id="7e3e",
+                status="open",
+                title="Regression-test peasant and lord flows with council review still default",
+                body="",
+                deps=["d456", "7c7d"],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="b507",
+                status="open",
+                title="Dogfood three to five concurrent hands on one branch",
+                body="",
+                deps=["7070", "ca34"],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="990d",
+                status="open",
+                title="Ship migration docs, staged deprecations, and release evidence",
+                body="",
+                deps=[
+                    "473d",
+                    "b507",
+                    "7e3e",
+                    "366d",
+                    "7c7d",
+                    "ab52",
+                    "648d",
+                    "045e",
+                    "3af0",
+                    "3732",
+                    "2974",
+                    "b529",
+                    "beb1",
+                    "4e2f",
+                    "a431",
+                ],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="366d",
+                status="open",
+                title="Run the supported-host end-to-end integration matrix",
+                body="",
+                deps=["d023", "92ca", "9353", "ca34", "f5b6", "1a28"],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="473d",
+                status="open",
+                title="Build upgrade, rollback, and doctor support for existing repositories",
+                body="",
+                deps=["09c8", "781f"],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="4e2f",
+                status="open",
+                title="Prove multi-epic dependency scheduling and lord coordination",
+                body="",
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+        ]
+        write_ticket(parent, tickets_dir / f"{parent.id}.md")
+        for child in children:
+            write_ticket(child, tickets_dir / f"{child.id}.md")
+
+        for width in (60, 120, 180):
+            with patch("kingdom.cli.ticket.console_width", return_value=width):
+                result = runner.invoke(ticket_app, ["list", "--parent", parent.id])
+
+            assert result.exit_code == 0, result.output
+            assert "ID" in result.output
+            assert "Status" in result.output
+            assert "Title" in result.output
+            assert "Deps" in result.output
+            assert "Location" not in result.output
+            assert {child.id for child in children} <= set(result.output.split())
+            assert "d456" in result.output
+            assert "a431" in result.output
+            table_lines = [line for line in result.output.splitlines() if line[:1] in "┏┃┡│└"]
+            assert table_lines
+            assert all(len(line) <= width for line in table_lines)
+            assert all(line[-1] in "┓┃┩│┘" for line in table_lines)
+
+        json_result = runner.invoke(ticket_app, ["list", "--parent", parent.id, "--json"])
+        assert json_result.exit_code == 0, json_result.output
+        assert {ticket["id"] for ticket in json.loads(json_result.output)} == {child.id for child in children}
+
     def test_table_has_header_row(self, cli_project: Path) -> None:
         """The table should include column headers."""
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
