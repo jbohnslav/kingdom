@@ -45,6 +45,18 @@ class CodexPluginInstallResult:
     marketplace_changed: bool
 
 
+@dataclass(frozen=True)
+class CodexPluginUninstallResult:
+    """Summary of managed local state removed after Codex deactivation."""
+
+    plugin_root: Path
+    marketplace_path: Path
+    marketplace_name: str
+    removed_files: tuple[str, ...]
+    preserved_files: tuple[str, ...]
+    marketplace_changed: bool
+
+
 def package_version() -> str:
     """Return the installed CLI version, with the manifest as a source-tree fallback."""
     try:
@@ -135,6 +147,26 @@ def merge_marketplace_entry(marketplace: dict) -> bool:
     return True
 
 
+def remove_marketplace_entry(marketplace: dict) -> bool:
+    """Remove Kingdom entries while preserving every other marketplace field."""
+    plugins = marketplace["plugins"]
+    retained = [entry for entry in plugins if not (isinstance(entry, dict) and entry.get("name") == PLUGIN_NAME)]
+    if len(retained) == len(plugins):
+        return False
+    marketplace["plugins"] = retained
+    return True
+
+
+def codex_plugin_marketplace_name(home: Path | None = None) -> str | None:
+    """Return the marketplace containing Kingdom's entry, if configured."""
+    resolved_home = home or Path.home()
+    marketplace_path = resolved_home / ".agents" / "plugins" / "marketplace.json"
+    marketplace = read_marketplace(marketplace_path)
+    if any(isinstance(entry, dict) and entry.get("name") == PLUGIN_NAME for entry in marketplace["plugins"]):
+        return str(marketplace["name"])
+    return None
+
+
 def install_codex_plugin(home: Path | None = None) -> CodexPluginInstallResult:
     """Install or refresh Kingdom in Codex's default personal marketplace."""
     resolved_home = home or Path.home()
@@ -164,6 +196,55 @@ def install_codex_plugin(home: Path | None = None) -> CodexPluginInstallResult:
         marketplace_path=marketplace_path,
         marketplace_name=marketplace["name"],
         changed_files=tuple(changed_files),
+        marketplace_changed=marketplace_changed,
+    )
+
+
+def uninstall_codex_plugin(home: Path | None = None) -> CodexPluginUninstallResult:
+    """Remove unmodified managed files and Kingdom's personal-marketplace entry."""
+    resolved_home = home or Path.home()
+    plugin_root = resolved_home / "plugins" / PLUGIN_NAME
+    marketplace_path = resolved_home / ".agents" / "plugins" / "marketplace.json"
+    marketplace = read_marketplace(marketplace_path)
+    payloads = plugin_payloads()
+
+    removed_files = []
+    for relative_path, content in payloads.items():
+        path = plugin_root / relative_path
+        if not path.is_file() or path.read_bytes() != content:
+            continue
+        path.unlink()
+        removed_files.append(relative_path)
+
+    managed_directories = {plugin_root}
+    for relative_path in payloads:
+        directory = (plugin_root / relative_path).parent
+        while directory != plugin_root.parent:
+            managed_directories.add(directory)
+            directory = directory.parent
+    for directory in sorted(managed_directories, key=lambda path: len(path.parts), reverse=True):
+        if directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
+
+    marketplace_changed = remove_marketplace_entry(marketplace)
+    if marketplace_changed:
+        write_if_changed(marketplace_path, (json.dumps(marketplace, indent=2) + "\n").encode())
+
+    preserved_files = ()
+    if plugin_root.exists():
+        preserved_files = tuple(
+            sorted(
+                str(path.relative_to(plugin_root))
+                for path in plugin_root.rglob("*")
+                if path.is_file() or path.is_symlink()
+            )
+        )
+    return CodexPluginUninstallResult(
+        plugin_root=plugin_root,
+        marketplace_path=marketplace_path,
+        marketplace_name=marketplace["name"],
+        removed_files=tuple(sorted(removed_files)),
+        preserved_files=preserved_files,
         marketplace_changed=marketplace_changed,
     )
 

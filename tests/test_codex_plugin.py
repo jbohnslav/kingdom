@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from kingdom.codex_plugin import (
     codex_plugin_install_detected,
     install_codex_plugin,
     is_codex_plugin_configured,
+    uninstall_codex_plugin,
 )
 from kingdom.state import resolve_execution_context
 
@@ -170,6 +172,131 @@ def test_cli_reports_codex_activation_failure_without_losing_installed_files(tmp
     assert result.exit_code == 1
     assert "Codex CLI was not found" in result.output
     assert (tmp_path / "plugins" / "kingdom" / ".codex-plugin" / "plugin.json").exists()
+
+
+def test_cli_uninstalls_codex_plugin_after_host_deactivation(tmp_path: Path) -> None:
+    marketplace_path = tmp_path / ".agents" / "plugins" / "marketplace.json"
+    marketplace_path.parent.mkdir(parents=True)
+    marketplace_path.write_text(
+        json.dumps(
+            {
+                "name": "my-tools",
+                "interface": {"displayName": "My tools", "theme": "blue"},
+                "userSetting": {"keep": True},
+                "plugins": [{"name": "other", "source": "./other"}],
+            }
+        )
+    )
+    install_codex_plugin(tmp_path)
+    completed = type("Completed", (), {"returncode": 0, "stdout": "Removed kingdom", "stderr": ""})()
+
+    with (
+        patch("kingdom.cli.plugin.Path.home", return_value=tmp_path),
+        patch("kingdom.cli.plugin.subprocess.run", return_value=completed) as run,
+    ):
+        result = runner.invoke(app, ["plugin", "uninstall", "codex"])
+
+    assert result.exit_code == 0
+    assert "Kingdom Codex plugin uninstalled" in result.output
+    assert "Codex: Removed kingdom" in result.output
+    run.assert_called_once_with(
+        ["codex", "plugin", "remove", "kingdom@my-tools"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert not (tmp_path / "plugins" / "kingdom").exists()
+    assert json.loads(marketplace_path.read_text()) == {
+        "name": "my-tools",
+        "interface": {"displayName": "My tools", "theme": "blue"},
+        "userSetting": {"keep": True},
+        "plugins": [{"name": "other", "source": "./other"}],
+    }
+
+
+def test_uninstall_preserves_modified_managed_and_unknown_plugin_files(tmp_path: Path) -> None:
+    install_codex_plugin(tmp_path)
+    plugin_root = tmp_path / "plugins" / "kingdom"
+    modified = plugin_root / "hooks" / "hooks.json"
+    unknown = plugin_root / "user-notes.md"
+    modified.write_text("locally modified\n")
+    unknown.write_text("keep me\n")
+
+    result = uninstall_codex_plugin(tmp_path)
+
+    assert result.marketplace_changed
+    assert result.preserved_files == ("hooks/hooks.json", "user-notes.md")
+    assert modified.read_text() == "locally modified\n"
+    assert unknown.read_text() == "keep me\n"
+    assert not (plugin_root / ".codex-plugin").exists()
+    assert not (plugin_root / "skills").exists()
+    marketplace = json.loads((tmp_path / ".agents" / "plugins" / "marketplace.json").read_text())
+    assert marketplace["plugins"] == []
+
+
+def test_cli_codex_uninstall_is_idempotent(tmp_path: Path) -> None:
+    install_codex_plugin(tmp_path)
+    preserved = tmp_path / "plugins" / "kingdom" / "user-notes.md"
+    preserved.write_text("keep me\n")
+    completed = type("Completed", (), {"returncode": 0, "stdout": "Removed kingdom", "stderr": ""})()
+
+    with (
+        patch("kingdom.cli.plugin.Path.home", return_value=tmp_path),
+        patch("kingdom.cli.plugin.subprocess.run", return_value=completed) as run,
+    ):
+        first = runner.invoke(app, ["plugin", "uninstall", "codex"])
+        second = runner.invoke(app, ["plugin", "uninstall", "codex"])
+
+    assert first.exit_code == 0
+    assert "Preserved local files: user-notes.md" in first.output
+    assert second.exit_code == 0
+    assert "not configured" in second.output
+    assert run.call_count == 1
+    assert preserved.read_text() == "keep me\n"
+
+
+def test_cli_codex_uninstall_failure_keeps_local_state(tmp_path: Path) -> None:
+    install_codex_plugin(tmp_path)
+    plugin_root = tmp_path / "plugins" / "kingdom"
+    marketplace_path = tmp_path / ".agents" / "plugins" / "marketplace.json"
+    marketplace_before = marketplace_path.read_bytes()
+    manifest_before = (plugin_root / ".codex-plugin" / "plugin.json").read_bytes()
+    failed = type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "remove failed"})()
+
+    with (
+        patch("kingdom.cli.plugin.Path.home", return_value=tmp_path),
+        patch("kingdom.cli.plugin.subprocess.run", return_value=failed),
+    ):
+        result = runner.invoke(app, ["plugin", "uninstall", "codex"])
+
+    assert result.exit_code == 1
+    assert "remove failed" in result.output
+    assert "left unchanged" in result.output
+    assert marketplace_path.read_bytes() == marketplace_before
+    assert (plugin_root / ".codex-plugin" / "plugin.json").read_bytes() == manifest_before
+
+
+def test_cli_codex_uninstall_reports_missing_cli_and_timeout(tmp_path: Path) -> None:
+    for index, (failure, message) in enumerate(
+        (
+            (FileNotFoundError(), "Codex CLI was not found"),
+            (subprocess.TimeoutExpired("codex", 30), "Codex plugin removal timed out"),
+        )
+    ):
+        home = tmp_path / str(index)
+        install_codex_plugin(home)
+        plugin_root = home / "plugins" / "kingdom"
+
+        with (
+            patch("kingdom.cli.plugin.Path.home", return_value=home),
+            patch("kingdom.cli.plugin.subprocess.run", side_effect=failure),
+        ):
+            result = runner.invoke(app, ["plugin", "uninstall", "codex"])
+
+        assert result.exit_code == 1
+        assert message in result.output
+        assert "left unchanged" in result.output
+        assert plugin_root.exists()
 
 
 def test_cli_codex_status_is_read_only(tmp_path: Path) -> None:
