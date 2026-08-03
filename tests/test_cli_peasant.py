@@ -1670,8 +1670,7 @@ class TestPeasantReview:
             ticket, _ = ticket_result
             assert ticket.status == "closed"
 
-    def test_review_accept_wrong_branch_fails(self) -> None:
-        """--accept should hard-fail if HEAD is not on the feature branch."""
+    def test_review_accept_allows_logical_feature_checkout_mismatch(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -1682,27 +1681,97 @@ class TestPeasantReview:
                 base,
                 BRANCH,
                 session_name,
-                AgentState(name=session_name, status="needs_king_review"),
+                AgentState(name=session_name, status="needs_king_review", ticket="kin-test"),
             )
 
+            merge_seen = False
+
             def mock_run(cmd, **kwargs):
+                nonlocal merge_seen
                 result = MagicMock()
                 if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
                     result.returncode = 0
                     result.stdout = "master\n"
                     result.stderr = ""
-                else:
+                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
+                    result.returncode = 1
+                    result.stdout = ""
+                    result.stderr = ""
+                elif cmd and "status" in cmd and "--porcelain" in cmd:
                     result.returncode = 0
                     result.stdout = ""
                     result.stderr = ""
+                elif cmd == ["git", "merge", "ticket/kin-test", "--no-edit"]:
+                    merge_seen = True
+                    result.returncode = 0
+                    result.stdout = "Merge made by the 'ort' strategy."
+                    result.stderr = ""
+                elif cmd == ["git", "branch", "-D", "ticket/kin-test"]:
+                    result.returncode = 0
+                    result.stdout = "Deleted branch ticket/kin-test"
+                    result.stderr = ""
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with (
+                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+                patch("kingdom.cli.peasant.remove_worktree"),
+            ):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert merge_seen
+            assert "ticket/kin-test" in result.output
+            assert "master" in result.output
+
+    def test_review_accept_rejects_session_for_unrelated_ticket(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review", ticket="kin-other"),
+            )
+
+            with patch("kingdom.cli.subprocess.run") as mock_run:
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
-            assert "Cannot accept" in result.output
-            assert "master" in result.output
+            assert "records ticket 'kin-other'" in result.output
+            assert "kd peasant review kin-test" in result.output
+            mock_run.assert_not_called()
+
+    def test_review_accept_rejects_duplicate_sessions_across_features(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+            ensure_branch_layout(base, BRANCH_B)
+
+            session_name = "peasant-kin-test"
+            for feature in (BRANCH, BRANCH_B):
+                set_agent_state(
+                    base,
+                    feature,
+                    session_name,
+                    AgentState(name=session_name, status="needs_king_review", ticket="kin-test"),
+                )
+
+            with patch("kingdom.cli.subprocess.run") as mock_run:
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "multiple Kingdom features" in result.output
+            assert normalize_branch_name(BRANCH) in result.output
+            assert normalize_branch_name(BRANCH_B) in result.output
+            assert "kd peasant accept kin-test" in result.output
+            mock_run.assert_not_called()
 
     def test_accept_slash_branch_with_stored_name(self) -> None:
         """Accept should work for branches with slashes when state.json has the original name."""

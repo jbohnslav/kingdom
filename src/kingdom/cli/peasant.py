@@ -24,11 +24,13 @@ from kingdom.parsing import parse_iso_datetime
 from kingdom.state import (
     backlog_root,
     branch_root,
+    branches_root,
     find_git_root,
     flock,
     get_current_git_branch,
     logs_root,
     normalize_branch_name,
+    read_json,
     resolve_current_run,
 )
 from kingdom.ticket import Ticket, list_tickets, move_ticket, read_ticket, write_ticket
@@ -684,8 +686,6 @@ def peasant_show(
     else:
         # ctx.feature may be normalized (slashes→dashes); resolve the
         # original git branch name from state.json for a valid ref.
-        from kingdom.state import read_json
-
         st = read_json(branch_root(ctx.base, ctx.feature) / "state.json")
         git_ref = st.get("branch")
         if not git_ref:
@@ -1558,12 +1558,42 @@ def accept_peasant(ctx: PeasantContext) -> None:
     """Integrate one reviewed peasant while holding the branch accept lock."""
     from kingdom.session import get_agent_state, update_agent_state
 
-    base, ticket_path = ctx.base, ctx.ticket_path
-    ticket = read_ticket(ticket_path)
-    full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
+    base = ctx.base
+    full_ticket_id = ctx.full_ticket_id
 
     session_name = peasant_session_name(full_ticket_id)
     branch_name = f"ticket/{full_ticket_id}"
+
+    owning_features: list[str] = []
+    branch_directory = branches_root(base)
+    if branch_directory.exists():
+        for feature_directory in sorted(branch_directory.iterdir()):
+            if not feature_directory.is_dir():
+                continue
+            session_file = feature_directory / "sessions" / f"{session_name}.json"
+            if not session_file.exists():
+                continue
+            session_data = read_json(session_file)
+            if session_data.get("status", "idle") != "idle":
+                owning_features.append(feature_directory.name)
+
+    if len(owning_features) != 1:
+        if owning_features:
+            features = ", ".join(owning_features)
+            print_error(f"Cannot accept: {session_name} exists in multiple Kingdom features: {features}.")
+        else:
+            print_error(f"Cannot accept: no active Kingdom session records {full_ticket_id}.")
+        error_console.print(f"Review the exact worker: `kd peasant review {full_ticket_id}`")
+        error_console.print(f"Retry exact acceptance: `kd peasant accept {full_ticket_id}`")
+        raise typer.Exit(code=1)
+
+    feature = owning_features[0]
+    ticket, ticket_path = resolve_ticket_or_exit(base, full_ticket_id, branch=feature)
+    state = get_agent_state(base, feature, session_name)
+    if state.ticket and state.ticket != full_ticket_id:
+        print_error(f"Cannot accept: {session_name} records ticket '{state.ticket}', not '{full_ticket_id}'.")
+        error_console.print(f"Review the exact worker: `kd peasant review {full_ticket_id}`")
+        raise typer.Exit(code=1)
 
     # Gate: ticket must be in_review
     if ticket.status != "in_review":
@@ -1573,42 +1603,26 @@ def accept_peasant(ctx: PeasantContext) -> None:
     # Gate: session must be needs_king_review or done
     # A peasant may close the ticket prematurely (session → done) before the
     # normal council-review flow sets needs_king_review.  Both are acceptable.
-    state = get_agent_state(base, feature, session_name)
     acceptable_statuses = {"needs_king_review", "done"}
     if state.status not in acceptable_statuses:
         print_error(f"Cannot accept: session is '{state.status}', expected one of {sorted(acceptable_statuses)}.")
         raise typer.Exit(code=1)
 
-    # Gate: must be on the feature branch for merge safety
-    # Resolve the original git branch name from state.json (feature may be normalized)
-    from kingdom.state import read_json
-
-    state_json = read_json(branch_root(base, feature) / "state.json")
-    git_branch_name = state_json.get("branch", feature)
-
-    current_branch = subprocess.run(
+    current_branch_result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
         text=True,
         cwd=str(ctx.git_root),
-    ).stdout.strip()
-    if "branch" in state_json:
-        # Original git branch name stored — compare exactly
-        branch_match = current_branch == git_branch_name
-    else:
-        # No original name stored (legacy state) — fall back to normalized comparison
-        branch_match = normalize_branch_name(current_branch) == normalize_branch_name(feature)
-    if not branch_match:
-        print_error(
-            f"Cannot accept: expected to be on '{git_branch_name}' but HEAD is on '{current_branch}'.\n"
-            f"  (kd branch key: {feature})\n"
-            f"Run `git checkout {git_branch_name}` first, then retry."
-        )
+    )
+    current_branch = current_branch_result.stdout.strip()
+    if current_branch_result.returncode != 0 or not current_branch or current_branch == "HEAD":
+        print_error("Cannot accept from a detached or unresolved Git HEAD.")
+        error_console.print(f"Review the exact worker: `kd peasant review {full_ticket_id}`")
         raise typer.Exit(code=1)
 
     if state.hand_mode:
-        # Hand mode: changes are already on the feature branch, skip merge
-        typer.echo(f"Hand mode — changes already on {feature}, skipping merge")
+        # Hand mode: changes are already on the invocation checkout, skip merge.
+        typer.echo(f"Hand mode — changes already on {current_branch}, skipping merge")
     else:
         # Worktree mode: merge ticket branch into feature branch
         # Check if already merged (idempotent re-run after manual conflict resolution)
@@ -1619,13 +1633,13 @@ def accept_peasant(ctx: PeasantContext) -> None:
             cwd=str(ctx.git_root),
         )
         if already_merged.returncode == 0:
-            typer.echo(f"{branch_name} already merged into {feature}, skipping merge")
+            typer.echo(f"{branch_name} already merged into {current_branch}, skipping merge")
         else:
             # Check for uncommitted changes before attempting merge
             uncommitted = check_uncommitted_changes(ctx.git_root, ignore_kd=True)
             if uncommitted:
                 print_error(
-                    f"Uncommitted changes on {git_branch_name} — commit or stash before accepting.\n"
+                    f"Uncommitted changes on {current_branch} — commit or stash before accepting.\n"
                     f"  Found {len(uncommitted)} changed file(s)."
                 )
                 raise typer.Exit(code=1)
@@ -1644,12 +1658,12 @@ def accept_peasant(ctx: PeasantContext) -> None:
                 print_error("Integration failed — merge conflicts detected. Ticket remains in_review.")
                 error_console.print(f"\n{merge_err}\n")
                 error_console.print("Recovery steps:")
-                error_console.print(f"  1. Resolve conflict markers in the working tree (you are on {git_branch_name})")
+                error_console.print(f"  1. Resolve conflict markers in the working tree (you are on {current_branch})")
                 error_console.print("  2. git add <resolved files> && git commit")
                 error_console.print(f"  3. kd peasant accept {full_ticket_id}  (re-run — detects merge is done)")
                 raise typer.Exit(code=1)
 
-            typer.echo(f"Integrated {branch_name} into {feature}")
+            typer.echo(f"Integrated {branch_name} into {current_branch}")
 
     ticket.status = "closed"
     write_ticket(ticket, ticket_path)
