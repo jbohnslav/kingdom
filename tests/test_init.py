@@ -305,10 +305,54 @@ def test_install_skill_idempotent(tmp_path: Path) -> None:
 
     with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
         assert install_skill() == "refreshed"
-        assert install_skill() == "refreshed"
+        assert install_skill() == "skipped"
 
     skill_dir = fake_home / ".claude" / "skills" / "kingdom"
     assert (skill_dir / "SKILL.md").exists()
+
+
+def test_install_skill_reports_each_supported_host(tmp_path: Path, capsys) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        result = install_skill()
+
+    output = capsys.readouterr().out
+    assert result == "refreshed"
+    assert "claude: updated" in output
+    assert "codex: skipped" in output
+    assert "cursor: skipped" in output
+
+
+def test_install_skill_preserves_unknown_existing_skill(tmp_path: Path, capsys) -> None:
+    fake_home = tmp_path / "home"
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("user customization\n", encoding="utf-8")
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        result = install_skill()
+
+    assert result == "failed"
+    assert skill_file.read_text(encoding="utf-8") == "user customization\n"
+    assert "claude: manual action needed" in capsys.readouterr().out
+
+
+def test_install_skill_preserves_modified_managed_skill(tmp_path: Path, capsys) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        assert install_skill() == "refreshed"
+        skill_file = fake_home / ".claude" / "skills" / "kingdom" / "SKILL.md"
+        skill_file.write_text("managed, then customized\n", encoding="utf-8")
+        result = install_skill()
+
+    assert result == "failed"
+    assert skill_file.read_text(encoding="utf-8") == "managed, then customized\n"
+    assert "claude: manual action needed" in capsys.readouterr().out
 
 
 def test_install_skill_permission_error_warns(tmp_path: Path) -> None:
