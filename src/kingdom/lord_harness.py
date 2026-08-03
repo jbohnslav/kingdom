@@ -21,7 +21,7 @@ import types
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
+from kingdom.agent import build_command, clean_agent_env, extract_token_count, parse_response, resolve_agent
 from kingdom.session import ACTIVE_PEASANT_STATUSES, get_agent_state, update_agent_state
 from kingdom.state import logs_root
 from kingdom.ticket import (
@@ -618,6 +618,7 @@ def run_lord_loop(
     if epic.type != "epic":
         logger.error("Ticket %s is not an epic (type: %s)", epic_id, epic.type)
         return "failed"
+    run_started_at = time.monotonic()
 
     # Signal handling
     stop_requested = False
@@ -638,8 +639,12 @@ def run_lord_loop(
     last_seen_states: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] | None = None
     consecutive_idle = 0
     agent_calls = 0
+    loop_iterations = 0
+    reported_tokens = 0
+    has_reported_tokens = False
 
     for iteration in range(1, max_iterations + 1):
+        loop_iterations = iteration
         # Check for stop: either SIGTERM signal or persisted "stopping" session state
         if not stop_requested:
             session_state = get_agent_state(base, branch, session_name)
@@ -703,14 +708,14 @@ def run_lord_loop(
             continue
 
         # Check agent call budget before making another LLM call
-        agent_calls += 1
-        if agent_calls > max_cycles:
+        if agent_calls >= max_cycles:
             logger.warning("Agent call budget (%d) exhausted at iteration %d", max_cycles, iteration)
             append_lord_worklog(
                 epic_path, epic_id=epic_id, entry=f"Agent call budget ({max_cycles}) exhausted without completion"
             )
             final_status = "failed"
             break
+        agent_calls += 1
 
         # Update session: working
         now = datetime.now(UTC).isoformat()
@@ -756,6 +761,15 @@ def run_lord_loop(
             final_status = "failed"
             break
 
+        text, new_session_id, raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
+        token_count = extract_token_count(agent_config.backend, raw)
+        if token_count is not None:
+            reported_tokens += token_count
+            has_reported_tokens = True
+        if new_session_id:
+            resume_id = new_session_id
+            update_agent_state(base, branch, session_name, resume_id=new_session_id)
+
         # Check for stop after agent call
         if stop_requested:
             final_status = "stopped"
@@ -763,12 +777,6 @@ def run_lord_loop(
                 epic_path, epic_id=epic_id, entry="STOP signal received after agent call — shutting down"
             )
             break
-
-        # Parse response
-        text, new_session_id, _raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
-        if new_session_id:
-            resume_id = new_session_id
-            update_agent_state(base, branch, session_name, resume_id=new_session_id)
 
         if not text and proc.returncode != 0:
             error_msg = proc.stderr.strip() or f"Exit code {proc.returncode}"
@@ -839,6 +847,17 @@ def run_lord_loop(
             epic_path, epic_id=epic_id, entry=f"Max iterations ({max_iterations}) reached without completion"
         )
         final_status = "failed"
+
+    token_summary = str(reported_tokens) if has_reported_tokens else "unavailable"
+    elapsed = time.monotonic() - run_started_at
+    append_lord_worklog(
+        epic_path,
+        epic_id=epic_id,
+        entry=(
+            f"Lord run metrics: agent cycles: {agent_calls}; loop iterations: {loop_iterations}; "
+            f"reported agent tokens: {token_summary}; elapsed: {elapsed:.1f}s"
+        ),
+    )
 
     # Final session update
     now = datetime.now(UTC).isoformat()

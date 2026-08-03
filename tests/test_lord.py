@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -28,7 +29,7 @@ from kingdom.lord_harness import (
 )
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.state import branch_root, ensure_branch_layout, set_current_run
-from kingdom.ticket import Ticket, write_ticket
+from kingdom.ticket import Ticket, read_ticket, write_ticket
 
 runner = CliRunner()
 
@@ -573,6 +574,102 @@ class TestLordHarnessStopDetection:
         state = get_agent_state(project_with_run, BRANCH, session_name)
         assert state.status == "stopped"
 
+    def test_signal_after_backend_preserves_usage_and_resume_id(self, project_with_run: Path) -> None:
+        from kingdom.lord_harness import run_lord_loop
+
+        _, epic_path = make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1")
+        session_name = "lord-epic1"
+        update_agent_state(project_with_run, BRANCH, session_name, status="working")
+        signal_handler = None
+
+        def capture_signal(signum, handler):
+            nonlocal signal_handler
+            signal_handler = handler
+
+        def stop_during_backend(*args, **kwargs):
+            assert signal_handler is not None
+            signal_handler(15, None)
+            result = MagicMock()
+            result.stdout = json.dumps(
+                {
+                    "result": "Progress.\n\nSTATUS: CONTINUE",
+                    "session_id": "lord-resume",
+                    "usage": {"input_tokens": 5, "output_tokens": 3},
+                }
+            )
+            result.stderr = ""
+            result.returncode = 0
+            return result
+
+        with (
+            patch("kingdom.lord_harness.signal.signal", side_effect=capture_signal),
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", side_effect=stop_during_backend),
+        ):
+            status = run_lord_loop(
+                project_with_run,
+                BRANCH,
+                "claude",
+                "epic1",
+                session_name,
+                max_cycles=2,
+                max_iterations=2,
+            )
+
+        assert status == "stopped"
+        assert get_agent_state(project_with_run, BRANCH, session_name).resume_id == "lord-resume"
+        epic = read_ticket(epic_path)
+        assert "reported agent tokens: 8" in epic.body
+
+
+class TestLordReviewedChildLifecycle:
+    def test_completes_after_reviewed_child_closes_with_cost_evidence(self, project_with_run: Path) -> None:
+        """A lord observes closure after the reviewed-child handoff state."""
+        from unittest.mock import MagicMock
+
+        from kingdom.lord_harness import run_lord_loop
+
+        _, epic_path = make_epic(project_with_run)
+        _, child_path = make_child(project_with_run, "ch01", "epic1", status="in_review")
+        update_agent_state(project_with_run, BRANCH, "peasant-ch01", status="needs_king_review")
+        update_agent_state(project_with_run, BRANCH, "lord-epic1", status="working")
+
+        def accept_reviewed_child(*args, **kwargs):
+            child = read_ticket(child_path)
+            child.status = "closed"
+            write_ticket(child, child_path)
+            result = MagicMock()
+            result.stdout = json.dumps(
+                {
+                    "result": "Accepted reviewed child.\n\nSTATUS: CONTINUE",
+                    "session_id": "lord-session",
+                    "usage": {"input_tokens": 14, "output_tokens": 6},
+                }
+            )
+            result.stderr = ""
+            result.returncode = 0
+            return result
+
+        with (
+            patch("kingdom.lord_harness.run_lord_streaming_subprocess", side_effect=accept_reviewed_child),
+            patch("kingdom.lord_harness.time.sleep"),
+        ):
+            status = run_lord_loop(
+                base=project_with_run,
+                branch=BRANCH,
+                agent_name="claude",
+                epic_id="epic1",
+                session_name="lord-epic1",
+                max_cycles=2,
+                max_iterations=3,
+            )
+
+        assert status == "done"
+        epic = read_ticket(epic_path)
+        assert "Lord run metrics: agent cycles: 1; loop iterations: 2" in epic.body
+        assert "reported agent tokens: 20" in epic.body
+        assert "elapsed" in epic.body
+
 
 class TestLordWorker:
     def test_main_requires_args(self) -> None:
@@ -1098,25 +1195,20 @@ class TestExtractBoundedWorklog:
         assert "last 10 of 50" in result
 
     def test_no_truncation_header_when_within_limit(self) -> None:
-        body = "Body.\n\n## Worklog\n\n" "- [10:00] [lord-epic1] — Entry 1\n" "- [10:05] [lord-epic1] — Entry 2\n"
+        body = "Body.\n\n## Worklog\n\n- [10:00] [lord-epic1] — Entry 1\n- [10:05] [lord-epic1] — Entry 2\n"
         result = extract_bounded_worklog(body, max_entries=10)
         assert "Recent Worklog" in result
         assert "last" not in result
 
     def test_preserves_continuation_lines(self) -> None:
-        body = (
-            "Body.\n\n## Worklog\n\n"
-            "- [10:00] [lord-epic1] — Decision made\n"
-            "  Reason: because X\n"
-            "  Follow-up: do Y\n"
-        )
+        body = "Body.\n\n## Worklog\n\n- [10:00] [lord-epic1] — Decision made\n  Reason: because X\n  Follow-up: do Y\n"
         result = extract_bounded_worklog(body)
         assert "Decision made" in result
         assert "Reason: because X" in result
         assert "Follow-up: do Y" in result
 
     def test_stops_at_next_heading(self) -> None:
-        body = "Body.\n\n## Worklog\n\n" "- [10:00] [lord-epic1] — Entry 1\n" "\n## Other Section\n\nStuff here.\n"
+        body = "Body.\n\n## Worklog\n\n- [10:00] [lord-epic1] — Entry 1\n\n## Other Section\n\nStuff here.\n"
         result = extract_bounded_worklog(body)
         assert "Entry 1" in result
         assert "Other Section" not in result

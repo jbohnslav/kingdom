@@ -24,7 +24,7 @@ import types
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
+from kingdom.agent import build_command, clean_agent_env, extract_token_count, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.state import logs_root
 from kingdom.thread import add_message, list_messages
@@ -794,6 +794,11 @@ def run_agent_loop(
         return "failed"
     _, ticket_path = result
     ticket_title = read_ticket(ticket_path).title
+    run_started_at = time.monotonic()
+    agent_cycles = 0
+    council_review_cycles = 0
+    reported_tokens = 0
+    has_reported_tokens = False
 
     # Track whether we should stop
     stop_requested = False
@@ -843,6 +848,15 @@ def run_agent_loop(
             ticket_path,
             ticket_id=ticket_id,
             entry=f"BRANCH ESCAPE: worktree is not on expected branch '{expected_branch}' — aborting",
+        )
+        elapsed = time.monotonic() - run_started_at
+        append_worklog(
+            ticket_path,
+            ticket_id=ticket_id,
+            entry=(
+                "Run metrics: agent cycles: 0; council review cycles: 0; "
+                f"reported agent tokens: unavailable; elapsed: {elapsed:.1f}s"
+            ),
         )
         now = datetime.now(UTC).isoformat()
         update_agent_state(base, branch, session_name, status="failed", last_activity=now)
@@ -950,6 +964,7 @@ def run_agent_loop(
         agent_live_log = logs_root(base, branch) / session_name / "agent-live.log"
 
         try:
+            agent_cycles += 1
             proc = run_streaming_subprocess(
                 cmd,
                 cwd=worktree,
@@ -962,6 +977,15 @@ def run_agent_loop(
             append_worklog(ticket_path, ticket_id=ticket_id, entry=f"Backend command not found: {cmd_name}")
             final_status = "failed"
             break
+
+        text, new_session_id, raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
+        token_count = extract_token_count(agent_config.backend, raw)
+        if token_count is not None:
+            reported_tokens += token_count
+            has_reported_tokens = True
+        if new_session_id:
+            resume_id = new_session_id
+            update_agent_state(base, branch, session_name, resume_id=new_session_id)
 
         # Check for stop signal after backend call returns
         if stop_requested:
@@ -985,12 +1009,6 @@ def run_agent_loop(
             logger.info("--- Agent stdout ---\n%s\n--- End agent stdout ---", proc.stdout.strip())
         if proc.stderr.strip():
             logger.info("--- Agent stderr ---\n%s\n--- End agent stderr ---", proc.stderr.strip())
-
-        # Parse response
-        text, new_session_id, _raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
-        if new_session_id:
-            resume_id = new_session_id
-            update_agent_state(base, branch, session_name, resume_id=new_session_id)
 
         if not text and proc.returncode != 0:
             error_msg = proc.stderr.strip() or f"Exit code {proc.returncode}"
@@ -1074,6 +1092,8 @@ def run_agent_loop(
                 append_worklog(ticket_path, ticket_id=ticket_id, entry="No council configured — awaiting king review")
                 break
 
+            council_review_cycles += 1
+
             if review_outcome == "timeout":
                 # Council timed out — escalate to king
                 final_status = "needs_king_review"
@@ -1146,6 +1166,17 @@ def run_agent_loop(
             ticket_path, ticket_id=ticket_id, entry=f"Max iterations ({max_iterations}) reached without completion"
         )
         final_status = "failed"
+
+    token_summary = str(reported_tokens) if has_reported_tokens else "unavailable"
+    elapsed = time.monotonic() - run_started_at
+    append_worklog(
+        ticket_path,
+        ticket_id=ticket_id,
+        entry=(
+            f"Run metrics: agent cycles: {agent_cycles}; council review cycles: {council_review_cycles}; "
+            f"reported agent tokens: {token_summary}; elapsed: {elapsed:.1f}s"
+        ),
+    )
 
     # Final session update
     now = datetime.now(UTC).isoformat()
