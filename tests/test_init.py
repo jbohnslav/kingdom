@@ -71,8 +71,29 @@ def test_cli_start_kd_base_unset_keeps_auto_init() -> None:
     with runner.isolated_filesystem():
         subprocess.run(["git", "init", "-q"], check=True)
         result = runner.invoke(app, ["start", "test-feature"])
-    assert result.exit_code == 0
-    assert "Auto-initializing" in result.output
+
+        assert result.exit_code == 0
+        assert "Auto-initializing" in result.output
+        assert (Path.cwd() / ".kd" / "branches" / "test-feature").is_dir()
+
+
+def test_cli_start_preserves_legacy_runs_hard_boundary() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        ensure_base_layout(base)
+        legacy_runs = base / ".kd" / "runs"
+        legacy_runs.mkdir()
+        (legacy_runs / "old-feature").mkdir()
+
+        result = runner.invoke(app, ["start", "test-feature"])
+
+        assert result.exit_code == 1
+        output = " ".join(result.output.splitlines())
+        assert "Legacy .kd/runs/ directory found. Rename it to .kd/branches/ manually and retry." in output
+        assert "Auto-initializing" not in result.output
+        assert not (base / ".kd" / "branches" / "test-feature").exists()
 
 
 def test_cli_start_auto_init_from_subdirectory_uses_git_root() -> None:

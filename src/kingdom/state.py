@@ -145,6 +145,10 @@ def find_kd_base_from_git_worktrees(cwd: Path | None = None) -> Path | None:
     raise ValueError(f"Multiple git worktrees contain .kd/. Set KD_BASE to choose one explicitly:\n{options}")
 
 
+class ProjectRootNotFoundError(ValueError):
+    """No Kingdom state could be discovered from the invocation context."""
+
+
 def find_project_root(cwd: Path | None = None) -> Path:
     """Locate the Kingdom project root directory.
 
@@ -194,7 +198,7 @@ def find_project_root(cwd: Path | None = None) -> Path:
 
     # 6. Error
     if root is None:
-        raise ValueError("No .kd/ directory found. Run `kd init` to initialize.")
+        raise ProjectRootNotFoundError("No .kd/ directory found. Run `kd init` to initialize.")
 
     check_no_legacy_runs(root)
     return root

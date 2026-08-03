@@ -22,6 +22,7 @@ from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_pl
 from kingdom.council import Council, create_council  # noqa: F401 (Council used by tests)
 from kingdom.doctor import binding_issues, context_issues, host_install_issues, resolution_issues, ticket_issues
 from kingdom.state import (
+    ProjectRootNotFoundError,
     branch_root,
     clear_current_run,
     compact_context_id,
@@ -159,8 +160,11 @@ def start(
     else:
         try:
             base = find_project_root()
-        except ValueError:
+        except ProjectRootNotFoundError:
             base = Path.cwd()
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(code=1) from None
 
     # Auto-init if .kd/ doesn't exist (with git check)
     if not state_root(base).exists():
