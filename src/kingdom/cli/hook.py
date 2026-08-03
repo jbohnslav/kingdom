@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -74,6 +75,7 @@ STALE_TTL_SECONDS = 86400  # 24 hours
 LEGACY_STOP_TICKET_FALLBACK_ENV = "KD_HOOK_LEGACY_TICKET_FALLBACK"
 
 CHECKPOINT_FIELDS = "decisions, completed work, verification, blockers, and next steps"
+CLAUDE_ENV_FILE_ENV = "CLAUDE_ENV_FILE"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -88,9 +90,11 @@ def runtime_dir(project_dir: str | None = None) -> Path:
     return d
 
 
-def state_file_for(project_dir: str | None, session_id: str) -> Path:
+def state_file_for(project_dir: str | None, session_id: str, host: str = "claude") -> Path:
     """Return the turn-state file path for a given session."""
-    return runtime_dir(project_dir) / f"turn-{session_id}.json"
+    identity = f"{host}\0{session_id}".encode()
+    digest = hashlib.sha256(identity).hexdigest()[:16]
+    return runtime_dir(project_dir) / f"turn-{host}-{digest}.json"
 
 
 def checkpoint_state_file(base: Path, host: str, session_id: str) -> Path:
@@ -391,11 +395,28 @@ def handler_event(data: HostEvent | dict, expected: EventKind) -> HostEvent | No
     return event if event and event.kind is expected else None
 
 
+def persist_claude_session_environment(event: HostEvent) -> str | None:
+    env_path = os.environ.get(CLAUDE_ENV_FILE_ENV)
+    if event.host is not Host.CLAUDE or not env_path:
+        return None
+
+    try:
+        with Path(env_path).open("a", encoding="utf-8") as env_file:
+            env_file.write(f"export KD_CONTEXT={shlex.quote(event.session_id)}\n")
+            env_file.write(f"export KD_HOST={shlex.quote(event.host.value)}\n")
+    except OSError as exc:
+        return f"Kingdom could not persist the Claude session identity: {exc}"
+    return None
+
+
 def handle_session_start(data: HostEvent | dict) -> str:
     event = handler_event(data, EventKind.SESSION_START)
     if event is None:
         return ""
     additional_context = SESSION_START_BRIEF
+    environment_warning = persist_claude_session_environment(event)
+    if environment_warning:
+        additional_context += "\n\n" + environment_warning
     base = terminal_context_base(str(event.cwd))
     checkpoint = read_checkpoint(base, event)
     if checkpoint and event.source == "compact":
@@ -539,7 +560,7 @@ def handle_user_prompt_submit(data: HostEvent | dict) -> str:
     project_dir = str(event.cwd)
     session_id = event.session_id
 
-    sf = state_file_for(project_dir, session_id)
+    sf = state_file_for(project_dir, session_id, event.host.value)
     write_turn_state(sf, fresh_turn_state())
 
     # TTL cleanup: remove stale turn-state files.
@@ -579,7 +600,7 @@ def handle_post_tool_use(data: HostEvent | dict) -> str:
     if checkpoint and checkpoint_completed_by_event(base, event, checkpoint):
         checkpoint_path.unlink(missing_ok=True)
 
-    sf = state_file_for(project_dir, session_id)
+    sf = state_file_for(project_dir, session_id, event.host.value)
     state = read_turn_state(sf)
     if state is None:
         return ""
@@ -613,7 +634,7 @@ def handle_stop(data: HostEvent | dict) -> str:
     project_dir = str(event.cwd)
     session_id = event.session_id
 
-    sf = state_file_for(project_dir, session_id)
+    sf = state_file_for(project_dir, session_id, event.host.value)
     state = read_turn_state(sf)
     if state is None:
         return ""

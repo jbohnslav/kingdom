@@ -221,6 +221,35 @@ class TestCursorHookAdapter:
         assert read_ticket(ticket_path).assignee == parent.context_id
         assert output == {"permission": "allow"}
 
+    def test_subagent_stop_without_child_id_preserves_recorded_child(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+        handle_subagent_start(
+            self.event(
+                tmp_path,
+                "subagentStart",
+                subagent_id="cursor-child",
+                subagent_type="explore",
+                parent_conversation_id="cursor-parent",
+            )
+        )
+
+        output = handle_subagent_stop(self.event(tmp_path, "subagentStop", subagent_type="explore"))
+
+        contexts = list_execution_contexts(tmp_path)
+        child = next(context for context in contexts if context.get("session_id") == "cursor-child")
+        assert output == ""
+        assert child["active"] is True
+
+    def test_session_end_records_checkpoint_without_claiming_visible_output(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+
+        output = handle_session_end(self.event(tmp_path, "sessionEnd", reason="completed"))
+
+        checkpoint = json.loads(checkpoint_state_file(tmp_path, "cursor", "cursor-parent").read_text())
+        assert output == ""
+        assert checkpoint["ticket_id"] == "cafe"
+        assert checkpoint["phase"] == "session handoff"
+
     def test_stop_uses_exact_cursor_binding_and_followup_schema(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
         handle_user_prompt_submit(self.event(tmp_path, "beforeSubmitPrompt"))
@@ -932,6 +961,23 @@ class TestStopHandler:
         assert json.loads(sf_a.read_text()) == {"had_work": True, "did_log": False, "stop_blocked": False}
         assert json.loads(sf_b.read_text()) == {"had_work": False, "did_log": True, "stop_blocked": False}
 
+    def test_same_session_identifier_is_isolated_between_hosts(self, tmp_path: Path) -> None:
+        for host in (Host.CLAUDE, Host.CODEX, Host.CURSOR):
+            event_name = "beforeSubmitPrompt" if host is Host.CURSOR else "UserPromptSubmit"
+            event = normalize_host_event(
+                host,
+                {
+                    "hook_event_name": event_name,
+                    "session_id": "shared-session",
+                    "cwd": str(tmp_path),
+                },
+            )
+            assert event is not None
+            handle_user_prompt_submit(event)
+
+        turn_states = list((tmp_path / ".kd" / "runtime").glob("turn-*.json"))
+        assert len(turn_states) == 3
+
     def test_stale_state_does_not_block_new_session(self, tmp_path: Path) -> None:
         runtime = tmp_path / ".kd" / "runtime"
         runtime.mkdir(parents=True)
@@ -950,6 +996,53 @@ class TestStopHandler:
 
 class TestHookRunCLI:
     """Test the kd hook run command via CLI runner."""
+
+    def test_claude_session_start_persists_host_context_over_parent_codex(self, tmp_path: Path) -> None:
+        env_file = tmp_path / "claude-session.env"
+        env_file.touch()
+        environment = {
+            "CLAUDE_ENV_FILE": str(env_file),
+            "CLAUDE_PROJECT_DIR": str(tmp_path),
+            "CODEX_THREAD_ID": "parent-codex-thread",
+        }
+
+        with patch.dict(os.environ, environment, clear=True):
+            result = runner.invoke(
+                app,
+                ["hook", "run"],
+                input=json.dumps(
+                    {
+                        "hook_event_name": "SessionStart",
+                        "session_id": "claude-session",
+                        "cwd": str(tmp_path),
+                    }
+                ),
+            )
+
+        assert result.exit_code == 0
+        assert env_file.read_text().splitlines() == [
+            "export KD_CONTEXT=claude-session",
+            "export KD_HOST=claude",
+        ]
+
+    def test_claude_environment_write_failure_warns_and_fails_open(self, tmp_path: Path) -> None:
+        missing_parent = tmp_path / "missing" / "claude-session.env"
+        with patch.dict(os.environ, {"CLAUDE_ENV_FILE": str(missing_parent)}, clear=True):
+            result = runner.invoke(
+                app,
+                ["hook", "run", "--host", "claude"],
+                input=json.dumps(
+                    {
+                        "hook_event_name": "SessionStart",
+                        "session_id": "claude-session",
+                        "cwd": str(tmp_path),
+                    }
+                ),
+            )
+
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert "could not persist the Claude session identity" in output["hookSpecificOutput"]["additionalContext"]
 
     def test_session_start_via_cli(self) -> None:
         result = runner.invoke(
