@@ -1,0 +1,273 @@
+{
+  "claude": [
+    {
+      "expected": "session_start",
+      "payload": {
+        "hook_event_name": "SessionStart",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "source": "startup",
+        "model": "claude-example"
+      }
+    },
+    {
+      "expected": "session_end",
+      "payload": {
+        "hook_event_name": "SessionEnd",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "reason": "other"
+      }
+    },
+    {
+      "expected": "pre_compact",
+      "payload": {
+        "hook_event_name": "PreCompact",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "trigger": "auto"
+      }
+    },
+    {
+      "expected": "post_compact",
+      "payload": {
+        "hook_event_name": "PostCompact",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "trigger": "auto"
+      }
+    },
+    {
+      "expected": "subagent_start",
+      "payload": {
+        "hook_event_name": "SubagentStart",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "agent_id": "claude-agent",
+        "agent_type": "Explore"
+      }
+    },
+    {
+      "expected": "subagent_stop",
+      "payload": {
+        "hook_event_name": "SubagentStop",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "agent_id": "claude-agent",
+        "agent_type": "Explore",
+        "last_assistant_message": "redacted"
+      }
+    },
+    {
+      "expected": "prompt_submit",
+      "payload": {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "prompt": "redacted"
+      }
+    },
+    {
+      "expected": "post_tool_use",
+      "payload": {
+        "hook_event_name": "PostToolUse",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "tool_name": "Edit",
+        "tool_input": {
+          "file_path": "/workspace/example.py"
+        }
+      }
+    },
+    {
+      "expected": "stop",
+      "payload": {
+        "hook_event_name": "Stop",
+        "session_id": "claude-session",
+        "cwd": "/workspace",
+        "stop_hook_active": false,
+        "last_assistant_message": "redacted"
+      }
+    }
+  ],
+  "codex": [
+    {
+      "expected": "session_start",
+      "payload": {
+        "hook_event_name": "SessionStart",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "source": "resume",
+        "model": "gpt-example"
+      }
+    },
+    {
+      "expected": "session_end",
+      "payload": {
+        "hook_event_name": "SessionEnd",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "reason": "other"
+      }
+    },
+    {
+      "expected": "pre_compact",
+      "payload": {
+        "hook_event_name": "PreCompact",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "turn_id": "turn-1",
+        "trigger": "manual"
+      }
+    },
+    {
+      "expected": "post_compact",
+      "payload": {
+        "hook_event_name": "PostCompact",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "turn_id": "turn-1",
+        "trigger": "manual"
+      }
+    },
+    {
+      "expected": "subagent_start",
+      "payload": {
+        "hook_event_name": "SubagentStart",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "turn_id": "turn-1",
+        "agent_id": "codex-agent",
+        "agent_type": "worker"
+      }
+    },
+    {
+      "expected": "subagent_stop",
+      "payload": {
+        "hook_event_name": "SubagentStop",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "turn_id": "turn-1",
+        "agent_id": "codex-agent",
+        "agent_type": "worker",
+        "last_assistant_message": "redacted"
+      }
+    },
+    {
+      "expected": "prompt_submit",
+      "payload": {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "turn_id": "turn-1",
+        "prompt": "redacted"
+      }
+    },
+    {
+      "expected": "post_tool_use",
+      "payload": {
+        "hook_event_name": "PostToolUse",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "turn_id": "turn-1",
+        "tool_name": "apply_patch",
+        "tool_input": {
+          "command": "redacted"
+        }
+      }
+    },
+    {
+      "expected": "stop",
+      "payload": {
+        "hook_event_name": "Stop",
+        "session_id": "codex-thread",
+        "cwd": "/workspace",
+        "turn_id": "turn-1",
+        "stop_hook_active": false,
+        "last_assistant_message": "redacted"
+      }
+    }
+  ],
+  "cursor": [
+    {
+      "expected": "session_start",
+      "payload": {
+        "hook_event_name": "sessionStart",
+        "session_id": "cursor-conversation",
+        "workspace_roots": ["/workspace"],
+        "composer_mode": "agent"
+      }
+    },
+    {
+      "expected": "session_end",
+      "payload": {
+        "hook_event_name": "sessionEnd",
+        "session_id": "cursor-conversation",
+        "workspace_roots": ["/workspace"],
+        "reason": "completed"
+      }
+    },
+    {
+      "expected": "pre_compact",
+      "payload": {
+        "hook_event_name": "preCompact",
+        "conversation_id": "cursor-conversation",
+        "workspace_roots": ["/workspace"],
+        "trigger": "auto"
+      }
+    },
+    {
+      "expected": "subagent_start",
+      "payload": {
+        "hook_event_name": "subagentStart",
+        "conversation_id": "cursor-conversation",
+        "workspace_roots": ["/workspace"],
+        "subagent_id": "cursor-agent",
+        "subagent_type": "explore"
+      }
+    },
+    {
+      "expected": "subagent_stop",
+      "payload": {
+        "hook_event_name": "subagentStop",
+        "conversation_id": "cursor-conversation",
+        "workspace_roots": ["/workspace"],
+        "subagent_id": "cursor-agent",
+        "subagent_type": "explore",
+        "task": "redacted",
+        "summary": "redacted"
+      }
+    },
+    {
+      "expected": "prompt_submit",
+      "payload": {
+        "hook_event_name": "beforeSubmitPrompt",
+        "conversation_id": "cursor-conversation",
+        "workspace_roots": ["/workspace"],
+        "prompt": "redacted"
+      }
+    },
+    {
+      "expected": "post_tool_use",
+      "payload": {
+        "hook_event_name": "postToolUse",
+        "conversation_id": "cursor-conversation",
+        "workspace_roots": ["/workspace"],
+        "tool_name": "Shell",
+        "tool_input": {
+          "command": "redacted"
+        }
+      }
+    },
+    {
+      "expected": "stop",
+      "payload": {
+        "hook_event_name": "stop",
+        "conversation_id": "cursor-conversation",
+        "workspace_roots": ["/workspace"],
+        "status": "completed",
+        "loop_count": 0
+      }
+    }
+  ]
+}

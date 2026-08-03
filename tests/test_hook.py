@@ -30,7 +30,7 @@ runner = CliRunner()
 
 class TestSessionStart:
     def test_emits_brief_as_additional_context(self) -> None:
-        output = handle_session_start({"hook_event_name": "SessionStart"})
+        output = handle_session_start({"hook_event_name": "SessionStart", "session_id": "sess-1", "cwd": "/workspace"})
         parsed = json.loads(output)
         hso = parsed["hookSpecificOutput"]
         assert hso["hookEventName"] == "SessionStart"
@@ -39,7 +39,14 @@ class TestSessionStart:
         assert "LOG PROACTIVELY" in hso["additionalContext"]
 
     def test_emits_on_resume(self) -> None:
-        output = handle_session_start({"hook_event_name": "SessionStart", "source": "resume"})
+        output = handle_session_start(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "sess-1",
+                "cwd": "/workspace",
+                "source": "resume",
+            }
+        )
         parsed = json.loads(output)
         assert "KINGDOM WORKFLOW" in parsed["hookSpecificOutput"]["additionalContext"]
 
@@ -52,7 +59,7 @@ class TestSessionStart:
 class TestUserPromptSubmit:
     def test_emits_reminder_as_additional_context(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit"})
+            output = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"})
         parsed = json.loads(output)
         hso = parsed["hookSpecificOutput"]
         assert hso["hookEventName"] == "UserPromptSubmit"
@@ -579,13 +586,27 @@ class TestHookRunCLI:
     """Test the kd hook run command via CLI runner."""
 
     def test_session_start_via_cli(self) -> None:
-        result = runner.invoke(app, ["hook", "run"], input='{"hook_event_name": "SessionStart"}')
+        result = runner.invoke(
+            app,
+            ["hook", "run", "--host", "claude"],
+            input='{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/workspace"}',
+        )
         assert result.exit_code == 0
         parsed = json.loads(result.output.strip())
         assert "KINGDOM WORKFLOW" in parsed["hookSpecificOutput"]["additionalContext"]
 
-    def test_user_prompt_submit_via_cli(self) -> None:
-        result = runner.invoke(app, ["hook", "run"], input='{"hook_event_name": "UserPromptSubmit"}')
+    def test_user_prompt_submit_via_cli(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app,
+            ["hook", "run", "--host", "claude"],
+            input=json.dumps(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "s1",
+                    "cwd": str(tmp_path),
+                }
+            ),
+        )
         assert result.exit_code == 0
         parsed = json.loads(result.output.strip())
         assert "Kingdom:" in parsed["hookSpecificOutput"]["additionalContext"]
