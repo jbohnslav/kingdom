@@ -131,7 +131,9 @@ def test_release_notes_distinguish_pre_cut_and_final_evidence() -> None:
         "64a8",
     ):
         assert f"`{ticket_id}`" in text
-    assert "## Known issues and disposition" in text
+    assert "## Resolved pre-cut correctness issues" in text
+    assert "## Final version-cut gates" in text
+    assert "Each linked ticket is now closed with reviewed regression evidence" in normalized
     assert "Other backlog enhancements" in text
     assert "64a8.md" not in text
     assert "future transactional migration capability" in text
