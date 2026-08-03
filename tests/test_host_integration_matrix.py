@@ -229,8 +229,8 @@ def test_published_matrix_has_dated_versioned_host_contract() -> None:
 
     for required_text in (
         "Verified: 2026-08-03",
-        "Kingdom: 0.6.0",
-        "Baseline commit: `a21fa79`",
+        "Kingdom: 1.0.0",
+        "Baseline commit: `676d4894f7a8c931ee3ff7b8673d36d54d84bd35`",
         "Claude Code 2.1.220",
         "Codex CLI 0.146.0-alpha.9.2",
         "Cursor Agent 2026.02.27-e7d2ef6",

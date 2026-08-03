@@ -59,7 +59,7 @@ def test_readme_covers_execution_choices_and_optional_design() -> None:
     assert "owning session" in text
     assert "council review by default" in text
     optional_design = text.split("### Optional design documents", 1)[1].split(
-        "## Deprecated ticket command migrations", 1
+        "## Removed ticket command replacements", 1
     )[0]
     assert optional_design.index("kd design                       # initialize") < optional_design.index(
         "kd design show"
@@ -73,15 +73,20 @@ def test_readme_uses_supported_new_council_chat_invocation() -> None:
     assert "kd council chat --new" not in text
 
 
-def test_readme_preserves_staged_deprecation_contracts() -> None:
+def test_readme_documents_removed_ticket_command_replacements() -> None:
     text = README.read_text()
+    replacements = text.split("## Removed ticket command replacements", 1)[1].split("## Ticket closure outcomes", 1)[0]
 
-    assert "`kd tk move` is deprecated and will be removed in v1.0.0" in text
-    assert "`kd tk pull`" in text
-    assert "`kd tk defer --reason`" in text
-    assert "`kd tk add-note` is a hidden compatibility alias that will be removed in v0.8.0" in text
-    assert "Use `kd tk log` instead" in text
-    assert "the final cut must remove this alias as well as `kd tk move`" in text
+    assert "`kd tk move` was removed in v1.0.0" in replacements
+    assert "`kd tk pull`" in replacements
+    assert "`kd tk defer --reason`" in replacements
+    assert "`kd tk add-note` was removed in v1.0.0" in replacements
+    assert "Use `kd tk log`" in replacements
+    assert "will be removed" not in replacements
+
+    ticket_guidance = TICKET_GUIDE.read_text()
+    assert "`kd tk move` was removed in v1.0.0" in ticket_guidance
+    assert "will be removed in v1.0.0" not in ticket_guidance
 
 
 def test_release_notes_preserve_workflow_and_explain_changes() -> None:
@@ -101,15 +106,19 @@ def test_release_notes_preserve_workflow_and_explain_changes() -> None:
         assert change in changed
 
 
-def test_release_notes_distinguish_pre_cut_and_final_evidence() -> None:
+def test_release_notes_are_final_without_claiming_publication() -> None:
     text = RELEASE_NOTES.read_text()
     normalized = " ".join(text.split())
 
-    assert "Pre-cut status" in text
-    assert "Neither belongs in the final 1.0.0 public CLI" in text
+    assert "final source-tree notes" in text
+    assert "Pre-cut status" not in text
+    assert "## Removed compatibility commands" in text
+    assert "were removed from the 1.0.0 public CLI" in text
     assert "`kd tk move`" in text
     assert "`kd tk add-note`" in text
-    assert "not a substitute for the live release branch's final completion gate" in text
+    assert "## Artifact validation and publication" in text
+    assert "Artifact validation is performed separately" in text
+    assert "does not claim that release artifacts were published" in normalized
     for ticket_id in (
         "473d",
         "b507",
@@ -131,8 +140,7 @@ def test_release_notes_distinguish_pre_cut_and_final_evidence() -> None:
         "64a8",
     ):
         assert f"`{ticket_id}`" in text
-    assert "## Resolved pre-cut correctness issues" in text
-    assert "## Final version-cut gates" in text
+    assert "## Resolved correctness issues" in text
     assert "Each linked ticket is now closed with reviewed regression evidence" in normalized
     assert "Other backlog enhancements" in text
     assert "64a8.md" not in text
@@ -177,7 +185,10 @@ def test_publish_checklist_keeps_local_and_live_done_gates_distinct() -> None:
     assert "isolated repository and reaches a real `kd done`" in text
     assert "final `uv run kd done` on the release branch" in text
     assert "TUI `/status`" in text
-    assert "Do not merge the release commit until publishing is explicitly authorized" in normalized
+    assert "Merging a version bump does not publish" in normalized
+    assert "publication is explicitly authorized" in normalized
+    assert "Run workflow" in text
+    assert "docs/releases/X.Y.Z.md" in text
 
 
 def test_smoke_executes_practical_documented_ticket_loop() -> None:
@@ -206,6 +217,32 @@ def test_smoke_executes_practical_documented_ticket_loop() -> None:
 def test_ci_and_release_run_documentation_smoke() -> None:
     assert "bash scripts/smoke.sh" in CI.read_text()
     assert "bash scripts/smoke.sh" in RELEASE.read_text()
+
+
+def test_release_requires_explicit_matching_version() -> None:
+    workflow = RELEASE.read_text()
+    trigger = workflow.split("on:\n", 1)[1].split("\njobs:", 1)[0]
+
+    assert "workflow_dispatch:" in trigger
+    assert "push:" not in trigger
+    assert "version:" in trigger
+    assert "required: true" in trigger
+    assert 'if [ "$RELEASE_REF" != "refs/heads/master" ]; then' in workflow
+    assert 'if [ "$requested_version" != "$project_version" ]; then' in workflow
+    assert 'release_notes="docs/releases/${project_version}.md"' in workflow
+    assert '--notes-file "$release_notes"' in workflow
+
+    ordered_steps = (
+        "Validate requested version",
+        "Set up uv",
+        "Validate documented CLI workflow",
+        "Build",
+        "Validate artifacts",
+        "Create GitHub Release",
+        "Publish to PyPI",
+    )
+    positions = [workflow.index(step) for step in ordered_steps]
+    assert positions == sorted(positions)
 
 
 def test_upgrade_guide_documents_recoverable_lazy_migration() -> None:

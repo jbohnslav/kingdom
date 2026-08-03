@@ -91,7 +91,7 @@ kd tk pull <id>...                  # select backlog work for current branch
 
 ## Backlog
 
-The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `kd tk create --backlog` to add new work, `kd tk pull <id>...` to select it for the current branch, and `kd tk defer <id>... --reason "..."` to return selected work with lifecycle history. `kd tk move` is deprecated and will be removed in v1.0.0; migrate branch-to-branch use to defer, switch/check out the target branch, then pull.
+The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `kd tk create --backlog` to add new work, `kd tk pull <id>...` to select it for the current branch, and `kd tk defer <id>... --reason "..."` to return selected work with lifecycle history. `kd tk move` was removed in v1.0.0; migrate branch-to-branch use to defer, switch/check out the target branch, then pull.
 
 ## Best Practices
 

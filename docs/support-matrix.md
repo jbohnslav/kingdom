@@ -2,9 +2,9 @@
 
 Verified: 2026-08-03
 
-Kingdom: 0.6.0
+Kingdom: 1.0.0
 
-Baseline commit: `a21fa79`
+Baseline commit: `676d4894f7a8c931ee3ff7b8673d36d54d84bd35`
 
 This matrix distinguishes observed host state from deterministic contract tests:
 

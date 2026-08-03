@@ -1,4 +1,4 @@
-"""Tests for ticket lifecycle commands: create, close, reopen, delete, move, pull, add-note."""
+"""Tests for ticket lifecycle commands."""
 
 from __future__ import annotations
 
@@ -1346,177 +1346,18 @@ class TestTicketDelete:
         assert path.exists()  # file should NOT have been deleted
 
 
-class TestTicketMove:
-    def test_move_defaults_to_current_branch(self, cli_project: Path) -> None:
-        backlog_dir = backlog_root(cli_project) / "tickets"
-        create_ticket_in(backlog_dir, "kin-mv01")
+class TestRemovedCompatibilityCommands:
+    def test_move_is_unregistered(self) -> None:
+        result = runner.invoke(ticket_app, ["move", "--help"])
 
-        result = runner.invoke(ticket_app, ["move", "kin-mv01"])
+        assert result.exit_code == 2
+        assert "No such command 'move'." in result.output
 
-        assert result.exit_code == 0, result.output
-        assert "Moved" in result.output
-        assert "branch 'feature-ticket-test'" in result.output
-        branch_tickets = branch_root(cli_project, BRANCH) / "tickets" / "kin-mv01.md"
-        assert branch_tickets.exists()
-        # Source must be removed (no duplicate in backlog)
-        assert not (backlog_dir / "kin-mv01.md").exists()
+    def test_add_note_is_unregistered(self) -> None:
+        result = runner.invoke(ticket_app, ["add-note", "--help"])
 
-    def test_move_to_backlog_shows_backlog_label(self, cli_project: Path) -> None:
-        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-mv04")
-
-        result = runner.invoke(ticket_app, ["move", "kin-mv04", "--to", "backlog"])
-
-        assert result.exit_code == 0, result.output
-        assert "Moved kin-mv04 to backlog" in result.output
-        # Verify actual file state, not just CLI output
-        assert not (tickets_dir / "kin-mv04.md").exists(), "Source ticket should be removed"
-        assert (backlog_root(cli_project) / "tickets" / "kin-mv04.md").exists(), "Ticket should exist in backlog"
-        assert result.stderr.count("Warning: `kd tk move` is deprecated") == 1
-        assert "removed in v1.0.0" in result.stderr
-        assert "tk pull" in result.stderr
-        assert "tk defer" in result.stderr
-
-    def test_move_already_in_destination(self, cli_project: Path) -> None:
-        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-mv02")
-
-        result = runner.invoke(ticket_app, ["move", "kin-mv02"])
-
-        assert result.exit_code == 0, result.output
-        assert "already in branch 'feature-ticket-test'" in result.output
-
-    def test_move_no_active_branch_errors(self) -> None:
-        """Move without an active branch should error with guidance."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            # Don't set current run
-            backlog_dir = backlog_root(base) / "tickets"
-            create_ticket_in(backlog_dir, "kin-mv03")
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv03"])
-
-            assert result.exit_code == 1
-            assert "No current branch active" in result.output
-            assert "kd start" in result.output
-
-    def test_move_to_branch_resolves_current_branch(self, cli_project: Path) -> None:
-        """--to branch should resolve to the current branch, not literal 'branch'."""
-        backlog_dir = backlog_root(cli_project) / "tickets"
-        create_ticket_in(backlog_dir, "kin-mv05")
-
-        result = runner.invoke(ticket_app, ["move", "kin-mv05", "--to", "branch"])
-
-        assert result.exit_code == 0, result.output
-        assert "Moved" in result.output
-        assert f"branch '{BRANCH}'" in result.output
-        branch_tickets = branch_root(cli_project, BRANCH) / "tickets" / "kin-mv05.md"
-        assert branch_tickets.exists()
-        assert not (backlog_dir / "kin-mv05.md").exists()
-
-    def test_move_to_nonexistent_branch_errors(self) -> None:
-        """--to with a branch that doesn't exist in .kd/branches/ errors."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            from kingdom.state import set_current_run
-
-            set_current_run(base, BRANCH)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-mv06")
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv06", "--to", "feature/nope"])
-
-            assert result.exit_code == 1
-            assert "not found" in result.output
-
-    def test_move_across_branches(self) -> None:
-        """kd tk move <id> --to <branch> moves ticket between branches."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            ensure_branch_layout(base, "feature/other")
-            from kingdom.state import set_current_run
-
-            set_current_run(base, BRANCH)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-mv07")
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv07", "--to", "feature/other"])
-
-            assert result.exit_code == 0, result.output
-            assert "Moved" in result.output
-            # Verify file moved
-            assert not (tickets_dir / "kin-mv07.md").exists()
-            assert (branch_root(base, "feature/other") / "tickets" / "kin-mv07.md").exists()
-
-    def test_move_blocked_by_active_peasant(self) -> None:
-        """Moving a ticket with an active peasant is blocked."""
-        from kingdom.session import AgentState, set_agent_state
-        from kingdom.state import set_current_run
-
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            ensure_branch_layout(base, "feature/other")
-            set_current_run(base, BRANCH)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-mv08")
-
-            # Create an active peasant session for this ticket
-            set_agent_state(
-                base,
-                BRANCH,
-                "peasant-kin-mv08",
-                AgentState(name="peasant-kin-mv08", status="working", ticket="kin-mv08"),
-            )
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv08", "--to", "feature/other"])
-
-            assert result.exit_code == 1
-            assert "active peasant" in result.output
-
-    def test_move_allowed_after_done_peasant(self) -> None:
-        """Moving a ticket whose peasant is done/failed/stopped should succeed."""
-        from kingdom.session import AgentState, set_agent_state
-        from kingdom.state import set_current_run
-
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            ensure_branch_layout(base, "feature/other")
-            set_current_run(base, BRANCH)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-mv09")
-
-            # Peasant finished — terminal status should not block the move
-            set_agent_state(
-                base,
-                BRANCH,
-                "peasant-kin-mv09",
-                AgentState(name="peasant-kin-mv09", status="done", ticket="kin-mv09"),
-            )
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv09", "--to", "feature/other"])
-
-            assert result.exit_code == 0, result.output
-            assert "Moved" in result.output
-            assert not (tickets_dir / "kin-mv09.md").exists()
-            assert (branch_root(base, "feature/other") / "tickets" / "kin-mv09.md").exists()
-
-    def test_move_blocks_active_native_context(self, cli_project: Path) -> None:
-        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        ticket_path = create_ticket_in(tickets_dir, "kin-native")
-
-        with patch.dict(os.environ, {"KD_CONTEXT": "native-owner"}, clear=True):
-            assert runner.invoke(ticket_app, ["start", "kin-native"]).exit_code == 0
-            result = runner.invoke(ticket_app, ["move", "kin-native", "--to", "backlog"])
-
-        assert result.exit_code == 1
-        assert "active work" in result.output
-        assert "tk defer" in result.output
-        assert ticket_path.exists()
+        assert result.exit_code == 2
+        assert "No such command 'add-note'." in result.output
 
 
 class TestTicketDefer:
@@ -2009,49 +1850,6 @@ class TestTicketFind:
 
         assert result.exit_code == 0, result.output
         assert result.output.strip() == str(ticket_path.resolve())
-
-
-class TestTicketAddNote:
-    """Tests for kd tk add-note."""
-
-    def test_delegates_to_log_without_changing_content(self, cli_project: Path) -> None:
-        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        write_ticket(
-            Ticket(id="aaaa", status="open", title="Test", body="Body.", created=datetime.now(UTC)),
-            tickets_dir / "aaaa.md",
-        )
-        message = "This is a note\nwith $HOME & `literal` characters"
-
-        result = runner.invoke(
-            ticket_app,
-            ["add-note", "aaaa", message],
-            env={"KD_AGENT_NAME": "hand-3af0"},
-        )
-
-        assert result.exit_code == 0, result.output
-        assert result.stderr.strip() == (
-            "Warning: `kd tk add-note` is deprecated and will be removed in v0.8.0; use `kd tk log`."
-        )
-
-        content = (tickets_dir / "aaaa.md").read_text()
-        assert "## Worklog" in content
-        assert "[hand-3af0] — This is a note" in content
-        assert "  with $HOME & `literal` characters" in content
-        assert "**Note (" not in content
-
-    def test_preserves_stdin_compatibility(self, cli_project: Path) -> None:
-        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        write_ticket(
-            Ticket(id="aaab", status="open", title="Test", body="Body.", created=datetime.now(UTC)),
-            tickets_dir / "aaab.md",
-        )
-
-        result = runner.invoke(ticket_app, ["add-note", "aaab"], input="Piped note\nsecond line\n")
-
-        assert result.exit_code == 0, result.output
-        content = (tickets_dir / "aaab.md").read_text()
-        assert "— Piped note" in content
-        assert "  second line" in content
 
 
 class TestTicketParent:

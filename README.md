@@ -227,12 +227,12 @@ kd design show
 kd design approve
 ```
 
-## Deprecated ticket command migrations
+## Removed ticket command replacements
 
-The checkout remains on the 0.6.x compatibility window until the final 1.0.0
-version cut. The removal versions below are release boundaries, not claims that
-the compatibility aliases have already disappeared from this pre-cut tree. See
-the [1.0.0 release notes](docs/releases/1.0.0.md) for the final-cut gate.
+Kingdom 1.0.0 removed two legacy ticket routes. Existing repositories keep their
+Markdown history; only the command used for future movement or Worklog entries
+changes. See the [1.0.0 release notes](docs/releases/1.0.0.md) for the complete
+upgrade boundary.
 
 `kd tk defer <id>... --reason "..."` is the supported way to return selected
 branch work to backlog. It records the source, previous status and assignee,
@@ -240,16 +240,16 @@ reason, time, and calling context in ticket lifecycle history, then resets the
 ticket to open/unassigned and clears active bindings. Pull it again when the work
 is timely.
 
-`kd tk move` is deprecated and will be removed in v1.0.0. Replace backlog→work
-movement with `kd tk pull`, work→backlog movement with `kd tk defer --reason`,
-and branch→branch movement with defer, switch/check out the target branch, then
-pull. The internal file-move primitive remains an implementation detail used by
-pull, defer, archive/restore, and peasant workflows.
+`kd tk move` was removed in v1.0.0. Use `kd tk pull` for backlog→work movement,
+`kd tk defer --reason` for work→backlog movement, and defer, switch/check out the
+target branch, then pull for branch→branch movement. The internal file-move
+primitive remains an implementation detail used by pull, defer, archive/restore,
+and peasant workflows.
 
-`kd tk add-note` is a hidden compatibility alias that will be removed in v0.8.0.
-Use `kd tk log` instead; it preserves multiline input while adding the canonical
-Worklog timestamp and author attribution. Because the next planned release jumps
-from 0.6.x to 1.0.0, the final cut must remove this alias as well as `kd tk move`.
+`kd tk add-note` was removed in v1.0.0. Use `kd tk log`; it preserves multiline
+input while adding the canonical Worklog timestamp and author attribution. The
+direct 0.6.x→1.0.0 upgrade crossed the alias's previously announced v0.8.0
+removal boundary.
 
 ## Ticket closure outcomes
 

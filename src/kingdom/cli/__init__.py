@@ -18,7 +18,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
-from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_plugin
+from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_plugin, package_version
 from kingdom.council import Council, create_council  # noqa: F401 (Council used by tests)
 from kingdom.doctor import binding_issues, context_issues, host_install_issues, resolution_issues, ticket_issues
 from kingdom.state import (
@@ -113,10 +113,21 @@ def development_source_warning(cwd: Path, loaded_module: Path) -> str | None:
     return "Warning: kd is not running from this Kingdom checkout. Use `uv run kd ...` to exercise working-tree code."
 
 
+def version_callback(value: bool) -> None:
+    """Print the installed Kingdom CLI version and exit."""
+    if value:
+        typer.echo(f"kd {package_version()}")
+        raise typer.Exit()
+
+
 @app.callback()
 def app_callback(
     ctx: typer.Context,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Print debug output.")] = False,
+    show_version: Annotated[
+        bool,
+        typer.Option("--version", callback=version_callback, is_eager=True, help="Show the Kingdom CLI version."),
+    ] = False,
 ) -> None:
     warning = development_source_warning(Path.cwd(), Path(__file__))
     if warning:

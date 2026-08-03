@@ -1859,109 +1859,6 @@ def ticket_defer(
         typer.echo(f"Ticket {ticket.id} is already in backlog")
 
 
-@ticket_app.command("move", help="Move a ticket to another branch (deprecated; removed in v1.0.0).")
-def ticket_move(
-    ticket_ids: Annotated[list[str], typer.Argument(help="Ticket ID(s) (full or partial).")],
-    to_target: Annotated[str | None, typer.Option("--to", help="Target branch name or 'backlog'.")] = None,
-) -> None:
-    """Move ticket(s) to a different branch or backlog.
-
-    Single ticket: `kd tk move <id> --to <branch>` or `kd tk move <id>` (to current branch).
-    Multiple tickets: `kd tk move <id1> <id2> --to <branch>`.
-
-    Searches all branches for the source ticket (IDs are globally unique).
-    Validates --to target exists in .kd/branches/. Blocks moves on tickets
-    with active peasant sessions.
-    """
-    from kingdom.session import find_active_peasant_branch
-
-    typer.echo(
-        "Warning: `kd tk move` is deprecated and will be removed in v1.0.0. "
-        "Use `kd tk pull` for backlog→work, `kd tk defer --reason` for work→backlog, "
-        "and defer/switch/pull for branch→branch.",
-        err=True,
-    )
-    base = require_project_root()
-
-    target = to_target
-    # Backwards compat: if exactly 2 positional args and no --to, treat second as target
-    if target is None and len(ticket_ids) == 2:
-        # Check if the second arg looks like a branch name (not a ticket ID)
-        second = ticket_ids[1]
-        try:
-            result = find_ticket(base, second)
-        except AmbiguousTicketMatch:
-            result = "ambiguous"
-        if result is None:
-            # Second arg is not a ticket, treat as target
-            target = second
-            ticket_ids = ticket_ids[:1]
-
-    # Determine destination
-    if target is None:
-        try:
-            target = resolve_current_run(base)
-        except RuntimeError:
-            print_error("No current branch active. Use --to <branch> or run `kd start` first.")
-            raise typer.Exit(code=1) from None
-
-    if target.lower() == "backlog":
-        dest_dir = backlog_root(base) / "tickets"
-        dest_label = "backlog"
-    elif target.lower() == "branch":
-        # "branch" is a keyword meaning "current git branch"
-        try:
-            resolved = resolve_current_run(base)
-        except RuntimeError:
-            print_error("No current branch active. Use a branch name or run `kd start` first.")
-            raise typer.Exit(code=1) from None
-        dest_dir = branches_root(base) / normalize_branch_name(resolved) / "tickets"
-        dest_label = f"branch '{resolved}'"
-    else:
-        normalized = normalize_branch_name(target)
-        branch_dir = branches_root(base) / normalized
-        # Validate target branch exists — no silent directory creation
-        if not branch_dir.exists():
-            print_error(f"Target branch '{target}' not found in .kd/branches/.")
-            error_console.print("Use `kd start <branch>` to create it first.")
-            raise typer.Exit(code=1)
-        dest_dir = branch_dir / "tickets"
-        dest_label = f"branch '{normalized}'"
-
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    # Pass 1: validate all tickets (search globally, not scoped to current branch)
-    validated: list[tuple[Ticket, Path]] = []
-    for tid in ticket_ids:
-        ticket, ticket_path = resolve_ticket_or_exit(base, tid)
-        if ticket_path.parent.resolve() == dest_dir.resolve():
-            typer.echo(f"Ticket {ticket.id} is already in {dest_label}")
-            continue
-
-        # Block moves on tickets with active peasant sessions
-        session_name = peasant_session_name(ticket.id)
-        owning_branch = find_active_peasant_branch(base, session_name)
-        if owning_branch:
-            print_error(
-                f"Ticket {ticket.id} has an active peasant session on branch '{owning_branch}'.\n"
-                f"Stop the peasant first: `kd peasant stop {ticket.id}`"
-            )
-            raise typer.Exit(code=1)
-        if ticket.status == "in_progress":
-            print_error(
-                f"Ticket {ticket.id} is active work and cannot be moved. "
-                "Use `kd tk defer --reason` before relocating it."
-            )
-            raise typer.Exit(code=1)
-
-        validated.append((ticket, ticket_path))
-
-    # Pass 2: move all validated tickets
-    for ticket, ticket_path in validated:
-        move_ticket(ticket_path, dest_dir)
-        typer.echo(f"Moved {ticket.id} to {dest_label} — {ticket.title}")
-
-
 def start_pulled_ticket(
     base: Path,
     feature: str,
@@ -2074,19 +1971,6 @@ def ticket_pull(
             typer.echo(f"Pulled and started {ticket.id} — {ticket.title}")
         else:
             typer.echo(f"Pulled {ticket.id} — {ticket.title}")
-
-
-@ticket_app.command("add-note", hidden=True)
-def ticket_add_note(
-    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
-    text: Annotated[str | None, typer.Argument(help="Note text. Reads from stdin if omitted.")] = None,
-) -> None:
-    """Compatibility alias for ``kd tk log``."""
-    typer.echo(
-        "Warning: `kd tk add-note` is deprecated and will be removed in v0.8.0; use `kd tk log`.",
-        err=True,
-    )
-    ticket_log(ticket_id, text)
 
 
 @ticket_app.command("log", help="Append a worklog entry to a ticket.")

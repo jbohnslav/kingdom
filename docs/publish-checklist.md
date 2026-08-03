@@ -54,12 +54,17 @@ rm -rf /tmp/kd-smoke
 
 ## Merge & Release
 
-Merging a version bump to `master` triggers publication. Do not merge the release
-commit until publishing is explicitly authorized.
+Merging a version bump does not publish. After the release commit is merged to
+`master` and publication is explicitly authorized:
 
-1. Push branch and merge PR to `master`
-2. The `Release on Version Bump` workflow triggers automatically when `pyproject.toml` changes on `master`
-3. Verify:
+1. Open the `Release` workflow in GitHub Actions and choose **Run workflow** on
+   the intended merged commit.
+2. Enter the exact version from `pyproject.toml`. The workflow stops before
+   setup, build, or publication if the input differs or the matching checked-in
+   `docs/releases/X.Y.Z.md` file is missing.
+3. Authorize the dispatch. The checked-in release notes become the GitHub Release
+   body, then the validated artifacts are uploaded to GitHub and PyPI.
+4. Verify:
    - GitHub Release created at `https://github.com/jbohnslav/kingdom/releases`
    - Tag `vX.Y.Z` exists
    - sdist and wheel attached to the release

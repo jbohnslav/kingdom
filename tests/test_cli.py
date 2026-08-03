@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -75,12 +76,21 @@ class TestCliWiring:
         assert hasattr(cli_mod, "format_ticket_line")
         assert hasattr(cli_mod, "resolve_peasant_context")
 
+    def test_version_option_matches_package_metadata(self) -> None:
+        manifest = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
 
-def test_doctor_all_installed() -> None:
+        result = runner.invoke(app, ["--version"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == f"kd {manifest['project']['version']}"
+
+
+def test_doctor_all_installed(tmp_path: Path) -> None:
     """Test doctor command when all CLIs are installed."""
     with (
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.cli.check_config", return_value=(True, None)),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
@@ -190,6 +200,7 @@ def test_doctor_json_output(tmp_path: Path) -> None:
         patch("kingdom.cli.check_config", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor", "--json"])
         assert result.exit_code == 0
@@ -254,6 +265,7 @@ def test_doctor_invalid_config(tmp_path) -> None:
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 1
@@ -272,6 +284,7 @@ def test_doctor_no_config_shows_defaults(tmp_path) -> None:
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
@@ -288,6 +301,7 @@ def test_doctor_valid_config(tmp_path) -> None:
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0

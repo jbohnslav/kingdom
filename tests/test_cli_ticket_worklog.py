@@ -200,11 +200,12 @@ class TestTicketLog:
         contexts = {item["context_id"]: item for item in json.loads(status_result.output)["contexts"]}
         assert contexts[owner.context_id]["stale"] is False
 
-    def test_primary_help_only_lists_log(self) -> None:
+    def test_primary_help_omits_removed_compatibility_commands(self) -> None:
         result = runner.invoke(ticket_app, ["--help"])
 
         assert result.exit_code == 0, result.output
         assert "add-note" not in result.output
+        assert "│ move " not in result.output
         assert "Append a worklog entry to a ticket." in result.output
 
     def test_log_help_routes_command_rich_messages_to_stdin(self) -> None:
