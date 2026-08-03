@@ -34,11 +34,25 @@ class TestCliWiring:
         """All expected sub-apps are reachable from the top-level app."""
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("council", "design", "peasant", "config", "plugin", "ticket", "update"):
+        for cmd in ("council", "peasant", "config", "lord", "plugin", "ticket", "update"):
             assert cmd in result.output, f"{cmd} not in --help output"
-        # tk is a hidden alias — verify it's mounted by invoking it
-        tk_result = runner.invoke(app, ["tk", "--help"])
-        assert tk_result.exit_code == 0
+
+        assert "│ design " not in result.output
+        assert "│ hook " not in result.output
+        for hidden_command in ("design", "hook", "tk"):
+            hidden_result = runner.invoke(app, [hidden_command, "--help"])
+            assert hidden_result.exit_code == 0
+
+    def test_retained_power_tools_are_reachable(self) -> None:
+        for command in (
+            ["council", "--help"],
+            ["council", "chat", "--help"],
+            ["peasant", "--help"],
+            ["lord", "--help"],
+            ["tk", "pull", "--help"],
+        ):
+            result = runner.invoke(app, command)
+            assert result.exit_code == 0, result.output
 
     def test_top_level_re_exports(self) -> None:
         """kingdom.cli re-exports key symbols from submodules."""

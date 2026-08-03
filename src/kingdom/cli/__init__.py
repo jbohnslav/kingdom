@@ -119,10 +119,10 @@ def app_callback(
 # ---------------------------------------------------------------------------
 
 app.add_typer(council_app, name="council")
-app.add_typer(design_app, name="design")
+app.add_typer(design_app, name="design", hidden=True)
 app.add_typer(peasant_app, name="peasant")
 app.add_typer(config_app, name="config")
-app.add_typer(hook_app, name="hook")
+app.add_typer(hook_app, name="hook", hidden=True)
 app.add_typer(lord_app, name="lord")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(ticket_app, name="ticket")

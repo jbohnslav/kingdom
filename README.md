@@ -96,7 +96,7 @@ kd done
 
 Design docs, council sessions, and peasant workers are all optional. A branch with one ticket and no design doc is a perfectly valid `kd` workflow.
 
-### Deferring work and `tk move` migration
+### Deprecated ticket command migrations
 
 `kd tk defer <id>... --reason "..."` is the supported way to return selected
 branch work to backlog. It records the source, previous status and assignee,
@@ -109,6 +109,10 @@ movement with `kd tk pull`, work→backlog movement with `kd tk defer --reason`,
 and branch→branch movement with defer, switch/check out the target branch, then
 pull. The internal file-move primitive remains an implementation detail used by
 pull, defer, archive/restore, and peasant workflows.
+
+`kd tk add-note` is a hidden compatibility alias that will be removed in v0.8.0.
+Use `kd tk log` instead; it preserves multiline input while adding the canonical
+Worklog timestamp and author attribution.
 
 ### Ticket closure outcomes
 
