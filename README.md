@@ -31,6 +31,19 @@ Start a new Codex task after installation, then use `/hooks` to review and trust
 the Kingdom hooks. Later `kd update` runs refresh an existing plugin along with
 the CLI and skill files; they do not install the Codex plugin unless you opted in.
 
+### Compaction checkpoints
+
+Where a host exposes lifecycle hooks, Kingdom asks the exact bound session to
+update its ticket before compaction or session handoff with decisions, completed
+work, verification, blockers, and next steps. If automatic compaction cannot give
+the model another turn first, the request is repeated immediately after compaction
+and on compact-resume. Kingdom does not read unstable transcript formats or invent
+handoff facts.
+
+For hosts or modes without a usable pre-compaction hook, run `kd tk current`, edit
+that ticket's Markdown directly, and record the same five fields before compacting
+or handing off.
+
 ## Workflow Scales
 
 `kd` scales down gracefully. You pick the parts of the workflow that fit the size of the work.

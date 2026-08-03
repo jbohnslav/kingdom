@@ -9,7 +9,11 @@ from typer.testing import CliRunner
 
 from kingdom.cli import app
 from kingdom.cli.hook import (
+    checkpoint_state_file,
+    handle_post_compact,
     handle_post_tool_use,
+    handle_pre_compact,
+    handle_session_end,
     handle_session_start,
     handle_stop,
     handle_subagent_start,
@@ -141,6 +145,90 @@ class TestSubagentLifecycle:
 
         assert "kd tk start <id>" in output["hookSpecificOutput"]["additionalContext"]
         assert list_execution_contexts(tmp_path) == []
+
+
+class TestTicketCheckpoints:
+    def setup_binding(self, tmp_path: Path, ticket_id: str = "aaaa") -> Path:
+        feature = "feature/checkpoint"
+        branch = ensure_branch_layout(tmp_path, feature)
+        set_current_run(tmp_path, feature)
+        context = resolve_execution_context(host="codex", session_id="session-1", cwd=tmp_path)
+        assert context is not None
+        path = branch / "tickets" / f"{ticket_id}.md"
+        write_ticket(Ticket(id=ticket_id, status="in_progress", title="Checkpoint", assignee=context.context_id), path)
+        record_execution_ticket_context(tmp_path, context, ticket_id, feature=feature)
+        return path
+
+    def event(self, tmp_path: Path, name: str, **extra: str):
+        event = normalize_host_event(
+            Host.CODEX,
+            {
+                "hook_event_name": name,
+                "session_id": "session-1",
+                "cwd": str(tmp_path),
+                **extra,
+            },
+        )
+        assert event is not None
+        return event
+
+    def test_pre_compact_requests_structured_exact_ticket_checkpoint(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+        other = ensure_branch_layout(tmp_path, "feature/checkpoint") / "tickets" / "bbbb.md"
+        write_ticket(Ticket(id="bbbb", status="in_progress", title="Unrelated recent ticket"), other)
+
+        output = json.loads(handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto")))
+
+        message = output["systemMessage"]
+        assert "ticket aaaa" in message
+        assert "bbbb" not in message
+        assert "decisions" in message
+        assert "verification" in message
+        assert "blockers" in message
+        assert "next steps" in message
+
+    def test_repeated_checkpoint_is_idempotent_until_ticket_update(self, tmp_path: Path) -> None:
+        ticket_path = self.setup_binding(tmp_path)
+        event = self.event(tmp_path, "PreCompact", trigger="auto")
+
+        assert handle_pre_compact(event)
+        assert handle_pre_compact(event) == ""
+
+        handle_post_tool_use(
+            self.event(
+                tmp_path,
+                "PostToolUse",
+                tool_name="Edit",
+                tool_input={"file_path": str(ticket_path)},
+            )
+        )
+        assert not checkpoint_state_file(tmp_path, "codex", "session-1").exists()
+        assert handle_pre_compact(event)
+
+    def test_post_compact_and_compact_resume_repeat_pending_request(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+        handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto"))
+
+        post = json.loads(handle_post_compact(self.event(tmp_path, "PostCompact", trigger="auto")))
+        resumed = json.loads(handle_session_start(self.event(tmp_path, "SessionStart", source="compact")))
+
+        assert "ticket aaaa" in post["systemMessage"]
+        assert "ticket aaaa" in resumed["hookSpecificOutput"]["additionalContext"]
+
+    def test_session_end_requests_same_handoff_without_blocking(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+
+        output = json.loads(handle_session_end(self.event(tmp_path, "SessionEnd", reason="other")))
+
+        assert "ticket aaaa" in output["systemMessage"]
+        assert "continue" not in output
+        assert checkpoint_state_file(tmp_path, "codex", "session-1").exists()
+
+    def test_missing_exact_binding_fails_open_without_branch_guess(self, tmp_path: Path) -> None:
+        ensure_branch_layout(tmp_path, "feature/checkpoint")
+        set_current_run(tmp_path, "feature/checkpoint")
+
+        assert handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto")) == ""
 
 
 # ---------------------------------------------------------------------------

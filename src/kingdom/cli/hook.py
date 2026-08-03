@@ -7,6 +7,7 @@ to stdout.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -32,6 +33,7 @@ from kingdom.state import (
     record_execution_ticket_context,
     resolve_current_run,
     resolve_execution_context,
+    write_json,
 )
 from kingdom.ticket import (
     AmbiguousTicketMatch,
@@ -70,6 +72,8 @@ WORK_TOOLS = {"WebSearch", "WebFetch", "Edit", "Write", "apply_patch"}
 STALE_TTL_SECONDS = 86400  # 24 hours
 LEGACY_STOP_TICKET_FALLBACK_ENV = "KD_HOOK_LEGACY_TICKET_FALLBACK"
 
+CHECKPOINT_FIELDS = "decisions, completed work, verification, blockers, and next steps"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -88,6 +92,12 @@ def state_file_for(project_dir: str | None, session_id: str) -> Path:
     return runtime_dir(project_dir) / f"turn-{session_id}.json"
 
 
+def checkpoint_state_file(base: Path, host: str, session_id: str) -> Path:
+    identity = f"{host}\0{session_id}".encode()
+    digest = hashlib.sha256(identity).hexdigest()[:16]
+    return base / ".kd" / "runtime" / f"checkpoint-{digest}.json"
+
+
 def read_turn_state(path: Path) -> dict | None:
     """Read turn state, returning None on any error (fail-open)."""
     try:
@@ -102,6 +112,86 @@ def write_turn_state(path: Path, state: dict) -> None:
 
 def fresh_turn_state() -> dict[str, bool]:
     return {"had_work": False, "did_log": False, "stop_blocked": False}
+
+
+def read_checkpoint(base: Path, event: HostEvent) -> dict | None:
+    return read_turn_state(checkpoint_state_file(base, event.host.value, event.session_id))
+
+
+def checkpoint_context(event: HostEvent) -> tuple[Path, ExecutionContext, dict] | None:
+    base = terminal_context_base(str(event.cwd))
+    context = resolve_execution_context(
+        session_id=event.session_id,
+        host=event.host.value,
+        cwd=event.cwd,
+    )
+    if context is None:
+        return None
+    binding = read_execution_ticket_context(base, context)
+    if binding is None:
+        return None
+    feature = binding.get("feature")
+    ticket_id = binding.get("ticket_id")
+    if not isinstance(feature, str) or not isinstance(ticket_id, str):
+        return None
+    result = find_ticket(base, ticket_id, branch=feature)
+    if result is None or result.ticket.status != "in_progress":
+        return None
+    binding = dict(binding)
+    binding["ticket_path"] = str(result.path.resolve())
+    return base, context, binding
+
+
+def checkpoint_message(ticket_id: str, phase: str) -> str:
+    return (
+        f"KINGDOM CHECKPOINT ({phase}) for exact ticket {ticket_id}: update its Markdown now with "
+        f"{CHECKPOINT_FIELDS}. Do not substitute another branch ticket."
+    )
+
+
+def request_checkpoint(event: HostEvent, phase: str) -> tuple[dict, bool] | None:
+    resolved = checkpoint_context(event)
+    if resolved is None:
+        return None
+    base, context, binding = resolved
+    path = checkpoint_state_file(base, event.host.value, event.session_id)
+    current = read_turn_state(path)
+    if current and current.get("ticket_id") == binding["ticket_id"]:
+        return current, False
+
+    checkpoint = {
+        "schema_version": 1,
+        "context_id": context.context_id,
+        "host": event.host.value,
+        "session_id": event.session_id,
+        "ticket_id": binding["ticket_id"],
+        "ticket_path": binding["ticket_path"],
+        "phase": phase,
+        "requested_at": time.time(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, checkpoint)
+    return checkpoint, True
+
+
+def checkpoint_completed_by_event(base: Path, event: HostEvent, checkpoint: dict) -> bool:
+    ticket_path = checkpoint.get("ticket_path")
+    if isinstance(ticket_path, str):
+        for file_path in event.file_paths:
+            candidate = Path(file_path)
+            if not candidate.is_absolute():
+                candidate = event.cwd / candidate
+            if candidate.resolve(strict=False) == Path(ticket_path):
+                return True
+
+    if event.tool_name not in {"Bash", "Shell"} or not event.command:
+        return False
+    ticket_id = checkpoint.get("ticket_id")
+    return (
+        isinstance(ticket_id, str)
+        and ticket_id in event.command
+        and ("kd tk log" in event.command or "kd ticket log" in event.command)
+    )
 
 
 def is_ticket_markdown_path(file_path: str, project_dir: str | None) -> bool:
@@ -285,14 +375,54 @@ def handle_session_start(data: HostEvent | dict) -> str:
     event = handler_event(data, EventKind.SESSION_START)
     if event is None:
         return ""
+    additional_context = SESSION_START_BRIEF
+    base = terminal_context_base(str(event.cwd))
+    checkpoint = read_checkpoint(base, event)
+    if checkpoint and event.source == "compact":
+        additional_context += "\n\n" + checkpoint_message(checkpoint["ticket_id"], "compact resume")
     return json.dumps(
         {
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
-                "additionalContext": SESSION_START_BRIEF,
+                "additionalContext": additional_context,
             }
         }
     )
+
+
+def handle_pre_compact(data: HostEvent | dict) -> str:
+    event = handler_event(data, EventKind.PRE_COMPACT)
+    if event is None:
+        return ""
+    requested = request_checkpoint(event, "before compaction")
+    if requested is None:
+        return ""
+    checkpoint, created = requested
+    if not created:
+        return ""
+    return json.dumps({"systemMessage": checkpoint_message(checkpoint["ticket_id"], "before compaction")})
+
+
+def handle_post_compact(data: HostEvent | dict) -> str:
+    event = handler_event(data, EventKind.POST_COMPACT)
+    if event is None:
+        return ""
+    base = terminal_context_base(str(event.cwd))
+    checkpoint = read_checkpoint(base, event)
+    if checkpoint is None:
+        return ""
+    return json.dumps({"systemMessage": checkpoint_message(checkpoint["ticket_id"], "after compaction")})
+
+
+def handle_session_end(data: HostEvent | dict) -> str:
+    event = handler_event(data, EventKind.SESSION_END)
+    if event is None:
+        return ""
+    requested = request_checkpoint(event, "session handoff")
+    if requested is None:
+        return ""
+    checkpoint, _ = requested
+    return json.dumps({"systemMessage": checkpoint_message(checkpoint["ticket_id"], "session handoff")})
 
 
 def handle_subagent_start(data: HostEvent | dict) -> str:
@@ -401,6 +531,12 @@ def handle_post_tool_use(data: HostEvent | dict) -> str:
     project_dir = str(event.cwd)
     session_id = event.session_id
 
+    base = terminal_context_base(project_dir)
+    checkpoint_path = checkpoint_state_file(base, event.host.value, event.session_id)
+    checkpoint = read_turn_state(checkpoint_path)
+    if checkpoint and checkpoint_completed_by_event(base, event, checkpoint):
+        checkpoint_path.unlink(missing_ok=True)
+
     sf = state_file_for(project_dir, session_id)
     state = read_turn_state(sf)
     if state is None:
@@ -466,6 +602,9 @@ def handle_stop(data: HostEvent | dict) -> str:
 # Map event names to handlers.
 HANDLERS = {
     EventKind.SESSION_START: handle_session_start,
+    EventKind.SESSION_END: handle_session_end,
+    EventKind.PRE_COMPACT: handle_pre_compact,
+    EventKind.POST_COMPACT: handle_post_compact,
     EventKind.SUBAGENT_START: handle_subagent_start,
     EventKind.SUBAGENT_STOP: handle_subagent_stop,
     EventKind.PROMPT_SUBMIT: handle_user_prompt_submit,
