@@ -243,6 +243,43 @@ def write_ticket(ticket: Ticket, path: Path) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def replace_ticket_assignee(content: str, assignee: str) -> str:
+    """Change only the assignee line while preserving the rest of a ticket verbatim."""
+    lines = content.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("Content must start with YAML frontmatter (---)")
+
+    closing_index = next(
+        (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+        None,
+    )
+    if closing_index is None:
+        raise ValueError("Invalid frontmatter: missing closing ---")
+
+    for index in range(1, closing_index):
+        if lines[index].partition(":")[0].strip() != "assignee":
+            continue
+        newline = "\r\n" if lines[index].endswith("\r\n") else "\n"
+        if not lines[index].endswith(("\n", "\r")):
+            newline = ""
+        lines[index] = f"assignee: {assignee}{newline}"
+        return "".join(lines)
+
+    newline = "\r\n" if lines[0].endswith("\r\n") else "\n"
+    lines.insert(closing_index, f"assignee: {assignee}{newline}")
+    return "".join(lines)
+
+
+def write_ticket_assignee(path: Path, assignee: str) -> None:
+    """Persist a migration-only assignee change without canonicalizing Markdown."""
+    lock_path = path.parent / f".{path.name}.lock"
+    with flock(lock_path):
+        content = path.read_text(encoding="utf-8")
+        updated = replace_ticket_assignee(content, assignee)
+        if updated != content:
+            path.write_text(updated, encoding="utf-8")
+
+
 def list_tickets(directory: Path) -> list[Ticket]:
     if not directory.exists():
         return []

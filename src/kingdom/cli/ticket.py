@@ -60,6 +60,7 @@ from kingdom.ticket import (
     move_ticket,
     read_ticket,
     write_ticket,
+    write_ticket_assignee,
 )
 
 from .display import STATUS_COLORS, STATUS_STYLES, console_width, error_console, print_error
@@ -938,7 +939,7 @@ def migrate_ticket_to_execution_context(
     location: str,
 ) -> dict[str, Any]:
     ticket.assignee = context.context_id
-    write_ticket(ticket, ticket_path)
+    write_ticket_assignee(ticket_path, context.context_id)
     record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
     binding = read_execution_ticket_context(base, context)
     if binding is None:
@@ -968,10 +969,25 @@ def migrate_legacy_execution_binding(
                 )
 
     tickets_dir = branch_root(base, feature) / "tickets"
+    branch_tickets = list_tickets(tickets_dir)
+    exact_candidates = [
+        ticket for ticket in branch_tickets if ticket.status == "in_progress" and ticket.assignee == context.context_id
+    ]
+    if len(exact_candidates) > 1:
+        raise AmbiguousLegacyTickets(sorted(ticket.id for ticket in exact_candidates))
+    if exact_candidates:
+        ticket = exact_candidates[0]
+        return migrate_ticket_to_execution_context(
+            base,
+            context,
+            ticket,
+            tickets_dir / f"{ticket.id}.md",
+            feature=feature,
+            location=f"branch:{normalized_feature}",
+        )
+
     candidates = [
-        ticket
-        for ticket in list_tickets(tickets_dir)
-        if ticket.status == "in_progress" and ticket.assignee in (None, "hand")
+        ticket for ticket in branch_tickets if ticket.status == "in_progress" and ticket.assignee in (None, "hand")
     ]
     if len(candidates) > 1:
         raise AmbiguousLegacyTickets(sorted(ticket.id for ticket in candidates))
