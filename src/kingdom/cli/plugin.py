@@ -36,6 +36,11 @@ class PluginInstallHost(StrEnum):
 
 
 HOOK_COMMAND = "kd hook run"
+LEGACY_HOOK_COMMANDS = {
+    '"$CLAUDE_PROJECT_DIR"/.claude/hooks/kd-workflow.sh',
+    "$CLAUDE_PROJECT_DIR/.claude/hooks/kd-workflow.sh",
+    ".claude/hooks/kd-workflow.sh",
+}
 
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
 EXTENDED_HOOK_EVENTS = ("SessionEnd", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop")
@@ -97,6 +102,40 @@ def is_hook_installed(settings: dict) -> bool:
 def has_full_hook_installation(settings: dict) -> bool:
     """Check if the full supported Claude lifecycle hook set is installed."""
     return all(has_hook_for_event(settings, event) for event in SUPPORTED_HOOK_EVENTS)
+
+
+def has_legacy_hook_installation(settings: dict) -> bool:
+    hooks = settings.get("hooks", {})
+    return any(
+        hook.get("command") in LEGACY_HOOK_COMMANDS
+        for matchers in hooks.values()
+        for matcher in matchers
+        for hook in matcher.get("hooks", [])
+    )
+
+
+def remove_legacy_hook_installation(settings: dict) -> bool:
+    hooks = settings.get("hooks", {})
+    changed = False
+    for event, matchers in list(hooks.items()):
+        retained_matchers = []
+        for matcher in matchers:
+            retained_hooks = [
+                hook for hook in matcher.get("hooks", []) if hook.get("command") not in LEGACY_HOOK_COMMANDS
+            ]
+            if len(retained_hooks) != len(matcher.get("hooks", [])):
+                changed = True
+            if retained_hooks:
+                retained_matcher = dict(matcher)
+                retained_matcher["hooks"] = retained_hooks
+                retained_matchers.append(retained_matcher)
+        if retained_matchers:
+            hooks[event] = retained_matchers
+        else:
+            hooks.pop(event, None)
+    if not hooks:
+        settings.pop("hooks", None)
+    return changed
 
 
 def activate_codex_plugin(marketplace_name: str) -> tuple[bool, str]:
@@ -207,7 +246,8 @@ def plugin_enable() -> None:
     settings_path = git_root / ".claude" / "settings.json"
     settings = read_settings(settings_path)
 
-    if has_full_hook_installation(settings):
+    removed_legacy = remove_legacy_hook_installation(settings)
+    if has_full_hook_installation(settings) and not removed_legacy:
         styled_echo("Kingdom hook is already enabled.", fg=typer.colors.YELLOW)
         return
 

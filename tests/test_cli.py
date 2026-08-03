@@ -163,7 +163,25 @@ def test_check_agent_model_rejects_unsupported_codex_effort() -> None:
     assert "does not support effort 'ultra'" in error
 
 
-def test_doctor_json_output(tmp_path) -> None:
+def test_doctor_shows_actual_cli_probe_error(tmp_path: Path) -> None:
+    def mock_check(command: list[str]) -> tuple[bool, str | None]:
+        if "codex" in command:
+            return (False, "Command timed out")
+        return (True, None)
+
+    with (
+        patch("kingdom.cli.check_cli", side_effect=mock_check),
+        patch("kingdom.cli.check_config", return_value=(True, None)),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
+    ):
+        result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "codex" in result.output
+    assert "Command timed out" in result.output
+
+
+def test_doctor_json_output(tmp_path: Path) -> None:
     """Test doctor command with --json flag."""
     kd_dir = tmp_path / ".kd"
     kd_dir.mkdir()

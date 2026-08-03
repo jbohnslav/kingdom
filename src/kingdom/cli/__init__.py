@@ -20,6 +20,7 @@ from rich.panel import Panel
 
 from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_plugin
 from kingdom.council import Council, create_council  # noqa: F401 (Council used by tests)
+from kingdom.doctor import binding_issues, context_issues, host_install_issues, resolution_issues, ticket_issues
 from kingdom.state import (
     branch_root,
     clear_current_run,
@@ -747,11 +748,11 @@ def update() -> None:
         raise typer.Exit(code=1)
 
 
-@app.command(help="Check config and agent CLIs.")
+@app.command(help="Check config, agent CLIs, repository state, and host integrations.")
 def doctor(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
-    """Validate config and verify agent CLIs are installed."""
+    """Validate config, runtime state, ticket closures, and host installs."""
     from kingdom.state import state_root as _state_root
 
     base = require_project_root()
@@ -799,9 +800,31 @@ def doctor(
             elif model_status == "unavailable":
                 cli_issues.append({"name": check["name"], "hint": model_error or "Model unavailable"})
 
+    bindings = binding_issues(base)
+    contexts = context_issues(base)
+    tickets = ticket_issues(base)
+    resolutions = resolution_issues(base)
+    host_installs = host_install_issues(base, Path.home())
+    state_issues = [*bindings, *contexts, *tickets, *resolutions, *host_installs]
+    if state_issues:
+        has_issues = True
+
     if output_json:
         console = Console()
-        console.print_json(json.dumps({"config": config_result, "agents": cli_results}, indent=2))
+        console.print_json(
+            json.dumps(
+                {
+                    "config": config_result,
+                    "agents": cli_results,
+                    "bindings": [issue.to_dict() for issue in bindings],
+                    "contexts": [issue.to_dict() for issue in contexts],
+                    "tickets": [issue.to_dict() for issue in tickets],
+                    "resolutions": [issue.to_dict() for issue in resolutions],
+                    "host_installs": [issue.to_dict() for issue in host_installs],
+                },
+                indent=2,
+            )
+        )
     else:
         if not config_ok:
             typer.echo("\nAgent CLIs:")
@@ -826,12 +849,31 @@ def doctor(
                         fg=typer.colors.GREEN,
                     )
                 else:
-                    styled_echo(f"  ✗ {name:12} ({result['error']})", fg=typer.colors.RED)
+                    styled_echo(f"  ✗ {name:12} ({result['error'] or 'unavailable'})", fg=typer.colors.RED)
 
             if cli_issues:
                 typer.echo("\nIssues found:")
                 for issue in cli_issues:
                     typer.echo(f"  {issue['name']}: {issue['hint']}")
+
+        doctor_sections = (
+            ("Bindings", bindings),
+            ("Contexts", contexts),
+            ("Tickets", tickets),
+            ("Ticket resolutions", resolutions),
+            ("Host integrations", host_installs),
+        )
+        for title, issues in doctor_sections:
+            typer.echo(f"\n{title}:")
+            if not issues:
+                styled_echo("  ✓ No issues found", fg=typer.colors.GREEN)
+                continue
+            for issue in issues:
+                styled_echo(f"  ✗ [{issue.code}] {issue.message}", fg=typer.colors.RED)
+                if issue.path:
+                    typer.echo(f"    Path: {issue.path}")
+                typer.echo(f"    Repair: {issue.repair}")
+        typer.echo("\nDoctor is read-only; no files were changed.")
         typer.echo()
 
     if has_issues or cli_issues:

@@ -195,6 +195,31 @@ class TestPluginEnable:
         for event in SUPPORTED_HOOK_EVENTS:
             assert has_hook_for_event(settings, event)
 
+    def test_enable_replaces_legacy_script_hooks(self, tmp_path: Path) -> None:
+        legacy_command = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/kd-workflow.sh'
+        legacy_hook = {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": legacy_command, "timeout": 10}],
+        }
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(json.dumps({"hooks": {event: [legacy_hook] for event in HOOK_EVENTS}}))
+
+        with mock_git_root(tmp_path):
+            result = runner.invoke(app, ["plugin", "enable"])
+
+        assert result.exit_code == 0
+        settings = json.loads(settings_path.read_text())
+        commands = [
+            hook["command"]
+            for matchers in settings["hooks"].values()
+            for matcher in matchers
+            for hook in matcher["hooks"]
+        ]
+        assert legacy_command not in commands
+        for event in SUPPORTED_HOOK_EVENTS:
+            assert has_hook_for_event(settings, event)
+
 
 class TestPluginDisable:
     def test_disable_removes_hook(self, tmp_path: Path) -> None:

@@ -247,6 +247,14 @@ validates terminal evidence before completing a branch and reports the same
 resolution breakdown. Resolution-less legacy closures remain readable and map
 to their compatible inferred outcome.
 
+## Upgrading existing repositories
+
+`kd update` refreshes the CLI and configured host integrations. Existing `.kd`
+repositories use a lazy, idempotent context migration that preserves ticket IDs
+and Markdown. Back up `.kd`, verify with the read-only `kd doctor`, and use the
+retained legacy context state if you need to roll back. See the complete
+[upgrade and rollback guide](docs/upgrading.md).
+
 ## How it works
 
 All state lives in `.kd/` as plain Markdown and JSON tracked with the code:
@@ -277,7 +285,7 @@ No database. No server. Just files on disk.
 | `kd peasant` | Power tool for reviewed unattended ticket workers |
 | `kd lord` | Power tool for epic-level peasant orchestration |
 | `kd design` | Optional design-document planning (hidden from root help) |
-| `kd config` / `kd doctor` | Inspect configuration and agent CLIs |
+| `kd config` / `kd doctor` | Inspect configuration, repository state, and host integrations |
 | `kd plugin` / `kd update` | Install and refresh host integrations |
 
 Run `kd <command> --help` for exact flags.

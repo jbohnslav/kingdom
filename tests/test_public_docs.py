@@ -5,6 +5,7 @@ README = REPO_ROOT / "README.md"
 SMOKE = REPO_ROOT / "scripts" / "smoke.sh"
 CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE = REPO_ROOT / ".github" / "workflows" / "release.yml"
+UPGRADING = REPO_ROOT / "docs" / "upgrading.md"
 
 
 def test_readme_leads_with_ticket_loop_before_power_tools() -> None:
@@ -84,3 +85,20 @@ def test_smoke_executes_practical_documented_ticket_loop() -> None:
 def test_ci_and_release_run_documentation_smoke() -> None:
     assert "bash scripts/smoke.sh" in CI.read_text()
     assert "bash scripts/smoke.sh" in RELEASE.read_text()
+
+
+def test_upgrade_guide_documents_recoverable_lazy_migration() -> None:
+    readme = README.read_text()
+    guide = UPGRADING.read_text()
+
+    assert "docs/upgrading.md" in readme
+    for text in (
+        "cp -R .kd ../kd-backup-YYYYMMDD-HHMMSS",
+        "kd tk current",
+        "kd doctor",
+        "mv -n .kd ../kd-after-upgrade",
+        "uv tool install --force kingdom-cli==PREVIOUS_VERSION",
+    ):
+        assert text in guide
+    assert "Ticket IDs, unknown frontmatter, Markdown bodies, and Worklogs remain intact" in guide
+    assert "neither the upgraded state nor the backup is deleted" in " ".join(guide.split())

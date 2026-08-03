@@ -97,12 +97,14 @@ def check_cli(command: list[str]) -> tuple[bool, str | None]:
     """Check if a CLI command is available."""
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=5)
-    except OSError:
+    except FileNotFoundError:
         return (False, "Command not found")
     except subprocess.TimeoutExpired:
         return (False, "Command timed out")
+    except OSError as exc:
+        return (False, f"Could not run command: {exc}")
     if result.returncode != 0:
-        error = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
+        error = result.stderr.strip() or result.stdout.strip() or f"Command exited with status {result.returncode}"
         return (False, error)
     return (True, None)
 
