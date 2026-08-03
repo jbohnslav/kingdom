@@ -8,7 +8,8 @@ from typer.testing import CliRunner
 
 from kingdom.cli import app
 from kingdom.cli.helpers import install_skill, skill_install_targets
-from kingdom.state import branch_root, ensure_base_layout
+from kingdom.state import branch_root, ensure_base_layout, ensure_branch_layout, set_current_run, write_json
+from kingdom.ticket import Ticket, write_ticket
 
 SKILL_REFERENCE_FILES = {"council.md", "peasants.md", "tickets.md"}
 
@@ -151,8 +152,24 @@ def test_cli_start_auto_init_installs_skill(tmp_path: Path) -> None:
     assert (skill_dir / "SKILL.md").exists()
 
 
-def test_cli_start_initializes_design_and_prints_path() -> None:
-    """kd start should create design.md from template and print its location."""
+def test_cli_start_existing_workspace_does_not_refresh_skill() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        ensure_base_layout(base)
+        ensure_branch_layout(base, "feature/existing")
+
+        with patch("kingdom.cli.install_skill") as installer:
+            resume_result = runner.invoke(app, ["start", "feature/existing"])
+            new_branch_result = runner.invoke(app, ["start", "feature/new"])
+
+        assert resume_result.exit_code == 0
+        assert new_branch_result.exit_code == 0
+        installer.assert_not_called()
+
+
+def test_cli_start_initializes_ticket_workspace_without_planning_docs() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         base = Path.cwd()
@@ -162,16 +179,18 @@ def test_cli_start_initializes_design_and_prints_path() -> None:
         result = runner.invoke(app, ["start", branch])
 
         assert result.exit_code == 0
-        assert f"Started session for branch {branch}" in result.output
+        assert f"Started workspace for branch {branch}" in result.output
 
-        design_path = branch_root(base, branch) / "design.md"
-        assert design_path.exists()
-        assert "Design: feature/test-start" in design_path.read_text(encoding="utf-8")
-        assert f"Design: {design_path}" in result.output
+        branch_dir = branch_root(base, branch)
+        assert (branch_dir / "tickets").is_dir()
+        assert not (branch_dir / "design.md").exists()
+        assert not (branch_dir / "breakdown.md").exists()
+        assert "Tickets: 0 branch, 0 backlog" in result.output
+        assert 'Next: kd tk create "<title>"' in result.output
+        assert "--type epic" in result.output
 
 
-def test_cli_design_prints_path_after_start() -> None:
-    """Running kd design after kd start should print the design path."""
+def test_cli_start_resumes_existing_workspace_without_overwriting_content() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         base = Path.cwd()
@@ -181,13 +200,100 @@ def test_cli_design_prints_path_after_start() -> None:
         start_result = runner.invoke(app, ["start", branch])
         assert start_result.exit_code == 0
 
-        design_path = branch_root(base, branch) / "design.md"
-        before = design_path.read_text(encoding="utf-8")
+        branch_dir = branch_root(base, branch)
+        design_path = branch_dir / "design.md"
+        design_path.write_text("# Legacy design\n", encoding="utf-8")
+        write_ticket(Ticket(id="task1", status="open", title="Existing task"), branch_dir / "tickets" / "task1.md")
 
-        design_result = runner.invoke(app, ["design"])
-        assert design_result.exit_code == 0
-        assert design_result.output.strip().endswith("design.md")
-        assert design_path.read_text(encoding="utf-8") == before
+        resume_result = runner.invoke(app, ["start", branch])
+
+        assert resume_result.exit_code == 0
+        assert f"Resumed workspace for branch {branch}" in resume_result.output
+        assert "Tickets: 1 branch, 0 backlog" in resume_result.output
+        assert "Next: kd tk list --ready" in resume_result.output
+        assert design_path.read_text(encoding="utf-8") == "# Legacy design\n"
+
+
+def test_cli_start_changes_workspace_default_without_force() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        ensure_branch_layout(base, "feature/previous")
+        set_current_run(base, "feature-previous")
+
+        result = runner.invoke(app, ["start", "feature/next"])
+
+        assert result.exit_code == 0
+        assert (base / ".kd" / "current").read_text(encoding="utf-8") == "feature-next\n"
+        assert "Started workspace for branch feature/next" in result.output
+
+
+def test_cli_start_with_only_closed_tickets_suggests_new_work() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        branch = "feature/complete"
+        branch_dir = ensure_branch_layout(base, branch)
+        write_ticket(
+            Ticket(id="done1", status="closed", title="Finished task"),
+            branch_dir / "tickets" / "done1.md",
+        )
+
+        result = runner.invoke(app, ["start", branch])
+
+        assert result.exit_code == 0
+        assert 'Next: kd tk create "<title>"' in result.output
+        assert "kd tk list --ready" not in result.output
+
+
+def test_cli_start_with_blocked_tickets_suggests_blocked_list() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        branch = "feature/blocked"
+        branch_dir = ensure_branch_layout(base, branch)
+        write_ticket(
+            Ticket(id="wait1", status="open", title="Waiting task", deps=["missing"]),
+            branch_dir / "tickets" / "wait1.md",
+        )
+
+        result = runner.invoke(app, ["start", branch])
+
+        assert result.exit_code == 0
+        assert "Next: kd tk list --blocked" in result.output
+        assert "kd tk list --ready" not in result.output
+
+
+def test_cli_start_uses_global_dependency_status_for_ready_work() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        done_dir = ensure_branch_layout(base, "feature/done")
+        write_ticket(
+            Ticket(id="done1", status="closed", title="Completed dependency"),
+            done_dir / "tickets" / "done1.md",
+        )
+        write_json(done_dir / "state.json", {"branch": "feature/done", "status": "done"})
+
+        branch = "feature/dependent"
+        branch_dir = ensure_branch_layout(base, branch)
+        write_ticket(
+            Ticket(id="next1", status="open", title="Ready task", deps=["done1"]),
+            branch_dir / "tickets" / "next1.md",
+        )
+
+        start_result = runner.invoke(app, ["start", branch])
+        ready_result = runner.invoke(app, ["tk", "list", "--ready"])
+
+        assert start_result.exit_code == 0
+        assert ready_result.exit_code == 0
+        assert "Next: kd tk list --ready" in start_result.output
+        assert "next1" in ready_result.output
 
 
 def test_install_skill_copies_files(tmp_path: Path) -> None:

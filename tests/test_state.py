@@ -388,15 +388,13 @@ class TestEnsureBranchLayout:
         assert result.is_dir()
         assert result == tmp_path / ".kd" / "branches" / "feature-test"
 
-    def test_creates_design_md(self, tmp_path: Path) -> None:
-        """ensure_branch_layout creates design.md file."""
+    def test_does_not_create_design_md(self, tmp_path: Path) -> None:
         branch_dir = ensure_branch_layout(tmp_path, "main")
-        assert (branch_dir / "design.md").is_file()
+        assert not (branch_dir / "design.md").exists()
 
-    def test_creates_breakdown_md(self, tmp_path: Path) -> None:
-        """ensure_branch_layout creates breakdown.md file."""
+    def test_does_not_create_breakdown_md(self, tmp_path: Path) -> None:
         branch_dir = ensure_branch_layout(tmp_path, "main")
-        assert (branch_dir / "breakdown.md").is_file()
+        assert not (branch_dir / "breakdown.md").exists()
 
     def test_does_not_create_learnings_md(self, tmp_path: Path) -> None:
         """ensure_branch_layout no longer creates learnings.md."""
@@ -436,12 +434,13 @@ class TestEnsureBranchLayout:
     def test_idempotent(self, tmp_path: Path) -> None:
         """ensure_branch_layout can be called multiple times safely."""
         branch_dir = ensure_branch_layout(tmp_path, "main")
-        # Write some content to design.md
         (branch_dir / "design.md").write_text("# Design", encoding="utf-8")
-        # Call again
+        (branch_dir / "breakdown.md").write_text("# Breakdown", encoding="utf-8")
+
         ensure_branch_layout(tmp_path, "main")
-        # Content should be preserved
+
         assert (branch_dir / "design.md").read_text() == "# Design"
+        assert (branch_dir / "breakdown.md").read_text() == "# Breakdown"
 
     def test_returns_branch_path(self, tmp_path: Path) -> None:
         """ensure_branch_layout returns the branch directory path."""

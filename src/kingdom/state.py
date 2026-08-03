@@ -794,8 +794,6 @@ def ensure_branch_layout(base: Path, branch: str) -> Path:
     """Create branch-specific structure under .kd/branches/<normalized-branch>/. Idempotent.
 
     Creates:
-        - .kd/branches/<normalized-branch>/design.md (empty file)
-        - .kd/branches/<normalized-branch>/breakdown.md (empty file)
         - .kd/branches/<normalized-branch>/tickets/
         - .kd/branches/<normalized-branch>/logs/
         - .kd/branches/<normalized-branch>/sessions/
@@ -824,19 +822,11 @@ def ensure_branch_layout(base: Path, branch: str) -> Path:
     if not state_path.exists():
         write_json(state_path, {})
 
-    # Create markdown files if not exist (touch)
-    design_path = branch_dir / "design.md"
-    if not design_path.exists():
-        design_path.write_text("", encoding="utf-8")
-
-    breakdown_path = branch_dir / "breakdown.md"
-    if not breakdown_path.exists():
-        breakdown_path.write_text("", encoding="utf-8")
-
     return branch_dir
 
 
 def set_current_run(base: Path, feature: str) -> None:
+    """Set the repository's fallback branch without binding an execution context."""
     ensure_dir(state_root(base))
     current_path = state_root(base) / "current"
     current_path.write_text(f"{feature}\n", encoding="utf-8")
@@ -875,13 +865,13 @@ def resolve_current_run(base: Path) -> str:
     3. Error with helpful message
 
     The invocation branch intentionally wins over ``.kd/current`` so long-lived
-    sibling worktrees can share one ``.kd/`` directory without forcing every
-    checkout onto the same active session.
+    sibling worktrees and execution contexts can share one ``.kd/`` directory
+    without inheriting one process's workspace default.
     """
     current_path = state_root(base) / "current"
 
     # 1. Prefer the branch of the worktree where kd was invoked. A shared
-    # .kd/current file should not force every human worktree onto one session.
+    # .kd/current should not force every worktree or execution context onto one branch.
     git_branch = get_current_git_branch()
     if git_branch:
         try:

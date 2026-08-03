@@ -20,7 +20,6 @@ from rich.panel import Panel
 
 from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_plugin
 from kingdom.council import Council, create_council  # noqa: F401 (Council used by tests)
-from kingdom.design import ensure_design_initialized
 from kingdom.state import (
     branch_root,
     clear_current_run,
@@ -42,8 +41,10 @@ from kingdom.state import (
 from kingdom.ticket import (
     TICKET_RESOLUTIONS,
     Ticket,
+    collect_all_tickets,
     effective_close_reason,
     effective_resolution,
+    filter_tickets_by_deps,
     list_tickets,
     validate_terminal_evidence,
 )
@@ -134,11 +135,13 @@ app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
 # ---------------------------------------------------------------------------
 
 
-@app.command(help="Initialize a branch-based session and state.")
+@app.command(
+    help="Initialize or resume a branch workspace. The repository default branch does not limit execution contexts."
+)
 def start(
     branch: Annotated[str | None, typer.Argument(help="Branch name (defaults to current git branch).")] = None,
     force: Annotated[
-        bool, typer.Option("--force", "-f", help="Force start even if a session is already active.")
+        bool, typer.Option("--force", "-f", help="Accepted for compatibility; start is already idempotent.")
     ] = False,
 ) -> None:
     # If KD_BASE is explicitly set, require it to be valid — no auto-init fallback.
@@ -171,20 +174,7 @@ def start(
             pass  # Fall back to using base as-is
         typer.echo("Auto-initializing .kd/ directory...")
         ensure_base_layout(base)
-
-    # Always refresh bundled skill (skips symlinks for dev setups)
-    install_skill()
-
-    # Check for existing current run
-    current_path = state_root(base) / "current"
-    if current_path.exists() and not force:
-        existing = current_path.read_text(encoding="utf-8").strip()
-        print_error(f"A session is already active: {existing}")
-        error_console.print(
-            "  If that branch is finished, run `kd done` to clean it up before starting a new session.\n"
-            "  If you need to switch mid-work, use `kd start --force` to override."
-        )
-        raise typer.Exit(code=1)
+        install_skill()
 
     # Determine branch name
     if branch is None:
@@ -197,14 +187,11 @@ def start(
     # Normalize branch name for directory
     normalized = normalize_branch_name(branch)
 
-    # Create branch layout
+    # Create or resume branch layout
+    branch_existed = branch_root(base, branch).exists()
     branch_dir = ensure_branch_layout(base, branch)
 
-    # Initialize design doc with template
-    design_path = branch_dir / "design.md"
-    ensure_design_initialized(design_path, branch)
-
-    # Write .kd/current with normalized name
+    # .kd/current is the repository's fallback branch, not execution-context identity.
     set_current_run(base, normalized)
 
     # Update state.json with original branch name
@@ -213,19 +200,39 @@ def start(
     state["branch"] = branch
     write_json(state_path, state)
 
-    typer.echo(f"Started session for branch {branch}")
+    branch_tickets = list_tickets(branch_dir / "tickets")
+    backlog_tickets = list_tickets(state_root(base) / "backlog" / "tickets")
+    all_known_tickets = collect_all_tickets(base, include_done=True)
+    ticket_status = {ticket.id: ticket.status for ticket in all_known_tickets}
+    visible_branch_tickets = [ticket for ticket in branch_tickets if ticket.status != "closed"]
+    has_ready = bool(filter_tickets_by_deps(visible_branch_tickets, ticket_status, ready=True))
+    has_active = any(ticket.status in {"in_progress", "in_review"} for ticket in branch_tickets)
+    has_blocked = bool(filter_tickets_by_deps(visible_branch_tickets, ticket_status, blocked=True))
+
+    action = "Resumed" if branch_existed else "Started"
+    typer.echo(f"{action} workspace for branch {branch}")
     typer.echo(f"  Location: {branch_dir}")
-    typer.echo(f"  Design: {design_path}")
+    typer.echo(f"  Tickets: {len(branch_tickets)} branch, {len(backlog_tickets)} backlog")
+    if has_ready:
+        typer.echo("  Next: kd tk list --ready")
+    elif has_active:
+        typer.echo("  Next: kd status")
+    elif has_blocked:
+        typer.echo("  Next: kd tk list --blocked")
+    elif backlog_tickets:
+        typer.echo("  Next: kd tk list --backlog, then kd tk pull <id>")
+    else:
+        typer.echo('  Next: kd tk create "<title>" (use --type epic for larger work)')
 
 
-@app.command(help="Switch the active kd session to another branch.")
+@app.command(help="Change the repository's default kd branch.")
 def switch(
     branch: Annotated[str | None, typer.Argument(help="Branch name to switch to.")] = None,
 ) -> None:
-    """Switch the active kd session without changing git branch.
+    """Change the fallback branch without changing Git or execution-context bindings.
 
     With an argument: validate the branch exists in .kd/branches/ and update .kd/current.
-    Without arguments: list all tracked branches, marking the current session and git branch.
+    Without arguments: list all tracked branches, marking the repository default and Git branch.
     """
     base = require_project_root()
     console = Console()
@@ -237,11 +244,11 @@ def switch(
             typer.echo("No tracked branches. Use `kd start <branch>` to create one.")
             return
 
-        # Determine current kd session
-        current_session: str | None = None
+        # Determine repository default branch
+        current_default: str | None = None
         current_path = base / ".kd" / "current"
         if current_path.exists():
-            current_session = current_path.read_text(encoding="utf-8").strip() or None
+            current_default = current_path.read_text(encoding="utf-8").strip() or None
 
         # Determine current git branch
         git_branch = get_current_git_branch()
@@ -273,8 +280,8 @@ def switch(
 
             # Build markers
             markers = []
-            if name == current_session:
-                markers.append("[bold cyan]* session[/bold cyan]")
+            if name == current_default:
+                markers.append("[bold cyan]* default[/bold cyan]")
             if name == git_normalized:
                 markers.append("[green]* git[/green]")
             marker_str = f"  ({', '.join(markers)})" if markers else ""
