@@ -106,6 +106,10 @@ clears the active closure fields without erasing that history. Use
 `kd tk list --resolution <value>` to filter terminal outcomes. When Kingdom can
 identify the calling execution context, its stable ID is recorded as
 `closed_context`; this is context attribution, not a separate human identity.
+`kd done` validates terminal evidence before completing the branch and reports
+the same per-resolution counts and non-completed outcomes in human or `--json`
+output. Resolution-less legacy closures count as `duplicate`/`superseded` when
+their matching reference field exists, and as `completed` otherwise.
 
 ## Getting Started
 

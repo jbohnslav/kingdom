@@ -39,7 +39,14 @@ from kingdom.state import (
     state_root,
     write_json,
 )
-from kingdom.ticket import Ticket, list_tickets
+from kingdom.ticket import (
+    TICKET_RESOLUTIONS,
+    Ticket,
+    effective_close_reason,
+    effective_resolution,
+    list_tickets,
+    validate_terminal_evidence,
+)
 from kingdom.worktree import create_worktree, remove_worktree, worktree_path_for  # noqa: F401
 
 from .config import check_agent_model, check_cli, check_config, config_app, get_doctor_checks
@@ -287,10 +294,34 @@ def switch(
     console.print(f"  {open_count} open, {closed_count} closed tickets{git_info}")
 
 
+def terminal_resolution_report(
+    tickets: list[Ticket],
+) -> tuple[dict[str, int], dict[str, list[dict[str, str | None]]]]:
+    """Build the shared human/JSON resolution breakdown for closed tickets."""
+    counts = dict.fromkeys(TICKET_RESOLUTIONS, 0)
+    outcomes: dict[str, list[dict[str, str | None]]] = {resolution: [] for resolution in TICKET_RESOLUTIONS}
+    for ticket in tickets:
+        resolution = effective_resolution(ticket)
+        if resolution is None:
+            continue
+        counts[resolution] += 1
+        reference = ticket.duplicate_of if resolution == "duplicate" else ticket.superseded_by
+        outcomes[resolution].append(
+            {
+                "id": ticket.id,
+                "title": ticket.title,
+                "reason": effective_close_reason(ticket),
+                "reference": reference,
+            }
+        )
+    return counts, outcomes
+
+
 @app.command(help="Mark the current session as done.")
 def done(
     feature: Annotated[str | None, typer.Argument(help="Branch name (defaults to current session).")] = None,
     force: Annotated[bool, typer.Option("--force", "-f", help="Close even if open tickets remain.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output the completion summary as JSON.")] = False,
 ) -> None:
     """Mark a session as done (status transition only, no file moves)."""
     from datetime import UTC, datetime
@@ -314,16 +345,34 @@ def done(
         print_error(f"Branch '{feature}' not found.")
         raise typer.Exit(code=1)
 
+    tickets_dir = source_dir / "tickets"
+    all_tickets = list_tickets(tickets_dir)
+
     # Check for open tickets
     if not force:
-        tickets_dir = source_dir / "tickets"
-        open_tickets = [t for t in list_tickets(tickets_dir) if t.status != "closed"]
+        open_tickets = [ticket for ticket in all_tickets if ticket.status != "closed"]
         if open_tickets:
             print_error(f"{len(open_tickets)} open ticket(s) on '{feature}':")
             for t in open_tickets:
                 error_console.print(f"  {t.id} \\[{t.status}] {t.title}")
             error_console.print("\nClose tickets, move them to backlog with `kd tk move`, or use --force.")
             raise typer.Exit(code=1)
+
+    invalid_tickets = [
+        (ticket, errors)
+        for ticket in all_tickets
+        if ticket.status == "closed" and (errors := validate_terminal_evidence(ticket))
+    ]
+    if invalid_tickets:
+        print_error(f"{len(invalid_tickets)} closed ticket(s) have invalid terminal evidence:")
+        for ticket, errors in invalid_tickets:
+            for error in errors:
+                error_console.print(f"  {ticket.id}: {error}")
+        error_console.print("\nFix the ticket closure metadata, or reopen and close the ticket again.")
+        raise typer.Exit(code=1)
+
+    closed_tickets = [ticket for ticket in all_tickets if ticket.status == "closed"]
+    resolution_counts, outcomes = terminal_resolution_report(closed_tickets)
 
     # Update state.json with status and timestamp
     state_path = source_dir / "state.json"
@@ -364,15 +413,20 @@ def done(
             session_cleared = True
 
     # Summary
-    tickets_dir = source_dir / "tickets"
-    all_tickets = list_tickets(tickets_dir)
-    closed_count = sum(1 for t in all_tickets if t.status == "closed")
+    closed_count = len(closed_tickets)
 
     console = Console()
 
     lines: list[str] = []
     if closed_count:
         lines.append(f"[cyan]{closed_count}[/cyan] tickets closed")
+        lines.append("Resolutions:")
+        lines.extend(f"  {resolution_counts[resolution]} {resolution}" for resolution in TICKET_RESOLUTIONS)
+        for resolution in ("wont-do", "duplicate", "superseded", "invalid"):
+            for outcome in outcomes[resolution]:
+                reference = f" → {outcome['reference']}" if outcome["reference"] else ""
+                reason = f" — {outcome['reason']}" if outcome["reason"] else ""
+                lines.append(f"{resolution}: {outcome['id']}{reference}{reason}")
     if session_cleared:
         lines.append("Session cleared")
 
@@ -386,14 +440,32 @@ def done(
         if rev_result.returncode == 0:
             ahead = int(rev_result.stdout.strip())
             if ahead > 0:
-                push_reminder = f"[yellow]{ahead} unpushed commit(s) — remember to push[/yellow]"
+                push_reminder = f"{ahead} unpushed commit(s) — remember to push"
         else:
-            push_reminder = "[yellow]No upstream branch — remember to push[/yellow]"
+            push_reminder = "No upstream branch — remember to push"
     except (subprocess.SubprocessError, ValueError) as exc:
-        push_reminder = f"[yellow]Could not check upstream status: {exc}[/yellow]"
+        push_reminder = f"Could not check upstream status: {exc}"
 
     if push_reminder:
-        lines.append(push_reminder)
+        lines.append(f"[yellow]{push_reminder}[/yellow]")
+
+    if output_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "feature": feature,
+                    "status": "done",
+                    "done_at": state["done_at"],
+                    "tickets_closed": closed_count,
+                    "resolutions": resolution_counts,
+                    "outcomes": outcomes,
+                    "session_cleared": session_cleared,
+                    "push_reminder": push_reminder or None,
+                },
+                indent=2,
+            )
+        )
+        return
 
     body = "\n".join(lines) if lines else "[dim]No additional info[/dim]"
     panel = Panel(body, title=f"[bold green]Done: {feature}[/bold green]", border_style="green")

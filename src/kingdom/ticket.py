@@ -540,6 +540,49 @@ def effective_resolution(ticket: Ticket) -> str | None:
     return "completed"
 
 
+def effective_close_reason(ticket: Ticket) -> str | None:
+    """Return the active reason, deriving it for legacy reference-based closures."""
+    if ticket.status != "closed":
+        return None
+    if ticket.close_reason and ticket.close_reason.strip():
+        return ticket.close_reason.strip()
+    if ticket.resolution is None:
+        if ticket.duplicate_of:
+            return f"Duplicate of {ticket.duplicate_of}"
+        if ticket.superseded_by:
+            return f"Superseded by {ticket.superseded_by}"
+    return None
+
+
+def validate_terminal_evidence(ticket: Ticket) -> list[str]:
+    """Return validation errors for a ticket's active terminal evidence."""
+    if ticket.status != "closed":
+        return [f"status is {ticket.status}, expected closed"]
+
+    resolution = effective_resolution(ticket)
+    if resolution not in TICKET_RESOLUTIONS:
+        return [f"unknown resolution '{resolution}'"]
+
+    errors = []
+    if resolution != "completed" and effective_close_reason(ticket) is None:
+        errors.append(f"resolution {resolution} requires close_reason")
+
+    if resolution == "duplicate":
+        if not ticket.duplicate_of:
+            errors.append("resolution duplicate requires duplicate-of")
+        if ticket.superseded_by:
+            errors.append("resolution duplicate cannot also set superseded-by")
+    elif resolution == "superseded":
+        if not ticket.superseded_by:
+            errors.append("resolution superseded requires superseded-by")
+        if ticket.duplicate_of:
+            errors.append("resolution superseded cannot also set duplicate-of")
+    elif ticket.duplicate_of or ticket.superseded_by:
+        errors.append(f"resolution {resolution} cannot use duplicate-of or superseded-by")
+
+    return errors
+
+
 def append_worklog_entry(
     path: Path,
     message: str,

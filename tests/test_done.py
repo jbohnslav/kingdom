@@ -6,6 +6,7 @@ import unittest.mock
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from kingdom.cli import app
@@ -18,6 +19,52 @@ from kingdom.state import (
     write_json,
 )
 from kingdom.ticket import Ticket, write_ticket
+
+
+def terminal_ticket_set() -> list[Ticket]:
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    return [
+        Ticket(id="done", status="closed", title="Completed", resolution="completed", created=created),
+        Ticket(
+            id="nope",
+            status="closed",
+            title="Won't do",
+            resolution="wont-do",
+            close_reason="Out of scope",
+            created=created,
+        ),
+        Ticket(
+            id="dupe",
+            status="closed",
+            title="Duplicate",
+            resolution="duplicate",
+            close_reason="Same as done",
+            duplicate_of="done",
+            created=created,
+        ),
+        Ticket(
+            id="old",
+            status="closed",
+            title="Superseded",
+            resolution="superseded",
+            close_reason="Replaced by done",
+            superseded_by="done",
+            created=created,
+        ),
+        Ticket(
+            id="bad",
+            status="closed",
+            title="Invalid request",
+            resolution="invalid",
+            close_reason="Request cannot be reproduced",
+            created=created,
+        ),
+    ]
+
+
+def write_terminal_tickets(tickets_dir: Path, tickets: list[Ticket]) -> None:
+    for ticket in tickets:
+        write_ticket(ticket, tickets_dir / f"{ticket.id}.md")
 
 
 def test_done_shows_summary_with_ticket_count() -> None:
@@ -43,6 +90,184 @@ def test_done_shows_summary_with_ticket_count() -> None:
         assert result.exit_code == 0
         assert "3 tickets closed" in result.output
         assert "Session cleared" in result.output
+
+
+def test_done_accepts_all_terminal_resolutions_and_reports_human_breakdown() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        write_terminal_tickets(branch_dir / "tickets", terminal_ticket_set())
+
+        result = runner.invoke(app, ["done"])
+
+        assert result.exit_code == 0, result.output
+        assert "5 tickets closed" in result.output
+        for resolution in ("completed", "wont-do", "duplicate", "superseded", "invalid"):
+            assert f"1 {resolution}" in result.output
+        assert "nope" in result.output
+        assert "Out of scope" in result.output
+        assert "dupe" in result.output
+        assert "done" in result.output
+        assert "old" in result.output
+        assert "Replaced by done" in result.output
+
+
+def test_done_json_matches_terminal_resolution_breakdown() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        write_terminal_tickets(branch_dir / "tickets", terminal_ticket_set())
+
+        result = runner.invoke(app, ["done", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["feature"] == "test-feature"
+        assert data["status"] == "done"
+        assert data["tickets_closed"] == 5
+        assert data["resolutions"] == {
+            "completed": 1,
+            "wont-do": 1,
+            "duplicate": 1,
+            "superseded": 1,
+            "invalid": 1,
+        }
+        assert data["outcomes"]["wont-do"] == [
+            {"id": "nope", "title": "Won't do", "reason": "Out of scope", "reference": None}
+        ]
+        assert data["outcomes"]["duplicate"][0]["reference"] == "done"
+        assert data["outcomes"]["superseded"][0]["reference"] == "done"
+        assert data["session_cleared"] is True
+
+
+@pytest.mark.parametrize(
+    ("ticket", "message"),
+    [
+        (
+            Ticket(id="nope", status="closed", title="No reason", resolution="wont-do"),
+            "requires close_reason",
+        ),
+        (
+            Ticket(
+                id="dupe",
+                status="closed",
+                title="No reference",
+                resolution="duplicate",
+                close_reason="Same work",
+            ),
+            "requires duplicate-of",
+        ),
+        (
+            Ticket(
+                id="old",
+                status="closed",
+                title="No reference",
+                resolution="superseded",
+                close_reason="Replaced",
+            ),
+            "requires superseded-by",
+        ),
+        (
+            Ticket(id="bad", status="closed", title="No reason", resolution="invalid"),
+            "requires close_reason",
+        ),
+        (
+            Ticket(
+                id="odd",
+                status="closed",
+                title="Unknown outcome",
+                resolution="abandoned",
+                close_reason="Unknown",
+            ),
+            "unknown resolution",
+        ),
+        (
+            Ticket(
+                id="mixed",
+                status="closed",
+                title="Mismatched evidence",
+                resolution="completed",
+                duplicate_of="done",
+            ),
+            "cannot use duplicate-of or superseded-by",
+        ),
+    ],
+)
+def test_done_rejects_invalid_terminal_evidence(ticket: Ticket, message: str) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        write_ticket(ticket, branch_dir / "tickets" / f"{ticket.id}.md")
+
+        result = runner.invoke(app, ["done", "--force"])
+
+        assert result.exit_code == 1
+        assert message in result.output
+        assert read_json(branch_dir / "state.json").get("status") != "done"
+        assert (base / ".kd" / "current").exists()
+
+
+def test_done_accepts_legacy_completed_duplicate_and_superseded_tickets() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        branch_dir = ensure_branch_layout(base, "test-feature")
+        set_current_run(base, "test-feature")
+        created = datetime(2026, 1, 1, tzinfo=UTC)
+        write_terminal_tickets(
+            branch_dir / "tickets",
+            [
+                Ticket(id="old1", status="closed", title="Legacy completed", created=created),
+                Ticket(
+                    id="old2",
+                    status="closed",
+                    title="Legacy duplicate",
+                    duplicate_of="old1",
+                    created=created,
+                ),
+                Ticket(
+                    id="old3",
+                    status="closed",
+                    title="Legacy superseded",
+                    superseded_by="old1",
+                    created=created,
+                ),
+            ],
+        )
+
+        result = runner.invoke(app, ["done", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["resolutions"]["completed"] == 1
+        assert data["resolutions"]["duplicate"] == 1
+        assert data["resolutions"]["superseded"] == 1
+        assert data["outcomes"]["duplicate"] == [
+            {
+                "id": "old2",
+                "title": "Legacy duplicate",
+                "reason": "Duplicate of old1",
+                "reference": "old1",
+            }
+        ]
+        assert data["outcomes"]["superseded"] == [
+            {
+                "id": "old3",
+                "title": "Legacy superseded",
+                "reason": "Superseded by old1",
+                "reference": "old1",
+            }
+        ]
 
 
 def test_done_shows_push_reminder_when_unpushed() -> None:
