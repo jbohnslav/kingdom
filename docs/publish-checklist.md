@@ -9,9 +9,10 @@ exercise a stale installed `kd`.
 
 1. All tests pass: `uv run pytest`
 2. Lint clean: `uv run ruff check .`
-3. Bump version in `pyproject.toml`
-4. Update any version references (if applicable)
-5. Commit: `git commit -m "Bump version to X.Y.Z"`
+3. Documented CLI workflow passes: `bash scripts/smoke.sh`
+4. Bump version in `pyproject.toml`
+5. Update any version references (if applicable)
+6. Commit: `git commit -m "Bump version to X.Y.Z"`
 
 ## Build & Validate
 

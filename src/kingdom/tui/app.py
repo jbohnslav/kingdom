@@ -120,6 +120,8 @@ def build_branch_context(base: Path, branch: str) -> str:
         Tickets:
           e0eb  in_progress  P2  kd chat: inject branch context
           a1b2  open         P1  Fix parsing bug
+        Contexts (concurrent agent sessions):
+          codex:abc123  codex/agent  e0eb
 
     Returns an empty string if no branch info is available.
     """
@@ -138,7 +140,7 @@ def build_branch_context(base: Path, branch: str) -> str:
 
     contexts = [context for context in list_execution_contexts(base, feature=branch) if context.get("ticket_id")]
     if contexts:
-        lines.append("Sessions:")
+        lines.append("Contexts (concurrent agent sessions):")
         for context in contexts:
             states = []
             if context["stale"]:
@@ -1129,7 +1131,7 @@ class ChatApp(App):
             "/unmute <member> — re-include member in queries\n"
             "/copy [member]   — copy last agent response to clipboard\n"
             "/writable        — toggle writable mode (file edits, commands)\n"
-            "/status          — show branch tickets and agent sessions\n"
+            "/status          — show branch tickets and concurrent agent contexts\n"
             "/mute            — show currently muted members\n"
             "/help            — show this help\n"
             "/quit or /exit   — quit kd council chat\n"

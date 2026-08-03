@@ -157,6 +157,12 @@ def skill_targets(home: Path) -> list[SkillTarget]:
     ]
 
 
+def skill_home() -> Path:
+    """Return an explicit skill target root when the environment isolates one."""
+    configured = os.environ.get("KD_SKILL_HOME")
+    return Path(configured) if configured else Path.home()
+
+
 def bundled_skill_files(skill_package: Traversable) -> dict[str, bytes]:
     """Read the packaged skill files keyed by target-relative path."""
     from importlib.resources import as_file
@@ -281,7 +287,7 @@ def install_skill() -> SkillInstallStatus:
     from importlib.resources import files
 
     try:
-        targets = skill_targets(Path.home())
+        targets = skill_targets(skill_home())
         skill_pkg = files("kingdom.skill")
         bundled_files = bundled_skill_files(skill_pkg)
         refreshed_targets = 0

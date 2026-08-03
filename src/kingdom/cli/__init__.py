@@ -75,7 +75,14 @@ NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
 
 app = typer.Typer(
     name="kd",
-    help="Kingdom CLI.",
+    help="Ticket-first development with durable Markdown worklogs and per-agent execution contexts.",
+    epilog=(
+        "Core loop: create/find → pull/start → log/close. Organize related work under epics.\n\n"
+        "Concurrent example: one agent context can own ticket ab12 while another owns cd34; "
+        "`kd tk current` reports only the calling session's ticket.\n\n"
+        "Power tools: TUI/council, reviewed peasants, and lords add collaboration and autonomy. "
+        "Design docs are optional through `kd design`."
+    ),
     add_completion=False,
 )
 
@@ -506,7 +513,7 @@ def done(
     console.print(panel)
 
 
-@app.command(help="Show current branch, design doc status, and breakdown status.")
+@app.command(help="Show ticket progress and concurrent agent contexts for the current branch.")
 def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
     stale_hours: Annotated[
@@ -616,9 +623,6 @@ def status(
     else:
         # Human-readable output
         typer.echo(f"Branch: {original_branch}")
-        if design_path_str:
-            approved_str = " (approved)" if design_approved else ""
-            typer.echo(f"Design: {design_path_str}{approved_str}")
         typer.echo()
         total = sum(status_counts.values())
         typer.echo(
@@ -634,7 +638,7 @@ def status(
 
         if contexts:
             typer.echo()
-            typer.echo("Sessions:")
+            typer.echo("Contexts (concurrent agent sessions):")
             for context in contexts:
                 context_id = compact_context_id(context["context_id"])
                 state_labels = []
@@ -665,6 +669,11 @@ def status(
             for assignee, assignee_tickets in other_assignments.items():
                 for t in assignee_tickets:
                     typer.echo(f"  {assignee}: {t.id} [{t.status}] {t.title}")
+
+        if design_path_str:
+            approved_str = " (approved)" if design_approved else ""
+            typer.echo()
+            typer.echo(f"Optional design: {design_path_str}{approved_str}")
 
 
 @app.command(help="Upgrade the CLI and refresh installed agent integrations.")

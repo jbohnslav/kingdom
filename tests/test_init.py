@@ -312,6 +312,18 @@ def test_install_skill_copies_files(tmp_path: Path) -> None:
     assert len((skill_dir / "SKILL.md").read_text()) > 100
 
 
+def test_install_skill_uses_explicit_target_home(monkeypatch, tmp_path: Path) -> None:
+    skill_home = tmp_path / "isolated-agent-home"
+    skill_home.mkdir()
+    monkeypatch.setenv("KD_SKILL_HOME", str(skill_home))
+
+    with patch("kingdom.cli.helpers.Path.home", side_effect=AssertionError("host home was read")):
+        result = install_skill()
+
+    assert result == "refreshed"
+    assert_skill_files_copied(skill_home / ".claude" / "skills" / "kingdom")
+
+
 def test_skill_install_targets_include_cursor_and_codex_when_roots_exist(tmp_path: Path) -> None:
     fake_home = tmp_path / "home"
     fake_home.mkdir()

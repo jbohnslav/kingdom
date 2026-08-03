@@ -54,6 +54,19 @@ class TestCliWiring:
             result = runner.invoke(app, command)
             assert result.exit_code == 0, result.output
 
+    def test_root_help_teaches_ticket_loop_and_concurrent_contexts(self) -> None:
+        result = runner.invoke(app, ["--help"])
+
+        assert result.exit_code == 0
+        assert "create/find" in result.output
+        assert "pull/start" in result.output
+        assert "log/close" in result.output
+        assert "epics" in result.output
+        assert "Concurrent example:" in result.output
+        assert "kd tk current" in result.output
+        assert "Power tools:" in result.output
+        assert "Design docs are optional" in result.output
+
     def test_top_level_re_exports(self) -> None:
         """kingdom.cli re-exports key symbols from submodules."""
         assert hasattr(cli_mod, "app")

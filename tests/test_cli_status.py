@@ -44,19 +44,25 @@ def test_status_human_readable_no_tickets() -> None:
         feature = "example-feature"
         ensure_branch_layout(base, feature)
         set_current_run(base, feature)
+        (branch_root(base, feature) / "design.md").write_text("# Optional design\n")
 
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
         assert "Branch:" in result.output
         assert "Tickets: 0 open, 0 in progress, 0 in review, 0 closed, 0 ready (0 total)" in result.output
-        # These lines should NOT appear in simplified output
-        assert "Design: present" not in result.output
-        assert "Design: empty" not in result.output
-        assert "Design: missing" not in result.output
-        assert "Breakdown: present" not in result.output
-        assert "Breakdown: empty" not in result.output
-        assert "Breakdown: missing" not in result.output
+        assert "Optional design: .kd/branches/example-feature/design.md" in result.output
+        assert result.output.index("Tickets:") < result.output.index("Optional design:")
+        assert "Breakdown:" not in result.output
         assert "\nReady:" not in result.output
+
+
+def test_status_help_describes_ticket_progress_and_concurrent_contexts() -> None:
+    result = runner.invoke(app, ["status", "--help"])
+
+    assert result.exit_code == 0
+    assert "ticket progress and concurrent agent contexts" in result.output
+    assert "design doc status" not in result.output
+    assert "breakdown status" not in result.output
 
 
 def test_status_human_readable_with_tickets() -> None:
@@ -221,7 +227,7 @@ def test_status_json_includes_live_and_stale_execution_contexts() -> None:
         assert contexts["stale"]["stale"] is True
 
 
-def test_status_human_readable_shows_session_assignments() -> None:
+def test_status_human_readable_shows_concurrent_context_assignments() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()
         feature = "example-feature"
@@ -238,7 +244,7 @@ def test_status_human_readable_shows_session_assignments() -> None:
         result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
-        assert "Sessions:" in result.output
+        assert "Contexts (concurrent agent sessions):" in result.output
         assert "codex" in result.output
         assert "agent" in result.output
         assert "ctx1 [in_progress] Session work" in result.output

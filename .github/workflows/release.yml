@@ -49,6 +49,10 @@ jobs:
         if: steps.v.outputs.changed == 'true'
         uses: astral-sh/setup-uv@04224aa8caab79e9c08d41c1ef06d6394aafe6a0 # v5
 
+      - name: Validate documented CLI workflow
+        if: steps.v.outputs.changed == 'true'
+        run: bash scripts/smoke.sh
+
       - name: Build
         if: steps.v.outputs.changed == 'true'
         run: |

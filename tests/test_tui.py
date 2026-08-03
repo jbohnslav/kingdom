@@ -2739,7 +2739,7 @@ class TestBuildBranchContext:
 
         branch_context = build_branch_context(project, BRANCH)
 
-        assert "Sessions:" in branch_context
+        assert "Contexts (concurrent agent sessions):" in branch_context
         assert "codex" in branch_context
         assert "agent" in branch_context
         assert "sess" in branch_context
@@ -2772,7 +2772,7 @@ class TestStatusSlashCommand:
 
         message = app_instance.show_system_message.call_args[0][0]
         assert f"Branch: {BRANCH}" in message
-        assert "Sessions:" in message
+        assert "Contexts (concurrent agent sessions):" in message
         assert "work" in message
 
 
