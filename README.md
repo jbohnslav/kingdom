@@ -187,7 +187,7 @@ multi-model discussion:
 
 ```bash
 kd council ask "Which migration strategy best preserves rollback safety?"
-kd council chat --new
+kd council chat                 # create a new thread
 ```
 
 Council output advises the ticket owner; it does not replace the implementation
@@ -218,6 +218,11 @@ kd design approve
 
 ## Deprecated ticket command migrations
 
+The checkout remains on the 0.6.x compatibility window until the final 1.0.0
+version cut. The removal versions below are release boundaries, not claims that
+the compatibility aliases have already disappeared from this pre-cut tree. See
+the [1.0.0 release notes](docs/releases/1.0.0.md) for the final-cut gate.
+
 `kd tk defer <id>... --reason "..."` is the supported way to return selected
 branch work to backlog. It records the source, previous status and assignee,
 reason, time, and calling context in ticket lifecycle history, then resets the
@@ -232,7 +237,8 @@ pull, defer, archive/restore, and peasant workflows.
 
 `kd tk add-note` is a hidden compatibility alias that will be removed in v0.8.0.
 Use `kd tk log` instead; it preserves multiline input while adding the canonical
-Worklog timestamp and author attribution.
+Worklog timestamp and author attribution. Because the next planned release jumps
+from 0.6.x to 1.0.0, the final cut must remove this alias as well as `kd tk move`.
 
 ## Ticket closure outcomes
 

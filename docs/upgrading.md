@@ -4,6 +4,20 @@
 Repository compatibility is separate: current `.kd` repositories migrate lazily
 when an execution context first runs `kd tk current`.
 
+## Supported starting point
+
+The minimum supported repository shape already stores active branch work under
+`.kd/branches/`. A non-empty legacy `.kd/runs/` directory is an intentional hard
+boundary: current Kingdom refuses to open it and does not attempt to combine or
+rewrite that older layout.
+
+Back up `.kd` before crossing this boundary. If `.kd/branches/` does not already
+exist, follow the CLI diagnostic to rename `.kd/runs/` to `.kd/branches/`
+manually, then inspect the result before retrying. If both directories contain
+work, stop and reconcile them from the backup rather than merging automatically.
+The lazy migration below begins only after the repository has the supported
+`.kd/branches/` shape.
+
 ## Back up first
 
 Kingdom's state is plain files, so a complete backup is a directory copy. Stop

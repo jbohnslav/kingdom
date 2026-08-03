@@ -6,6 +6,7 @@ SMOKE = REPO_ROOT / "scripts" / "smoke.sh"
 CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE = REPO_ROOT / ".github" / "workflows" / "release.yml"
 UPGRADING = REPO_ROOT / "docs" / "upgrading.md"
+RELEASE_NOTES = REPO_ROOT / "docs" / "releases" / "1.0.0.md"
 
 
 def test_readme_leads_with_ticket_loop_before_power_tools() -> None:
@@ -49,6 +50,13 @@ def test_readme_covers_execution_choices_and_optional_design() -> None:
     )
 
 
+def test_readme_uses_supported_new_council_chat_invocation() -> None:
+    text = README.read_text()
+
+    assert "kd council chat                 # create a new thread" in text
+    assert "kd council chat --new" not in text
+
+
 def test_readme_preserves_staged_deprecation_contracts() -> None:
     text = README.read_text()
 
@@ -57,6 +65,101 @@ def test_readme_preserves_staged_deprecation_contracts() -> None:
     assert "`kd tk defer --reason`" in text
     assert "`kd tk add-note` is a hidden compatibility alias that will be removed in v0.8.0" in text
     assert "Use `kd tk log` instead" in text
+    assert "the final cut must remove this alias as well as `kd tk move`" in text
+
+
+def test_release_notes_preserve_workflow_and_explain_changes() -> None:
+    text = RELEASE_NOTES.read_text()
+
+    stayed = text.split("## What stayed", 1)[1].split("## What changed", 1)[0]
+    for preserved_surface in ("`kd tk pull`", "council chat TUI", "council review by default"):
+        assert preserved_surface in stayed
+
+    changed = text.split("## What changed", 1)[1].split("## Upgrade and rollback", 1)[0]
+    for change in (
+        "Session-scoped current tickets",
+        "Typed closure reasons",
+        "Optional design",
+        "Command consolidation",
+    ):
+        assert change in changed
+
+
+def test_release_notes_distinguish_pre_cut_and_final_evidence() -> None:
+    text = RELEASE_NOTES.read_text()
+    normalized = " ".join(text.split())
+
+    assert "Pre-cut status" in text
+    assert "Neither belongs in the final 1.0.0 public CLI" in text
+    assert "`kd tk move`" in text
+    assert "`kd tk add-note`" in text
+    assert "not a substitute for the live release branch's final completion gate" in text
+    for ticket_id in (
+        "473d",
+        "b507",
+        "7e3e",
+        "366d",
+        "648d",
+        "4e2f",
+        "14fa",
+        "063d",
+        "a298",
+        "b245",
+        "d88b",
+        "50df",
+        "2d38",
+        "bc0c",
+        "f240",
+        "ff67",
+        "0cb0",
+        "64a8",
+    ):
+        assert f"`{ticket_id}`" in text
+    assert "## Known issues and disposition" in text
+    assert "Other backlog enhancements" in text
+    assert "64a8.md" not in text
+    assert "future transactional migration capability" in text
+    assert "optional presentation work" in normalized
+
+    evidence_links = (
+        "473d",
+        "b507",
+        "7e3e",
+        "366d",
+        "648d",
+        "4e2f",
+    )
+    for ticket_id in evidence_links:
+        relative = Path(".kd/branches/codex-workflow-polish/tickets") / f"{ticket_id}.md"
+        assert f"](../../{relative})" in text
+        assert (REPO_ROOT / relative).exists()
+
+    known_issue_links = {
+        "14fa": Path(".kd/branches/codex-workflow-polish/tickets/14fa.md"),
+        "063d": Path(".kd/branches/codex-workflow-polish/tickets/063d.md"),
+        "a298": Path(".kd/backlog/tickets/a298.md"),
+        "b245": Path(".kd/branches/codex-workflow-polish/tickets/b245.md"),
+        "d88b": Path(".kd/backlog/tickets/d88b.md"),
+        "50df": Path(".kd/backlog/tickets/50df.md"),
+        "2d38": Path(".kd/backlog/tickets/2d38.md"),
+        "bc0c": Path(".kd/backlog/tickets/bc0c.md"),
+        "f240": Path(".kd/backlog/tickets/f240.md"),
+        "ff67": Path(".kd/backlog/tickets/ff67.md"),
+        "0cb0": Path(".kd/backlog/tickets/0cb0.md"),
+    }
+    for ticket_id, relative in known_issue_links.items():
+        assert f"[`{ticket_id}`](../../{relative})" in text
+        assert (REPO_ROOT / relative).exists()
+
+
+def test_publish_checklist_keeps_local_and_live_done_gates_distinct() -> None:
+    text = (REPO_ROOT / "docs" / "publish-checklist.md").read_text()
+    normalized = " ".join(text.split())
+
+    assert "isolated repository and reaches a real `kd done`" in text
+    assert "final `uv run kd done` on the release branch" in text
+    assert "TUI `/status`" in text
+    assert "Do not merge the release commit until publishing is explicitly authorized" in normalized
 
 
 def test_smoke_executes_practical_documented_ticket_loop() -> None:
@@ -102,3 +205,5 @@ def test_upgrade_guide_documents_recoverable_lazy_migration() -> None:
         assert text in guide
     assert "Ticket IDs, unknown frontmatter, Markdown bodies, and Worklogs remain intact" in guide
     assert "neither the upgraded state nor the backup is deleted" in " ".join(guide.split())
+    assert "minimum supported repository shape" in guide
+    assert "non-empty legacy `.kd/runs/` directory is an intentional hard boundary" in " ".join(guide.split())
