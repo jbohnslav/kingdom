@@ -1501,6 +1501,40 @@ class TestTicketMove:
 
 
 class TestTicketPull:
+    def test_pull_preserves_markdown_and_relationships_byte_for_byte(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        backlog_dir.mkdir(parents=True, exist_ok=True)
+        source_path = backlog_dir / "meta.md"
+        source = """---
+id: "meta"
+status: open
+deps: [dep1, dep2]
+links: [link1, link2]
+created: 2026-08-03T12:00:00Z
+type: task
+priority: 1
+parent: epic
+---
+# Preserve this ticket
+
+Formatting, links, and relationships must survive exactly.
+
+## Worklog
+
+- Existing history
+"""
+        source_path.write_text(source)
+
+        result = runner.invoke(ticket_app, ["pull", "meta"])
+
+        assert result.exit_code == 0, result.output
+        destination = branch_root(cli_project, BRANCH) / "tickets" / "meta.md"
+        assert destination.read_bytes() == source.encode()
+        ticket = read_ticket(destination)
+        assert ticket.deps == ["dep1", "dep2"]
+        assert ticket.links == ["link1", "link2"]
+        assert ticket.parent == "epic"
+
     def test_pull_single_ticket(self, cli_project: Path) -> None:
         backlog_dir = backlog_root(cli_project) / "tickets"
         create_ticket_in(backlog_dir, "kin-pull")
@@ -1530,15 +1564,93 @@ class TestTicketPull:
         assert (branch_dir / "kin-aa01.md").exists()
         assert (branch_dir / "kin-bb02.md").exists()
 
-    def test_pull_not_in_backlog_errors(self, cli_project: Path) -> None:
-        # Create ticket on branch, not backlog
+    def test_pull_and_start_binds_only_calling_context(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(branch_dir, "kin-brnc")
+        peer_path = create_ticket_in(branch_dir, "kin-peer")
+        target_path = create_ticket_in(backlog_dir, "kin-bind")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "peer-session"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-peer"]).exit_code == 0
+            peer_context = resolve_execution_context()
+            assert peer_context is not None
+            peer_binding = read_execution_ticket_context(cli_project, peer_context)
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "pull-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["pull", "kin-bind", "--start"])
+            pull_context = resolve_execution_context()
+            assert pull_context is not None
+            pull_binding = read_execution_ticket_context(cli_project, pull_context)
+
+        assert result.exit_code == 0, result.output
+        assert "Pulled and started kin-bind" in result.output
+        destination = branch_dir / target_path.name
+        pulled = read_ticket(destination)
+        assert pulled.status == "in_progress"
+        assert pulled.assignee == pull_context.context_id
+        assert pull_binding is not None
+        assert pull_binding["ticket_id"] == "kin-bind"
+        assert pull_binding["location"] == f"branch:{BRANCH.replace('/', '-')}"
+        assert read_execution_ticket_context(cli_project, peer_context) == peer_binding
+        assert read_ticket(peer_path).assignee == peer_context.context_id
+
+    def test_pull_and_start_without_context_does_not_move_ticket(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        source = create_ticket_in(backlog_dir, "kin-noctx")
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            result = runner.invoke(ticket_app, ["pull", "kin-noctx", "--start"])
+
+        assert result.exit_code == 1
+        assert "Set KD_CONTEXT" in result.output
+        assert source.exists()
+        assert not (branch_root(cli_project, BRANCH) / "tickets" / source.name).exists()
+
+    def test_pull_and_start_rejects_multiple_tickets_before_moving(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        first = create_ticket_in(backlog_dir, "kin-one1")
+        second = create_ticket_in(backlog_dir, "kin-two2")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "pull-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["pull", "kin-one1", "kin-two2", "--start"])
+
+        assert result.exit_code == 1
+        assert "exactly one ticket" in result.output
+        assert first.exists()
+        assert second.exists()
+
+    def test_pull_ticket_already_selected_reports_precise_conflict(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        branch_path = create_ticket_in(branch_dir, "kin-brnc")
 
         result = runner.invoke(ticket_app, ["pull", "kin-brnc"])
 
         assert result.exit_code == 1
-        assert "not found in backlog" in result.output
+        assert "already selected" in result.output
+        assert BRANCH.replace("/", "-") in result.output
+        assert branch_path.exists()
+
+    def test_pull_in_progress_ticket_does_not_steal_binding(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        source = create_ticket_in(backlog_dir, "kin-busy")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "owner-session"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-busy"]).exit_code == 0
+            owner_context = resolve_execution_context()
+            assert owner_context is not None
+            owner_binding = read_execution_ticket_context(cli_project, owner_context)
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "pull-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["pull", "kin-busy", "--start"])
+
+        assert result.exit_code == 1
+        assert "already in progress" in result.output
+        assert source.exists()
+        assert read_execution_ticket_context(cli_project, owner_context) == owner_binding
+        assert read_ticket(source).assignee == owner_context.context_id
 
     def test_pull_not_found_errors(self, cli_project: Path) -> None:
         result = runner.invoke(ticket_app, ["pull", "kin-nope"])
@@ -1601,16 +1713,27 @@ class TestTicketPull:
         assert not (backlog_dir / "kin-dupe.md").exists()
 
     def test_pull_already_on_branch_errors(self, cli_project: Path) -> None:
-        """Pulling a ticket that's already on the current branch should error."""
+        """A destination conflict is caught before other tickets move."""
+        backlog_dir = backlog_root(cli_project) / "tickets"
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        first = create_ticket_in(backlog_dir, "kin-first")
+        duplicate = create_ticket_in(backlog_dir, "kin-here")
         create_ticket_in(branch_dir, "kin-here")
 
-        result = runner.invoke(ticket_app, ["pull", "kin-here"])
+        result = runner.invoke(ticket_app, ["pull", "kin-first", "kin-here"])
 
         assert result.exit_code == 1
-        assert "not found in backlog" in result.output
-        # Ticket should still be on the branch
+        assert "already selected" in result.output
+        assert first.exists()
+        assert duplicate.exists()
         assert (branch_dir / "kin-here.md").exists()
+
+    def test_pull_help_describes_backlog_work_selection(self) -> None:
+        result = runner.invoke(ticket_app, ["pull", "--help"])
+
+        assert result.exit_code == 0, result.output
+        assert "Select backlog tickets for work" in result.output
+        assert "--start" in result.output
 
     def test_pull_ticket_appears_in_ready(self, cli_project: Path) -> None:
         """After pulling, the ticket should appear in `tk ready`."""

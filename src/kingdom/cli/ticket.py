@@ -1805,15 +1805,43 @@ def ticket_move(
         typer.echo(f"Moved {ticket.id} to {dest_label} — {ticket.title}")
 
 
-@ticket_app.command("pull", help="Pull backlog tickets into the current branch.")
-def ticket_pull(
-    ticket_ids: Annotated[list[str], typer.Argument(help="Ticket IDs to pull from backlog.")],
+def start_pulled_ticket(
+    base: Path,
+    feature: str,
+    context: ExecutionContext,
+    ticket: Ticket,
+    ticket_path: Path,
 ) -> None:
-    """Move one or more tickets from backlog to the current branch."""
+    previous_binding = read_execution_ticket_context(base, context)
+    if previous_binding:
+        unassign_previous_context_ticket(
+            base,
+            context.context_id,
+            previous_binding["ticket_id"],
+            ticket.id,
+        )
+
+    ticket.status = "in_progress"
+    ticket.assignee = context.context_id
+    write_ticket(ticket, ticket_path)
+    location = f"branch:{normalize_branch_name(feature)}"
+    record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
+    record_terminal_ticket_context(base, ticket.id, feature=feature, location=location)
+
+
+@ticket_app.command("pull", help="Select backlog tickets for work on the current branch.")
+def ticket_pull(
+    ticket_ids: Annotated[list[str], typer.Argument(help="Backlog ticket IDs to select for work.")],
+    start: Annotated[
+        bool,
+        typer.Option("--start", help="Start and bind one pulled ticket to this execution context."),
+    ] = False,
+) -> None:
+    """Select one or more backlog tickets for work on the current branch."""
     base = require_project_root()
 
     try:
-        resolve_current_run(base)
+        feature = resolve_current_run(base)
     except RuntimeError as exc:
         print_error(str(exc))
         raise typer.Exit(code=1) from None
@@ -1822,8 +1850,24 @@ def ticket_pull(
         print_error("at least one ticket ID is required")
         raise typer.Exit(code=1)
 
-    dest_dir = get_tickets_dir(base)
+    if start and len(ticket_ids) != 1:
+        print_error("--start requires exactly one ticket ID")
+        raise typer.Exit(code=1)
+
+    context = None
+    if start:
+        try:
+            context = resolve_execution_context()
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(code=1) from None
+        if context is None:
+            print_error("No execution context detected. Set KD_CONTEXT before pulling with --start.")
+            raise typer.Exit(code=1)
+
+    dest_dir = branch_root(base, feature) / "tickets"
     backlog_tickets = backlog_root(base) / "tickets"
+    selected_tickets = {ticket.id.removeprefix("kin-"): ticket for ticket in list_tickets(dest_dir)}
 
     # Pass 1: validate all tickets before moving any (backlog-scoped lookup)
     validated: list[tuple[Ticket, Path]] = []
@@ -1831,6 +1875,11 @@ def ticket_pull(
     for tid in ticket_ids:
         # Support both legacy kin-XXXX and new XXXX formats
         clean_id = tid[4:] if tid.startswith("kin-") else tid
+        selected = selected_tickets.get(clean_id)
+        if selected:
+            print_error(f"Ticket {selected.id} is already selected on branch '{normalize_branch_name(feature)}'.")
+            raise typer.Exit(code=1)
+
         ticket_path = backlog_tickets / f"{clean_id}.md"
         if not ticket_path.exists():
             # Fall back to legacy kin- format
@@ -1840,6 +1889,20 @@ def ticket_pull(
             raise typer.Exit(code=1)
 
         ticket = read_ticket(ticket_path)
+        selected = selected_tickets.get(ticket.id.removeprefix("kin-"))
+        if selected or (dest_dir / ticket_path.name).exists():
+            print_error(f"Ticket {ticket.id} is already selected on branch '{normalize_branch_name(feature)}'.")
+            raise typer.Exit(code=1)
+        if ticket.status == "in_progress":
+            owner = f" by {compact_context_id(ticket.assignee)}" if ticket.assignee else ""
+            print_error(f"Ticket {ticket.id} is already in progress{owner}; refusing to pull active work.")
+            raise typer.Exit(code=1)
+        if start and ticket.status != "open":
+            print_error(f"Ticket {ticket.id} has status '{ticket.status}'; --start requires an open ticket.")
+            raise typer.Exit(code=1)
+        if start and ticket.assignee not in (None, "hand", context.context_id):
+            print_error(f"Ticket {ticket.id} is already assigned to {compact_context_id(ticket.assignee)}.")
+            raise typer.Exit(code=1)
 
         if ticket.id in seen_ids:
             continue
@@ -1848,8 +1911,12 @@ def ticket_pull(
 
     # Pass 2: move all validated tickets
     for ticket, ticket_path in validated:
-        move_ticket(ticket_path, dest_dir)
-        typer.echo(f"Pulled {ticket.id} — {ticket.title}")
+        destination = move_ticket(ticket_path, dest_dir)
+        if start:
+            start_pulled_ticket(base, feature, context, ticket, destination)
+            typer.echo(f"Pulled and started {ticket.id} — {ticket.title}")
+        else:
+            typer.echo(f"Pulled {ticket.id} — {ticket.title}")
 
 
 @ticket_app.command("add-note", help="Append a timestamped note to a ticket.")
