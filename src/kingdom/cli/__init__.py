@@ -297,7 +297,7 @@ def workspace_readiness_report(tickets: list[Ticket]) -> dict[str, object]:
     }
 
 
-@app.command(help="Show ticket progress and contexts, and optionally check workspace readiness.")
+@app.command(help="Show ticket progress and concurrent agent contexts; optionally check workspace readiness.")
 def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
     check: Annotated[
