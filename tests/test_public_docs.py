@@ -2,9 +2,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README = REPO_ROOT / "README.md"
+DEVELOPMENT_NOTES = REPO_ROOT / "AGENTS.md"
 SMOKE = REPO_ROOT / "scripts" / "smoke.sh"
 CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE = REPO_ROOT / ".github" / "workflows" / "release.yml"
+ARCHITECTURE = REPO_ROOT / "docs" / "architecture.md"
+PUBLISH_CHECKLIST = REPO_ROOT / "docs" / "publish-checklist.md"
 UPGRADING = REPO_ROOT / "docs" / "upgrading.md"
 RELEASE_NOTES = REPO_ROOT / "docs" / "releases" / "1.0.0.md"
 KINGDOM_SKILL = REPO_ROOT / "skills" / "kingdom" / "SKILL.md"
@@ -59,7 +62,7 @@ def test_readme_covers_execution_choices_and_optional_design() -> None:
     assert "owning session" in text
     assert "council review by default" in text
     optional_design = text.split("### Optional design documents", 1)[1].split(
-        "## Removed ticket command replacements", 1
+        "## Consolidated command replacements", 1
     )[0]
     assert optional_design.index("kd design                       # initialize") < optional_design.index(
         "kd design show"
@@ -73,10 +76,14 @@ def test_readme_uses_supported_new_council_chat_invocation() -> None:
     assert "kd council chat --new" not in text
 
 
-def test_readme_documents_removed_ticket_command_replacements() -> None:
+def test_readme_documents_consolidated_command_replacements() -> None:
     text = README.read_text()
-    replacements = text.split("## Removed ticket command replacements", 1)[1].split("## Ticket closure outcomes", 1)[0]
+    replacements = text.split("## Consolidated command replacements", 1)[1].split("## Ticket closure outcomes", 1)[0]
 
+    assert "`kd done` was removed in v1.0.0" in replacements
+    assert "`kd status --check`" in replacements
+    assert "`kd switch <branch>` was removed in v1.0.0" in replacements
+    assert "`kd start <branch>`" in replacements
     assert "`kd tk move` was removed in v1.0.0" in replacements
     assert "`kd tk pull`" in replacements
     assert "`kd tk defer --reason`" in replacements
@@ -102,8 +109,15 @@ def test_release_notes_preserve_workflow_and_explain_changes() -> None:
         "Typed closure reasons",
         "Optional design",
         "Command consolidation",
+        "Workspace lifecycle",
     ):
         assert change in changed
+
+    replacements = text.split("## Removed and consolidated commands", 1)[1].split("## Release evidence", 1)[0]
+    assert "`kd done`" in replacements
+    assert "`kd status --check`" in replacements
+    assert "`kd switch <branch>`" in replacements
+    assert "`kd start <branch>`" in replacements
 
 
 def test_release_notes_are_final_without_claiming_publication() -> None:
@@ -112,7 +126,7 @@ def test_release_notes_are_final_without_claiming_publication() -> None:
 
     assert "final source-tree notes" in text
     assert "Pre-cut status" not in text
-    assert "## Removed compatibility commands" in text
+    assert "## Removed and consolidated commands" in text
     assert "were removed from the 1.0.0 public CLI" in text
     assert "`kd tk move`" in text
     assert "`kd tk add-note`" in text
@@ -178,12 +192,13 @@ def test_release_notes_are_final_without_claiming_publication() -> None:
         assert (REPO_ROOT / relative).exists()
 
 
-def test_publish_checklist_keeps_local_and_live_done_gates_distinct() -> None:
-    text = (REPO_ROOT / "docs" / "publish-checklist.md").read_text()
+def test_publish_checklist_uses_read_only_status_gate() -> None:
+    text = PUBLISH_CHECKLIST.read_text()
     normalized = " ".join(text.split())
 
-    assert "isolated repository and reaches a real `kd done`" in text
-    assert "final `uv run kd done` on the release branch" in text
+    assert "isolated repository and reaches a real `kd status --check`" in normalized
+    assert "final `uv run kd status --check` on the release branch" in normalized
+    assert "`kd done` is not a release step" in text
     assert "TUI `/status`" in text
     assert "Merging a version bump does not publish" in normalized
     assert "publication is explicitly authorized" in normalized
@@ -211,7 +226,29 @@ def test_smoke_executes_practical_documented_ticket_loop() -> None:
         assert command in script
     assert 'tk close "$epic_id"' in script
     assert 'tk list --parent "$epic_id" --closed' in script
-    assert '"${kd[@]}" done' in script
+    assert '"${kd[@]}" status --check' in script
+    assert '"${kd[@]}" done' not in script
+
+
+def test_public_workflow_teaches_consolidated_lifecycle() -> None:
+    readme = README.read_text()
+    skill = KINGDOM_SKILL.read_text()
+    development_notes = DEVELOPMENT_NOTES.read_text()
+    architecture = ARCHITECTURE.read_text()
+
+    for text in (readme, skill, development_notes, architecture):
+        assert "kd status --check" in text
+
+    for text in (development_notes, architecture):
+        assert "kd done" not in text
+
+    for text in (readme, skill):
+        assert "\nkd done\n" not in text
+
+    assert "kd start <branch>" in readme
+    assert "kd start <branch>" in skill
+    assert "kd status --prune-stale" in readme
+    assert "kd peasant prune" in readme
 
 
 def test_ci_and_release_run_documentation_smoke() -> None:
@@ -262,3 +299,5 @@ def test_upgrade_guide_documents_recoverable_lazy_migration() -> None:
     assert "neither the upgraded state nor the backup is deleted" in " ".join(guide.split())
     assert "minimum supported repository shape" in guide
     assert "non-empty legacy `.kd/runs/` directory is an intentional hard boundary" in " ".join(guide.split())
+    assert "| `kd done` | `kd status --check` |" in guide
+    assert "| `kd switch <branch>` | `kd start <branch>` |" in guide

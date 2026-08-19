@@ -10,9 +10,10 @@ exercise a stale installed `kd`.
 1. All tests pass: `uv run pytest`
 2. Lint clean: `uv run ruff check .`
 3. Documented CLI workflow passes: `bash scripts/smoke.sh`
-   This smoke creates an isolated repository and reaches a real `kd done`; it
-   does not replace the final `uv run kd done` on the release branch after its
-   tickets and epic are closed.
+   This smoke creates an isolated repository and reaches a real
+   `kd status --check`; it does not replace the final
+   `uv run kd status --check` on the release branch after its tickets and epic
+   are closed. `kd done` is not a release step and has no replacement mutation.
 4. Manually inspect the changed human CLI and council-chat TUI surfaces. At
    minimum review root/ticket help, status in human and JSON modes, closure and
    migration help, and the TUI `/status` output.
@@ -29,8 +30,11 @@ exercise a stale installed `kd`.
    - label fixture/CLI evidence Contract and reserve Live for real host checks;
    - preserve the documented Cursor limits instead of assuming host parity.
 8. Bump the version in `pyproject.toml` and update all version references.
-9. Close the final release ticket and epic, then run `uv run kd done`. Any open
-   ticket or invalid closure evidence means the release is not ready.
+9. Close the final release ticket and epic, then run
+   `uv run kd status --check`. Any open ticket or invalid closure evidence means
+   the release is not ready. The check is read-only; ticket closure,
+   `status --prune-stale`, and peasant lifecycle commands own their respective
+   cleanup.
 10. Commit: `git commit -m "Bump version to X.Y.Z"`
 
 ## Build & Validate

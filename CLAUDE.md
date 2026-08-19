@@ -36,7 +36,8 @@ When working with Python, invoke the relevant /astral:<skill> for uv and ruff to
 
 ## Workflow
 
-Run `kd done` before creating or merging a PR. It verifies all tickets are closed.
+Run `uv run kd status --check` before creating or merging a PR. It verifies that
+all workspace tickets have terminal, valid resolutions without mutating state.
 
 ## Skills
 

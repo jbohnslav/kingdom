@@ -159,13 +159,18 @@ Before declaring work complete:
 - Do not swallow failed `kd` commands. Diagnose them and preserve blockers in the
   ticket.
 - Commit `.kd/` state and worklogs alongside the code they explain.
-- Run `kd done` before creating or merging the PR; it verifies branch completion.
+- Run `kd status --check` before creating or merging the PR; it validates
+  workspace readiness without mutating state.
 
 ## Common Routing Decisions
 
 - Existing selected work is no longer for now → `kd tk defer <id> --reason "..."`.
 - Backlog work is selected now → `kd tk pull <id>...`.
-- Branch-to-branch work → defer it, switch/check out the target, then pull it.
+- Branch-to-branch work → defer it, check out the target Git branch, run
+  `kd start <branch>`, then pull it.
+- Stale execution-context bindings → `kd status --prune-stale`.
+- Retained or stale peasant resources → `kd peasant clean <id>` or
+  `kd peasant prune`; accepted workers are cleaned by `kd peasant accept`.
 - Council follow-up on the same decision → `kd council ask --continue "..."`.
 - A peasant completes → inspect `kd peasant review <id>` and council feedback,
   then accept or reject; council approval does not remove owning-session review.
@@ -184,7 +189,7 @@ kd start
 kd tk create --type epic "Concrete feature outcome"
 kd tk create --parent <epic-id> "First executable slice"
 # start directly or delegate each ready child deliberately
-kd done
+kd status --check
 ```
 
 Optional planning when real ambiguity or cross-cutting design warrants it:
@@ -203,21 +208,27 @@ git checkout -b <branch>
 kd start
 kd tk pull <id> <id> ...
 # execute and close tickets one at a time per worker
-kd done
+kd status --check
 ```
 
 Design documents, council, and autonomous workers are optional. Context resolution,
 accurate tickets, durable updates, and verified state transitions are not.
 
+For repositories upgrading to 1.0, replace `kd done` with the read-only
+`kd status --check` readiness gate and replace `kd switch <branch>` with the
+idempotent `kd start <branch>`. Ticket closure clears that ticket's active
+bindings; stale contexts and peasant resources remain owned by the cleanup
+commands above, so no global finalizer is needed.
+
 ## Command Quick Reference
 
 ```bash
-kd status / start / done
+kd start / status / status --check / status --prune-stale
 kd tk current / list / show / find
 kd tk list --recently-closed --limit 10
 kd tk create / start / log / close / reopen
 kd tk pull / defer / deps / link / unlink
-kd peasant start / status / watch / review / accept / reject
+kd peasant start / status / watch / review / accept / reject / clean / prune
 kd lord start / status / watch / stop
 kd council ask / show / list / watch / retry
 ```

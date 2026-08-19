@@ -51,6 +51,22 @@ Use `kd doctor` after upgrading. It is read-only and reports exact next steps fo
 ambiguous bindings, invalid or orphaned contexts, bad closure resolutions, and
 stale configured Claude or Codex integrations.
 
+## Consolidated lifecycle commands
+
+Kingdom 1.0 derives workspace readiness from ticket state and uses `start` as the
+single workspace entry point:
+
+| Previous command | 1.0 replacement | Behavior |
+| --- | --- | --- |
+| `kd done` | `kd status --check` | Validate terminal ticket resolutions without changing workspace state. |
+| `kd switch <branch>` | `kd start <branch>` | Initialize, resume, or select the named workspace idempotently. |
+
+Legacy workspaces recorded with `status: done` remain readable. Selecting one
+with `kd start <branch>` reactivates the workspace while preserving its ticket
+history. There is no global cleanup step: ticket close/defer operations clear
+their bindings, `kd status --prune-stale` removes stale context bindings, and
+`kd peasant accept`, `clean`, or `prune` own worker cleanup.
+
 ## Roll back
 
 The legacy terminal-context record is retained, so the previous Kingdom version

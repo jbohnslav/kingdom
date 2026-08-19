@@ -91,7 +91,7 @@ kd tk pull <id>...                  # select backlog work for current branch
 
 ## Backlog
 
-The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `kd tk create --backlog` to add new work, `kd tk pull <id>...` to select it for the current branch, and `kd tk defer <id>... --reason "..."` to return selected work with lifecycle history. `kd tk move` was removed in v1.0.0; migrate branch-to-branch use to defer, switch/check out the target branch, then pull.
+The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `kd tk create --backlog` to add new work, `kd tk pull <id>...` to select it for the current branch, and `kd tk defer <id>... --reason "..."` to return selected work with lifecycle history. `kd tk move` was removed in v1.0.0; migrate branch-to-branch use to defer, check out the target Git branch, run `kd start <branch>`, then pull.
 
 ## Best Practices
 
@@ -131,7 +131,7 @@ do not replace ownership of the ticket's final state.
   `kd tk deps tree <id>` and work or report the blocker.
 - Selected work is no longer timely: use `kd tk defer <id> --reason "..."`, not a
   worklog note pretending the lifecycle did not change.
-- Work belongs on another branch: defer it, switch/check out the target, then
-  pull it there.
+- Work belongs on another branch: defer it, check out the target Git branch,
+  run `kd start <branch>`, then pull it there.
 - State or content is stale: inspect the raw Markdown with `kd tk show <id>`,
   correct it explicitly, and record why.

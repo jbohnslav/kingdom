@@ -57,7 +57,11 @@ if [[ "$hierarchy_output" != *"$direct_id"* ]]; then
 fi
 printf '%s\n' "$hierarchy_output"
 "${kd[@]}" status
+if "${kd[@]}" status --check >/dev/null 2>&1; then
+  printf 'Readiness check unexpectedly passed with open epic %s\n' "$epic_id" >&2
+  exit 1
+fi
 "${kd[@]}" tk close "$epic_id"
-"${kd[@]}" done
+"${kd[@]}" status --check
 
 printf 'Smoke workflow passed in %s\n' "$smoke_root"

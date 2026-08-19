@@ -110,6 +110,19 @@ kd tk create --parent <epic-id> "Implement recovery endpoint"
 kd tk list --parent <epic-id>
 ```
 
+### 5. Check workspace readiness
+
+Status is the end of the loop; there is no separate workspace-finalization step:
+
+```bash
+kd status                      # inspect tickets and active contexts
+kd status --check              # exit nonzero unless every ticket is terminal and valid
+```
+
+`kd status --check` is read-only, so it is safe for local review, CI, and release
+gates. Workspace readiness is derived from ticket state rather than stored as a
+separate branch lifecycle transition.
+
 ## Concurrent agent contexts
 
 Each terminal, Codex task, Claude session, or native subagent can have a distinct
@@ -145,6 +158,17 @@ For hosts or modes without a usable pre-compaction hook, run `kd tk current`, ed
 that ticket's Markdown directly, and record the same five fields before
 compacting or handing off. See [Cursor hook capability](docs/cursor-hooks.md) for
 the supported Cursor events and remaining attribution gaps.
+
+## Resource cleanup
+
+Cleanup stays with the command that owns each resource; there is no global
+end-of-work cleanup command:
+
+- `kd tk close` and `kd tk defer` clear active bindings for the affected ticket.
+- `kd status --prune-stale` removes stale execution-context bindings.
+- `kd peasant accept` integrates reviewed work and cleans its worker state;
+  `kd peasant clean <id>` removes one retained worktree, and
+  `kd peasant prune` removes stale peasant sessions and orphaned state.
 
 ## Execution choices
 
@@ -227,12 +251,12 @@ kd design show
 kd design approve
 ```
 
-## Removed ticket command replacements
+## Consolidated command replacements
 
-Kingdom 1.0.0 removed two legacy ticket routes. Existing repositories keep their
-Markdown history; only the command used for future movement or Worklog entries
-changes. See the [1.0.0 release notes](docs/releases/1.0.0.md) for the complete
-upgrade boundary.
+Kingdom 1.0.0 consolidates four command routes. Existing repositories keep their
+Markdown history; only the commands used for readiness, workspace selection,
+ticket movement, and Worklog entries change. See the
+[1.0.0 release notes](docs/releases/1.0.0.md) for the complete upgrade boundary.
 
 `kd tk defer <id>... --reason "..."` is the supported way to return selected
 branch work to backlog. It records the source, previous status and assignee,
@@ -240,11 +264,19 @@ reason, time, and calling context in ticket lifecycle history, then resets the
 ticket to open/unassigned and clears active bindings. Pull it again when the work
 is timely.
 
+`kd done` was removed in v1.0.0. Use the read-only `kd status --check` readiness
+gate after closing tickets and epics. There is no replacement finalization
+transition and no `--force` bypass; readiness is derived from ticket state.
+
+`kd switch <branch>` was removed in v1.0.0. Use `kd start <branch>` to initialize,
+resume, or select a workspace through one idempotent entry point. For
+branch-to-branch ticket movement, defer the ticket, check out the target Git
+branch, run `kd start <branch>`, then pull the ticket there.
+
 `kd tk move` was removed in v1.0.0. Use `kd tk pull` for backlog→work movement,
-`kd tk defer --reason` for work→backlog movement, and defer, switch/check out the
-target branch, then pull for branch→branch movement. The internal file-move
-primitive remains an implementation detail used by pull, defer, archive/restore,
-and peasant workflows.
+`kd tk defer --reason` for work→backlog movement, and the branch-to-branch flow
+above. The internal file-move primitive remains an implementation detail used by
+pull, defer, archive/restore, and peasant workflows.
 
 `kd tk add-note` was removed in v1.0.0. Use `kd tk log`; it preserves multiline
 input while adding the canonical Worklog timestamp and author attribution. The
@@ -259,10 +291,10 @@ a non-empty `--reason`. `--duplicate-of <id>` and `--superseded-by <id>` record
 their target ticket. Closing appends lifecycle history; reopening clears active
 closure fields without erasing that history.
 
-Use `kd tk list --resolution <value>` to filter terminal outcomes. `kd done`
-validates terminal evidence before completing a branch and reports the same
-resolution breakdown. Resolution-less legacy closures remain readable and map
-to their compatible inferred outcome.
+Use `kd tk list --resolution <value>` to filter terminal outcomes.
+`kd status --check` validates terminal evidence and reports the same resolution
+breakdown without changing workspace state. Resolution-less legacy closures
+remain readable and map to their compatible inferred outcome.
 
 ## Upgrading existing repositories
 
@@ -296,8 +328,8 @@ No database. No server. Just files on disk.
 | Group | Description |
 |-------|-------------|
 | `kd ticket` / `kd tk` | Create, find, pull, start, log, relate, and close tickets and epics |
-| `kd status` | Show branch ticket progress and concurrent agent contexts |
-| `kd start` / `kd done` | Initialize/resume and validate/finish branch work |
+| `kd start [branch]` | Initialize, resume, or select a workspace |
+| `kd status [--check]` | Show ticket/context state and optionally enforce workspace readiness |
 | `kd council` | Power tool for multi-model questions, reviews, and the chat TUI |
 | `kd peasant` | Power tool for reviewed unattended ticket workers |
 | `kd lord` | Power tool for epic-level peasant orchestration |

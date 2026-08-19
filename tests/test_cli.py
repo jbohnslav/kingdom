@@ -57,11 +57,14 @@ class TestCliWiring:
 
     def test_root_help_teaches_ticket_loop_and_concurrent_contexts(self) -> None:
         result = runner.invoke(app, ["--help"])
+        normalized = " ".join(result.output.split())
 
         assert result.exit_code == 0
         assert "create/find" in result.output
         assert "pull/start" in result.output
         assert "log/close" in result.output
+        assert "kd status --check" in result.output
+        assert "read-only readiness gate" in normalized
         assert "epics" in result.output
         assert "Concurrent example:" in result.output
         assert "kd tk current" in result.output

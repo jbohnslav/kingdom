@@ -78,6 +78,7 @@ app = typer.Typer(
     help="Ticket-first development with durable Markdown worklogs and per-agent execution contexts.",
     epilog=(
         "Core loop: create/find → pull/start → log/close. Organize related work under epics.\n\n"
+        "Finish by closing every ticket, then run `kd status --check` for a read-only readiness gate.\n\n"
         "Concurrent example: one agent context can own ticket ab12 while another owns cd34; "
         "`kd tk current` reports only the calling session's ticket.\n\n"
         "Power tools: TUI/council, reviewed peasants, and lords add collaboration and autonomy. "
@@ -296,7 +297,7 @@ def workspace_readiness_report(tickets: list[Ticket]) -> dict[str, object]:
     }
 
 
-@app.command(help="Show ticket progress and concurrent agent contexts for the current branch.")
+@app.command(help="Show ticket progress and contexts, and optionally check workspace readiness.")
 def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
     check: Annotated[
