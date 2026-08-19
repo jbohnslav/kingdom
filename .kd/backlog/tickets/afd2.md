@@ -6,6 +6,7 @@ links: []
 created: 2026-07-10T13:32:00Z
 type: bug
 priority: 2
+parent: b1de
 ---
 # Handle council ask without an active session gracefully
 
