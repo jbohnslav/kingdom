@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from kingdom.cli import app
@@ -21,6 +22,52 @@ from kingdom.state import (
 from kingdom.ticket import Ticket, write_ticket
 
 runner = CliRunner()
+
+
+def terminal_ticket_set() -> list[Ticket]:
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    return [
+        Ticket(id="done", status="closed", title="Completed", resolution="completed", created=created),
+        Ticket(
+            id="nope",
+            status="closed",
+            title="Won't do",
+            resolution="wont-do",
+            close_reason="Out of scope",
+            created=created,
+        ),
+        Ticket(
+            id="dupe",
+            status="closed",
+            title="Duplicate",
+            resolution="duplicate",
+            close_reason="Same as done",
+            duplicate_of="done",
+            created=created,
+        ),
+        Ticket(
+            id="old",
+            status="closed",
+            title="Superseded",
+            resolution="superseded",
+            close_reason="Replaced by done",
+            superseded_by="done",
+            created=created,
+        ),
+        Ticket(
+            id="bad",
+            status="closed",
+            title="Invalid request",
+            resolution="invalid",
+            close_reason="Request cannot be reproduced",
+            created=created,
+        ),
+    ]
+
+
+def write_terminal_tickets(tickets_dir: Path, tickets: list[Ticket]) -> None:
+    for ticket in tickets:
+        write_ticket(ticket, tickets_dir / f"{ticket.id}.md")
 
 
 def record_test_context(
@@ -47,12 +94,13 @@ def test_status_human_readable_no_tickets() -> None:
         set_current_run(base, feature)
         (branch_root(base, feature) / "design.md").write_text("# Optional design\n")
 
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--check"])
         assert result.exit_code == 0
         assert "Branch:" in result.output
         assert "Tickets: 0 open, 0 in progress, 0 in review, 0 closed, 0 ready (0 total)" in result.output
         assert "Optional design: .kd/branches/example-feature/design.md" in result.output
         assert result.output.index("Tickets:") < result.output.index("Optional design:")
+        assert "Readiness: ready" in result.output
         assert "Breakdown:" not in result.output
         assert "\nReady:" not in result.output
 
@@ -84,6 +132,7 @@ def test_status_human_readable_with_tickets() -> None:
         assert "Tickets: 1 open, 1 in progress, 0 in review, 1 closed," in result.output
         assert "ready" in result.output
         assert "(3 total)" in result.output
+        assert "Readiness:" not in result.output
         # No separate Ready line
         assert "\nReady:" not in result.output
 
@@ -315,3 +364,222 @@ def test_status_prune_stale_removes_only_stale_contexts() -> None:
         assert "Pruned 1 stale execution context" in result.output
         contexts = list_execution_contexts(base, feature=feature, stale_after=timedelta(hours=24), now=now)
         assert [context["ticket_id"] for context in contexts] == ["live"]
+
+
+def test_status_check_fails_for_nonterminal_tickets_without_mutating_state() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        branch_dir = ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+        write_json(branch_dir / "state.json", {"branch": feature, "custom": "preserved"})
+        write_ticket(
+            Ticket(id="open-work", title="Open work", status="open"),
+            branch_dir / "tickets" / "open-work.md",
+        )
+        state_before = (branch_dir / "state.json").read_bytes()
+        current_before = (base / ".kd" / "current").read_bytes()
+
+        result = runner.invoke(app, ["status", "--check"])
+
+        assert result.exit_code == 1
+        assert "Readiness: not ready" in result.output
+        assert "open-work [open] Open work" in result.output
+        assert (branch_dir / "state.json").read_bytes() == state_before
+        assert (base / ".kd" / "current").read_bytes() == current_before
+
+
+def test_status_check_rejects_invalid_terminal_evidence() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        branch_dir = ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+        write_ticket(
+            Ticket(id="no-reason", title="Missing evidence", status="closed", resolution="wont-do"),
+            branch_dir / "tickets" / "no-reason.md",
+        )
+
+        result = runner.invoke(app, ["status", "--check"])
+
+        assert result.exit_code == 1
+        assert "Readiness: not ready" in result.output
+        assert "no-reason: resolution wont-do requires close_reason" in result.output
+        assert "Fix the ticket closure metadata, or reopen and close the ticket again." in result.output
+
+
+def test_status_json_check_reports_same_readiness_and_failure_details() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        branch_dir = ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+        write_ticket(
+            Ticket(id="active", title="Active work", status="in_progress"),
+            branch_dir / "tickets" / "active.md",
+        )
+        write_ticket(
+            Ticket(id="bad", title="Bad closure", status="closed", resolution="duplicate"),
+            branch_dir / "tickets" / "bad.md",
+        )
+
+        human_result = runner.invoke(app, ["status", "--check"])
+        json_result = runner.invoke(app, ["status", "--check", "--json"])
+
+        assert human_result.exit_code == json_result.exit_code == 1
+        assert "Readiness: not ready" in human_result.output
+        readiness = json.loads(json_result.output)["readiness"]
+        assert readiness["ready"] is False
+        assert readiness["nonterminal_tickets"] == [{"id": "active", "status": "in_progress", "title": "Active work"}]
+        assert readiness["invalid_terminal_evidence"] == [
+            {
+                "id": "bad",
+                "title": "Bad closure",
+                "errors": [
+                    "resolution duplicate requires close_reason",
+                    "resolution duplicate requires duplicate-of",
+                ],
+            }
+        ]
+
+
+def test_status_check_reads_legacy_done_workspace_without_mutating_it() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "legacy-feature"
+        branch_dir = ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+        legacy_state = {"branch": feature, "status": "done", "done_at": "2026-01-01T00:00:00+00:00"}
+        write_json(branch_dir / "state.json", legacy_state)
+        write_terminal_tickets(
+            branch_dir / "tickets",
+            [
+                Ticket(id="legacy", title="Legacy completion", status="closed"),
+                Ticket(
+                    id="legacy-dupe",
+                    title="Legacy duplicate",
+                    status="closed",
+                    duplicate_of="legacy",
+                ),
+                Ticket(
+                    id="legacy-old",
+                    title="Legacy superseded",
+                    status="closed",
+                    superseded_by="legacy",
+                ),
+            ],
+        )
+        state_before = (branch_dir / "state.json").read_bytes()
+
+        result = runner.invoke(app, ["status", "--check", "--json"])
+
+        assert result.exit_code == 0, result.output
+        readiness = json.loads(result.output)["readiness"]
+        assert readiness["ready"] is True
+        assert readiness["resolutions"]["completed"] == 1
+        assert readiness["resolutions"]["duplicate"] == 1
+        assert readiness["resolutions"]["superseded"] == 1
+        assert readiness["outcomes"]["duplicate"][0]["reason"] == "Duplicate of legacy"
+        assert readiness["outcomes"]["superseded"][0]["reason"] == "Superseded by legacy"
+        assert (branch_dir / "state.json").read_bytes() == state_before
+
+
+def test_status_check_succeeds_for_active_workspace_with_valid_terminal_tickets() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "active-feature"
+        branch_dir = ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+        write_terminal_tickets(branch_dir / "tickets", terminal_ticket_set())
+
+        human_result = runner.invoke(app, ["status", "--check"])
+        json_result = runner.invoke(app, ["status", "--check", "--json"])
+
+        assert human_result.exit_code == json_result.exit_code == 0
+        assert "Readiness: ready" in human_result.output
+        readiness = json.loads(json_result.output)["readiness"]
+        assert readiness["ready"] is True
+        assert readiness["resolutions"] == {
+            "completed": 1,
+            "wont-do": 1,
+            "duplicate": 1,
+            "superseded": 1,
+            "invalid": 1,
+        }
+
+
+@pytest.mark.parametrize(
+    ("ticket", "message"),
+    [
+        (
+            Ticket(id="nope", status="closed", title="No reason", resolution="wont-do"),
+            "requires close_reason",
+        ),
+        (
+            Ticket(
+                id="dupe",
+                status="closed",
+                title="No reference",
+                resolution="duplicate",
+                close_reason="Same work",
+            ),
+            "requires duplicate-of",
+        ),
+        (
+            Ticket(
+                id="old",
+                status="closed",
+                title="No reference",
+                resolution="superseded",
+                close_reason="Replaced",
+            ),
+            "requires superseded-by",
+        ),
+        (
+            Ticket(id="bad", status="closed", title="No reason", resolution="invalid"),
+            "requires close_reason",
+        ),
+        (
+            Ticket(
+                id="odd",
+                status="closed",
+                title="Unknown outcome",
+                resolution="abandoned",
+                close_reason="Unknown",
+            ),
+            "unknown resolution",
+        ),
+        (
+            Ticket(
+                id="mixed",
+                status="closed",
+                title="Mismatched evidence",
+                resolution="completed",
+                duplicate_of="done",
+            ),
+            "cannot use duplicate-of or superseded-by",
+        ),
+    ],
+)
+def test_status_check_rejects_each_invalid_terminal_evidence_case(ticket: Ticket, message: str) -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        branch_dir = ensure_branch_layout(base, "example-feature")
+        set_current_run(base, "example-feature")
+        write_ticket(ticket, branch_dir / "tickets" / f"{ticket.id}.md")
+
+        result = runner.invoke(app, ["status", "--check"])
+
+        assert result.exit_code == 1
+        assert ticket.id in result.output
+        assert message in result.output
+
+
+def test_done_is_not_a_public_command() -> None:
+    help_result = runner.invoke(app, ["--help"])
+    done_result = runner.invoke(app, ["done"])
+
+    assert help_result.exit_code == 0
+    assert "done" not in help_result.output.split("Commands:", maxsplit=1)[-1]
+    assert done_result.exit_code == 2
+    assert "No such command 'done'" in done_result.output

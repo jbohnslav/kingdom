@@ -911,7 +911,7 @@ def resolve_current_run(base: Path) -> str:
 
     Resolution order:
     1. Current invocation worktree git branch matched against .kd/branches/
-    2. Explicit .kd/current file (repo default, set by ``kd start`` / ``kd switch``)
+    2. Explicit .kd/current file (repository default set by ``kd start``)
     3. Error with helpful message
 
     The invocation branch intentionally wins over ``.kd/current`` so long-lived
@@ -943,4 +943,4 @@ def resolve_current_run(base: Path) -> str:
 
             # Stale pointer — fall through to the helpful error below.
 
-    raise RuntimeError("No active session. Use `kd start <feature>` or switch to a tracked branch.")
+    raise RuntimeError("No active session. Use `kd start <feature>` to select a tracked branch.")

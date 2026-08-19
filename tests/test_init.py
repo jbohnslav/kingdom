@@ -8,7 +8,17 @@ from typer.testing import CliRunner
 
 from kingdom.cli import app
 from kingdom.cli.helpers import install_skill, skill_install_targets
-from kingdom.state import branch_root, ensure_base_layout, ensure_branch_layout, set_current_run, write_json
+from kingdom.state import (
+    branch_root,
+    ensure_base_layout,
+    ensure_branch_layout,
+    read_execution_ticket_context,
+    read_json,
+    record_execution_ticket_context,
+    resolve_execution_context,
+    set_current_run,
+    write_json,
+)
 from kingdom.ticket import Ticket, write_ticket
 
 SKILL_REFERENCE_FILES = {"council.md", "peasants.md", "tickets.md"}
@@ -248,6 +258,79 @@ def test_cli_start_changes_workspace_default_without_force() -> None:
         assert result.exit_code == 0
         assert (base / ".kd" / "current").read_text(encoding="utf-8") == "feature-next\n"
         assert "Started workspace for branch feature/next" in result.output
+
+
+def test_cli_start_selects_existing_workspace_as_default() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        ensure_branch_layout(base, "feature/previous")
+        ensure_branch_layout(base, "feature/existing")
+        set_current_run(base, "feature-previous")
+
+        result = runner.invoke(app, ["start", "feature/existing"])
+
+        assert result.exit_code == 0, result.output
+        assert (base / ".kd" / "current").read_text(encoding="utf-8") == "feature-existing\n"
+        assert "Resumed workspace for branch feature/existing" in result.output
+
+
+def test_cli_start_help_describes_workspace_selection() -> None:
+    result = CliRunner().invoke(app, ["start", "--help"])
+
+    assert result.exit_code == 0
+    assert "Initialize, resume, or select a branch workspace" in " ".join(result.output.split())
+
+
+def test_cli_start_reactivates_done_workspace_without_changing_tickets() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        branch = "feature/legacy-done"
+        branch_dir = ensure_branch_layout(base, branch)
+        ticket_path = branch_dir / "tickets" / "done1.md"
+        write_ticket(Ticket(id="done1", status="closed", title="Finished task"), ticket_path)
+        ticket_history = ticket_path.read_text(encoding="utf-8")
+        write_json(
+            branch_dir / "state.json",
+            {
+                "branch": branch,
+                "status": "done",
+                "done_at": "2026-08-01T12:00:00+00:00",
+            },
+        )
+
+        result = runner.invoke(app, ["start", branch])
+
+        assert result.exit_code == 0, result.output
+        state = read_json(branch_dir / "state.json")
+        assert state == {"branch": branch}
+        assert ticket_path.read_text(encoding="utf-8") == ticket_history
+
+
+def test_cli_start_does_not_move_execution_context_binding() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        source = "feature/context-owner"
+        target = "feature/selected-default"
+        ensure_branch_layout(base, source)
+        ensure_branch_layout(base, target)
+        set_current_run(base, source)
+
+        with patch.dict("os.environ", {"KD_CONTEXT": "start-independence"}, clear=True):
+            context = resolve_execution_context()
+            assert context is not None
+            record_execution_ticket_context(base, context, "task1", feature=source)
+            binding = read_execution_ticket_context(base, context)
+            result = runner.invoke(app, ["start", target])
+            updated_binding = read_execution_ticket_context(base, context)
+
+        assert result.exit_code == 0, result.output
+        assert (base / ".kd" / "current").read_text(encoding="utf-8") == "feature-selected-default\n"
+        assert updated_binding == binding
+        assert updated_binding is not None
+        assert updated_binding["feature"] == "feature-context-owner"
 
 
 def test_cli_start_with_only_closed_tickets_suggests_new_work() -> None:

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -24,7 +23,6 @@ from kingdom.doctor import binding_issues, context_issues, host_install_issues, 
 from kingdom.state import (
     ProjectRootNotFoundError,
     branch_root,
-    clear_current_run,
     compact_context_id,
     ensure_base_layout,
     ensure_branch_layout,
@@ -156,7 +154,10 @@ app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
 
 
 @app.command(
-    help="Initialize or resume a branch workspace. The repository default branch does not limit execution contexts."
+    help=(
+        "Initialize, resume, or select a branch workspace. "
+        "The repository default branch does not limit execution contexts."
+    )
 )
 def start(
     branch: Annotated[str | None, typer.Argument(help="Branch name (defaults to current git branch).")] = None,
@@ -221,6 +222,8 @@ def start(
     state_path = branch_dir / "state.json"
     state = read_json(state_path)
     state["branch"] = branch
+    state.pop("status", None)
+    state.pop("done_at", None)
     write_json(state_path, state)
 
     branch_tickets = list_tickets(branch_dir / "tickets")
@@ -248,109 +251,6 @@ def start(
         typer.echo('  Next: kd tk create "<title>" (use --type epic for larger work)')
 
 
-@app.command(help="Change the repository's default kd branch.")
-def switch(
-    branch: Annotated[str | None, typer.Argument(help="Branch name to switch to.")] = None,
-) -> None:
-    """Change the fallback branch without changing Git or execution-context bindings.
-
-    With an argument: validate the branch exists in .kd/branches/ and update .kd/current.
-    Without arguments: list all tracked branches, marking the repository default and Git branch.
-    """
-    base = require_project_root()
-    console = Console()
-
-    if branch is None:
-        # List mode: show all tracked branches
-        branches_dir = base / ".kd" / "branches"
-        if not branches_dir.exists() or not any(branches_dir.iterdir()):
-            typer.echo("No tracked branches. Use `kd start <branch>` to create one.")
-            return
-
-        # Determine repository default branch
-        current_default: str | None = None
-        current_path = base / ".kd" / "current"
-        if current_path.exists():
-            current_default = current_path.read_text(encoding="utf-8").strip() or None
-
-        # Determine current git branch
-        git_branch = get_current_git_branch()
-        git_normalized = normalize_branch_name(git_branch) if git_branch else None
-
-        for branch_dir in sorted(branches_dir.iterdir()):
-            if not branch_dir.is_dir():
-                continue
-            name = branch_dir.name
-
-            # Read original branch name from state.json
-            state_path = branch_dir / "state.json"
-            original = name
-            branch_status = ""
-            if state_path.exists():
-                try:
-                    state = read_json(state_path)
-                    original = state.get("branch", name)
-                    if state.get("status") == "done":
-                        branch_status = " [dim](done)[/dim]"
-                except (FileNotFoundError, KeyError):
-                    pass
-
-            # Count open tickets
-            tickets_dir = branch_dir / "tickets"
-            ticket_count = 0
-            if tickets_dir.exists():
-                ticket_count = sum(1 for f in tickets_dir.glob("*.md"))
-
-            # Build markers
-            markers = []
-            if name == current_default:
-                markers.append("[bold cyan]* default[/bold cyan]")
-            if name == git_normalized:
-                markers.append("[green]* git[/green]")
-            marker_str = f"  ({', '.join(markers)})" if markers else ""
-
-            console.print(f"  {original}{branch_status}  [{ticket_count} tickets]{marker_str}")
-        return
-
-    # Switch mode: validate and update
-    normalized = normalize_branch_name(branch)
-    branch_dir = base / ".kd" / "branches" / normalized
-    if not branch_dir.exists():
-        print_error(f"Branch '{branch}' not found in .kd/branches/.")
-        error_console.print("Available branches:")
-        branches_dir = base / ".kd" / "branches"
-        if branches_dir.exists():
-            for d in sorted(branches_dir.iterdir()):
-                if d.is_dir():
-                    error_console.print(f"  {d.name}")
-        raise typer.Exit(code=1)
-
-    set_current_run(base, normalized)
-
-    # Print summary
-    state_path = branch_dir / "state.json"
-    original = branch
-    if state_path.exists():
-        try:
-            state = read_json(state_path)
-            original = state.get("branch", branch)
-        except (FileNotFoundError, KeyError):
-            pass
-
-    tickets_dir = branch_dir / "tickets"
-    tickets = list_tickets(tickets_dir) if tickets_dir.exists() else []
-    open_count = sum(1 for t in tickets if t.status != "closed")
-    closed_count = sum(1 for t in tickets if t.status == "closed")
-
-    git_branch = get_current_git_branch()
-    git_info = f"  git: {git_branch}" if git_branch else ""
-    if git_branch and normalize_branch_name(git_branch) != normalized:
-        git_info += " [yellow](mismatch)[/yellow]"
-
-    console.print(f"Switched to [bold]{original}[/bold]")
-    console.print(f"  {open_count} open, {closed_count} closed tickets{git_info}")
-
-
 def terminal_resolution_report(
     tickets: list[Ticket],
 ) -> tuple[dict[str, int], dict[str, list[dict[str, str | None]]]]:
@@ -359,7 +259,7 @@ def terminal_resolution_report(
     outcomes: dict[str, list[dict[str, str | None]]] = {resolution: [] for resolution in TICKET_RESOLUTIONS}
     for ticket in tickets:
         resolution = effective_resolution(ticket)
-        if resolution is None:
+        if resolution not in counts:
             continue
         counts[resolution] += 1
         reference = ticket.duplicate_of if resolution == "duplicate" else ticket.superseded_by
@@ -374,164 +274,35 @@ def terminal_resolution_report(
     return counts, outcomes
 
 
-@app.command(help="Mark the current session as done.")
-def done(
-    feature: Annotated[str | None, typer.Argument(help="Branch name (defaults to current session).")] = None,
-    force: Annotated[bool, typer.Option("--force", "-f", help="Close even if open tickets remain.")] = False,
-    output_json: Annotated[bool, typer.Option("--json", help="Output the completion summary as JSON.")] = False,
-) -> None:
-    """Mark a session as done (status transition only, no file moves)."""
-    from datetime import UTC, datetime
-
-    base = require_project_root()
-
-    # Resolve feature: use argument or fall back to current session
-    if feature is None:
-        try:
-            feature = resolve_current_run(base)
-        except RuntimeError:
-            print_error("No active session. Pass the branch name: `kd done <branch>`")
-            raise typer.Exit(code=1) from None
-
-    # Get the branch directory (normalized name)
-    normalized = normalize_branch_name(feature)
-    source_dir = branch_root(base, feature)
-
-    # Check if it exists
-    if not source_dir.exists():
-        print_error(f"Branch '{feature}' not found.")
-        raise typer.Exit(code=1)
-
-    tickets_dir = source_dir / "tickets"
-    all_tickets = list_tickets(tickets_dir)
-
-    # Check for open tickets
-    if not force:
-        open_tickets = [ticket for ticket in all_tickets if ticket.status != "closed"]
-        if open_tickets:
-            print_error(f"{len(open_tickets)} open ticket(s) on '{feature}':")
-            for t in open_tickets:
-                error_console.print(f"  {t.id} \\[{t.status}] {t.title}")
-            error_console.print("\nClose tickets, defer them with `kd tk defer`, or use --force.")
-            raise typer.Exit(code=1)
-
-    invalid_tickets = [
-        (ticket, errors)
-        for ticket in all_tickets
+def workspace_readiness_report(tickets: list[Ticket]) -> dict[str, object]:
+    nonterminal_tickets = [
+        {"id": ticket.id, "status": ticket.status, "title": ticket.title}
+        for ticket in tickets
+        if ticket.status != "closed"
+    ]
+    invalid_terminal_evidence = [
+        {"id": ticket.id, "title": ticket.title, "errors": errors}
+        for ticket in tickets
         if ticket.status == "closed" and (errors := validate_terminal_evidence(ticket))
     ]
-    if invalid_tickets:
-        print_error(f"{len(invalid_tickets)} closed ticket(s) have invalid terminal evidence:")
-        for ticket, errors in invalid_tickets:
-            for error in errors:
-                error_console.print(f"  {ticket.id}: {error}")
-        error_console.print("\nFix the ticket closure metadata, or reopen and close the ticket again.")
-        raise typer.Exit(code=1)
-
-    closed_tickets = [ticket for ticket in all_tickets if ticket.status == "closed"]
+    closed_tickets = [ticket for ticket in tickets if ticket.status == "closed"]
     resolution_counts, outcomes = terminal_resolution_report(closed_tickets)
-
-    # Update state.json with status and timestamp
-    state_path = source_dir / "state.json"
-    if state_path.exists():
-        state = read_json(state_path)
-    else:
-        state = {}
-    state["status"] = "done"
-    state["done_at"] = datetime.now(UTC).isoformat()
-    write_json(state_path, state)
-
-    # Clean up associated worktrees (read from state.json worktrees map)
-    worktrees = state.get("worktrees", {})
-    if worktrees:
-        if not force and sys.stdin.isatty():
-            names = ", ".join(worktrees.keys())
-            typer.confirm(f"Remove {len(worktrees)} worktree(s) ({names})?", abort=True)
-        for ticket_id, wt_path in worktrees.items():
-            wt = Path(wt_path)
-            if wt.exists():
-                result = subprocess.run(
-                    ["git", "worktree", "remove", "--force", str(wt)],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    typer.echo(f"Warning: Failed to remove worktree {ticket_id}: {result.stderr.strip()}")
-        state["worktrees"] = {}
-        write_json(state_path, state)
-
-    # Clear current session pointer (only if this was the current session)
-    current_path = state_root(base) / "current"
-    session_cleared = False
-    if current_path.exists():
-        current_feature = current_path.read_text(encoding="utf-8").strip()
-        if current_feature == normalized:
-            clear_current_run(base)
-            session_cleared = True
-
-    # Summary
-    closed_count = len(closed_tickets)
-
-    console = Console()
-
-    lines: list[str] = []
-    if closed_count:
-        lines.append(f"[cyan]{closed_count}[/cyan] tickets closed")
-        lines.append("Resolutions:")
-        lines.extend(f"  {resolution_counts[resolution]} {resolution}" for resolution in TICKET_RESOLUTIONS)
-        for resolution in ("wont-do", "duplicate", "superseded", "invalid"):
-            for outcome in outcomes[resolution]:
-                reference = f" → {outcome['reference']}" if outcome["reference"] else ""
-                reason = f" — {outcome['reason']}" if outcome["reason"] else ""
-                lines.append(f"{resolution}: {outcome['id']}{reference}{reason}")
-    if session_cleared:
-        lines.append("Session cleared")
-
-    push_reminder = ""
-    try:
-        rev_result = subprocess.run(
-            ["git", "rev-list", "--count", "@{u}..HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        if rev_result.returncode == 0:
-            ahead = int(rev_result.stdout.strip())
-            if ahead > 0:
-                push_reminder = f"{ahead} unpushed commit(s) — remember to push"
-        else:
-            push_reminder = "No upstream branch — remember to push"
-    except (subprocess.SubprocessError, ValueError) as exc:
-        push_reminder = f"Could not check upstream status: {exc}"
-
-    if push_reminder:
-        lines.append(f"[yellow]{push_reminder}[/yellow]")
-
-    if output_json:
-        typer.echo(
-            json.dumps(
-                {
-                    "feature": feature,
-                    "status": "done",
-                    "done_at": state["done_at"],
-                    "tickets_closed": closed_count,
-                    "resolutions": resolution_counts,
-                    "outcomes": outcomes,
-                    "session_cleared": session_cleared,
-                    "push_reminder": push_reminder or None,
-                },
-                indent=2,
-            )
-        )
-        return
-
-    body = "\n".join(lines) if lines else "[dim]No additional info[/dim]"
-    panel = Panel(body, title=f"[bold green]Done: {feature}[/bold green]", border_style="green")
-    console.print(panel)
+    return {
+        "ready": not nonterminal_tickets and not invalid_terminal_evidence,
+        "nonterminal_tickets": nonterminal_tickets,
+        "invalid_terminal_evidence": invalid_terminal_evidence,
+        "resolutions": resolution_counts,
+        "outcomes": outcomes,
+    }
 
 
 @app.command(help="Show ticket progress and concurrent agent contexts for the current branch.")
 def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON for machine consumption.")] = False,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="Exit nonzero unless all workspace tickets have valid terminal resolutions."),
+    ] = False,
     stale_hours: Annotated[
         float,
         typer.Option("--stale-hours", min=0.01, help="Hours without activity before a context is stale."),
@@ -596,6 +367,7 @@ def status(
     all_known_tickets = collect_all_tickets(base, include_done=True)
     status_by_id = {ticket.id: ticket.status for ticket in all_known_tickets}
     ready_count = len(filter_tickets_by_deps(tickets, status_by_id, ready=True))
+    readiness = workspace_readiness_report(tickets)
 
     # Design approved status
     design_approved = state.get("design_approved", False)
@@ -610,6 +382,7 @@ def status(
         "breakdown_status": breakdown_status,
         "tickets": status_counts,
         "ready_count": ready_count,
+        "readiness": readiness,
         "contexts": contexts,
         "pruned_contexts": pruned_contexts,
     }
@@ -641,6 +414,21 @@ def status(
             f"{status_counts['in_review']} in review, {status_counts['closed']} closed, "
             f"{ready_count} ready ({total} total)"
         )
+        if check:
+            typer.echo(f"Readiness: {'ready' if readiness['ready'] else 'not ready'}")
+
+            nonterminal_tickets = readiness["nonterminal_tickets"]
+            invalid_terminal_evidence = readiness["invalid_terminal_evidence"]
+            if nonterminal_tickets:
+                typer.echo("Nonterminal tickets:")
+                for ticket in nonterminal_tickets:
+                    typer.echo(f"  {ticket['id']} [{ticket['status']}] {ticket['title']}")
+            if invalid_terminal_evidence:
+                typer.echo("Invalid terminal evidence:")
+                for ticket in invalid_terminal_evidence:
+                    for error in ticket["errors"]:
+                        typer.echo(f"  {ticket['id']}: {error}")
+                typer.echo("Fix the ticket closure metadata, or reopen and close the ticket again.")
 
         if prune_stale:
             count = len(pruned_contexts)
@@ -685,6 +473,9 @@ def status(
             approved_str = " (approved)" if design_approved else ""
             typer.echo()
             typer.echo(f"Optional design: {design_path_str}{approved_str}")
+
+    if check and not readiness["ready"]:
+        raise typer.Exit(code=1)
 
 
 @app.command(help="Upgrade the CLI and refresh installed agent integrations.")
