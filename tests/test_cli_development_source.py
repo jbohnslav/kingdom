@@ -41,11 +41,11 @@ def test_installed_cli_is_quiet_outside_development_checkout(tmp_path: Path) -> 
     assert development_source_warning(tmp_path / "ordinary-project", installed_module) is None
 
 
-def test_top_level_callback_prints_development_source_warning() -> None:
+def test_top_level_callback_prints_development_source_warning(cli_project: Path) -> None:
     warning = "Warning: use uv run kd"
 
     with patch("kingdom.cli.development_source_warning", return_value=warning):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status"], env={"KD_BASE": str(cli_project)})
 
     assert result.exit_code == 0
     assert warning in result.stderr

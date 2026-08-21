@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 import kingdom.cli as cli_mod
@@ -57,19 +58,20 @@ class TestCliWiring:
 
     def test_root_help_teaches_ticket_loop_and_concurrent_contexts(self) -> None:
         result = runner.invoke(app, ["--help"])
-        normalized = " ".join(result.output.split())
+        output = unstyle(result.output)
+        normalized = " ".join(output.split())
 
         assert result.exit_code == 0
-        assert "create/find" in result.output
-        assert "pull/start" in result.output
-        assert "log/close" in result.output
-        assert "kd status --check" in result.output
+        assert "create/find" in output
+        assert "pull/start" in output
+        assert "log/close" in output
+        assert "kd status --check" in output
         assert "read-only readiness gate" in normalized
-        assert "epics" in result.output
-        assert "Concurrent example:" in result.output
-        assert "kd tk current" in result.output
-        assert "Power tools:" in result.output
-        assert "Design docs are optional" in result.output
+        assert "epics" in output
+        assert "Concurrent example:" in output
+        assert "kd tk current" in output
+        assert "Power tools:" in output
+        assert "Design docs are optional" in output
 
     def test_top_level_re_exports(self) -> None:
         """kingdom.cli re-exports key symbols from submodules."""

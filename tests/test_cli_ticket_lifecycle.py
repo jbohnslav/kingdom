@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from click import unstyle
 from typer.testing import CliRunner
 
 from kingdom.cli.ticket import ticket_app
@@ -1765,10 +1766,11 @@ Formatting, links, and relationships must survive exactly.
 
     def test_pull_help_describes_backlog_work_selection(self) -> None:
         result = runner.invoke(ticket_app, ["pull", "--help"])
+        output = unstyle(result.output)
 
         assert result.exit_code == 0, result.output
-        assert "Select backlog tickets for work" in result.output
-        assert "--start" in result.output
+        assert "Select backlog tickets for work" in output
+        assert "--start" in output
 
     def test_pull_ticket_appears_in_ready(self, cli_project: Path) -> None:
         """After pulling, the ticket should appear in `tk ready`."""
