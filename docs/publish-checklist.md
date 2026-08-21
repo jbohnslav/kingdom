@@ -58,21 +58,25 @@ rm -rf /tmp/kd-smoke
 
 ## Merge & Release
 
-Merging a version bump does not publish. After the release commit is merged to
-`master` and publication is explicitly authorized:
+Merging a `pyproject.toml` version bump to `master` starts the `Release on
+Version Bump` workflow automatically:
 
-1. Open the `Release` workflow in GitHub Actions and choose **Run workflow** on
-   the intended merged commit.
-2. Enter the exact version from `pyproject.toml`. The workflow stops before
-   setup, build, or publication if the input differs or the matching checked-in
-   `docs/releases/X.Y.Z.md` file is missing.
-3. Authorize the dispatch. The checked-in release notes become the GitHub Release
-   body, then the validated artifacts are uploaded to GitHub and PyPI.
+1. The workflow confirms that the version changed and that the matching
+   checked-in `docs/releases/X.Y.Z.md` file exists.
+2. It runs the documented CLI smoke test, builds the sdist and wheel, and
+   validates both artifacts before publication.
+3. The checked-in release notes become the GitHub Release body, then the
+   validated artifacts are uploaded to GitHub and PyPI.
 4. Verify:
    - GitHub Release created at `https://github.com/jbohnslav/kingdom/releases`
    - Tag `vX.Y.Z` exists
    - sdist and wheel attached to the release
    - PyPI package updated at `https://pypi.org/project/kingdom-cli/`
+
+If an automatic run was missed after a version bump was already merged, use the
+workflow's manual recovery dispatch from `master` and enter the exact version
+from `pyproject.toml`. A mismatched version or missing release-notes file fails
+before setup, build, or publication.
 
 ## Post-release
 

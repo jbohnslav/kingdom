@@ -120,11 +120,10 @@ def test_release_notes_preserve_workflow_and_explain_changes() -> None:
     assert "`kd start <branch>`" in replacements
 
 
-def test_release_notes_are_final_without_claiming_publication() -> None:
+def test_release_notes_document_automatic_publication() -> None:
     text = RELEASE_NOTES.read_text()
     normalized = " ".join(text.split())
 
-    assert "final source-tree notes" in text
     assert "Pre-cut status" not in text
     assert "## Removed and consolidated commands" in text
     assert "were removed from the 1.0.0 public CLI" in text
@@ -132,7 +131,8 @@ def test_release_notes_are_final_without_claiming_publication() -> None:
     assert "`kd tk add-note`" in text
     assert "## Artifact validation and publication" in text
     assert "Artifact validation is performed separately" in text
-    assert "does not claim that release artifacts were published" in normalized
+    assert "automatically runs those checks" in normalized
+    assert "publishes the validated artifacts to PyPI" in normalized
     for ticket_id in (
         "473d",
         "b507",
@@ -200,9 +200,9 @@ def test_publish_checklist_uses_read_only_status_gate() -> None:
     assert "final `uv run kd status --check` on the release branch" in normalized
     assert "`kd done` is not a release step" in text
     assert "TUI `/status`" in text
-    assert "Merging a version bump does not publish" in normalized
-    assert "publication is explicitly authorized" in normalized
-    assert "Run workflow" in text
+    assert "version bump to `master` starts" in normalized
+    assert "workflow automatically" in normalized
+    assert "manual recovery dispatch" in normalized
     assert "docs/releases/X.Y.Z.md" in text
 
 
@@ -256,21 +256,25 @@ def test_ci_and_release_run_documentation_smoke() -> None:
     assert "bash scripts/smoke.sh" in RELEASE.read_text()
 
 
-def test_release_requires_explicit_matching_version() -> None:
+def test_release_runs_automatically_on_version_bump_with_manual_recovery() -> None:
     workflow = RELEASE.read_text()
     trigger = workflow.split("on:\n", 1)[1].split("\njobs:", 1)[0]
 
+    assert "push:" in trigger
+    assert "branches: [master]" in trigger
+    assert "paths: [pyproject.toml]" in trigger
     assert "workflow_dispatch:" in trigger
-    assert "push:" not in trigger
     assert "version:" in trigger
     assert "required: true" in trigger
     assert 'if [ "$RELEASE_REF" != "refs/heads/master" ]; then' in workflow
-    assert 'if [ "$requested_version" != "$project_version" ]; then' in workflow
+    assert 'if [ "$EVENT_NAME" = "push" ]; then' in workflow
+    assert 'if [ "$previous_version" = "$project_version" ]; then' in workflow
+    assert 'if [ "$REQUESTED_VERSION" != "$project_version" ]; then' in workflow
     assert 'release_notes="docs/releases/${project_version}.md"' in workflow
     assert '--notes-file "$release_notes"' in workflow
 
     ordered_steps = (
-        "Validate requested version",
+        "Validate release version",
         "Set up uv",
         "Validate documented CLI workflow",
         "Build",

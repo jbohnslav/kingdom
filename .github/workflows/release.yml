@@ -1,10 +1,13 @@
-name: Release
+name: Release on Version Bump
 
 on:
+  push:
+    branches: [master]
+    paths: [pyproject.toml]
   workflow_dispatch:
     inputs:
       version:
-        description: Version to publish (must match pyproject.toml)
+        description: Version to publish after a missed automatic release
         required: true
         type: string
 
@@ -20,10 +23,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate requested version
+      - name: Validate release version
         id: release
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           RELEASE_REF: ${{ github.ref }}
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
@@ -32,9 +36,20 @@ jobs:
             exit 1
           fi
           project_version=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
-          requested_version="$REQUESTED_VERSION"
-          if [ "$requested_version" != "$project_version" ]; then
-            echo "Requested version $requested_version does not match pyproject.toml version $project_version." >&2
+          if [ "$EVENT_NAME" = "push" ]; then
+            previous_version=$(git show HEAD^:pyproject.toml | python3 -c "import sys, tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])")
+            if [ "$previous_version" = "$project_version" ]; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "Version unchanged; skipping release."
+              exit 0
+            fi
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$REQUESTED_VERSION" != "$project_version" ]; then
+              echo "Requested version $REQUESTED_VERSION does not match pyproject.toml version $project_version." >&2
+              exit 1
+            fi
+          else
+            echo "Unsupported release event: $EVENT_NAME" >&2
             exit 1
           fi
           release_notes="docs/releases/${project_version}.md"
@@ -42,24 +57,30 @@ jobs:
             echo "Checked-in release notes not found: $release_notes" >&2
             exit 1
           fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
           echo "version=$project_version" >> "$GITHUB_OUTPUT"
           echo "release_notes=$release_notes" >> "$GITHUB_OUTPUT"
 
       - name: Set up uv
+        if: steps.release.outputs.publish == 'true'
         uses: astral-sh/setup-uv@04224aa8caab79e9c08d41c1ef06d6394aafe6a0 # v5
 
       - name: Validate documented CLI workflow
+        if: steps.release.outputs.publish == 'true'
         run: bash scripts/smoke.sh
 
       - name: Build
+        if: steps.release.outputs.publish == 'true'
         run: |
           rm -rf dist/
           uv build
 
       - name: Validate artifacts
+        if: steps.release.outputs.publish == 'true'
         run: uv run --with twine python -m twine check dist/*
 
       - name: Create GitHub Release
+        if: steps.release.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -76,4 +97,5 @@ jobs:
           fi
 
       - name: Publish to PyPI
+        if: steps.release.outputs.publish == 'true'
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
