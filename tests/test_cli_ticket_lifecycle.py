@@ -512,6 +512,23 @@ class TestTicketStatus:
         assert read_ticket(path).assignee is None
         assert binding is None
 
+    def test_status_leaving_in_progress_clears_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-status-terminal")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "status-session", "TERM_SESSION_ID": "status-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-status-terminal"]).exit_code == 0
+            assert read_terminal_ticket_context(cli_project) is not None
+            result = runner.invoke(ticket_app, ["status", "kin-status-terminal", "blocked"])
+            assert read_terminal_ticket_context(cli_project) is None
+
+        assert result.exit_code == 0, result.output
+        assert legacy_context_issues(cli_project) == []
+
 
 class TestTicketCloseIdempotent:
     def test_close_already_archived_ticket_is_noop(self, cli_project: Path) -> None:
@@ -1435,6 +1452,23 @@ class TestTicketDelete:
         assert "Deleted" in result.output
         assert "kin-del1" in result.output
         assert not path.exists()
+
+    def test_delete_clears_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-delete-terminal")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "delete-session", "TERM_SESSION_ID": "delete-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-delete-terminal"]).exit_code == 0
+            assert read_terminal_ticket_context(cli_project) is not None
+            result = runner.invoke(ticket_app, ["delete", "kin-delete-terminal", "--force"])
+            assert read_terminal_ticket_context(cli_project) is None
+
+        assert result.exit_code == 0, result.output
+        assert legacy_context_issues(cli_project) == []
 
     def test_delete_prevents_a_stale_snapshot_from_resurrecting_the_ticket(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"

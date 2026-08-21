@@ -1460,7 +1460,9 @@ def ticket_status(
     """Set ticket status to any arbitrary string."""
     ticket = update_ticket_status(ticket_id, status, clear_assignee=status != "in_progress")
     if status != "in_progress":
-        clear_ticket_execution_contexts(require_project_root(), ticket.id)
+        base = require_project_root()
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
 
 
 @ticket_app.command("delete", help="Permanently delete a ticket file.")
@@ -1495,6 +1497,7 @@ def ticket_delete(
 
     delete_ticket(ticket_path)
     clear_ticket_execution_contexts(base, ticket.id)
+    clear_terminal_ticket_contexts(base, ticket.id)
     typer.echo(f"Deleted {ticket.id} — {ticket.title}")
 
 
