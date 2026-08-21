@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from kingdom.cli import app
 from kingdom.state import (
+    archive_root,
     branch_root,
     ensure_branch_layout,
     list_execution_contexts,
@@ -206,6 +207,36 @@ def test_status_ready_count_uses_global_dependency_state() -> None:
         write_ticket(
             Ticket(id="ready-work", title="Ready work", status="open", deps=["done-dep"]),
             branch_root(base, feature) / "tickets" / "ready-work.md",
+        )
+
+        ready_result = runner.invoke(app, ["tk", "list", "--ready"])
+        human_result = runner.invoke(app, ["status"])
+        json_result = runner.invoke(app, ["status", "--json"])
+
+        assert ready_result.exit_code == 0, ready_result.output
+        assert "ready-work" in ready_result.output
+        assert human_result.exit_code == 0, human_result.output
+        assert "1 ready (1 total)" in human_result.output
+        assert json_result.exit_code == 0, json_result.output
+        assert json.loads(json_result.output)["ready_count"] == 1
+
+
+def test_status_ready_count_includes_archived_dependency() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        branch_dir = ensure_branch_layout(base, feature)
+        set_current_run(base, feature)
+
+        archived_tickets = archive_root(base) / "finished" / "tickets"
+        archived_tickets.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="archived-dep", title="Completed and archived", status="closed"),
+            archived_tickets / "archived-dep.md",
+        )
+        write_ticket(
+            Ticket(id="ready-work", title="Ready work", status="open", deps=["archived-dep"]),
+            branch_dir / "tickets" / "ready-work.md",
         )
 
         ready_result = runner.invoke(app, ["tk", "list", "--ready"])

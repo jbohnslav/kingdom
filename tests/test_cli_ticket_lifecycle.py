@@ -14,6 +14,7 @@ from click import unstyle
 from typer.testing import CliRunner
 
 from kingdom.cli.ticket import ticket_app
+from kingdom.doctor import legacy_context_issues
 from kingdom.state import (
     archive_root,
     backlog_root,
@@ -380,6 +381,34 @@ class TestTicketCloseArchive:
         assert result.exit_code == 0, result.output
         assert context is not None
         assert read_ticket(ticket_path).assignee == context.context_id
+
+    def test_start_reassignment_replaces_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-reassign")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "first-owner", "TERM_SESSION_ID": "first-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-reassign"]).exit_code == 0
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "second-owner", "TERM_SESSION_ID": "second-terminal"},
+            clear=True,
+        ):
+            result = runner.invoke(ticket_app, ["start", "kin-reassign"])
+
+        assert result.exit_code == 0, result.output
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "first-terminal"}, clear=True):
+            previous = read_terminal_ticket_context(cli_project)
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "second-terminal"}, clear=True):
+            replacement = read_terminal_ticket_context(cli_project)
+        assert previous is None
+        assert replacement is not None
+        assert replacement["ticket_id"] == "kin-reassign"
+        assert legacy_context_issues(cli_project) == []
 
     def test_start_without_active_session_does_not_mutate_ticket(self) -> None:
         with runner.isolated_filesystem():
@@ -980,6 +1009,23 @@ class TestTicketContextLifecycle:
 
             assert current.exit_code == 1
             assert "No ticket bound" in current.output
+
+    def test_close_clears_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-term-close")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "close-session", "TERM_SESSION_ID": "close-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-term-close"]).exit_code == 0
+            result = runner.invoke(ticket_app, ["close", "kin-term-close"])
+
+        assert result.exit_code == 0, result.output
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "close-terminal"}, clear=True):
+            assert read_terminal_ticket_context(cli_project) is None
+        assert legacy_context_issues(cli_project) == []
 
     def test_start_switches_binding_and_unassigns_previous_ticket(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"

@@ -130,6 +130,7 @@ def checkpoint_context(event: HostEvent) -> tuple[Path, ExecutionContext, dict] 
         session_id=event.session_id,
         host=event.host.value,
         cwd=event.cwd,
+        prefer_session_id=True,
     )
     if context is None:
         return None
@@ -450,6 +451,35 @@ def persist_claude_session_environment(event: HostEvent) -> str | None:
     return None
 
 
+def reactivate_resumed_context(base: Path, event: HostEvent) -> None:
+    context = resolve_execution_context(
+        session_id=event.session_id,
+        host=event.host.value,
+        cwd=event.cwd,
+        prefer_session_id=True,
+    )
+    if context is None:
+        return
+    binding = read_execution_ticket_context(base, context)
+    if binding is None or binding.get("active") is not False:
+        return
+    feature = binding.get("feature")
+    ticket_id = binding.get("ticket_id")
+    if not isinstance(feature, str) or not isinstance(ticket_id, str):
+        return
+    result = find_ticket(base, ticket_id, branch=feature)
+    if result is None or result.ticket.status != "in_progress" or result.ticket.assignee != context.context_id:
+        return
+    location = binding.get("location")
+    record_execution_ticket_context(
+        base,
+        context,
+        ticket_id,
+        feature=feature,
+        location=location if isinstance(location, str) else None,
+    )
+
+
 def handle_session_start(data: HostEvent | dict) -> str:
     event = handler_event(data, EventKind.SESSION_START)
     if event is None:
@@ -459,6 +489,7 @@ def handle_session_start(data: HostEvent | dict) -> str:
     if environment_warning:
         additional_context += "\n\n" + environment_warning
     base = terminal_context_base(str(event.cwd))
+    reactivate_resumed_context(base, event)
     checkpoint = read_checkpoint(base, event)
     if checkpoint and event.source == "compact":
         additional_context += "\n\n" + checkpoint_message(checkpoint["ticket_id"], "compact resume")
@@ -511,6 +542,15 @@ def handle_session_end(data: HostEvent | dict) -> str:
     if event is None:
         return ""
     requested = request_checkpoint(event, "session handoff")
+    base = terminal_context_base(str(event.cwd))
+    context = resolve_execution_context(
+        session_id=event.session_id,
+        host=event.host.value,
+        cwd=event.cwd,
+        prefer_session_id=True,
+    )
+    if context is not None:
+        finish_execution_context(base, context)
     if requested is None:
         return ""
     checkpoint, _ = requested
@@ -655,10 +695,8 @@ def handle_post_tool_use(data: HostEvent | dict) -> str:
     if ticket_markdown_edit:
         state["did_log"] = True
 
-    if tool == "Bash":
-        cmd = event.command or ""
-        if "kd tk log" in cmd or "kd ticket log" in cmd:
-            state["did_log"] = True
+    if tool in {"Bash", "Shell"} and event.command and logged_ticket_ids(event.command):
+        state["did_log"] = True
 
     write_turn_state(sf, state)
     return ""

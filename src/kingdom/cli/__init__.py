@@ -42,6 +42,7 @@ from kingdom.ticket import (
     TICKET_RESOLUTIONS,
     Ticket,
     collect_all_tickets,
+    collect_ticket_statuses,
     effective_close_reason,
     effective_resolution,
     filter_tickets_by_deps,
@@ -364,8 +365,7 @@ def status(
         status_counts[ticket.status] = status_counts.get(ticket.status, 0) + 1
 
     # Count ready tickets (open with all deps closed — startable, not already started)
-    all_known_tickets = collect_all_tickets(base, include_done=True)
-    status_by_id = {ticket.id: ticket.status for ticket in all_known_tickets}
+    status_by_id = collect_ticket_statuses(base)
     ready_count = len(filter_tickets_by_deps(tickets, status_by_id, ready=True))
     readiness = workspace_readiness_report(tickets)
 

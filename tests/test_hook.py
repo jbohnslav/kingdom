@@ -185,6 +185,22 @@ class TestCursorHookAdapter:
 
         assert output == {"continue": True}
 
+    def test_shell_log_command_updates_cursor_turn_state(self, tmp_path: Path) -> None:
+        handle_user_prompt_submit(self.event(tmp_path, "beforeSubmitPrompt"))
+
+        handle_post_tool_use(
+            self.event(
+                tmp_path,
+                "postToolUse",
+                tool_name="Shell",
+                tool_input={"command": 'uv run kd tk log cafe "checkpoint"'},
+            )
+        )
+
+        state = read_turn_state(state_file_for(str(tmp_path), "cursor-parent", "cursor"))
+        assert state is not None
+        assert state["did_log"] is True
+
     def test_pre_compact_uses_cursor_user_message(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
 
@@ -241,14 +257,21 @@ class TestCursorHookAdapter:
         assert child["active"] is True
 
     def test_session_end_records_checkpoint_without_claiming_visible_output(self, tmp_path: Path) -> None:
-        self.setup_binding(tmp_path)
+        context, _ = self.setup_binding(tmp_path)
 
         output = handle_session_end(self.event(tmp_path, "sessionEnd", reason="completed"))
 
         checkpoint = json.loads(checkpoint_state_file(tmp_path, "cursor", "cursor-parent").read_text())
+        stored = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
         assert output == ""
         assert checkpoint["ticket_id"] == "cafe"
         assert checkpoint["phase"] == "session handoff"
+        assert stored["active"] is False
+
+        handle_session_start(self.event(tmp_path, "sessionStart"))
+
+        resumed = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
+        assert resumed["active"] is True
 
     def test_stop_uses_exact_cursor_binding_and_followup_schema(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
@@ -380,12 +403,61 @@ class TestTicketCheckpoints:
 
     def test_session_end_requests_same_handoff_without_blocking(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
+        context = resolve_execution_context(host="codex", session_id="session-1", cwd=tmp_path)
+        assert context is not None
+        sibling = resolve_execution_context(host="codex", session_id="session-2", cwd=tmp_path)
+        assert sibling is not None
+        record_execution_ticket_context(tmp_path, sibling, "aaaa", feature="feature/checkpoint")
 
         output = json.loads(handle_session_end(self.event(tmp_path, "SessionEnd", reason="other")))
 
         assert "ticket aaaa" in output["systemMessage"]
         assert "continue" not in output
         assert checkpoint_state_file(tmp_path, "codex", "session-1").exists()
+        contexts = {item["context_id"]: item for item in list_execution_contexts(tmp_path)}
+        assert contexts[context.context_id]["active"] is False
+        assert contexts[sibling.context_id]["active"] is True
+
+    def test_session_end_uses_event_identity_over_ambient_context(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+        context = resolve_execution_context(host="codex", session_id="session-1", cwd=tmp_path)
+        assert context is not None
+        sibling = resolve_execution_context(host="codex", session_id="session-2", cwd=tmp_path)
+        assert sibling is not None
+        record_execution_ticket_context(tmp_path, sibling, "aaaa", feature="feature/checkpoint")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "session-2", "KD_HOST": "codex"}):
+            handle_session_end(self.event(tmp_path, "SessionEnd", reason="other"))
+
+        contexts = {item["context_id"]: item for item in list_execution_contexts(tmp_path)}
+        assert contexts[context.context_id]["active"] is False
+        assert contexts[sibling.context_id]["active"] is True
+
+    def test_session_resume_reactivates_exact_owned_context(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+        context = resolve_execution_context(host="codex", session_id="session-1", cwd=tmp_path)
+        assert context is not None
+        handle_session_end(self.event(tmp_path, "SessionEnd", reason="other"))
+
+        handle_session_start(self.event(tmp_path, "SessionStart", source="resume"))
+
+        stored = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
+        assert stored["active"] is True
+        assert "completed_at" not in stored
+
+    def test_session_end_finishes_context_without_eligible_checkpoint(self, tmp_path: Path) -> None:
+        ticket_path = self.setup_binding(tmp_path)
+        ticket = read_ticket(ticket_path)
+        ticket.status = "closed"
+        write_ticket(ticket, ticket_path)
+        context = resolve_execution_context(host="codex", session_id="session-1", cwd=tmp_path)
+        assert context is not None
+
+        assert handle_session_end(self.event(tmp_path, "SessionEnd", reason="other")) == ""
+
+        assert not checkpoint_state_file(tmp_path, "codex", "session-1").exists()
+        stored = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
+        assert stored["active"] is False
 
     def test_missing_exact_binding_fails_open_without_branch_guess(self, tmp_path: Path) -> None:
         ensure_branch_layout(tmp_path, "feature/checkpoint")

@@ -1077,6 +1077,7 @@ def ticket_start(
 
     ticket = update_ticket_status(ticket_id, "in_progress", assignee=context.context_id)
     clear_ticket_execution_contexts(base, ticket.id)
+    clear_terminal_ticket_contexts(base, ticket.id)
     record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
     record_terminal_ticket_context(base, ticket.id, feature=feature, location=location)
 
@@ -1376,6 +1377,7 @@ def ticket_close(
     ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
     write_ticket(ticket, ticket_path)
     clear_ticket_execution_contexts(base, ticket.id, now=closed_at)
+    clear_terminal_ticket_contexts(base, ticket.id, now=closed_at)
 
     if reason:
         from kingdom.harness import format_worklog_timestamp

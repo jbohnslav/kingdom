@@ -309,11 +309,16 @@ def resolve_execution_context(
     agent_type: str | None = None,
     cwd: Path | None = None,
     now: datetime | None = None,
+    prefer_session_id: bool = False,
 ) -> ExecutionContext | None:
     explicit_context = os.environ.get("KD_CONTEXT")
     codex_thread = os.environ.get("CODEX_THREAD_ID")
 
-    if explicit_context:
+    if session_id and prefer_session_id:
+        stable_id = validate_context_identifier("session_id", session_id)
+        source = "hook"
+        resolved_host = host or os.environ.get("KD_HOST") or "hook"
+    elif explicit_context:
         stable_id = validate_context_identifier("KD_CONTEXT", explicit_context)
         source = "KD_CONTEXT"
         resolved_host = host or os.environ.get("KD_HOST") or "kingdom"
@@ -687,7 +692,6 @@ def clear_terminal_ticket_contexts(
     if not contexts_root.exists():
         return 0
 
-    timestamp = (now or datetime.now(UTC)).isoformat()
     cleared = 0
     for path in sorted(contexts_root.glob("*.json")):
         lock_path = path.parent / f".{path.name}.lock"
@@ -698,10 +702,7 @@ def clear_terminal_ticket_contexts(
                 continue
             if data.get("ticket_id") != ticket_id:
                 continue
-            data["ticket_id"] = None
-            data["updated_at"] = timestamp
-            data["unbound_at"] = timestamp
-            write_json(path, data)
+            path.unlink(missing_ok=True)
             cleared += 1
     return cleared
 
