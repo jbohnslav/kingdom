@@ -228,13 +228,13 @@ def test_published_matrix_has_dated_versioned_host_contract() -> None:
     matrix = SUPPORT_MATRIX.read_text(encoding="utf-8")
 
     for required_text in (
-        "Verified: 2026-08-03",
+        "Verified: 2026-08-21",
         "Kingdom: 1.0.0",
-        "Baseline commit: `676d4894f7a8c931ee3ff7b8673d36d54d84bd35`",
+        "Baseline commit: `a9120675c2cadcd62c9117f8e2cc329f48cdd7d9`",
         "Claude Code 2.1.220",
-        "Codex CLI 0.146.0-alpha.9.2",
+        "Codex CLI 0.147.0-alpha.6.6",
         "Cursor Agent 2026.02.27-e7d2ef6",
-        "Cursor desktop 3.14.7",
+        "Cursor desktop 3.17.8",
         "**Live**",
         "**Contract**",
         "**Limited**",
