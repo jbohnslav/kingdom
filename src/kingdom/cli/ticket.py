@@ -41,6 +41,7 @@ from kingdom.state import (
     refresh_execution_context_activity,
     resolve_current_run,
     resolve_execution_context,
+    ticket_assignment_lock_path,
 )
 from kingdom.ticket import (
     STATUSES,
@@ -1068,18 +1069,20 @@ def ticket_start(
         print_error("No execution context detected. Set KD_CONTEXT before starting a ticket.")
         raise typer.Exit(code=1)
 
-    _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
-    location = terminal_context_location_for_start(base, ticket_path)
-    previous_binding = read_execution_ticket_context(base, context)
-    if previous_binding:
-        previous_ticket_id = previous_binding["ticket_id"]
-        unassign_previous_context_ticket(base, context.context_id, previous_ticket_id, ticket_id)
+    ticket, _ = resolve_ticket_or_exit(base, ticket_id)
+    with flock(ticket_assignment_lock_path(base)):
+        _, ticket_path = resolve_ticket_or_exit(base, ticket.id)
+        location = terminal_context_location_for_start(base, ticket_path)
+        previous_binding = read_execution_ticket_context(base, context)
+        if previous_binding:
+            previous_ticket_id = previous_binding["ticket_id"]
+            unassign_previous_context_ticket(base, context.context_id, previous_ticket_id, ticket.id)
 
-    ticket = update_ticket_status(ticket_id, "in_progress", assignee=context.context_id)
-    clear_ticket_execution_contexts(base, ticket.id)
-    clear_terminal_ticket_contexts(base, ticket.id)
-    record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
-    record_terminal_ticket_context(base, ticket.id, feature=feature, location=location)
+        ticket = update_ticket_status(ticket.id, "in_progress", assignee=context.context_id)
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
+        record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
+        record_terminal_ticket_context(base, ticket.id, feature=feature, location=location)
 
 
 @ticket_app.command("current", help="Show the ticket bound to this execution context.")
@@ -1132,52 +1135,55 @@ def ticket_current(
             print_error("No execution context detected. Set KD_CONTEXT or use --branch-fallback.")
             raise typer.Exit(code=1)
 
-        binding = read_execution_ticket_context(base, context)
-        if binding is None:
-            try:
-                binding = migrate_legacy_execution_binding(base, context, feature)
-            except AmbiguousLegacyTickets as exc:
-                if id_only:
+        with flock(ticket_assignment_lock_path(base)):
+            binding = read_execution_ticket_context(base, context)
+            if binding is None:
+                try:
+                    binding = migrate_legacy_execution_binding(base, context, feature)
+                except AmbiguousLegacyTickets as exc:
+                    if id_only:
+                        raise typer.Exit(code=1) from None
+                    ticket_list = ", ".join(exc.ticket_ids)
+                    print_error(
+                        f"Multiple legacy in-progress tickets ({ticket_list}); refusing to guess. "
+                        "Run `kd tk start <id>` to bind this context explicitly."
+                    )
                     raise typer.Exit(code=1) from None
-                ticket_list = ", ".join(exc.ticket_ids)
+            if binding is None or binding.get("feature") != normalize_branch_name(feature):
+                if id_only:
+                    raise typer.Exit(code=1)
                 print_error(
-                    f"Multiple legacy in-progress tickets ({ticket_list}); refusing to guess. "
-                    "Run `kd tk start <id>` to bind this context explicitly."
+                    "No ticket bound to this execution context. Run `kd tk start <id>` or use `--branch-fallback`."
                 )
-                raise typer.Exit(code=1) from None
-        if binding is None or binding.get("feature") != normalize_branch_name(feature):
-            if id_only:
                 raise typer.Exit(code=1)
-            print_error("No ticket bound to this execution context. Run `kd tk start <id>` or use `--branch-fallback`.")
-            raise typer.Exit(code=1)
 
-        bound_ticket = ticket_from_execution_binding(base, binding)
-        if bound_ticket is None:
-            if id_only:
+            bound_ticket = ticket_from_execution_binding(base, binding)
+            if bound_ticket is None:
+                if id_only:
+                    raise typer.Exit(code=1)
+                print_error(f"Bound ticket {binding['ticket_id']} cannot be found. Run `kd tk start <id>` to recover.")
                 raise typer.Exit(code=1)
-            print_error(f"Bound ticket {binding['ticket_id']} cannot be found. Run `kd tk start <id>` to recover.")
-            raise typer.Exit(code=1)
-        ticket, ticket_path = bound_ticket
-        if ticket.status == "in_progress" and ticket.assignee in (None, "hand"):
-            write_ticket_assignee(ticket_path, context.context_id)
-            ticket.assignee = context.context_id
-        wrong_assignee = ticket.assignee != context.context_id
-        excluded = exclude_peasant and (ticket.assignee or "").startswith("peasant-")
-        if ticket.status != "in_progress" or wrong_assignee or excluded:
-            if id_only:
+            ticket, ticket_path = bound_ticket
+            if ticket.status == "in_progress" and ticket.assignee in (None, "hand"):
+                write_ticket_assignee(ticket_path, context.context_id)
+                ticket.assignee = context.context_id
+            wrong_assignee = ticket.assignee != context.context_id
+            excluded = exclude_peasant and (ticket.assignee or "").startswith("peasant-")
+            if ticket.status != "in_progress" or wrong_assignee or excluded:
+                if id_only:
+                    raise typer.Exit(code=1)
+                print_error(
+                    f"Bound ticket {ticket.id} is no longer active for this execution context. "
+                    "Run `kd tk start <id>` to recover."
+                )
                 raise typer.Exit(code=1)
-            print_error(
-                f"Bound ticket {ticket.id} is no longer active for this execution context. "
-                "Run `kd tk start <id>` to recover."
+            record_execution_ticket_context(
+                base,
+                context,
+                ticket.id,
+                feature=feature,
+                location=binding.get("location"),
             )
-            raise typer.Exit(code=1)
-        record_execution_ticket_context(
-            base,
-            context,
-            ticket.id,
-            feature=feature,
-            location=binding.get("location"),
-        )
 
     if id_only:
         typer.echo(ticket.id)
@@ -1351,50 +1357,52 @@ def ticket_close(
     except RuntimeError:
         pass  # no active branch — skip the check
 
-    old_status = ticket.status
-    closed_at = datetime.now(UTC).replace(microsecond=0)
-    try:
-        context = resolve_execution_context()
-    except ValueError as exc:
-        print_error(str(exc))
-        raise typer.Exit(code=1) from None
-    ticket.status = "closed"
-    ticket.closed_at = closed_at
-    ticket.resolution = close_resolution
-    ticket.close_reason = reason
-    ticket.closed_context = context.context_id if context else None
-    ticket.duplicate_of = duplicate_target_id if close_resolution == "duplicate" else None
-    ticket.superseded_by = superseding_ticket_id if close_resolution == "superseded" else None
-    reference_id = ticket.duplicate_of or ticket.superseded_by
-    context_tag = f" [{ticket.closed_context}]" if ticket.closed_context else ""
-    lifecycle_details = f"closed ({close_resolution})"
-    if reference_id:
-        lifecycle_details += f" [reference: {reference_id}]"
-    if reason:
-        lifecycle_details += f": {' '.join(reason.splitlines())}"
-    lifecycle_timestamp = closed_at.isoformat().replace("+00:00", "Z")
-    lifecycle_entry = f"- {lifecycle_timestamp}{context_tag} — {lifecycle_details}"
-    ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
-    write_ticket(ticket, ticket_path)
-    clear_ticket_execution_contexts(base, ticket.id, now=closed_at)
-    clear_terminal_ticket_contexts(base, ticket.id, now=closed_at)
+    with flock(ticket_assignment_lock_path(base)):
+        ticket, ticket_path = resolve_ticket_or_exit(base, ticket.id)
+        old_status = ticket.status
+        closed_at = datetime.now(UTC).replace(microsecond=0)
+        try:
+            context = resolve_execution_context()
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(code=1) from None
+        ticket.status = "closed"
+        ticket.closed_at = closed_at
+        ticket.resolution = close_resolution
+        ticket.close_reason = reason
+        ticket.closed_context = context.context_id if context else None
+        ticket.duplicate_of = duplicate_target_id if close_resolution == "duplicate" else None
+        ticket.superseded_by = superseding_ticket_id if close_resolution == "superseded" else None
+        reference_id = ticket.duplicate_of or ticket.superseded_by
+        context_tag = f" [{ticket.closed_context}]" if ticket.closed_context else ""
+        lifecycle_details = f"closed ({close_resolution})"
+        if reference_id:
+            lifecycle_details += f" [reference: {reference_id}]"
+        if reason:
+            lifecycle_details += f": {' '.join(reason.splitlines())}"
+        lifecycle_timestamp = closed_at.isoformat().replace("+00:00", "Z")
+        lifecycle_entry = f"- {lifecycle_timestamp}{context_tag} — {lifecycle_details}"
+        ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
+        write_ticket(ticket, ticket_path)
+        clear_ticket_execution_contexts(base, ticket.id, now=closed_at)
+        clear_terminal_ticket_contexts(base, ticket.id, now=closed_at)
 
-    if reason:
-        from kingdom.harness import format_worklog_timestamp
+        if reason:
+            from kingdom.harness import format_worklog_timestamp
 
-        append_worklog_entry(
-            ticket_path,
-            f"Closed: {reason}",
-            timestamp=closed_at,
-            timestamp_text=format_worklog_timestamp(closed_at),
-            author=ticket.closed_context,
-        )
+            append_worklog_entry(
+                ticket_path,
+                f"Closed: {reason}",
+                timestamp=closed_at,
+                timestamp_text=format_worklog_timestamp(closed_at),
+                author=ticket.closed_context,
+            )
 
-    # Auto-archive: closing a backlog ticket moves it to archive/backlog/tickets/
-    backlog_tickets = backlog_root(base) / "tickets"
-    archive_backlog_tickets = archive_root(base) / "backlog" / "tickets"
-    if ticket_path.parent.resolve() == backlog_tickets.resolve():
-        ticket_path = move_ticket(ticket_path, archive_backlog_tickets)
+        # Auto-archive: closing a backlog ticket moves it to archive/backlog/tickets/
+        backlog_tickets = backlog_root(base) / "tickets"
+        archive_backlog_tickets = archive_root(base) / "backlog" / "tickets"
+        if ticket_path.parent.resolve() == backlog_tickets.resolve():
+            ticket_path = move_ticket(ticket_path, archive_backlog_tickets)
 
     typer.echo(f"{ticket.id}: {old_status} → closed — {ticket.title}")
 
@@ -1412,43 +1420,45 @@ def ticket_reopen(
 ) -> None:
     """Set ticket status back to open."""
     base = require_project_root()
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
-    old_status = ticket.status
-    reopened_at = datetime.now(UTC).replace(microsecond=0)
+    with flock(ticket_assignment_lock_path(base)):
+        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        old_status = ticket.status
+        reopened_at = datetime.now(UTC).replace(microsecond=0)
 
-    if ticket.status == "closed":
-        previous_resolution = effective_resolution(ticket) or "completed"
-        reference_id = ticket.duplicate_of or ticket.superseded_by
-        try:
-            context = resolve_execution_context()
-        except ValueError as exc:
-            print_error(str(exc))
-            raise typer.Exit(code=1) from None
-        context_tag = f" [{context.context_id}]" if context else ""
-        lifecycle_details = f"reopened (previous: {previous_resolution})"
-        if reference_id:
-            lifecycle_details += f" [reference: {reference_id}]"
-        if ticket.close_reason:
-            lifecycle_details += f": {' '.join(ticket.close_reason.splitlines())}"
-        lifecycle_timestamp = reopened_at.isoformat().replace("+00:00", "Z")
-        lifecycle_entry = f"- {lifecycle_timestamp}{context_tag} — {lifecycle_details}"
-        ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
+        if ticket.status == "closed":
+            previous_resolution = effective_resolution(ticket) or "completed"
+            reference_id = ticket.duplicate_of or ticket.superseded_by
+            try:
+                context = resolve_execution_context()
+            except ValueError as exc:
+                print_error(str(exc))
+                raise typer.Exit(code=1) from None
+            context_tag = f" [{context.context_id}]" if context else ""
+            lifecycle_details = f"reopened (previous: {previous_resolution})"
+            if reference_id:
+                lifecycle_details += f" [reference: {reference_id}]"
+            if ticket.close_reason:
+                lifecycle_details += f": {' '.join(ticket.close_reason.splitlines())}"
+            lifecycle_timestamp = reopened_at.isoformat().replace("+00:00", "Z")
+            lifecycle_entry = f"- {lifecycle_timestamp}{context_tag} — {lifecycle_details}"
+            ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
 
-    ticket.status = "open"
-    ticket.closed_at = None
-    ticket.resolution = None
-    ticket.close_reason = None
-    ticket.closed_context = None
-    ticket.duplicate_of = None
-    ticket.superseded_by = None
-    ticket.assignee = None
-    write_ticket(ticket, ticket_path)
+        ticket.status = "open"
+        ticket.closed_at = None
+        ticket.resolution = None
+        ticket.close_reason = None
+        ticket.closed_context = None
+        ticket.duplicate_of = None
+        ticket.superseded_by = None
+        ticket.assignee = None
+        write_ticket(ticket, ticket_path)
 
-    archive_backlog_tickets = archive_root(base) / "backlog" / "tickets"
-    if ticket_path.parent.resolve() == archive_backlog_tickets.resolve():
-        ticket_path = move_ticket(ticket_path, backlog_root(base) / "tickets")
+        archive_backlog_tickets = archive_root(base) / "backlog" / "tickets"
+        if ticket_path.parent.resolve() == archive_backlog_tickets.resolve():
+            ticket_path = move_ticket(ticket_path, backlog_root(base) / "tickets")
 
-    clear_ticket_execution_contexts(base, ticket.id, now=reopened_at)
+        clear_ticket_execution_contexts(base, ticket.id, now=reopened_at)
+        clear_terminal_ticket_contexts(base, ticket.id, now=reopened_at)
     typer.echo(f"{ticket.id}: {old_status} → open — {ticket.title}")
 
 
@@ -1458,9 +1468,11 @@ def ticket_status(
     status: Annotated[str, typer.Argument(help="New status (e.g. blocked, in_review, waiting).")],
 ) -> None:
     """Set ticket status to any arbitrary string."""
-    ticket = update_ticket_status(ticket_id, status, clear_assignee=status != "in_progress")
-    if status != "in_progress":
-        base = require_project_root()
+    base = require_project_root()
+    with flock(ticket_assignment_lock_path(base)):
+        ticket = update_ticket_status(ticket_id, status, clear_assignee=status != "in_progress")
+        if status == "in_progress":
+            return
         clear_ticket_execution_contexts(base, ticket.id)
         clear_terminal_ticket_contexts(base, ticket.id)
 
@@ -1495,9 +1507,11 @@ def ticket_delete(
             typer.echo("Cancelled.")
             raise typer.Exit(code=0)
 
-    delete_ticket(ticket_path)
-    clear_ticket_execution_contexts(base, ticket.id)
-    clear_terminal_ticket_contexts(base, ticket.id)
+    with flock(ticket_assignment_lock_path(base)):
+        ticket, ticket_path = resolve_ticket_or_exit(base, ticket.id)
+        delete_ticket(ticket_path)
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
     typer.echo(f"Deleted {ticket.id} — {ticket.title}")
 
 
@@ -1742,9 +1756,14 @@ def ticket_assign(
     """Set the assignee field on a ticket."""
     base = require_project_root()
 
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
-    ticket.assignee = agent
-    write_ticket(ticket, ticket_path)
+    with flock(ticket_assignment_lock_path(base)):
+        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        changed_owner = ticket.assignee != agent
+        ticket.assignee = agent
+        write_ticket(ticket, ticket_path)
+        if changed_owner:
+            clear_ticket_execution_contexts(base, ticket.id)
+            clear_terminal_ticket_contexts(base, ticket.id)
     typer.echo(f"{ticket.id}: assigned to {agent}")
 
 
@@ -1755,9 +1774,12 @@ def ticket_unassign(
     """Clear the assignee field on a ticket."""
     base = require_project_root()
 
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
-    ticket.assignee = None
-    write_ticket(ticket, ticket_path)
+    with flock(ticket_assignment_lock_path(base)):
+        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        ticket.assignee = None
+        write_ticket(ticket, ticket_path)
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
     typer.echo(f"{ticket.id}: unassigned")
 
 
@@ -1804,28 +1826,10 @@ def ticket_parent(
             typer.echo(f"{ticket.id}: parent set to {parent_ticket.id}")
 
 
-@ticket_app.command("defer", help="Return branch work to the backlog for later.")
-def ticket_defer(
-    ticket_ids: Annotated[list[str], typer.Argument(help="Ticket ID(s) (full or partial).")],
-    reason: Annotated[str, typer.Option("--reason", "-m", help="Why this work is being deferred.")],
-) -> None:
-    """Reset branch work to open/unassigned and return it to backlog."""
+def defer_tickets_locked(base: Path, ticket_ids: list[str], reason: str, context_id: str | None) -> None:
     from kingdom.session import find_active_peasant_branch
 
-    base = require_project_root()
-    reason = " ".join(reason.splitlines()).strip()
-    if not reason:
-        print_error("--reason must be non-empty")
-        raise typer.Exit(code=1)
-
-    try:
-        context = resolve_execution_context()
-    except ValueError as exc:
-        print_error(str(exc))
-        raise typer.Exit(code=1) from None
-    context_id = context.context_id if context else None
     backlog_tickets = backlog_root(base) / "tickets"
-
     validated: list[tuple[Ticket, Path, str]] = []
     already_backlogged: list[Ticket] = []
     seen_ids: set[str] = set()
@@ -1891,6 +1895,29 @@ def ticket_defer(
         typer.echo(f"Ticket {ticket.id} is already in backlog")
 
 
+@ticket_app.command("defer", help="Return branch work to the backlog for later.")
+def ticket_defer(
+    ticket_ids: Annotated[list[str], typer.Argument(help="Ticket ID(s) (full or partial).")],
+    reason: Annotated[str, typer.Option("--reason", "-m", help="Why this work is being deferred.")],
+) -> None:
+    """Reset branch work to open/unassigned and return it to backlog."""
+    base = require_project_root()
+    reason = " ".join(reason.splitlines()).strip()
+    if not reason:
+        print_error("--reason must be non-empty")
+        raise typer.Exit(code=1)
+
+    try:
+        context = resolve_execution_context()
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
+    context_id = context.context_id if context else None
+
+    with flock(ticket_assignment_lock_path(base)):
+        defer_tickets_locked(base, ticket_ids, reason, context_id)
+
+
 def start_pulled_ticket(
     base: Path,
     feature: str,
@@ -1898,21 +1925,34 @@ def start_pulled_ticket(
     ticket: Ticket,
     ticket_path: Path,
 ) -> None:
-    previous_binding = read_execution_ticket_context(base, context)
-    if previous_binding:
-        unassign_previous_context_ticket(
-            base,
-            context.context_id,
-            previous_binding["ticket_id"],
-            ticket.id,
-        )
+    with flock(ticket_assignment_lock_path(base)):
+        current = read_ticket(ticket_path)
+        if current.id != ticket.id or current.status != "open":
+            print_error(
+                f"Ticket {ticket.id} changed while it was being pulled; run `kd tk start {ticket.id}` explicitly."
+            )
+            raise typer.Exit(code=1)
+        if current.assignee not in (None, "hand", context.context_id):
+            print_error(f"Ticket {ticket.id} is already assigned to {compact_context_id(current.assignee)}.")
+            raise typer.Exit(code=1)
 
-    ticket.status = "in_progress"
-    ticket.assignee = context.context_id
-    write_ticket(ticket, ticket_path)
-    location = f"branch:{normalize_branch_name(feature)}"
-    record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
-    record_terminal_ticket_context(base, ticket.id, feature=feature, location=location)
+        previous_binding = read_execution_ticket_context(base, context)
+        if previous_binding:
+            unassign_previous_context_ticket(
+                base,
+                context.context_id,
+                previous_binding["ticket_id"],
+                current.id,
+            )
+
+        current.status = "in_progress"
+        current.assignee = context.context_id
+        write_ticket(current, ticket_path)
+        clear_ticket_execution_contexts(base, current.id)
+        clear_terminal_ticket_contexts(base, current.id)
+        location = f"branch:{normalize_branch_name(feature)}"
+        record_execution_ticket_context(base, context, current.id, feature=feature, location=location)
+        record_terminal_ticket_context(base, current.id, feature=feature, location=location)
 
 
 @ticket_app.command("pull", help="Select backlog tickets for work on the current branch.")

@@ -6,9 +6,10 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib.resources.abc import Traversable
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
 import typer
@@ -188,6 +189,41 @@ def skill_manifest(files: dict[str, bytes]) -> dict[str, object]:
     }
 
 
+def skill_manifest_path_is_safe(name: str) -> bool:
+    posix_path = PurePosixPath(name)
+    windows_path = PureWindowsPath(name)
+    return (
+        bool(posix_path.parts)
+        and "\0" not in name
+        and not posix_path.anchor
+        and not windows_path.anchor
+        and ".." not in posix_path.parts
+        and ".." not in windows_path.parts
+    )
+
+
+def skill_paths_are_safe(target: Path, names: Iterable[str]) -> bool:
+    try:
+        target_root = target.resolve(strict=False)
+        for name in names:
+            path = target / name
+            resolved_path = path.resolve(strict=False)
+            if not resolved_path.is_relative_to(target_root) or path.is_symlink():
+                return False
+            for parent in path.parents:
+                if parent == target:
+                    break
+                if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+                    return False
+            else:
+                return False
+            if path.exists() and not path.is_file():
+                return False
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
 def read_skill_manifest(path: Path) -> dict[str, str] | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -200,18 +236,20 @@ def read_skill_manifest(path: Path) -> dict[str, str] | None:
         return None
     if not all(isinstance(name, str) and isinstance(digest, str) for name, digest in files.items()):
         return None
+    if not all(skill_manifest_path_is_safe(name) for name in files):
+        return None
     return files
 
 
+def file_matches_hash(path: Path, expected: str) -> bool:
+    try:
+        return content_hash(path.read_bytes()) == expected
+    except OSError:
+        return False
+
+
 def target_matches_hashes(target: Path, hashes: dict[str, str]) -> bool:
-    for name, expected in hashes.items():
-        try:
-            actual = content_hash((target / name).read_bytes())
-        except OSError:
-            return False
-        if actual != expected:
-            return False
-    return True
+    return all(file_matches_hash(target / name, expected) for name, expected in hashes.items())
 
 
 def target_matches_bundle(target: Path, files: dict[str, bytes]) -> bool:
@@ -237,10 +275,16 @@ def install_skill_target(target: Path, files: dict[str, bytes]) -> tuple[SkillTa
         return "skipped", "dev symlink"
     if target.exists() and not target.is_dir():
         return "manual", "target exists and is not a directory"
+    if not all(skill_manifest_path_is_safe(name) for name in files) or not skill_paths_are_safe(target, files):
+        return "manual", "bundled skill paths are invalid"
 
     manifest_path = target / SKILL_MANIFEST
+    if not skill_paths_are_safe(target, [SKILL_MANIFEST]):
+        return "manual", "managed-file manifest is invalid"
     manifest_hashes = read_skill_manifest(manifest_path)
     if manifest_path.exists() and manifest_hashes is None:
+        return "manual", "managed-file manifest is invalid"
+    if manifest_hashes is not None and not skill_paths_are_safe(target, manifest_hashes):
         return "manual", "managed-file manifest is invalid"
 
     if manifest_hashes is None:
@@ -256,7 +300,8 @@ def install_skill_target(target: Path, files: dict[str, bytes]) -> tuple[SkillTa
         write_skill_bundle(target, files)
         return ("adopted", "existing files matched") if already_current else ("installed", "new managed install")
 
-    if not target_matches_hashes(target, manifest_hashes):
+    retained_hashes = {name: digest for name, digest in manifest_hashes.items() if name in files}
+    if not target_matches_hashes(target, retained_hashes):
         return "manual", "managed files were modified locally"
 
     untracked_conflicts = [
@@ -266,8 +311,18 @@ def install_skill_target(target: Path, files: dict[str, bytes]) -> tuple[SkillTa
     ]
     if untracked_conflicts:
         return "manual", f"new bundled files conflict: {', '.join(untracked_conflicts)}"
-    if target_matches_bundle(target, files):
+
+    next_hashes = {name: content_hash(content) for name, content in files.items()}
+    if target_matches_bundle(target, files) and manifest_hashes == next_hashes:
         return "skipped", "already current"
+
+    retired_files = [
+        target / name
+        for name, expected in manifest_hashes.items()
+        if name not in files and file_matches_hash(target / name, expected)
+    ]
+    for retired_file in retired_files:
+        retired_file.unlink()
 
     write_skill_bundle(target, files)
     return "updated", "managed files refreshed"

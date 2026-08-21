@@ -5,21 +5,26 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, current_thread
 from unittest.mock import patch
 
 import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
-from kingdom.cli.ticket import ticket_app
-from kingdom.doctor import legacy_context_issues
+from kingdom.cli.ticket import ticket_app, ticket_pull, ticket_reopen, ticket_start
+from kingdom.doctor import binding_issues, execution_context_issues, legacy_context_issues
 from kingdom.state import (
+    ExecutionContext,
     archive_root,
     backlog_root,
     branch_root,
+    clear_ticket_execution_contexts,
     ensure_branch_layout,
+    list_execution_contexts,
     read_execution_ticket_context,
     read_terminal_ticket_context,
     record_execution_ticket_context,
@@ -409,6 +414,265 @@ class TestTicketCloseArchive:
         assert replacement is not None
         assert replacement["ticket_id"] == "kin-reassign"
         assert legacy_context_issues(cli_project) == []
+
+    def test_concurrent_starts_by_one_context_leave_one_ticket_bound(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        first_path = create_ticket_in(branch_dir, "kin-race-a")
+        second_path = create_ticket_in(branch_dir, "kin-race-b")
+        context = resolve_execution_context(
+            session_id="shared-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        assert context is not None
+
+        first_reached_record = Event()
+        second_finished_record = Event()
+        release_first = Event()
+
+        def delayed_record(
+            base: Path,
+            current: ExecutionContext,
+            ticket_id: str,
+            *,
+            feature: str,
+            location: str | None = None,
+        ) -> None:
+            if current_thread().name.endswith("_0"):
+                first_reached_record.set()
+                assert release_first.wait(timeout=2)
+            record_execution_ticket_context(
+                base,
+                current,
+                ticket_id,
+                feature=feature,
+                location=location,
+            )
+            if current_thread().name.endswith("_1"):
+                second_finished_record.set()
+
+        with (
+            patch("kingdom.cli.ticket.resolve_execution_context", return_value=context),
+            patch("kingdom.cli.ticket.record_execution_ticket_context", side_effect=delayed_record),
+            patch("kingdom.cli.ticket.record_terminal_ticket_context"),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="starter") as pool,
+        ):
+            first_future = pool.submit(ticket_start, "kin-race-a")
+            assert first_reached_record.wait(timeout=2)
+            second_future = pool.submit(ticket_start, "kin-race-b")
+            assert not second_finished_record.wait(timeout=0.5)
+            release_first.set()
+            first_future.result(timeout=2)
+            second_future.result(timeout=2)
+
+        binding = read_execution_ticket_context(cli_project, context)
+        assert read_ticket(first_path).assignee is None
+        assert read_ticket(second_path).assignee == context.context_id
+        assert binding is not None
+        assert binding["ticket_id"] == "kin-race-b"
+        assert binding_issues(cli_project) == []
+        assert execution_context_issues(cli_project) == []
+
+    def test_concurrent_reassignment_does_not_unassign_new_owner(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        next_path = create_ticket_in(branch_dir, "kin-next")
+        previous_path = create_ticket_in(branch_dir, "kin-previous")
+        first = resolve_execution_context(
+            session_id="first-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        second = resolve_execution_context(
+            session_id="second-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        assert first is not None
+        assert second is not None
+        previous = read_ticket(previous_path)
+        previous.status = "in_progress"
+        previous.assignee = first.context_id
+        write_ticket(previous, previous_path)
+        record_execution_ticket_context(
+            cli_project,
+            first,
+            previous.id,
+            feature=BRANCH,
+            location=f"branch:{BRANCH}",
+        )
+
+        first_reached_stale_write = Event()
+        second_finished = Event()
+        release_first = Event()
+
+        def current_context() -> ExecutionContext:
+            return first if current_thread().name.endswith("_0") else second
+
+        def delayed_write(ticket: Ticket, path: Path) -> None:
+            if current_thread().name.endswith("_0") and ticket.id == previous.id and ticket.assignee is None:
+                first_reached_stale_write.set()
+                assert release_first.wait(timeout=2)
+            write_ticket(ticket, path)
+
+        def start_as_second() -> None:
+            ticket_start(previous.id)
+            second_finished.set()
+
+        with (
+            patch("kingdom.cli.ticket.resolve_execution_context", side_effect=current_context),
+            patch("kingdom.cli.ticket.write_ticket", side_effect=delayed_write),
+            patch("kingdom.cli.ticket.record_terminal_ticket_context"),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="starter") as pool,
+        ):
+            first_future = pool.submit(ticket_start, "kin-next")
+            assert first_reached_stale_write.wait(timeout=2)
+            second_future = pool.submit(start_as_second)
+            assert not second_finished.wait(timeout=0.5)
+            release_first.set()
+            first_future.result(timeout=2)
+            second_future.result(timeout=2)
+
+        contexts = {
+            binding["context_id"]: binding["ticket_id"]
+            for binding in list_execution_contexts(cli_project, feature=BRANCH)
+            if binding.get("active") and binding.get("ticket_id")
+        }
+        assert read_ticket(next_path).assignee == first.context_id
+        assert read_ticket(previous_path).assignee == second.context_id
+        assert contexts == {
+            first.context_id: "kin-next",
+            second.context_id: previous.id,
+        }
+        assert binding_issues(cli_project) == []
+        assert execution_context_issues(cli_project) == []
+
+    def test_pull_start_serializes_with_direct_start(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        direct_path = create_ticket_in(branch_dir, "kin-direct-race")
+        pulled_path = create_ticket_in(backlog_root(cli_project) / "tickets", "kin-pull-race")
+        context = resolve_execution_context(
+            session_id="shared-pull-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        assert context is not None
+
+        direct_reached_record = Event()
+        pull_finished = Event()
+        release_direct = Event()
+
+        def delayed_record(
+            base: Path,
+            current: ExecutionContext,
+            ticket_id: str,
+            *,
+            feature: str,
+            location: str | None = None,
+        ) -> None:
+            if current_thread().name.endswith("_0"):
+                direct_reached_record.set()
+                assert release_direct.wait(timeout=2)
+            record_execution_ticket_context(
+                base,
+                current,
+                ticket_id,
+                feature=feature,
+                location=location,
+            )
+
+        def pull_and_start() -> None:
+            ticket_pull(["kin-pull-race"], start=True)
+            pull_finished.set()
+
+        with (
+            patch("kingdom.cli.ticket.resolve_execution_context", return_value=context),
+            patch("kingdom.cli.ticket.record_execution_ticket_context", side_effect=delayed_record),
+            patch("kingdom.cli.ticket.record_terminal_ticket_context"),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="starter") as pool,
+        ):
+            direct_future = pool.submit(ticket_start, "kin-direct-race")
+            assert direct_reached_record.wait(timeout=2)
+            pull_future = pool.submit(pull_and_start)
+            assert not pull_finished.wait(timeout=0.5)
+            release_direct.set()
+            direct_future.result(timeout=2)
+            pull_future.result(timeout=2)
+
+        pulled_path = branch_dir / pulled_path.name
+        binding = read_execution_ticket_context(cli_project, context)
+        assert read_ticket(direct_path).assignee is None
+        assert read_ticket(pulled_path).assignee == context.context_id
+        assert binding is not None
+        assert binding["ticket_id"] == "kin-pull-race"
+        assert binding_issues(cli_project) == []
+        assert execution_context_issues(cli_project) == []
+
+    def test_reopen_serializes_ticket_clear_with_direct_start(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(branch_dir, "kin-reopen-race")
+        ticket = read_ticket(ticket_path)
+        ticket.status = "closed"
+        ticket.closed_at = datetime.now(UTC)
+        ticket.resolution = "completed"
+        write_ticket(ticket, ticket_path)
+        reopening = resolve_execution_context(
+            session_id="reopening-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        starting = resolve_execution_context(
+            session_id="starting-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        assert reopening is not None
+        assert starting is not None
+
+        reopen_reached_clear = Event()
+        start_finished = Event()
+        release_reopen = Event()
+
+        def current_context() -> ExecutionContext:
+            return reopening if current_thread().name.endswith("_0") else starting
+
+        def delayed_clear(base: Path, ticket_id: str, *, now: datetime | None = None) -> list[str]:
+            if current_thread().name.endswith("_0"):
+                reopen_reached_clear.set()
+                assert release_reopen.wait(timeout=2)
+            return clear_ticket_execution_contexts(base, ticket_id, now=now)
+
+        def start_ticket() -> None:
+            ticket_start("kin-reopen-race")
+            start_finished.set()
+
+        with (
+            patch("kingdom.cli.ticket.resolve_execution_context", side_effect=current_context),
+            patch("kingdom.cli.ticket.clear_ticket_execution_contexts", side_effect=delayed_clear),
+            patch("kingdom.cli.ticket.record_terminal_ticket_context"),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="starter") as pool,
+        ):
+            reopen_future = pool.submit(ticket_reopen, "kin-reopen-race")
+            assert reopen_reached_clear.wait(timeout=2)
+            start_future = pool.submit(start_ticket)
+            assert not start_finished.wait(timeout=0.5)
+            release_reopen.set()
+            reopen_future.result(timeout=2)
+            start_future.result(timeout=2)
+
+        binding = read_execution_ticket_context(cli_project, starting)
+        ticket = read_ticket(ticket_path)
+        assert ticket.status == "in_progress"
+        assert ticket.assignee == starting.context_id
+        assert binding is not None
+        assert binding["ticket_id"] == ticket.id
+        assert binding_issues(cli_project) == []
+        assert execution_context_issues(cli_project) == []
 
     def test_start_without_active_session_does_not_mutate_ticket(self) -> None:
         with runner.isolated_filesystem():
@@ -1041,6 +1305,47 @@ class TestTicketContextLifecycle:
 
         assert result.exit_code == 0, result.output
         with patch.dict(os.environ, {"TERM_SESSION_ID": "close-terminal"}, clear=True):
+            assert read_terminal_ticket_context(cli_project) is None
+        assert legacy_context_issues(cli_project) == []
+
+    def test_reopen_clears_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-term-reopen")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "reopen-session", "TERM_SESSION_ID": "reopen-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-term-reopen"]).exit_code == 0
+            assert read_terminal_ticket_context(cli_project) is not None
+
+            result = runner.invoke(ticket_app, ["reopen", "kin-term-reopen"])
+
+            assert result.exit_code == 0, result.output
+            assert read_terminal_ticket_context(cli_project) is None
+        assert legacy_context_issues(cli_project) == []
+
+    def test_reopen_clears_terminal_binding_retained_after_interrupted_close(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(branch_dir, "kin-term-interrupted")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "interrupted-session", "TERM_SESSION_ID": "interrupted-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-term-interrupted"]).exit_code == 0
+            ticket = read_ticket(ticket_path)
+            ticket.status = "closed"
+            ticket.closed_at = datetime.now(UTC)
+            ticket.resolution = "completed"
+            write_ticket(ticket, ticket_path)
+            assert legacy_context_issues(cli_project)
+
+            result = runner.invoke(ticket_app, ["reopen", "kin-term-interrupted"])
+
+            assert result.exit_code == 0, result.output
             assert read_terminal_ticket_context(cli_project) is None
         assert legacy_context_issues(cli_project) == []
 

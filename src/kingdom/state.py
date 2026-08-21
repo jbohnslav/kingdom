@@ -231,6 +231,10 @@ def execution_context_root(base: Path) -> Path:
     return runtime_root(base) / "contexts"
 
 
+def ticket_assignment_lock_path(base: Path) -> Path:
+    return runtime_root(base) / ".ticket-assignment.lock"
+
+
 @dataclass(frozen=True)
 class ExecutionContext:
     context_id: str

@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import os
 import signal
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
-from kingdom.cli.peasant import peasant_app, resolve_invocation_git_root, resolve_peasant_context
-from kingdom.cli.ticket import ticket_app
+from kingdom.cli.peasant import peasant_app, resolve_invocation_git_root, resolve_peasant_context, start_peasant
+from kingdom.cli.ticket import ticket_app, ticket_start
+from kingdom.doctor import execution_context_issues
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
 from kingdom.state import (
     backlog_root,
@@ -19,6 +24,8 @@ from kingdom.state import (
     ensure_branch_layout,
     logs_root,
     normalize_branch_name,
+    read_execution_ticket_context,
+    resolve_execution_context,
     set_current_run,
 )
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
@@ -52,6 +59,55 @@ def create_test_ticket(base: Path, ticket_id: str = "kin-test", status: str = "o
 
 
 class TestPeasantStart:
+    def test_start_does_not_overwrite_concurrent_native_owner(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base)
+            peasant_context = resolve_peasant_context("kin-test")
+            native = resolve_execution_context(
+                session_id="native-owner",
+                host="codex",
+                cwd=base,
+                prefer_session_id=True,
+            )
+            assert native is not None
+
+            peasant_reached_worktree = Event()
+            release_peasant = Event()
+
+            def delayed_create_worktree(*args: object, **kwargs: object) -> Path:
+                peasant_reached_worktree.set()
+                assert release_peasant.wait(timeout=2)
+                return base / ".kd" / "worktrees" / "kin-test"
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", side_effect=delayed_create_worktree),
+                patch("kingdom.cli.launch_work_background", return_value=12345),
+                patch("kingdom.cli.ticket.resolve_execution_context", return_value=native),
+                ThreadPoolExecutor(max_workers=1) as pool,
+            ):
+                peasant_future = pool.submit(
+                    start_peasant,
+                    peasant_context,
+                    agent="claude",
+                    hand=False,
+                    tmux=False,
+                    no_preflight=True,
+                )
+                assert peasant_reached_worktree.wait(timeout=2)
+                ticket_start("kin-test")
+                release_peasant.set()
+                with pytest.raises(typer.Exit):
+                    peasant_future.result(timeout=2)
+
+            ticket = read_ticket(ticket_path)
+            binding = read_execution_ticket_context(base, native)
+            assert ticket.assignee == native.context_id
+            assert binding is not None
+            assert binding["ticket_id"] == ticket.id
+            assert execution_context_issues(base) == []
+
     def test_start_allows_closed_dependency_from_another_workspace(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -234,6 +290,20 @@ class TestPeasantStart:
             # Verify the ticket was transitioned to in_progress
             ticket = read_ticket(ticket_path)
             assert ticket.status == "in_progress"
+
+    def test_start_preserves_custom_nonterminal_status(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base, status="waiting")
+
+            with patch("kingdom.cli.launch_work_background", return_value=12345):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            ticket = read_ticket(ticket_path)
+            assert ticket.status == "waiting"
+            assert ticket.assignee == "peasant-kin-test"
 
     def test_start_with_watch_calls_peasant_watch(self) -> None:
         with runner.isolated_filesystem():

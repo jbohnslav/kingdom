@@ -7,7 +7,15 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from kingdom.cli import app
-from kingdom.cli.helpers import install_skill, skill_install_targets
+from kingdom.cli.helpers import (
+    SKILL_MANIFEST,
+    content_hash,
+    install_skill,
+    install_skill_target,
+    read_skill_manifest,
+    skill_install_targets,
+    write_skill_bundle,
+)
 from kingdom.state import (
     branch_root,
     ensure_base_layout,
@@ -531,6 +539,224 @@ def test_install_skill_idempotent(tmp_path: Path) -> None:
 
     skill_dir = fake_home / ".claude" / "skills" / "kingdom"
     assert (skill_dir / "SKILL.md").exists()
+
+
+def test_install_skill_target_removes_unmodified_retired_files(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    current_files = {
+        "SKILL.md": b"current skill\n",
+        "references/retired.md": b"retired reference\n",
+    }
+    next_files = {"SKILL.md": b"current skill\n"}
+    write_skill_bundle(target, current_files)
+
+    status, note = install_skill_target(target, next_files)
+
+    assert (status, note) == ("updated", "managed files refreshed")
+    assert not (target / "references" / "retired.md").exists()
+    assert read_skill_manifest(target / SKILL_MANIFEST) == {"SKILL.md": content_hash(next_files["SKILL.md"])}
+
+
+def test_install_skill_target_preserves_modified_retired_files(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    current_files = {
+        "SKILL.md": b"old skill\n",
+        "references/retired.md": b"managed reference\n",
+    }
+    next_files = {"SKILL.md": b"new skill\n"}
+    write_skill_bundle(target, current_files)
+    retired = target / "references" / "retired.md"
+    retired.write_bytes(b"user customization\n")
+
+    status, note = install_skill_target(target, next_files)
+
+    assert (status, note) == ("updated", "managed files refreshed")
+    assert (target / "SKILL.md").read_bytes() == next_files["SKILL.md"]
+    assert retired.read_bytes() == b"user customization\n"
+    assert read_skill_manifest(target / SKILL_MANIFEST) == {"SKILL.md": content_hash(next_files["SKILL.md"])}
+    assert install_skill_target(target, next_files) == ("skipped", "already current")
+    assert retired.read_bytes() == b"user customization\n"
+
+
+def test_install_skill_target_rejects_manifest_paths_outside_target(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(b"previously managed\n")
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"../outside.md": content_hash(outside.read_bytes())},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert outside.read_bytes() == b"previously managed\n"
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_retired_file_through_symlinked_parent(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    retired = outside / "retired.md"
+    retired.write_bytes(b"previously managed\n")
+    (target / "references").symlink_to(outside, target_is_directory=True)
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"references/retired.md": content_hash(retired.read_bytes())},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert retired.read_bytes() == b"previously managed\n"
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_retired_file_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(b"previously managed\n")
+    retired = target / "retired.md"
+    retired.symlink_to(outside)
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"retired.md": content_hash(outside.read_bytes())},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert retired.is_symlink()
+    assert outside.read_bytes() == b"previously managed\n"
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_nul_manifest_path(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"references/retired\0.md": content_hash(b"managed\n")},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_manifest_path_resolution_error(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    loop = target / "loop"
+    loop.symlink_to(loop)
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"loop/retired.md": content_hash(b"managed\n")},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_new_file_through_symlinked_parent(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (target / "references").symlink_to(outside, target_is_directory=True)
+
+    result = install_skill_target(target, {"references/new.md": b"new reference\n"})
+
+    assert result == ("manual", "bundled skill paths are invalid")
+    assert not (outside / "new.md").exists()
+    assert not (target / SKILL_MANIFEST).exists()
+
+
+def test_install_skill_target_rejects_live_manifest_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_bytes(b"old skill\n")
+    outside_manifest = tmp_path / "outside-manifest.json"
+    write_json(
+        outside_manifest,
+        {
+            "schema_version": 1,
+            "files": {"SKILL.md": content_hash(skill.read_bytes())},
+        },
+    )
+    original_manifest = outside_manifest.read_bytes()
+    (target / SKILL_MANIFEST).symlink_to(outside_manifest)
+
+    result = install_skill_target(target, {"SKILL.md": b"new skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert skill.read_bytes() == b"old skill\n"
+    assert outside_manifest.read_bytes() == original_manifest
+
+
+def test_install_skill_target_rejects_dangling_manifest_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside_manifest = tmp_path / "missing" / "outside-manifest.json"
+    manifest = target / SKILL_MANIFEST
+    manifest.symlink_to(outside_manifest)
+
+    result = install_skill_target(target, {"SKILL.md": b"new skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert manifest.is_symlink()
+    assert not outside_manifest.exists()
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_regular_file_as_incoming_parent(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    current_files = {
+        "SKILL.md": b"old skill\n",
+        "retired.md": b"retired reference\n",
+    }
+    write_skill_bundle(target, current_files)
+    manifest = target / SKILL_MANIFEST
+    original_manifest = manifest.read_bytes()
+    references = target / "references"
+    references.write_bytes(b"user file\n")
+
+    result = install_skill_target(
+        target,
+        {
+            "SKILL.md": b"new skill\n",
+            "references/new.md": b"new reference\n",
+        },
+    )
+
+    assert result == ("manual", "bundled skill paths are invalid")
+    assert (target / "SKILL.md").read_bytes() == current_files["SKILL.md"]
+    assert (target / "retired.md").read_bytes() == current_files["retired.md"]
+    assert references.read_bytes() == b"user file\n"
+    assert manifest.read_bytes() == original_manifest
 
 
 def test_install_skill_reports_each_supported_host(tmp_path: Path, capsys) -> None:

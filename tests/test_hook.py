@@ -115,6 +115,30 @@ class TestSubagentLifecycle:
         assert ticket.assignee == child.context_id
         assert read_execution_ticket_context(tmp_path, child)["ticket_id"] == "bbbb"
 
+    def test_reused_child_identity_unassigns_its_previous_explicit_ticket(self, tmp_path: Path) -> None:
+        parent, _ = self.setup_parent(tmp_path)
+        branch = ensure_branch_layout(tmp_path, "feature/native-agents")
+        first_path = branch / "tickets" / "bbbb.md"
+        second_path = branch / "tickets" / "cccc.md"
+        write_ticket(Ticket(id="bbbb", status="open", title="First child ticket"), first_path)
+        write_ticket(Ticket(id="cccc", status="open", title="Second child ticket"), second_path)
+
+        handle_subagent_start(self.event(tmp_path, "SubagentStart", ticket_id="bbbb"))
+        handle_subagent_start(self.event(tmp_path, "SubagentStart", ticket_id="cccc"))
+
+        child = resolve_execution_context(
+            host="codex",
+            session_id="child-1",
+            role="subagent",
+            parent_agent_id=parent.context_id,
+            agent_type="explorer",
+            cwd=tmp_path,
+        )
+        assert child is not None
+        assert read_ticket(first_path).assignee is None
+        assert read_ticket(second_path).assignee == child.context_id
+        assert read_execution_ticket_context(tmp_path, child)["ticket_id"] == "cccc"
+
     def test_subagent_stop_appends_handoff_and_marks_child_complete(self, tmp_path: Path) -> None:
         parent, ticket_path = self.setup_parent(tmp_path)
         handle_subagent_start(self.event(tmp_path, "SubagentStart"))

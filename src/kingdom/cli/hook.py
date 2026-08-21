@@ -26,15 +26,19 @@ from kingdom.state import (
     archive_root,
     backlog_root,
     branch_root,
+    clear_terminal_ticket_contexts,
+    clear_ticket_execution_contexts,
     compact_context_id,
     find_project_root,
     finish_execution_context,
+    flock,
     normalize_branch_name,
     read_execution_ticket_context,
     read_terminal_ticket_context,
     record_execution_ticket_context,
     resolve_current_run,
     resolve_execution_context,
+    ticket_assignment_lock_path,
     write_json,
 )
 from kingdom.ticket import (
@@ -382,6 +386,19 @@ def subagent_context_output(event: HostEvent, message: str) -> str:
     )
 
 
+def unassign_previous_child_ticket(base: Path, child: ExecutionContext, next_ticket_id: str) -> None:
+    binding = read_execution_ticket_context(base, child)
+    if binding is None or binding.get("ticket_id") == next_ticket_id:
+        return
+    previous_ticket_id = binding["ticket_id"]
+    feature = binding.get("feature")
+    result = find_ticket(base, previous_ticket_id, branch=feature if isinstance(feature, str) else None)
+    if result is None or result.ticket.assignee != child.context_id:
+        return
+    result.ticket.assignee = None
+    write_ticket(result.ticket, result.path)
+
+
 def assign_explicit_subagent_ticket(
     base: Path,
     feature: str,
@@ -390,29 +407,33 @@ def assign_explicit_subagent_ticket(
 ) -> str | None:
     if not event.ticket_hint:
         return None
-    try:
-        result = find_ticket(base, event.ticket_hint, branch=feature)
-    except AmbiguousTicketMatch:
-        return f"Kingdom could not resolve explicit ticket {event.ticket_hint}; run kd tk start <id>."
-    if result is None:
-        return f"Kingdom could not find explicit ticket {event.ticket_hint}; run kd tk start <id>."
+    with flock(ticket_assignment_lock_path(base)):
+        try:
+            result = find_ticket(base, event.ticket_hint, branch=feature)
+        except AmbiguousTicketMatch:
+            return f"Kingdom could not resolve explicit ticket {event.ticket_hint}; run kd tk start <id>."
+        if result is None:
+            return f"Kingdom could not find explicit ticket {event.ticket_hint}; run kd tk start <id>."
 
-    ticket = result.ticket
-    if ticket.status not in {"open", "in_progress"}:
-        return f"Kingdom ticket {ticket.id} is {ticket.status}; run kd tk start <id> for another ticket."
-    if ticket.assignee and ticket.assignee != child.context_id:
-        return f"Kingdom ticket {ticket.id} already has an owner; run kd tk start <id> explicitly if reassignment is intended."
+        ticket = result.ticket
+        if ticket.status not in {"open", "in_progress"}:
+            return f"Kingdom ticket {ticket.id} is {ticket.status}; run kd tk start <id> for another ticket."
+        if ticket.assignee and ticket.assignee != child.context_id:
+            return f"Kingdom ticket {ticket.id} already has an owner; run kd tk start <id> explicitly if reassignment is intended."
 
-    ticket.status = "in_progress"
-    ticket.assignee = child.context_id
-    write_ticket(ticket, result.path)
-    record_execution_ticket_context(
-        base,
-        child,
-        ticket.id,
-        feature=feature,
-        location=result.location,
-    )
+        unassign_previous_child_ticket(base, child, ticket.id)
+        ticket.status = "in_progress"
+        ticket.assignee = child.context_id
+        write_ticket(ticket, result.path)
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
+        record_execution_ticket_context(
+            base,
+            child,
+            ticket.id,
+            feature=feature,
+            location=result.location,
+        )
     return (
         f"Kingdom assigned you ticket {ticket.id}. Keep its Markdown body, acceptance criteria, and worklog current; "
         "do not close it unless your parent asked you to own completion."
@@ -463,21 +484,25 @@ def reactivate_resumed_context(base: Path, event: HostEvent) -> None:
     binding = read_execution_ticket_context(base, context)
     if binding is None or binding.get("active") is not False:
         return
-    feature = binding.get("feature")
-    ticket_id = binding.get("ticket_id")
-    if not isinstance(feature, str) or not isinstance(ticket_id, str):
-        return
-    result = find_ticket(base, ticket_id, branch=feature)
-    if result is None or result.ticket.status != "in_progress" or result.ticket.assignee != context.context_id:
-        return
-    location = binding.get("location")
-    record_execution_ticket_context(
-        base,
-        context,
-        ticket_id,
-        feature=feature,
-        location=location if isinstance(location, str) else None,
-    )
+    with flock(ticket_assignment_lock_path(base)):
+        binding = read_execution_ticket_context(base, context)
+        if binding is None or binding.get("active") is not False:
+            return
+        feature = binding.get("feature")
+        ticket_id = binding.get("ticket_id")
+        if not isinstance(feature, str) or not isinstance(ticket_id, str):
+            return
+        result = find_ticket(base, ticket_id, branch=feature)
+        if result is None or result.ticket.status != "in_progress" or result.ticket.assignee != context.context_id:
+            return
+        location = binding.get("location")
+        record_execution_ticket_context(
+            base,
+            context,
+            ticket_id,
+            feature=feature,
+            location=location if isinstance(location, str) else None,
+        )
 
 
 def handle_session_start(data: HostEvent | dict) -> str:
@@ -584,20 +609,22 @@ def handle_subagent_start(data: HostEvent | dict) -> str:
     if explicit_message:
         return subagent_context_output(event, explicit_message)
 
-    parent_binding = read_execution_ticket_context(base, parent)
-    if parent_binding is None or parent_binding.get("feature") != normalize_branch_name(feature):
-        return subagent_context_output(
-            event, "Kingdom found no exact parent ticket to inherit; run kd tk start <id> explicitly."
-        )
+    with flock(ticket_assignment_lock_path(base)):
+        parent_binding = read_execution_ticket_context(base, parent)
+        if parent_binding is None or parent_binding.get("feature") != normalize_branch_name(feature):
+            return subagent_context_output(
+                event, "Kingdom found no exact parent ticket to inherit; run kd tk start <id> explicitly."
+            )
 
-    ticket_id = parent_binding["ticket_id"]
-    record_execution_ticket_context(
-        base,
-        child,
-        ticket_id,
-        feature=feature,
-        location=parent_binding.get("location"),
-    )
+        ticket_id = parent_binding["ticket_id"]
+        unassign_previous_child_ticket(base, child, ticket_id)
+        record_execution_ticket_context(
+            base,
+            child,
+            ticket_id,
+            feature=feature,
+            location=parent_binding.get("location"),
+        )
     return subagent_context_output(
         event,
         f"Kingdom: inherit Kingdom ticket {ticket_id} from {compact_context_id(parent.context_id)}. "

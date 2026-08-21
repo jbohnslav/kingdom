@@ -25,6 +25,8 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     branches_root,
+    clear_terminal_ticket_contexts,
+    clear_ticket_execution_contexts,
     find_git_root,
     flock,
     get_current_git_branch,
@@ -32,6 +34,7 @@ from kingdom.state import (
     normalize_branch_name,
     read_json,
     resolve_current_run,
+    ticket_assignment_lock_path,
 )
 from kingdom.ticket import (
     Ticket,
@@ -387,11 +390,6 @@ def launch_peasant(
         print_error(f"Peasant already running on {full_ticket_id} (pid {existing.pid})")
         raise typer.Exit(code=1)
 
-    # Transition open → in_progress only after every launch gate passes.
-    if ticket.status == "open":
-        ticket.status = "in_progress"
-        write_ticket(ticket, ctx.ticket_path)
-
     # 0. Preflight: warn on uncommitted changes (skipped in hand mode or with --no-preflight)
     if not hand and not no_preflight:
         uncommitted = check_uncommitted_changes(ctx.git_root, ignore_kd=True)
@@ -430,9 +428,22 @@ def launch_peasant(
             print_error(str(exc))
             raise typer.Exit(code=1) from None
 
-    # Auto-assign ticket to the peasant session
-    ticket.assignee = session_name
-    write_ticket(ticket, ctx.ticket_path)
+    # Auto-assign only after slow setup, with a fresh eligibility check so a
+    # native owner that started while the worktree was created wins cleanly.
+    with flock(ticket_assignment_lock_path(base)):
+        ticket = read_ticket(ctx.ticket_path)
+        if ticket.status in ("in_review", "closed"):
+            print_error(f"Cannot start work on {full_ticket_id}: ticket is {ticket.status}")
+            raise typer.Exit(code=1)
+        if ticket.status == "in_progress" and ticket.assignee not in (None, "hand", session_name):
+            print_error(f"Cannot start work on {full_ticket_id}: ticket is owned by {ticket.assignee}")
+            raise typer.Exit(code=1)
+        if ticket.status == "open":
+            ticket.status = "in_progress"
+        ticket.assignee = session_name
+        write_ticket(ticket, ctx.ticket_path)
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
 
     # 2. Create work thread (ignore if already exists)
     with contextlib.suppress(FileExistsError):
