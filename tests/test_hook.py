@@ -319,6 +319,55 @@ class TestTicketCheckpoints:
         assert not checkpoint_state_file(tmp_path, "codex", "session-1").exists()
         assert handle_pre_compact(event)
 
+    def test_checkpoint_requires_log_command_for_exact_ticket(self, tmp_path: Path) -> None:
+        self.setup_binding(tmp_path)
+        handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto"))
+        checkpoint_path = checkpoint_state_file(tmp_path, "codex", "session-1")
+
+        handle_post_tool_use(
+            self.event(
+                tmp_path,
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": 'uv run kd tk log bbbb "note: aaaa also affected"'},
+            )
+        )
+
+        assert checkpoint_path.exists()
+
+        handle_post_tool_use(
+            self.event(
+                tmp_path,
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": "echo kd tk log aaaa"},
+            )
+        )
+
+        assert checkpoint_path.exists()
+
+        handle_post_tool_use(
+            self.event(
+                tmp_path,
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": "# kd tk log aaaa"},
+            )
+        )
+
+        assert checkpoint_path.exists()
+
+        handle_post_tool_use(
+            self.event(
+                tmp_path,
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": 'uv run kd tk log aaaa "checkpoint complete"'},
+            )
+        )
+
+        assert not checkpoint_path.exists()
+
     def test_post_compact_and_compact_resume_repeat_pending_request(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
         handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto"))

@@ -29,7 +29,8 @@ import os
 import re
 import shutil
 import threading
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -67,6 +68,8 @@ class Ticket:
     external_ref: str | None = None
     duplicate_of: str | None = None
     superseded_by: str | None = None
+    source_content: str | None = field(default=None, init=False, repr=False, compare=False)
+    source_path: Path | None = field(default=None, init=False, repr=False, compare=False)
 
 
 def clamp_priority(value: int | str | None) -> int:
@@ -171,7 +174,7 @@ def parse_ticket(content: str) -> Ticket:
     links = coerce_to_str_list(frontmatter_dict.get("links", []))
     tags = coerce_to_str_list(frontmatter_dict.get("tags", []))
 
-    return Ticket(
+    ticket = Ticket(
         id=str(frontmatter_dict.get("id", "")),
         status=str(frontmatter_dict.get("status", "open")),
         deps=deps,
@@ -194,6 +197,8 @@ def parse_ticket(content: str) -> Ticket:
         duplicate_of=(str(frontmatter_dict.get("duplicate-of")) if frontmatter_dict.get("duplicate-of") else None),
         superseded_by=(str(frontmatter_dict.get("superseded-by")) if frontmatter_dict.get("superseded-by") else None),
     )
+    ticket.source_content = content
+    return ticket
 
 
 def serialize_ticket(ticket: Ticket) -> str:
@@ -235,16 +240,144 @@ def read_ticket(path: Path) -> Ticket:
         raise FileNotFoundError(f"Ticket file not found: {path}")
 
     content = path.read_text(encoding="utf-8")
-    return parse_ticket(content)
+    ticket = parse_ticket(content)
+    ticket.source_path = path.resolve()
+    return ticket
+
+
+def ticket_lock_path(path: Path) -> Path:
+    return path.parent / f".{path.name}.lock"
+
+
+@contextlib.contextmanager
+def ticket_locks(paths: Iterable[Path]) -> Iterator[None]:
+    """Lock ticket paths in stable order so multi-path mutations cannot deadlock."""
+    lock_paths = sorted({ticket_lock_path(path).resolve() for path in paths}, key=str)
+    with contextlib.ExitStack() as stack:
+        for lock_path in lock_paths:
+            stack.enter_context(flock(lock_path))
+        yield
+
+
+def split_markdown_body(body: str) -> tuple[str, list[tuple[str, int]], dict[tuple[str, int], str]]:
+    """Split a ticket body into its preamble and second-level sections."""
+    preamble: list[str] = []
+    section_lines: list[str] = []
+    section_order: list[tuple[str, int]] = []
+    sections: dict[tuple[str, int], str] = {}
+    section_key: tuple[str, int] | None = None
+    heading_counts: dict[str, int] = {}
+
+    for line in body.splitlines():
+        if line.startswith("## "):
+            if section_key is not None:
+                sections[section_key] = "\n".join(section_lines).strip()
+            heading = line[3:].strip()
+            occurrence = heading_counts.get(heading, 0)
+            heading_counts[heading] = occurrence + 1
+            section_key = (heading, occurrence)
+            section_order.append(section_key)
+            section_lines = []
+        elif section_key is None:
+            preamble.append(line)
+        else:
+            section_lines.append(line)
+
+    if section_key is not None:
+        sections[section_key] = "\n".join(section_lines).strip()
+    return "\n".join(preamble).strip(), section_order, sections
+
+
+def merge_ticket_body(original: str, proposed: str, current: str) -> str:
+    """Three-way merge a body at Markdown section boundaries.
+
+    A section changed by the proposed (last locked) writer wins even when the
+    current writer changed that same section. Sections the proposed writer did
+    not change retain the current value, including concurrent Worklog appends.
+    """
+    missing = object()
+    original_preamble, _original_order, original_sections = split_markdown_body(original)
+    proposed_preamble, proposed_order, proposed_sections = split_markdown_body(proposed)
+    current_preamble, current_order, current_sections = split_markdown_body(current)
+
+    preamble = proposed_preamble if proposed_preamble != original_preamble else current_preamble
+    keys = [*proposed_order, *(key for key in current_order if key not in proposed_order)]
+    selected_sections: list[tuple[tuple[str, int], str]] = []
+    for key in keys:
+        original_value = original_sections.get(key, missing)
+        proposed_value = proposed_sections.get(key, missing)
+        current_value = current_sections.get(key, missing)
+        selected = proposed_value if proposed_value != original_value else current_value
+        if selected is not missing:
+            selected_sections.append((key, str(selected)))
+
+    parts = [preamble] if preamble else []
+    for (heading, _occurrence), content in selected_sections:
+        section = f"## {heading}"
+        if content:
+            section = f"{section}\n\n{content}"
+        parts.append(section)
+    return "\n\n".join(parts)
+
+
+def merge_ticket_update(ticket: Ticket, path: Path) -> Ticket:
+    """Merge fields untouched by a stale caller from the current file.
+
+    A caller's change wins when both writers changed the same field. Concurrent
+    changes to fields left at their read-snapshot value are preserved. Ticket
+    bodies use the same rule per second-level Markdown section.
+    """
+    if ticket.source_content is None or ticket.source_path != path.resolve():
+        return ticket
+    if not path.exists():
+        raise FileNotFoundError(f"Ticket moved or deleted since it was read: {path}")
+
+    current_content = path.read_text(encoding="utf-8")
+    if current_content == ticket.source_content:
+        return ticket
+
+    original = parse_ticket(ticket.source_content)
+    current = parse_ticket(current_content)
+    values = {}
+    for ticket_field in fields(Ticket):
+        name = ticket_field.name
+        if name in {"source_content", "source_path"}:
+            continue
+        proposed_value = getattr(ticket, name)
+        original_value = getattr(original, name)
+        current_value = getattr(current, name)
+        if name == "body" and proposed_value != original_value and current_value != original_value:
+            values[name] = merge_ticket_body(original_value, proposed_value, current_value)
+        else:
+            values[name] = proposed_value if proposed_value != original_value else current_value
+    return Ticket(**values)
+
+
+def update_ticket_snapshot(ticket: Ticket, written: Ticket, path: Path, content: str) -> None:
+    for ticket_field in fields(Ticket):
+        name = ticket_field.name
+        if name in {"source_content", "source_path"}:
+            continue
+        setattr(ticket, name, getattr(written, name))
+    ticket.source_content = content
+    ticket.source_path = path.resolve()
 
 
 def write_ticket(ticket: Ticket, path: Path) -> None:
-    content = serialize_ticket(ticket)
-    write_ticket_content(path, content)
+    with flock(ticket_lock_path(path)):
+        written = merge_ticket_update(ticket, path)
+        content = serialize_ticket(written)
+        atomic_write_ticket_content(path, content)
+        update_ticket_snapshot(ticket, written, path, content)
 
 
 def write_ticket_content(path: Path, content: str) -> None:
-    """Atomically replace a ticket so an interrupted write leaves the original intact."""
+    with flock(ticket_lock_path(path)):
+        atomic_write_ticket_content(path, content)
+
+
+def atomic_write_ticket_content(path: Path, content: str) -> None:
+    """Replace a ticket atomically while the caller holds its mutation lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
@@ -285,12 +418,11 @@ def replace_ticket_assignee(content: str, assignee: str) -> str:
 
 def write_ticket_assignee(path: Path, assignee: str) -> None:
     """Persist a migration-only assignee change without canonicalizing Markdown."""
-    lock_path = path.parent / f".{path.name}.lock"
-    with flock(lock_path):
+    with flock(ticket_lock_path(path)):
         content = path.read_text(encoding="utf-8")
         updated = replace_ticket_assignee(content, assignee)
         if updated != content:
-            write_ticket_content(path, updated)
+            atomic_write_ticket_content(path, updated)
 
 
 def list_tickets(directory: Path) -> list[Ticket]:
@@ -516,20 +648,28 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> Ticke
 
 
 def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
-    if not ticket_path.exists():
-        raise FileNotFoundError(f"Ticket file not found: {ticket_path}")
-
     dest_dir.mkdir(parents=True, exist_ok=True)
     new_path = dest_dir / ticket_path.name
-    if new_path.exists():
-        raise FileExistsError(f"Destination already exists: {new_path}")
-    try:
-        ticket_path.rename(new_path)
-    except OSError:
-        # Cross-filesystem rename; fall back to copy-then-delete
-        shutil.copy2(str(ticket_path), str(new_path))
-        ticket_path.unlink()
+    with ticket_locks([ticket_path, new_path]):
+        if not ticket_path.exists():
+            raise FileNotFoundError(f"Ticket file not found: {ticket_path}")
+        if new_path.exists():
+            raise FileExistsError(f"Destination already exists: {new_path}")
+        try:
+            ticket_path.rename(new_path)
+        except OSError:
+            # Cross-filesystem rename; fall back to copy-then-delete
+            shutil.copy2(str(ticket_path), str(new_path))
+            ticket_path.unlink()
     return new_path
+
+
+def delete_ticket(ticket_path: Path) -> None:
+    """Delete a ticket while participating in its mutation lock."""
+    with flock(ticket_lock_path(ticket_path)):
+        if not ticket_path.exists():
+            raise FileNotFoundError(f"Ticket file not found: {ticket_path}")
+        ticket_path.unlink()
 
 
 def insert_markdown_section_entry(content: str, section: str, entry: str) -> str:
@@ -662,11 +802,10 @@ def append_worklog_entry(
     author_tag = f" [{author}]" if author else ""
     entry = f"- {timestamp_text}{author_tag} — {formatted}"
 
-    lock_path = path.parent / f".{path.name}.lock"
-    with flock(lock_path):
+    with flock(ticket_lock_path(path)):
         content = path.read_text(encoding="utf-8")
         new_content = insert_worklog_entry(content, entry)
-        write_ticket_content(path, new_content)
+        atomic_write_ticket_content(path, new_content)
     return entry
 
 

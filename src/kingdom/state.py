@@ -369,26 +369,23 @@ def record_execution_ticket_context(
     location: str | None = None,
 ) -> None:
     path = execution_context_path(base, context)
-    ensure_dir(path.parent)
-    write_json(
-        path,
-        {
-            "schema_version": 1,
-            "context_id": context.context_id,
-            "host": context.host,
-            "role": context.role,
-            "session_id": context.session_id,
-            "parent_agent_id": context.parent_agent_id,
-            "agent_type": context.agent_type,
-            "cwd": context.cwd,
-            "source": context.source,
-            "ticket_id": ticket_id,
-            "feature": normalize_branch_name(feature),
-            "location": location or f"branch:{normalize_branch_name(feature)}",
-            "last_seen": context.last_seen.isoformat(),
-            "active": True,
-        },
-    )
+    record = {
+        "schema_version": 1,
+        "context_id": context.context_id,
+        "host": context.host,
+        "role": context.role,
+        "session_id": context.session_id,
+        "parent_agent_id": context.parent_agent_id,
+        "agent_type": context.agent_type,
+        "cwd": context.cwd,
+        "source": context.source,
+        "ticket_id": ticket_id,
+        "feature": normalize_branch_name(feature),
+        "location": location or f"branch:{normalize_branch_name(feature)}",
+        "last_seen": context.last_seen.isoformat(),
+        "active": True,
+    }
+    locked_json_update(path, lambda _current: record)
 
 
 def finish_execution_context(
@@ -542,9 +539,10 @@ def prune_stale_execution_contexts(
     stale_after: timedelta = DEFAULT_CONTEXT_STALE_AFTER,
     now: datetime | None = None,
 ) -> list[str]:
+    current_time = now or datetime.now(UTC)
     stale_contexts = [
         context
-        for context in list_execution_contexts(base, feature=feature, stale_after=stale_after, now=now)
+        for context in list_execution_contexts(base, feature=feature, stale_after=stale_after, now=current_time)
         if context["stale"]
     ]
     stale_ids = {context["context_id"] for context in stale_contexts}
@@ -552,32 +550,48 @@ def prune_stale_execution_contexts(
         return []
 
     removed = []
+    stale_legacy_bindings: dict[tuple[object, object], datetime] = {}
+    exact_legacy_bindings: dict[Path, tuple[object, object]] = {}
     for path in execution_context_root(base).glob("*.json"):
-        try:
-            data = read_json(path)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            continue
-        context_id = data.get("context_id")
-        if context_id not in stale_ids:
-            continue
-        path.unlink(missing_ok=True)
-        (path.parent / f".{path.name}.lock").unlink(missing_ok=True)
-        removed.append(context_id)
+        lock_path = path.parent / f".{path.name}.lock"
+        with flock(lock_path):
+            try:
+                data = read_json(path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            context_id = data.get("context_id")
+            last_seen = parse_context_last_seen(data.get("last_seen"))
+            if context_id not in stale_ids or last_seen is None or current_time - last_seen <= stale_after:
+                continue
+            path.unlink(missing_ok=True)
+            removed.append(context_id)
+            binding = (data.get("ticket_id"), data.get("feature"))
+            if all(binding):
+                existing = stale_legacy_bindings.get(binding)
+                if existing is None or last_seen > existing:
+                    stale_legacy_bindings[binding] = last_seen
+                legacy_path = legacy_terminal_context_path(base, data)
+                if legacy_path is not None:
+                    exact_legacy_bindings[legacy_path] = binding
 
-    stale_legacy_bindings = {
-        (context.get("ticket_id"), context.get("feature"))
-        for context in stale_contexts
-        if context.get("ticket_id") and context.get("feature")
-    }
     for path in terminal_context_root(base).glob("*.json"):
-        try:
-            data = read_json(path)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            continue
-        if (data.get("ticket_id"), data.get("feature")) not in stale_legacy_bindings:
-            continue
-        path.unlink(missing_ok=True)
-        (path.parent / f".{path.name}.lock").unlink(missing_ok=True)
+        lock_path = path.parent / f".{path.name}.lock"
+        with flock(lock_path):
+            try:
+                data = read_json(path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            binding = (data.get("ticket_id"), data.get("feature"))
+            if exact_legacy_bindings.get(path) == binding:
+                path.unlink(missing_ok=True)
+                continue
+            stale_last_seen = stale_legacy_bindings.get(binding)
+            if stale_last_seen is None:
+                continue
+            updated_at = parse_context_last_seen(data.get("updated_at"))
+            if updated_at is not None and updated_at > stale_last_seen:
+                continue
+            path.unlink(missing_ok=True)
     return sorted(removed)
 
 
@@ -606,8 +620,27 @@ def terminal_context_path(base: Path, session_id: str | None = None) -> Path | N
     identity = terminal_context_identity(session_id)
     if identity is None:
         return None
+    return terminal_context_path_for_identity(base, identity)
+
+
+def terminal_context_path_for_identity(base: Path, identity: str) -> Path:
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return terminal_context_root(base) / f"{key}.json"
+
+
+def legacy_terminal_context_path(base: Path, context: dict[str, Any]) -> Path | None:
+    source = context.get("source")
+    session_id = context.get("session_id")
+    if not isinstance(source, str) or not isinstance(session_id, str):
+        return None
+    if source == "hook":
+        return terminal_context_path_for_identity(base, f"session:{session_id}")
+    if source not in TERMINAL_CONTEXT_ENV_VARS:
+        return None
+    identity = session_id
+    if source == "TTY" and session_id.startswith("TTY:"):
+        identity = f"tty:{session_id.removeprefix('TTY:')}"
+    return terminal_context_path_for_identity(base, identity)
 
 
 def record_terminal_ticket_context(
@@ -621,16 +654,13 @@ def record_terminal_ticket_context(
     path = terminal_context_path(base, session_id)
     if path is None:
         return
-    ensure_dir(path.parent)
-    write_json(
-        path,
-        {
-            "ticket_id": ticket_id,
-            "feature": normalize_branch_name(feature),
-            "location": location or f"branch:{normalize_branch_name(feature)}",
-            "updated_at": datetime.now(UTC).isoformat(),
-        },
-    )
+    record = {
+        "ticket_id": ticket_id,
+        "feature": normalize_branch_name(feature),
+        "location": location or f"branch:{normalize_branch_name(feature)}",
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    locked_json_update(path, lambda _current: record)
 
 
 def read_terminal_ticket_context(base: Path, session_id: str | None = None) -> dict[str, Any] | None:

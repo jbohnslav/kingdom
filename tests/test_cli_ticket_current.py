@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -34,6 +36,35 @@ def setup_project(base: Path) -> None:
 
 
 class TestTicketCurrent:
+    def test_current_migration_completes_without_nested_ticket_lock_deadlock(self, tmp_path: Path) -> None:
+        setup_project(tmp_path)
+        ticket_path = branch_root(tmp_path, BRANCH) / "tickets" / "only.md"
+        write_ticket(
+            Ticket(
+                id="only",
+                status="in_progress",
+                title="Only legacy ticket",
+                assignee="hand",
+                created=datetime.now(UTC),
+            ),
+            ticket_path,
+        )
+        source_root = Path(__file__).resolve().parent.parent / "src"
+        env = os.environ.copy()
+        env.update({"KD_BASE": str(tmp_path), "KD_CONTEXT": "migration-timeout", "PYTHONPATH": str(source_root)})
+
+        result = subprocess.run(
+            [sys.executable, "-c", "from kingdom.cli import main; main()", "ticket", "current", "--id"],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "only"
+
     def test_current_migrates_exact_legacy_terminal_binding(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

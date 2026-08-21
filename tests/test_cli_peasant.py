@@ -1670,11 +1670,18 @@ class TestPeasantReview:
             ticket, _ = ticket_result
             assert ticket.status == "closed"
 
-    def test_review_accept_allows_logical_feature_checkout_mismatch(self) -> None:
+    def test_review_accept_rejects_unrelated_checkout_branch(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
             create_test_ticket(base, status="in_review")
+
+            from kingdom.state import branch_root, read_json, write_json
+
+            state_path = branch_root(base, BRANCH) / "state.json"
+            workspace_state = read_json(state_path)
+            workspace_state["branch"] = BRANCH
+            write_json(state_path, workspace_state)
 
             session_name = "peasant-kin-test"
             set_agent_state(
@@ -1684,46 +1691,28 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review", ticket="kin-test"),
             )
 
-            merge_seen = False
-
             def mock_run(cmd, **kwargs):
-                nonlocal merge_seen
                 result = MagicMock()
                 if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
                     result.returncode = 0
                     result.stdout = "master\n"
                     result.stderr = ""
-                elif cmd and "merge-base" in cmd and "--is-ancestor" in cmd:
-                    result.returncode = 1
-                    result.stdout = ""
-                    result.stderr = ""
-                elif cmd and "status" in cmd and "--porcelain" in cmd:
-                    result.returncode = 0
-                    result.stdout = ""
-                    result.stderr = ""
-                elif cmd == ["git", "merge", "ticket/kin-test", "--no-edit"]:
-                    merge_seen = True
-                    result.returncode = 0
-                    result.stdout = "Merge made by the 'ort' strategy."
-                    result.stderr = ""
-                elif cmd == ["git", "branch", "-D", "ticket/kin-test"]:
-                    result.returncode = 0
-                    result.stdout = "Deleted branch ticket/kin-test"
-                    result.stderr = ""
                 else:
                     raise AssertionError(f"Unexpected subprocess call: {cmd}")
                 return result
 
-            with (
-                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
-                patch("kingdom.cli.peasant.remove_worktree"),
-            ):
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
-            assert result.exit_code == 0, result.output
-            assert merge_seen
-            assert "ticket/kin-test" in result.output
+            assert result.exit_code == 1
+            assert BRANCH in result.output
             assert "master" in result.output
+            assert "git switch" in result.output
+
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "in_review"
 
     def test_review_accept_rejects_session_for_unrelated_ticket(self) -> None:
         with runner.isolated_filesystem():
@@ -1873,6 +1862,52 @@ class TestPeasantReview:
             # Session should be done
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "done"
+
+    def test_review_accept_hand_mode_allows_different_physical_checkout(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            from kingdom.state import branch_root, read_json, write_json
+
+            state_path = branch_root(base, BRANCH) / "state.json"
+            workspace_state = read_json(state_path)
+            workspace_state["branch"] = BRANCH
+            write_json(state_path, workspace_state)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(
+                    name=session_name,
+                    status="needs_king_review",
+                    ticket="kin-test",
+                    hand_mode=True,
+                ),
+            )
+
+            def mock_run(cmd, **kwargs):
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result = MagicMock()
+                    result.returncode = 0
+                    result.stdout = "master\n"
+                    result.stderr = ""
+                    return result
+                raise AssertionError(f"Unexpected subprocess call: {cmd}")
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "Hand mode — changes already on master, skipping merge" in result.output
+
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
 
     def test_review_reject_hand_mode_relaunches_in_place(self) -> None:
         """In hand mode, --reject should relaunch using base dir, not worktree."""

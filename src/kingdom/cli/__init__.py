@@ -361,8 +361,7 @@ def status(
     # Count by status
     status_counts = {"open": 0, "in_progress": 0, "in_review": 0, "closed": 0}
     for ticket in tickets:
-        if ticket.status in status_counts:
-            status_counts[ticket.status] += 1
+        status_counts[ticket.status] = status_counts.get(ticket.status, 0) + 1
 
     # Count ready tickets (open with all deps closed — startable, not already started)
     all_known_tickets = collect_all_tickets(base, include_done=True)
@@ -402,6 +401,8 @@ def status(
     output["role"] = role
     output["agent_name"] = agent_name
     output["assignments"] = {k: [t.id for t in v] for k, v in assigned.items()}
+    unassigned = [ticket for ticket in tickets if ticket.assignee is None and ticket.status != "closed"]
+    output["unassigned"] = [ticket.id for ticket in unassigned]
 
     if output_json:
         typer.echo(json.dumps(output, indent=2))
@@ -409,12 +410,20 @@ def status(
         # Human-readable output
         typer.echo(f"Branch: {original_branch}")
         typer.echo()
-        total = sum(status_counts.values())
-        typer.echo(
-            f"Tickets: {status_counts['open']} open, {status_counts['in_progress']} in progress, "
-            f"{status_counts['in_review']} in review, {status_counts['closed']} closed, "
-            f"{ready_count} ready ({total} total)"
+        status_summary = [
+            f"{status_counts['open']} open",
+            f"{status_counts['in_progress']} in progress",
+            f"{status_counts['in_review']} in review",
+            f"{status_counts['closed']} closed",
+        ]
+        standard_statuses = {"open", "in_progress", "in_review", "closed"}
+        status_summary.extend(
+            f"{count} {ticket_status}"
+            for ticket_status, count in sorted(status_counts.items())
+            if ticket_status not in standard_statuses
         )
+        status_summary.append(f"{ready_count} ready ({len(tickets)} total)")
+        typer.echo(f"Tickets: {', '.join(status_summary)}")
         if check:
             typer.echo(f"Readiness: {'ready' if readiness['ready'] else 'not ready'}")
 
@@ -469,6 +478,12 @@ def status(
             for assignee, assignee_tickets in other_assignments.items():
                 for t in assignee_tickets:
                     typer.echo(f"  {assignee}: {t.id} [{t.status}] {t.title}")
+
+        if unassigned:
+            typer.echo()
+            typer.echo("Unassigned:")
+            for ticket in unassigned:
+                typer.echo(f"  {ticket.id} [{ticket.status}] {ticket.title}")
 
         if design_path_str:
             approved_str = " (approved)" if design_approved else ""

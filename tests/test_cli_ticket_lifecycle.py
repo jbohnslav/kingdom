@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
@@ -466,6 +467,22 @@ class TestTicketStatus:
         assert result.exit_code == 0, result.output
         assert "in_review → waiting" in result.output
 
+    def test_status_leaving_in_progress_clears_native_assignee(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-unassign")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "status-unassign"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-unassign"]).exit_code == 0
+            context = resolve_execution_context()
+            assert context is not None
+
+            result = runner.invoke(ticket_app, ["status", "kin-unassign", "blocked"])
+            binding = read_execution_ticket_context(cli_project, context)
+
+        assert result.exit_code == 0, result.output
+        assert read_ticket(path).assignee is None
+        assert binding is None
+
 
 class TestTicketCloseIdempotent:
     def test_close_already_archived_ticket_is_noop(self, cli_project: Path) -> None:
@@ -682,7 +699,7 @@ class TestTicketCloseResolution:
     def test_close_accepts_each_non_completed_resolution(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
 
-        for resolution in ("wont-do", "duplicate", "superseded", "invalid"):
+        for resolution in ("wont-do", "invalid"):
             ticket_id = f"kin-{resolution[:4]}"
             path = create_ticket_in(branch_dir, ticket_id)
 
@@ -693,6 +710,30 @@ class TestTicketCloseResolution:
 
             assert result.exit_code == 0, result.output
             assert read_ticket(path).resolution == resolution
+
+    def test_reference_resolutions_require_reference_without_mutation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+
+        for resolution, option in (("duplicate", "--duplicate-of"), ("superseded", "--superseded-by")):
+            ticket_id = f"kin-missing-{resolution}"
+            path = create_ticket_in(branch_dir, ticket_id)
+            with patch.dict(os.environ, {"KD_CONTEXT": f"missing-{resolution}"}, clear=True):
+                assert runner.invoke(ticket_app, ["start", ticket_id]).exit_code == 0
+                context = resolve_execution_context()
+                assert context is not None
+                original = path.read_text(encoding="utf-8")
+
+                result = runner.invoke(
+                    ticket_app,
+                    ["close", ticket_id, "--resolution", resolution, "--reason", f"Marked {resolution}"],
+                )
+                binding = read_execution_ticket_context(cli_project, context)
+
+            assert result.exit_code == 1
+            assert f"requires {option}" in result.output
+            assert path.read_text(encoding="utf-8") == original
+            assert binding is not None
+            assert binding["ticket_id"] == ticket_id
 
     def test_non_completed_resolution_requires_reason_without_mutation(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -841,6 +882,54 @@ class TestTicketLifecycleHistory:
         assert "- old close note" in reopened.body
         assert "closed (duplicate): Same work" in reopened.body
         assert "— reopened (previous: duplicate)" in reopened.body
+
+    def test_reopen_clears_stale_native_assignee(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-reopen-owner",
+            status="closed",
+            title="Reopen stale owner",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            resolution="completed",
+            assignee="codex:stale-owner",
+        )
+        path = branch_dir / "kin-reopen-owner.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["reopen", "kin-reopen-owner"])
+
+        assert result.exit_code == 0, result.output
+        assert read_ticket(path).assignee is None
+
+    def test_close_and_reopen_reject_malformed_context_without_mutation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        close_path = create_ticket_in(branch_dir, "kin-bad-close")
+        reopen_path = branch_dir / "kin-bad-reopen.md"
+        write_ticket(
+            Ticket(
+                id="kin-bad-reopen",
+                status="closed",
+                title="Closed ticket",
+                created=datetime(2026, 1, 1, tzinfo=UTC),
+                closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+                resolution="completed",
+            ),
+            reopen_path,
+        )
+        original_close = close_path.read_text(encoding="utf-8")
+        original_reopen = reopen_path.read_text(encoding="utf-8")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "malformed\ncontext"}, clear=True):
+            close_result = runner.invoke(ticket_app, ["close", "kin-bad-close"])
+            reopen_result = runner.invoke(ticket_app, ["reopen", "kin-bad-reopen"])
+
+        for result in (close_result, reopen_result):
+            assert result.exit_code == 1
+            assert "KD_CONTEXT must be a single-line identifier" in result.output
+            assert "Traceback" not in result.output
+        assert close_path.read_text(encoding="utf-8") == original_close
+        assert reopen_path.read_text(encoding="utf-8") == original_reopen
 
     def test_superseded_by_rejects_missing_target_without_mutation(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -1299,6 +1388,19 @@ class TestTicketDelete:
         assert result.exit_code == 0, result.output
         assert "Deleted" in result.output
         assert "kin-del1" in result.output
+        assert not path.exists()
+
+    def test_delete_prevents_a_stale_snapshot_from_resurrecting_the_ticket(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-stale-delete")
+        stale_ticket = read_ticket(path)
+
+        result = runner.invoke(ticket_app, ["delete", "kin-stale-delete", "--force"])
+        stale_ticket.status = "closed"
+
+        assert result.exit_code == 0, result.output
+        with pytest.raises(FileNotFoundError, match="moved or deleted"):
+            write_ticket(stale_ticket, path)
         assert not path.exists()
 
     def test_delete_not_found(self, cli_project: Path) -> None:

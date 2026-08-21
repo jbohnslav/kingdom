@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -179,6 +180,50 @@ def request_checkpoint(event: HostEvent, phase: str) -> tuple[dict, bool] | None
     return checkpoint, True
 
 
+def logged_ticket_ids(command: str) -> set[str]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars="();&|\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return set()
+
+    ticket_ids = set()
+    command_tokens: list[str] = []
+    commands: list[list[str]] = []
+    for token in tokens:
+        if token and all(character in "();&|\n" for character in token):
+            if command_tokens:
+                commands.append(command_tokens)
+                command_tokens = []
+            continue
+        command_tokens.append(token)
+    if command_tokens:
+        commands.append(command_tokens)
+
+    assignment = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+    for shell_command in commands:
+        index = 0
+        while index < len(shell_command) and assignment.match(shell_command[index]):
+            index += 1
+        if index < len(shell_command) and Path(shell_command[index]).name == "env":
+            index += 1
+            while index < len(shell_command) and assignment.match(shell_command[index]):
+                index += 1
+        if shell_command[index : index + 2] == ["uv", "run"]:
+            index += 2
+        if index >= len(shell_command) or Path(shell_command[index]).name != "kd":
+            continue
+        route = shell_command[index + 1 : index + 3]
+        if route not in (["tk", "log"], ["ticket", "log"]):
+            continue
+        if index + 3 < len(shell_command):
+            ticket_ids.add(shell_command[index + 3])
+    return ticket_ids
+
+
 def checkpoint_completed_by_event(base: Path, event: HostEvent, checkpoint: dict) -> bool:
     ticket_path = checkpoint.get("ticket_path")
     if isinstance(ticket_path, str):
@@ -192,11 +237,7 @@ def checkpoint_completed_by_event(base: Path, event: HostEvent, checkpoint: dict
     if event.tool_name not in {"Bash", "Shell"} or not event.command:
         return False
     ticket_id = checkpoint.get("ticket_id")
-    return (
-        isinstance(ticket_id, str)
-        and ticket_id in event.command
-        and ("kd tk log" in event.command or "kd ticket log" in event.command)
-    )
+    return isinstance(ticket_id, str) and ticket_id in logged_ticket_ids(event.command)
 
 
 def is_ticket_markdown_path(file_path: str, project_dir: str | None) -> bool:

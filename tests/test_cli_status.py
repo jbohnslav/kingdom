@@ -161,6 +161,35 @@ def test_status_counts_in_review_separately() -> None:
         assert data["ready_count"] == 1  # only the open ticket is ready
 
 
+def test_status_shows_unassigned_ticket_after_leaving_in_progress() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        feature = "example-feature"
+        tickets_dir = ensure_branch_layout(base, feature) / "tickets"
+        set_current_run(base, feature)
+        write_ticket(
+            Ticket(id="kin-blocked", title="Needs a decision", status="open"),
+            tickets_dir / "kin-blocked.md",
+        )
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "status-owner"}, clear=True):
+            start_result = runner.invoke(app, ["tk", "start", "kin-blocked"])
+            transition_result = runner.invoke(app, ["tk", "status", "kin-blocked", "blocked"])
+            human_result = runner.invoke(app, ["status"])
+            json_result = runner.invoke(app, ["status", "--json"])
+
+        assert start_result.exit_code == 0, start_result.output
+        assert transition_result.exit_code == 0, transition_result.output
+        assert human_result.exit_code == 0, human_result.output
+        assert "1 blocked" in human_result.output
+        assert "Unassigned:" in human_result.output
+        assert "kin-blocked [blocked] Needs a decision" in human_result.output
+
+        data = json.loads(json_result.output)
+        assert data["tickets"]["blocked"] == 1
+        assert data["unassigned"] == ["kin-blocked"]
+
+
 def test_status_ready_count_uses_global_dependency_state() -> None:
     with runner.isolated_filesystem():
         base = Path.cwd()

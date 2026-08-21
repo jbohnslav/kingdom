@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 import pytest
@@ -22,8 +24,11 @@ from kingdom.state import (
     execution_context_is_stale,
     execution_context_path,
     find_project_root,
+    flock,
+    list_execution_contexts,
     normalize_branch_name,
     parse_worktree_list,
+    prune_stale_execution_contexts,
     read_execution_ticket_context,
     read_terminal_ticket_context,
     record_execution_ticket_context,
@@ -33,6 +38,8 @@ from kingdom.state import (
     set_current_run,
     state_root,
     terminal_context_identity,
+    terminal_context_path,
+    write_json,
 )
 
 
@@ -192,6 +199,33 @@ class TestClearTerminalTicketContexts:
             assert read_terminal_ticket_context(tmp_path, session_id="two") is None
             assert read_terminal_ticket_context(tmp_path, session_id="three")["ticket_id"] == "other"
 
+    def test_record_waits_for_the_terminal_context_mutation_lock(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
+            path = terminal_context_path(tmp_path, session_id="shared-terminal")
+            assert path is not None
+            lock_path = path.parent / f".{path.name}.lock"
+            started = Event()
+            finished = Event()
+
+            def record() -> None:
+                started.set()
+                record_terminal_ticket_context(
+                    tmp_path,
+                    "new-ticket",
+                    feature="feature/context",
+                    session_id="shared-terminal",
+                )
+                finished.set()
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                with flock(lock_path):
+                    future = pool.submit(record)
+                    assert started.wait(timeout=2)
+                    assert not finished.wait(timeout=0.2)
+                future.result(timeout=2)
+
+            assert read_terminal_ticket_context(tmp_path, session_id="shared-terminal")["ticket_id"] == "new-ticket"
+
 
 class TestExecutionContext:
     def test_explicit_context_takes_precedence(self) -> None:
@@ -301,6 +335,99 @@ class TestExecutionContext:
 
         assert read_execution_ticket_context(tmp_path, first)["ticket_id"] == "aaaa"
         assert read_execution_ticket_context(tmp_path, second)["ticket_id"] == "bbbb"
+
+    def test_record_waits_for_the_context_mutation_lock(self, tmp_path: Path) -> None:
+        ensure_base_layout(tmp_path)
+        with patch.dict(os.environ, {"KD_CONTEXT": "shared"}, clear=True):
+            context = resolve_execution_context(host="codex", cwd=tmp_path)
+        assert context is not None
+        path = execution_context_path(tmp_path, context)
+        lock_path = path.parent / f".{path.name}.lock"
+        started = Event()
+        finished = Event()
+
+        def record() -> None:
+            started.set()
+            record_execution_ticket_context(tmp_path, context, "new-ticket", feature="feature/context")
+            finished.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with flock(lock_path):
+                future = pool.submit(record)
+                assert started.wait(timeout=2)
+                assert not finished.wait(timeout=0.2)
+            future.result(timeout=2)
+
+        assert read_execution_ticket_context(tmp_path, context)["ticket_id"] == "new-ticket"
+
+    def test_prune_preserves_a_fresh_terminal_binding_for_the_same_ticket(self, tmp_path: Path) -> None:
+        stale_time = datetime(2026, 1, 1, tzinfo=UTC)
+        with patch.dict(os.environ, {"KD_CONTEXT": "stale-context"}, clear=True):
+            context = resolve_execution_context(host="codex", cwd=tmp_path, now=stale_time)
+        assert context is not None
+        record_execution_ticket_context(tmp_path, context, "shared", feature="feature/context")
+        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
+            record_terminal_ticket_context(tmp_path, "shared", feature="feature/context", session_id="live-terminal")
+
+        removed = prune_stale_execution_contexts(
+            tmp_path,
+            feature="feature/context",
+            stale_after=timedelta(hours=1),
+            now=datetime.now(UTC),
+        )
+
+        assert removed == [context.context_id]
+        assert read_terminal_ticket_context(tmp_path, session_id="live-terminal")["ticket_id"] == "shared"
+        context_lock = execution_context_path(tmp_path, context).with_name(
+            f".{execution_context_path(tmp_path, context).name}.lock"
+        )
+        assert context_lock.exists()
+
+    def test_prune_rechecks_a_stale_context_after_acquiring_its_lock(self, tmp_path: Path) -> None:
+        stale_time = datetime(2026, 1, 1, tzinfo=UTC)
+        fresh_time = datetime(2026, 1, 3, tzinfo=UTC)
+        with patch.dict(os.environ, {"KD_CONTEXT": "refreshed-context"}, clear=True):
+            stale_context = resolve_execution_context(host="codex", cwd=tmp_path, now=stale_time)
+            fresh_context = resolve_execution_context(host="codex", cwd=tmp_path, now=fresh_time)
+        assert stale_context is not None
+        assert fresh_context is not None
+        record_execution_ticket_context(tmp_path, stale_context, "shared", feature="feature/context")
+        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
+            record_terminal_ticket_context(tmp_path, "shared", feature="feature/context", session_id="live-terminal")
+            terminal_path = terminal_context_path(tmp_path, session_id="live-terminal")
+        assert terminal_path is not None
+        write_json(
+            terminal_path,
+            {
+                "ticket_id": "shared",
+                "feature": "feature-context",
+                "location": "branch:feature-context",
+                "updated_at": stale_time.isoformat(),
+            },
+        )
+
+        stale_snapshot = list_execution_contexts(
+            tmp_path,
+            feature="feature/context",
+            stale_after=timedelta(hours=1),
+            now=fresh_time,
+        )
+
+        def snapshot_then_refresh(*args, **kwargs):
+            record_execution_ticket_context(tmp_path, fresh_context, "shared", feature="feature/context")
+            return stale_snapshot
+
+        with patch("kingdom.state.list_execution_contexts", side_effect=snapshot_then_refresh):
+            removed = prune_stale_execution_contexts(
+                tmp_path,
+                feature="feature/context",
+                stale_after=timedelta(hours=1),
+                now=fresh_time,
+            )
+
+        assert removed == []
+        assert read_execution_ticket_context(tmp_path, fresh_context)["last_seen"] == fresh_time.isoformat()
+        assert read_terminal_ticket_context(tmp_path, session_id="live-terminal")["ticket_id"] == "shared"
 
     def test_stale_context_uses_last_seen(self) -> None:
         last_seen = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)

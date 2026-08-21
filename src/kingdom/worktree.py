@@ -5,6 +5,7 @@ Handles git worktree creation, removal, and state.json bookkeeping.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from collections.abc import Callable
@@ -192,7 +193,7 @@ def create_worktree(
 
     try:
         update_worktree_state(base, feature, full_ticket_id, worktree_path)
-    except RuntimeError as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         log(f"Warning: could not record worktree in state.json: {exc}")
 
     return worktree_path
@@ -224,5 +225,5 @@ def remove_worktree(
 
     try:
         update_worktree_state(base, feature, full_ticket_id, None)
-    except RuntimeError as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         log(f"Warning: could not update state.json worktree map: {exc}")

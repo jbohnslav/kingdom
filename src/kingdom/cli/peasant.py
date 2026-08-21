@@ -1624,6 +1624,24 @@ def accept_peasant(ctx: PeasantContext) -> None:
         # Hand mode: changes are already on the invocation checkout, skip merge.
         typer.echo(f"Hand mode — changes already on {current_branch}, skipping merge")
     else:
+        workspace_state = read_json(branch_root(base, feature) / "state.json")
+        recorded_branch = workspace_state.get("branch")
+        if isinstance(recorded_branch, str) and recorded_branch.strip():
+            integration_branch = recorded_branch.strip()
+            correct_checkout = current_branch == integration_branch
+        else:
+            integration_branch = feature
+            correct_checkout = normalize_branch_name(current_branch) == normalize_branch_name(feature)
+
+        if not correct_checkout:
+            print_error(
+                f"Cannot accept: workspace '{feature}' integrates into Git branch "
+                f"'{integration_branch}', but HEAD is on '{current_branch}'."
+            )
+            error_console.print(f"Switch to the integration branch: `git switch {shlex.quote(integration_branch)}`")
+            error_console.print(f"Then retry: `kd peasant accept {full_ticket_id}`")
+            raise typer.Exit(code=1)
+
         # Worktree mode: merge ticket branch into feature branch
         # Check if already merged (idempotent re-run after manual conflict resolution)
         already_merged = subprocess.run(

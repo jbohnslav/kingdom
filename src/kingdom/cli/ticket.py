@@ -49,8 +49,10 @@ from kingdom.ticket import (
     AmbiguousTicketMatch,
     Ticket,
     append_worklog_entry,
+    atomic_write_ticket_content,
     collect_all_tickets,
     collect_tickets_by_location,
+    delete_ticket,
     effective_resolution,
     filter_tickets,
     filter_tickets_by_deps,
@@ -65,7 +67,6 @@ from kingdom.ticket import (
     replace_ticket_assignee,
     write_ticket,
     write_ticket_assignee,
-    write_ticket_content,
 )
 
 from .display import STATUS_COLORS, STATUS_STYLES, console_width, error_console, print_error
@@ -823,14 +824,20 @@ def ticket_find(
     typer.echo(ticket_path.resolve())
 
 
-def update_ticket_status(ticket_id: str, new_status: str, *, assignee: str | None = None) -> Ticket:
+def update_ticket_status(
+    ticket_id: str,
+    new_status: str,
+    *,
+    assignee: str | None = None,
+    clear_assignee: bool = False,
+) -> Ticket:
     """Helper to update a ticket's status."""
     base = require_project_root()
 
     ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
     old_status = ticket.status
     ticket.status = new_status
-    if assignee is not None:
+    if assignee is not None or clear_assignee:
         ticket.assignee = assignee
     write_ticket(ticket, ticket_path)
 
@@ -955,7 +962,7 @@ def migrate_ticket_to_execution_context(
         content = ticket_path.read_text(encoding="utf-8")
         updated = replace_ticket_assignee(content, context.context_id)
         if updated != content:
-            write_ticket_content(ticket_path, updated)
+            atomic_write_ticket_content(ticket_path, updated)
 
     binding = read_execution_ticket_context(base, context)
     if binding is None:
@@ -1292,6 +1299,13 @@ def ticket_close(
         typer.echo(f"{ticket.id}: already closed ({existing_resolution}) — {ticket.title}")
         return
 
+    if close_resolution == "duplicate" and duplicate_target_id is None:
+        print_error("Resolution duplicate requires --duplicate-of <ticket-id>.")
+        raise typer.Exit(code=1)
+    if close_resolution == "superseded" and superseding_ticket_id is None:
+        print_error("Resolution superseded requires --superseded-by <ticket-id>.")
+        raise typer.Exit(code=1)
+
     # Block closing an epic with open children
     if ticket.type == "epic":
         all_known = collect_all_tickets(base)
@@ -1334,7 +1348,11 @@ def ticket_close(
 
     old_status = ticket.status
     closed_at = datetime.now(UTC).replace(microsecond=0)
-    context = resolve_execution_context()
+    try:
+        context = resolve_execution_context()
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
     ticket.status = "closed"
     ticket.closed_at = closed_at
     ticket.resolution = close_resolution
@@ -1395,7 +1413,11 @@ def ticket_reopen(
     if ticket.status == "closed":
         previous_resolution = effective_resolution(ticket) or "completed"
         reference_id = ticket.duplicate_of or ticket.superseded_by
-        context = resolve_execution_context()
+        try:
+            context = resolve_execution_context()
+        except ValueError as exc:
+            print_error(str(exc))
+            raise typer.Exit(code=1) from None
         context_tag = f" [{context.context_id}]" if context else ""
         lifecycle_details = f"reopened (previous: {previous_resolution})"
         if reference_id:
@@ -1413,6 +1435,7 @@ def ticket_reopen(
     ticket.closed_context = None
     ticket.duplicate_of = None
     ticket.superseded_by = None
+    ticket.assignee = None
     write_ticket(ticket, ticket_path)
 
     archive_backlog_tickets = archive_root(base) / "backlog" / "tickets"
@@ -1429,7 +1452,7 @@ def ticket_status(
     status: Annotated[str, typer.Argument(help="New status (e.g. blocked, in_review, waiting).")],
 ) -> None:
     """Set ticket status to any arbitrary string."""
-    ticket = update_ticket_status(ticket_id, status)
+    ticket = update_ticket_status(ticket_id, status, clear_assignee=status != "in_progress")
     if status != "in_progress":
         clear_ticket_execution_contexts(require_project_root(), ticket.id)
 
@@ -1464,7 +1487,7 @@ def ticket_delete(
             typer.echo("Cancelled.")
             raise typer.Exit(code=0)
 
-    ticket_path.unlink()
+    delete_ticket(ticket_path)
     clear_ticket_execution_contexts(base, ticket.id)
     typer.echo(f"Deleted {ticket.id} — {ticket.title}")
 

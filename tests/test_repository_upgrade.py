@@ -119,7 +119,7 @@ def test_ticket_write_failure_leaves_recoverable_context_binding(tmp_path: Path)
     ):
         context = resolve_execution_context(cwd=base)
         assert context is not None
-        with patch("kingdom.cli.ticket.write_ticket_content", side_effect=OSError("interrupted")):
+        with patch("kingdom.cli.ticket.atomic_write_ticket_content", side_effect=OSError("interrupted")):
             interrupted = runner.invoke(ticket_app, ["current", "--id"])
         binding = read_execution_ticket_context(base, context)
         after_interrupted = active_path.read_bytes()
