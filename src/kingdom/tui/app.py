@@ -120,10 +120,12 @@ def build_branch_context(base: Path, branch: str) -> str:
         Tickets:
           e0eb  in_progress  P2  kd chat: inject branch context
           a1b2  open         P1  Fix parsing bug
+        Contexts (concurrent agent sessions):
+          codex:abc123  codex/agent  e0eb
 
     Returns an empty string if no branch info is available.
     """
-    from kingdom.state import branch_root
+    from kingdom.state import branch_root, compact_context_id, list_execution_contexts
     from kingdom.ticket import list_tickets
 
     lines = ["[Branch context]", f"Branch: {branch}"]
@@ -135,6 +137,24 @@ def build_branch_context(base: Path, branch: str) -> str:
         for t in tickets:
             status = t.status.replace("_", " ")
             lines.append(f"  {t.id}  {status:12s}  P{t.priority}  {t.title}")
+
+    contexts = [context for context in list_execution_contexts(base, feature=branch) if context.get("ticket_id")]
+    if contexts:
+        lines.append("Contexts (concurrent agent sessions):")
+        for context in contexts:
+            states = []
+            if context["stale"]:
+                states.append("stale")
+            if not context["active"]:
+                states.append("completed")
+            state = f" ({', '.join(states)})" if states else ""
+            agent_type = f"/{context['agent_type']}" if context.get("agent_type") else ""
+            parent = context.get("parent_agent_id")
+            parent_label = f" child-of:{compact_context_id(parent)}" if isinstance(parent, str) else ""
+            lines.append(
+                f"  {compact_context_id(context['context_id'])}  "
+                f"{context['host']}/{context['role']}{agent_type}{state}{parent_label}  {context['ticket_id']}"
+            )
 
     return "\n".join(lines) + "\n\n"
 
@@ -1015,6 +1035,8 @@ class ChatApp(App):
             self.cmd_copy(arg)
         elif cmd in ("/writable", "/writeable"):
             self.cmd_writable()
+        elif cmd == "/status":
+            self.cmd_status()
         elif cmd in ("/help", "/h"):
             self.cmd_help()
         elif cmd in ("/quit", "/exit"):
@@ -1098,6 +1120,10 @@ class ChatApp(App):
         label = "ON — members can edit files and run commands" if self.writable else "OFF — advisory only"
         self.show_system_message(f"Writable mode: {label}")
 
+    def cmd_status(self) -> None:
+        """Show the branch's tickets and execution-context assignments."""
+        self.show_system_message(build_branch_context(self.base, self.branch).rstrip())
+
     def cmd_help(self) -> None:
         """Show available commands."""
         help_text = (
@@ -1105,6 +1131,7 @@ class ChatApp(App):
             "/unmute <member> — re-include member in queries\n"
             "/copy [member]   — copy last agent response to clipboard\n"
             "/writable        — toggle writable mode (file edits, commands)\n"
+            "/status          — show branch tickets and concurrent agent contexts\n"
             "/mute            — show currently muted members\n"
             "/help            — show this help\n"
             "/quit or /exit   — quit kd council chat\n"

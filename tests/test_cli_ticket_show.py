@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -76,6 +77,51 @@ class TestTicketShow:
         assert result.exit_code == 0
         assert result.output.rstrip().endswith(f"File: {ticket_path.resolve()}")
 
+    def test_show_raw_marks_closed_dependencies_nonblocking(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="done", status="closed", title="Finished dependency", created=datetime.now(UTC)),
+            tickets_dir / "done.md",
+        )
+        write_ticket(
+            Ticket(id="next", status="open", title="Ready work", deps=["done"], created=datetime.now(UTC)),
+            tickets_dir / "next.md",
+        )
+
+        result = runner.invoke(ticket_app, ["show", "next"])
+
+        assert result.exit_code == 0, result.output
+        assert "done (closed)" in result.output
+        assert "Dependency gate: clear — not blocked; all dependencies are closed." in result.output
+
+    def test_show_raw_identifies_only_unclosed_blockers(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="done", status="closed", title="Finished dependency", created=datetime.now(UTC)),
+            tickets_dir / "done.md",
+        )
+        write_ticket(
+            Ticket(id="open", status="open", title="Open dependency", created=datetime.now(UTC)),
+            tickets_dir / "open.md",
+        )
+        write_ticket(
+            Ticket(
+                id="next",
+                status="open",
+                title="Blocked work",
+                deps=["done", "open"],
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "next.md",
+        )
+
+        result = runner.invoke(ticket_app, ["show", "next"])
+
+        assert result.exit_code == 0, result.output
+        assert "done (closed)" in result.output
+        assert "open (open)" in result.output
+        assert "Dependency gate: blocked by open (open)." in result.output
+
     def test_show_rich_structured_header(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         ticket = Ticket(
@@ -99,6 +145,81 @@ class TestTicketShow:
         assert "Fix the bug" in result.output
         # Should NOT contain raw YAML delimiters
         assert "---" not in result.output
+
+    def test_show_rich_includes_structured_closure(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="done",
+            status="closed",
+            title="Closed with evidence",
+            body="## Lifecycle\n\n- close event",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            resolution="superseded",
+            close_reason="Replaced by the new flow",
+            superseded_by="next",
+        )
+        write_ticket(ticket, tickets_dir / "done.md")
+
+        result = runner.invoke(ticket_app, ["show", "done", "--rich"])
+
+        assert result.exit_code == 0, result.output
+        assert "resolution" in result.output
+        assert "superseded" in result.output
+        assert "close reason" in result.output
+        assert "Replaced by the new flow" in result.output
+        assert "superseded by" in result.output
+        assert "next" in result.output
+
+    def test_show_json_includes_structured_closure(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="done",
+            status="closed",
+            title="Closed with evidence",
+            body="## Lifecycle\n\n- close event",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            resolution="duplicate",
+            close_reason="Same as original",
+            duplicate_of="original",
+        )
+        write_ticket(ticket, tickets_dir / "done.md")
+
+        result = runner.invoke(ticket_app, ["show", "done", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["resolution"] == "duplicate"
+        assert data["close_reason"] == "Same as original"
+        assert data["duplicate_of"] == "original"
+        assert data["closed_at"] == "2026-01-02T00:00:00+00:00"
+        assert data["body"] == "## Lifecycle\n\n- close event"
+
+    def test_show_treats_stale_resolution_as_inactive_without_rewriting_markdown(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = tickets_dir / "stale.md"
+        write_ticket(
+            Ticket(
+                id="stale",
+                status="open",
+                title="Still open",
+                resolution="wont-do",
+                close_reason="Stale reason",
+                created=datetime.now(UTC),
+            ),
+            path,
+        )
+
+        json_result = runner.invoke(ticket_app, ["show", "stale", "--json"])
+        rich_result = runner.invoke(ticket_app, ["show", "stale", "--rich"])
+        raw_result = runner.invoke(ticket_app, ["show", "stale"])
+
+        assert json_result.exit_code == 0, json_result.output
+        assert json.loads(json_result.output)["resolution"] is None
+        assert "resolution" not in rich_result.output
+        assert "resolution: wont-do" in raw_result.output
+        assert path.read_text() in raw_result.output
 
     def test_show_no_raw_frontmatter(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -149,6 +270,8 @@ class TestTicketShow:
         assert "deps" in result.output
         assert "ab12" in result.output
         assert "closed" in result.output
+        assert "dependency gate" in result.output
+        assert "clear" in result.output
 
     def test_show_dep_status_unknown_when_not_found(self, cli_project: Path) -> None:
         """When a dep ticket doesn't exist, status should show as 'unknown'."""
@@ -170,6 +293,8 @@ class TestTicketShow:
         assert "deps" in result.output
         assert "zzzz" in result.output
         assert "unknown" in result.output
+        assert "dependency gate" in result.output
+        assert "blocked by zzzz (unknown)" in result.output
 
     def test_show_dep_status_multiple_deps(self, cli_project: Path) -> None:
         """Multiple deps should each show their status."""
@@ -230,6 +355,39 @@ class TestTicketShow:
         assert len(data["deps"]) == 1
         assert data["deps"][0]["id"] == "ab12"
         assert data["deps"][0]["status"] == "closed"
+        assert data["dependency_gate"] == {"blocked": False, "blockers": []}
+
+    def test_show_json_names_only_unclosed_dependencies_as_blockers(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="done", status="closed", title="Done", created=datetime.now(UTC)),
+            tickets_dir / "done.md",
+        )
+        write_ticket(
+            Ticket(id="open", status="open", title="Open", created=datetime.now(UTC)),
+            tickets_dir / "open.md",
+        )
+        write_ticket(
+            Ticket(
+                id="next",
+                status="open",
+                title="Mixed deps",
+                deps=["done", "open", "missing"],
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "next.md",
+        )
+
+        result = runner.invoke(ticket_app, ["show", "next", "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["dependency_gate"] == {
+            "blocked": True,
+            "blockers": [
+                {"id": "open", "status": "open"},
+                {"id": "missing", "status": "unknown"},
+            ],
+        }
 
     def test_show_panel_layout_contains_metadata_grid(self, cli_project: Path) -> None:
         """Panel should contain a grid with status, priority, type, and created rows."""

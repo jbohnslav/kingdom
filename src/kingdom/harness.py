@@ -24,7 +24,7 @@ import types
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
+from kingdom.agent import build_command, clean_agent_env, extract_token_count, parse_response, resolve_agent
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.state import logs_root
 from kingdom.thread import add_message, list_messages
@@ -115,7 +115,7 @@ def build_prompt(
             "Keep the ticket worklog updated as you work. Log important decisions, "
             "tradeoffs, things you noticed, or King input by editing the ticket "
             f"Markdown directly after reading it. Use `kd tk show {ticket_id}` to "
-            f'print the raw ticket file; use `kd tk log {ticket_id} "message"` '
+            f'print the raw ticket file and resolved dependency gate; use `kd tk log {ticket_id} "message"` '
             "only for quick one-off entries. "
             "The worklog is how the King stays informed about what you're doing and why."
         )
@@ -166,6 +166,94 @@ def parse_status(response_text: str) -> str:
         if match:
             return match.group(1).lower()
     return "continue"
+
+
+def classify_provider_failure(text: str, stderr: str, returncode: int) -> str | None:
+    """Classify provider failures that should not be treated as agent output."""
+    first_line = (text.strip() or stderr.strip()).splitlines()[0].lower() if text.strip() or stderr.strip() else ""
+    evidence = f"{text}\n{stderr}".lower()
+    authentication_markers = (
+        "authentication_error",
+        "failed to authenticate",
+        "oauth access token has expired",
+        "invalid api key",
+        "api error: 401",
+        "unauthorized",
+    )
+    authentication_prefixes = ("failed to authenticate", "api error: 401", "error: 401", "unauthorized")
+    if first_line.startswith(authentication_prefixes) or (
+        returncode != 0 and any(marker in evidence for marker in authentication_markers)
+    ):
+        return "authentication"
+
+    permanent_markers = (
+        "api error: 403",
+        "forbidden",
+        "permission denied",
+        "account disabled",
+        "billing account",
+        "insufficient credits",
+        "model not found",
+    )
+    permanent_prefixes = (
+        "api error: 403",
+        "error: 403",
+        "forbidden",
+        "permission denied",
+        "account disabled",
+        "model not found",
+    )
+    if first_line.startswith(permanent_prefixes) or (
+        returncode != 0 and any(marker in evidence for marker in permanent_markers)
+    ):
+        return "permanent"
+
+    transient_markers = (
+        "connection refused",
+        "failed to connect",
+        "connection reset",
+        "rate limit",
+        "api error: 429",
+        "temporarily unavailable",
+        "service unavailable",
+        "request timed out",
+        "timed out",
+        "bad gateway",
+        "api error: 502",
+        "api error: 503",
+        "api error: 504",
+    )
+    transient_prefixes = (
+        "connection refused",
+        "failed to connect",
+        "rate limit",
+        "api error: 429",
+        "temporarily unavailable",
+        "service unavailable",
+        "request timed out",
+    )
+    if first_line.startswith(transient_prefixes) or (
+        returncode != 0 and any(marker in evidence for marker in transient_markers)
+    ):
+        return "transient"
+    return None
+
+
+def authentication_recovery_hint(backend: str) -> str:
+    """Return the actionable authentication recovery command for a backend."""
+    hints = {
+        "claude_code": "Run `claude` to re-authenticate, then run `kd doctor`.",
+        "codex": "Run `codex login` to re-authenticate, then run `kd doctor`.",
+        "cursor": "Re-authenticate Cursor Agent, then run `kd doctor`.",
+    }
+    return hints.get(backend, "Re-authenticate the provider, then run `kd doctor`.")
+
+
+def concise_provider_error(text: str, stderr: str, returncode: int) -> str:
+    """Return one bounded provider error for logs and ticket worklogs."""
+    message = text.strip() or stderr.strip() or f"Exit code {returncode}"
+    message = " ".join(message.split())
+    return message if len(message) <= 500 else message[:497] + "..."
 
 
 def extract_worklog_entry(response_text: str) -> str:
@@ -794,6 +882,11 @@ def run_agent_loop(
         return "failed"
     _, ticket_path = result
     ticket_title = read_ticket(ticket_path).title
+    run_started_at = time.monotonic()
+    agent_cycles = 0
+    council_review_cycles = 0
+    reported_tokens = 0
+    has_reported_tokens = False
 
     # Track whether we should stop
     stop_requested = False
@@ -844,6 +937,15 @@ def run_agent_loop(
             ticket_id=ticket_id,
             entry=f"BRANCH ESCAPE: worktree is not on expected branch '{expected_branch}' — aborting",
         )
+        elapsed = time.monotonic() - run_started_at
+        append_worklog(
+            ticket_path,
+            ticket_id=ticket_id,
+            entry=(
+                "Run metrics: agent cycles: 0; council review cycles: 0; "
+                f"reported agent tokens: unavailable; elapsed: {elapsed:.1f}s"
+            ),
+        )
         now = datetime.now(UTC).isoformat()
         update_agent_state(base, branch, session_name, status="failed", last_activity=now)
         return "failed"
@@ -867,6 +969,8 @@ def run_agent_loop(
             logger.warning("Could not record start_sha")
 
     final_status = "failed"
+    final_failure_kind: str | None = None
+    transient_failures = 0
     last_bounce_feedback: list[str] = []  # Council feedback from last bounce (for worklog context)
 
     for iteration in range(1, max_iterations + 1):
@@ -882,6 +986,7 @@ def run_agent_loop(
             branch,
             session_name,
             status="working",
+            failure_kind=None,
             last_activity=now,
         )
 
@@ -950,6 +1055,7 @@ def run_agent_loop(
         agent_live_log = logs_root(base, branch) / session_name / "agent-live.log"
 
         try:
+            agent_cycles += 1
             proc = run_streaming_subprocess(
                 cmd,
                 cwd=worktree,
@@ -962,6 +1068,15 @@ def run_agent_loop(
             append_worklog(ticket_path, ticket_id=ticket_id, entry=f"Backend command not found: {cmd_name}")
             final_status = "failed"
             break
+
+        text, new_session_id, raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
+        token_count = extract_token_count(agent_config.backend, raw)
+        if token_count is not None:
+            reported_tokens += token_count
+            has_reported_tokens = True
+        if new_session_id:
+            resume_id = new_session_id
+            update_agent_state(base, branch, session_name, resume_id=new_session_id)
 
         # Check for stop signal after backend call returns
         if stop_requested:
@@ -986,16 +1101,68 @@ def run_agent_loop(
         if proc.stderr.strip():
             logger.info("--- Agent stderr ---\n%s\n--- End agent stderr ---", proc.stderr.strip())
 
-        # Parse response
-        text, new_session_id, _raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
-        if new_session_id:
-            resume_id = new_session_id
-            update_agent_state(base, branch, session_name, resume_id=new_session_id)
+        provider_failure = classify_provider_failure(text, proc.stderr, proc.returncode)
+        if provider_failure == "authentication":
+            error_msg = concise_provider_error(text, proc.stderr, proc.returncode)
+            recovery = authentication_recovery_hint(agent_config.backend)
+            logger.error("Authentication infrastructure failure: %s", error_msg)
+            append_worklog(
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=f"Infrastructure failure (authentication): {error_msg}\n{recovery}",
+            )
+            final_failure_kind = "authentication"
+            final_status = "failed"
+            break
+        if provider_failure == "permanent":
+            error_msg = concise_provider_error(text, proc.stderr, proc.returncode)
+            append_worklog(
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=(
+                    f"Infrastructure failure (provider configuration): {error_msg}\n"
+                    "Run `kd doctor` and inspect provider account, model, and permission settings."
+                ),
+            )
+            final_failure_kind = "provider"
+            final_status = "failed"
+            break
+        if provider_failure == "transient":
+            transient_failures += 1
+            error_msg = concise_provider_error(text, proc.stderr, proc.returncode)
+            if transient_failures >= 3:
+                append_worklog(
+                    ticket_path,
+                    ticket_id=ticket_id,
+                    entry=(
+                        f"Infrastructure failure (provider retries exhausted {transient_failures}/3): {error_msg}\n"
+                        "Run `kd doctor` and retry after provider connectivity recovers."
+                    ),
+                )
+                final_failure_kind = "provider"
+                final_status = "failed"
+                break
+            delay = transient_failures
+            append_worklog(
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=(
+                    f"Transient provider failure (attempt {transient_failures}/3); retrying in {delay}s: {error_msg}"
+                ),
+            )
+            time.sleep(delay)
+            continue
+        transient_failures = 0
 
         if not text and proc.returncode != 0:
             error_msg = proc.stderr.strip() or f"Exit code {proc.returncode}"
             logger.error("Backend error: %s", error_msg)
-            append_worklog(ticket_path, ticket_id=ticket_id, entry=f"Backend error: {error_msg}")
+            append_worklog(
+                ticket_path,
+                ticket_id=ticket_id,
+                entry=f"Infrastructure failure (backend): {error_msg}\nRun `kd doctor` and inspect the provider CLI.",
+            )
+            final_failure_kind = "provider"
             final_status = "failed"
             break
 
@@ -1074,6 +1241,8 @@ def run_agent_loop(
                 append_worklog(ticket_path, ticket_id=ticket_id, entry="No council configured — awaiting king review")
                 break
 
+            council_review_cycles += 1
+
             if review_outcome == "timeout":
                 # Council timed out — escalate to king
                 final_status = "needs_king_review"
@@ -1147,6 +1316,17 @@ def run_agent_loop(
         )
         final_status = "failed"
 
+    token_summary = str(reported_tokens) if has_reported_tokens else "unavailable"
+    elapsed = time.monotonic() - run_started_at
+    append_worklog(
+        ticket_path,
+        ticket_id=ticket_id,
+        entry=(
+            f"Run metrics: agent cycles: {agent_cycles}; council review cycles: {council_review_cycles}; "
+            f"reported agent tokens: {token_summary}; elapsed: {elapsed:.1f}s"
+        ),
+    )
+
     # Final session update
     now = datetime.now(UTC).isoformat()
     update_agent_state(
@@ -1154,6 +1334,7 @@ def run_agent_loop(
         branch,
         session_name,
         status=final_status,
+        failure_kind=final_failure_kind,
         last_activity=now,
     )
 

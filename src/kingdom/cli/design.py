@@ -8,12 +8,13 @@ import typer
 from rich.console import Console
 from rich.markdown import Markdown
 
+from kingdom.design import ensure_design_initialized
 from kingdom.state import branch_root, read_json, resolve_current_run, write_json
 
 from .display import print_error
 from .helpers import require_project_root
 
-design_app = typer.Typer(name="design", help="Manage design documents.")
+design_app = typer.Typer(name="design", help="Manage optional design documents.")
 
 
 def get_doc_status(path: Path) -> str:
@@ -55,10 +56,7 @@ def design_default(ctx: typer.Context) -> None:
     feature = resolve_current_run(base)
     design_path, _ = get_design_paths(base, feature)
 
-    if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
-        print_error("No design document found. Run `kd start` to create one.")
-        raise typer.Exit(code=1)
-
+    ensure_design_initialized(design_path, feature)
     typer.echo(str(design_path.relative_to(base)))
 
 

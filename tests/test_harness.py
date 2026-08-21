@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -508,7 +509,7 @@ class TestRunAgentLoop:
 
         mock_result = MagicMock()
         mock_result.stdout = ""
-        mock_result.stderr = "Connection refused"
+        mock_result.stderr = "Unexpected backend exit"
         mock_result.returncode = 1
 
         with patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result):
@@ -525,6 +526,138 @@ class TestRunAgentLoop:
         assert status == "failed"
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "failed"
+        ticket = read_ticket(ticket_path)
+        assert "Run metrics: agent cycles: 1; council review cycles: 0" in ticket.body
+        assert "reported agent tokens: unavailable" in ticket.body
+        assert "elapsed" in ticket.body
+
+    def test_loop_fails_fast_on_expired_authentication(self, project: Path, ticket_path: Path) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        auth_result = MagicMock(
+            stdout=json.dumps(
+                {
+                    "result": (
+                        'Failed to authenticate. API Error: 401 {"error":'
+                        '{"type":"authentication_error","message":"OAuth access token has expired."}}'
+                    )
+                }
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+        with patch("kingdom.harness.run_streaming_subprocess", return_value=auth_result) as backend:
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "failed"
+        assert backend.call_count == 1
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.status == "failed"
+        assert state.failure_kind == "authentication"
+        body = read_ticket(ticket_path).body
+        assert "Infrastructure failure (authentication)" in body
+        assert "re-authenticate" in body
+        assert "kd doctor" in body
+
+    def test_loop_fails_fast_on_permanent_provider_rejection(self, project: Path, ticket_path: Path) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        rejected = MagicMock(
+            stdout='{"result": "API Error: 403 Forbidden: account disabled"}',
+            stderr="",
+            returncode=0,
+        )
+
+        with patch("kingdom.harness.run_streaming_subprocess", return_value=rejected) as backend:
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "failed"
+        assert backend.call_count == 1
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.failure_kind == "provider"
+        body = read_ticket(ticket_path).body
+        assert "Infrastructure failure (provider configuration)" in body
+        assert "kd doctor" in body
+
+    def test_loop_retries_transient_provider_failures_with_bounded_backoff(
+        self,
+        project: Path,
+        ticket_path: Path,
+    ) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        transient = MagicMock(stdout="", stderr="Connection refused", returncode=1)
+        completed = MagicMock(
+            stdout='{"result": "Recovered.\\n\\nSTATUS: DONE", "session_id": "s1"}',
+            stderr="",
+            returncode=0,
+        )
+
+        with (
+            patch("kingdom.harness.run_streaming_subprocess", side_effect=[transient, transient, completed]) as backend,
+            patch("kingdom.harness.time.sleep") as sleep,
+            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.has_code_changes", return_value=True),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "needs_king_review"
+        assert backend.call_count == 3
+        assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.failure_kind is None
+        body = read_ticket(ticket_path).body
+        assert "Transient provider failure (attempt 1/3)" in body
+        assert "Transient provider failure (attempt 2/3)" in body
+
+    def test_loop_stops_after_three_transient_provider_failures(self, project: Path, ticket_path: Path) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        transient = MagicMock(stdout="", stderr="Connection refused", returncode=1)
+
+        with (
+            patch("kingdom.harness.run_streaming_subprocess", return_value=transient) as backend,
+            patch("kingdom.harness.time.sleep") as sleep,
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "failed"
+        assert backend.call_count == 3
+        assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+        state = get_agent_state(project, BRANCH, session_name)
+        assert state.failure_kind == "provider"
+        body = read_ticket(ticket_path).body
+        assert "Infrastructure failure (provider retries exhausted 3/3)" in body
+        assert "kd doctor" in body
 
     def test_loop_writes_to_thread(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
@@ -603,6 +736,45 @@ class TestRunAgentLoop:
 
         state = get_agent_state(project, BRANCH, session_name)
         assert state.resume_id == "new-session-123"
+
+    def test_loop_resumes_after_continue_and_records_costs(self, project: Path, ticket_path: Path) -> None:
+        thread_id, session_name = self.setup_for_loop(project, ticket_path)
+        results = []
+        for status, session_id, tokens in [("CONTINUE", "resume-123", 7), ("DONE", "resume-123", 11)]:
+            result = MagicMock()
+            result.stdout = json.dumps(
+                {
+                    "result": f"Progress.\n\nSTATUS: {status}",
+                    "session_id": session_id,
+                    "usage": {"input_tokens": tokens - 2, "output_tokens": 2},
+                }
+            )
+            result.stderr = ""
+            result.returncode = 0
+            results.append(result)
+
+        with (
+            patch("kingdom.harness.run_streaming_subprocess", side_effect=results),
+            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.build_command", return_value=["agent"]) as mock_build,
+            patch("kingdom.harness.has_code_changes", return_value=True),
+        ):
+            status = run_agent_loop(
+                base=project,
+                branch=BRANCH,
+                agent_name="claude",
+                ticket_id="kin-test",
+                worktree=project,
+                thread_id=thread_id,
+                session_name=session_name,
+            )
+
+        assert status == "needs_king_review"
+        assert mock_build.call_args_list[0].args[2] is None
+        assert mock_build.call_args_list[1].args[2] == "resume-123"
+        ticket = read_ticket(ticket_path)
+        assert "Run metrics: agent cycles: 2; council review cycles: 1" in ticket.body
+        assert "reported agent tokens: 18" in ticket.body
 
     def test_loop_continues_across_iterations(self, project: Path, ticket_path: Path) -> None:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
@@ -732,6 +904,9 @@ class TestRunAgentLoop:
         assert status == "stopped"
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "stopped"
+        assert state.resume_id == "s1"
+        ticket = read_ticket(ticket_path)
+        assert "agent cycles: 1" in ticket.body
 
     def test_loop_records_start_sha(self, project: Path, ticket_path: Path) -> None:
         """Harness should record start_sha on first run."""
@@ -1272,13 +1447,16 @@ class TestCouncilReviewInLoop:
         thread_id, session_name = self.setup_for_loop(project, ticket_path)
 
         mock_result = MagicMock()
-        mock_result.stdout = '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1"}'
+        mock_result.stdout = (
+            '{"result": "Done.\\n\\nSTATUS: DONE", "session_id": "s1", '
+            '"usage": {"input_tokens": 10, "output_tokens": 5}}'
+        )
         mock_result.stderr = ""
         mock_result.returncode = 0
 
         with (
             patch("kingdom.harness.run_streaming_subprocess", return_value=mock_result),
-            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED),
+            patch("kingdom.harness.run_council_review", return_value=COUNCIL_APPROVED) as mock_review,
         ):
             status = run_agent_loop(
                 base=project,
@@ -1297,6 +1475,9 @@ class TestCouncilReviewInLoop:
         # Ticket should be in_review
         ticket = read_ticket(ticket_path)
         assert ticket.status == "in_review"
+        assert mock_review.call_count == 1
+        assert "Run metrics: agent cycles: 1; council review cycles: 1" in ticket.body
+        assert "reported agent tokens: 15" in ticket.body
 
     def test_council_blocking_bounces_back(self, project: Path, ticket_path: Path) -> None:
         """When council blocks, peasant should return to working and then complete."""
@@ -1345,6 +1526,8 @@ class TestCouncilReviewInLoop:
         # Bounce count should be 1
         state = get_agent_state(project, BRANCH, session_name)
         assert state.review_bounce_count == 1
+        ticket = read_ticket(ticket_path)
+        assert "Run metrics: agent cycles: 2; council review cycles: 2" in ticket.body
 
         # Council feedback message should have been written to the thread
         feedback_calls = [
@@ -1456,6 +1639,7 @@ class TestCouncilReviewInLoop:
         assert status == "needs_king_review"
         ticket = read_ticket(ticket_path)
         assert "no council" in ticket.body.lower()
+        assert "council review cycles: 0" in ticket.body
 
     def test_council_timeout_escalates(self, project: Path, ticket_path: Path) -> None:
         """When council times out, should escalate to king."""
@@ -1483,6 +1667,7 @@ class TestCouncilReviewInLoop:
         assert status == "needs_king_review"
         ticket = read_ticket(ticket_path)
         assert "timed out" in ticket.body.lower()
+        assert "Run metrics: agent cycles: 1; council review cycles: 1" in ticket.body
 
     def test_ticket_status_transitions(self, project: Path, ticket_path: Path) -> None:
         """Ticket should transition open -> in_review during council review."""
@@ -1876,6 +2061,7 @@ class TestBranchEscapeInLoop:
 
         state = get_agent_state(project, BRANCH, session_name)
         assert state.status == "failed"
+        assert "Run metrics: agent cycles: 0; council review cycles: 0" in ticket.body
 
     def test_post_iteration_escape_aborts(self, project: Path, ticket_path: Path) -> None:
         """If worktree branch changes after agent call, abort."""
@@ -1889,7 +2075,10 @@ class TestBranchEscapeInLoop:
             return call_count == 1  # Pre-loop passes, post-iteration fails
 
         mock_result = MagicMock()
-        mock_result.stdout = '{"result": "Working on it.\\n\\nSTATUS: WORKING", "session_id": "s1"}'
+        mock_result.stdout = (
+            '{"result": "Working on it.\\n\\nSTATUS: WORKING", "session_id": "s1", '
+            '"usage": {"input_tokens": 4, "output_tokens": 2}}'
+        )
         mock_result.stderr = ""
         mock_result.returncode = 0
 
@@ -1910,6 +2099,8 @@ class TestBranchEscapeInLoop:
         assert status == "failed"
         ticket = read_ticket(ticket_path)
         assert "BRANCH ESCAPE detected after iteration" in ticket.body
+        assert "reported agent tokens: 6" in ticket.body
+        assert get_agent_state(project, BRANCH, session_name).resume_id == "s1"
 
     def test_hand_mode_slash_branch_not_false_escape(self, project: Path, ticket_path: Path) -> None:
         """Hand mode with a slash branch (e.g. feature/foo) should not false-positive escape.

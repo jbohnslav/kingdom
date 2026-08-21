@@ -16,6 +16,7 @@ from kingdom.agent import (
     extract_error,
     extract_model_metadata,
     extract_stream_text,
+    extract_token_count,
     parse_claude_response,
     parse_codex_response,
     parse_cursor_response,
@@ -538,6 +539,52 @@ class TestParseResponseDispatch:
         text, session_id, _ = parse_response(config, "raw output", "", 0)
         assert text == "raw output"
         assert session_id is None
+
+
+class TestExtractTokenCount:
+    def test_claude_counts_cache_and_regular_tokens(self) -> None:
+        raw = json.dumps(
+            {
+                "type": "result",
+                "usage": {
+                    "input_tokens": 10,
+                    "cache_creation_input_tokens": 3,
+                    "cache_read_input_tokens": 2,
+                    "output_tokens": 5,
+                },
+            }
+        )
+
+        assert extract_token_count("claude_code", raw) == 20
+
+    def test_codex_prefers_reported_total_without_double_counting_cached_tokens(self) -> None:
+        raw = "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 12,
+                            "cached_input_tokens": 4,
+                            "output_tokens": 6,
+                            "total_tokens": 18,
+                        },
+                    }
+                ),
+            ]
+        )
+
+        assert extract_token_count("codex", raw) == 18
+
+    def test_cursor_uses_input_and_output_when_total_is_absent(self) -> None:
+        raw = json.dumps({"usage": {"input_tokens": 7, "output_tokens": 3}})
+
+        assert extract_token_count("cursor", raw) == 10
+
+    def test_returns_none_when_backend_does_not_report_usage(self) -> None:
+        assert extract_token_count("claude_code", '{"result": "done"}') is None
+        assert extract_token_count("claude_code", "not json") is None
 
 
 class TestBuildCommandStreaming:

@@ -2013,9 +2013,9 @@ class TestAutoTurns:
         # Neither broadcast response should be persisted since generation changed
         msgs = list_messages(project, BRANCH, tid)
         member_msgs = [m for m in msgs if m.from_ != "king"]
-        assert (
-            len(member_msgs) == 0
-        ), f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
+        assert len(member_msgs) == 0, (
+            f"Stale broadcast results should not be persisted, got {len(member_msgs)} member messages"
+        )
 
     def test_natural_mode_follow_up_shuffled_sequential(self, project: Path) -> None:
         """natural mode follow-up: shuffled sequential only, no broadcast."""
@@ -2720,6 +2720,60 @@ class TestBuildBranchContext:
         hi_pos = ctx.index("hi01")
         lo_pos = ctx.index("lo01")
         assert hi_pos < lo_pos
+
+    def test_includes_execution_context_assignments(self, project: Path) -> None:
+        from kingdom.state import branch_root, record_execution_ticket_context, resolve_execution_context
+        from kingdom.ticket import Ticket, write_ticket
+        from kingdom.tui.app import build_branch_context
+
+        tickets_dir = branch_root(project, BRANCH) / "tickets"
+        tickets_dir.mkdir(parents=True, exist_ok=True)
+        with patch.dict(os.environ, {"KD_CONTEXT": "tui-session"}, clear=True):
+            context = resolve_execution_context(host="codex", role="agent", cwd=project)
+        assert context is not None
+        record_execution_ticket_context(project, context, "sess", feature=BRANCH)
+        write_ticket(
+            Ticket(id="sess", status="in_progress", title="Visible session", assignee=context.context_id),
+            tickets_dir / "sess.md",
+        )
+
+        branch_context = build_branch_context(project, BRANCH)
+
+        assert "Contexts (concurrent agent sessions):" in branch_context
+        assert "codex" in branch_context
+        assert "agent" in branch_context
+        assert "sess" in branch_context
+
+
+class TestStatusSlashCommand:
+    def test_status_shows_current_branch_and_sessions(self, project: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from kingdom.state import branch_root, record_execution_ticket_context, resolve_execution_context
+        from kingdom.ticket import Ticket, write_ticket
+        from kingdom.tui.app import ChatApp
+
+        thread_id = "council-status"
+        create_thread(project, BRANCH, thread_id, ["king", "claude"], "council")
+        tickets_dir = branch_root(project, BRANCH) / "tickets"
+        tickets_dir.mkdir(parents=True, exist_ok=True)
+        with patch.dict(os.environ, {"KD_CONTEXT": "tui-status-session"}, clear=True):
+            context = resolve_execution_context(host="codex", cwd=project)
+        assert context is not None
+        record_execution_ticket_context(project, context, "work", feature=BRANCH)
+        write_ticket(
+            Ticket(id="work", status="in_progress", title="Status work", assignee=context.context_id),
+            tickets_dir / "work.md",
+        )
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=thread_id)
+        app_instance.show_system_message = MagicMock()
+
+        app_instance.handle_slash_command("/status")
+
+        message = app_instance.show_system_message.call_args[0][0]
+        assert f"Branch: {BRANCH}" in message
+        assert "Contexts (concurrent agent sessions):" in message
+        assert "work" in message
 
 
 class TestSendMessageCleansUpPanels:

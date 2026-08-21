@@ -19,10 +19,12 @@ import os
 import re
 import subprocess
 import threading
+import time
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +145,10 @@ def find_kd_base_from_git_worktrees(cwd: Path | None = None) -> Path | None:
     raise ValueError(f"Multiple git worktrees contain .kd/. Set KD_BASE to choose one explicitly:\n{options}")
 
 
+class ProjectRootNotFoundError(ValueError):
+    """No Kingdom state could be discovered from the invocation context."""
+
+
 def find_project_root(cwd: Path | None = None) -> Path:
     """Locate the Kingdom project root directory.
 
@@ -192,7 +198,7 @@ def find_project_root(cwd: Path | None = None) -> Path:
 
     # 6. Error
     if root is None:
-        raise ValueError("No .kd/ directory found. Run `kd init` to initialize.")
+        raise ProjectRootNotFoundError("No .kd/ directory found. Run `kd init` to initialize.")
 
     check_no_legacy_runs(root)
     return root
@@ -221,6 +227,27 @@ def terminal_context_root(base: Path) -> Path:
     return runtime_root(base) / "terminal-context"
 
 
+def execution_context_root(base: Path) -> Path:
+    return runtime_root(base) / "contexts"
+
+
+def ticket_assignment_lock_path(base: Path) -> Path:
+    return runtime_root(base) / ".ticket-assignment.lock"
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    context_id: str
+    host: str
+    role: str
+    session_id: str
+    parent_agent_id: str | None
+    agent_type: str | None
+    cwd: str
+    last_seen: datetime
+    source: str
+
+
 TERMINAL_CONTEXT_ENV_VARS = (
     "KD_TERMINAL_ID",
     "TMUX_PANE",
@@ -234,18 +261,364 @@ TERMINAL_CONTEXT_ENV_VARS = (
     "SSH_TTY",
 )
 
+MAX_CONTEXT_IDENTIFIER_LENGTH = 256
+DEFAULT_CONTEXT_STALE_AFTER = timedelta(hours=24)
 
-def terminal_context_identity(session_id: str | None = None) -> str | None:
+
+def validate_context_identifier(name: str, value: str) -> str:
+    identifier = value.strip()
+    if not identifier:
+        raise ValueError(f"{name} must not be empty")
+    if len(identifier) > MAX_CONTEXT_IDENTIFIER_LENGTH:
+        raise ValueError(f"{name} must be at most {MAX_CONTEXT_IDENTIFIER_LENGTH} characters")
+    if any(character in identifier for character in ("\n", "\r", "\0")):
+        raise ValueError(f"{name} must be a single-line identifier")
+    return identifier
+
+
+def normalize_context_host(host: str) -> str:
+    normalized = re.sub(r"[^a-z0-9-]+", "-", host.strip().lower()).strip("-")
+    if not normalized:
+        raise ValueError("context host must contain a letter or number")
+    return normalized
+
+
+def compact_context_id(context_id: str, digest_length: int = 8) -> str:
+    host, separator, digest = context_id.partition(":")
+    if not separator or len(digest) <= digest_length or not re.fullmatch(r"[0-9a-f]+", digest):
+        return context_id
+    return f"{host}:{digest[:digest_length]}"
+
+
+def terminal_fallback_identity() -> tuple[str, str] | None:
     for name in TERMINAL_CONTEXT_ENV_VARS:
         value = os.environ.get(name)
         if value:
-            return f"{name}:{value}"
+            return name, validate_context_identifier(name, value)
 
     for fd in (0, 1, 2):
         try:
-            return f"tty:{os.ttyname(fd)}"
+            return "TTY", validate_context_identifier("TTY", os.ttyname(fd))
         except OSError:
             pass
+    return None
+
+
+def resolve_execution_context(
+    *,
+    session_id: str | None = None,
+    host: str | None = None,
+    role: str | None = None,
+    parent_agent_id: str | None = None,
+    agent_type: str | None = None,
+    cwd: Path | None = None,
+    now: datetime | None = None,
+    prefer_session_id: bool = False,
+) -> ExecutionContext | None:
+    explicit_context = os.environ.get("KD_CONTEXT")
+    codex_thread = os.environ.get("CODEX_THREAD_ID")
+
+    if session_id and prefer_session_id:
+        stable_id = validate_context_identifier("session_id", session_id)
+        source = "hook"
+        resolved_host = host or os.environ.get("KD_HOST") or "hook"
+    elif explicit_context:
+        stable_id = validate_context_identifier("KD_CONTEXT", explicit_context)
+        source = "KD_CONTEXT"
+        resolved_host = host or os.environ.get("KD_HOST") or "kingdom"
+    elif session_id:
+        stable_id = validate_context_identifier("session_id", session_id)
+        source = "hook"
+        resolved_host = host or os.environ.get("KD_HOST") or "hook"
+    elif codex_thread:
+        stable_id = validate_context_identifier("CODEX_THREAD_ID", codex_thread)
+        source = "CODEX_THREAD_ID"
+        resolved_host = host or "codex"
+    else:
+        terminal_identity = terminal_fallback_identity()
+        if terminal_identity is None:
+            return None
+        terminal_source, terminal_id = terminal_identity
+        stable_id = f"{terminal_source}:{terminal_id}"
+        source = terminal_source
+        resolved_host = host or "terminal"
+
+    normalized_host = normalize_context_host(resolved_host)
+    resolved_role = normalize_context_host(
+        role or os.environ.get("KD_ROLE") or ("subagent" if parent_agent_id else "agent")
+    )
+    digest = hashlib.sha256(f"{normalized_host}\0{stable_id}".encode()).hexdigest()[:16]
+    validated_parent = (
+        validate_context_identifier("parent_agent_id", parent_agent_id) if parent_agent_id is not None else None
+    )
+    return ExecutionContext(
+        context_id=f"{normalized_host}:{digest}",
+        host=normalized_host,
+        role=resolved_role,
+        session_id=stable_id,
+        parent_agent_id=validated_parent,
+        agent_type=normalize_context_host(agent_type) if agent_type else None,
+        cwd=str((cwd or Path.cwd()).resolve()),
+        last_seen=now or datetime.now(UTC),
+        source=source,
+    )
+
+
+def execution_context_path(base: Path, context: ExecutionContext) -> Path:
+    digest = context.context_id.split(":", 1)[-1]
+    return execution_context_root(base) / f"{context.host}-{digest}.json"
+
+
+def record_execution_ticket_context(
+    base: Path,
+    context: ExecutionContext,
+    ticket_id: str,
+    *,
+    feature: str,
+    location: str | None = None,
+) -> None:
+    path = execution_context_path(base, context)
+    record = {
+        "schema_version": 1,
+        "context_id": context.context_id,
+        "host": context.host,
+        "role": context.role,
+        "session_id": context.session_id,
+        "parent_agent_id": context.parent_agent_id,
+        "agent_type": context.agent_type,
+        "cwd": context.cwd,
+        "source": context.source,
+        "ticket_id": ticket_id,
+        "feature": normalize_branch_name(feature),
+        "location": location or f"branch:{normalize_branch_name(feature)}",
+        "last_seen": context.last_seen.isoformat(),
+        "active": True,
+    }
+    locked_json_update(path, lambda _current: record)
+
+
+def finish_execution_context(
+    base: Path,
+    context: ExecutionContext,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    path = execution_context_path(base, context)
+    if not path.exists():
+        return None
+
+    timestamp = (now or datetime.now(UTC)).isoformat()
+
+    def finish(data: dict[str, Any]) -> dict[str, Any]:
+        if data.get("context_id") != context.context_id:
+            return data
+        data["active"] = False
+        data["completed_at"] = timestamp
+        data["last_seen"] = timestamp
+        return data
+
+    return locked_json_update(path, finish)
+
+
+def read_execution_ticket_context(base: Path, context: ExecutionContext) -> dict[str, Any] | None:
+    try:
+        data = read_json(execution_context_path(base, context))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if data.get("context_id") != context.context_id:
+        return None
+    ticket_id = data.get("ticket_id")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        return None
+    return data
+
+
+def refresh_execution_context_activity(
+    base: Path,
+    context: ExecutionContext,
+    ticket_id: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Refresh an active context only when it is still bound to *ticket_id*."""
+    path = execution_context_path(base, context)
+    if not path.exists():
+        return False
+
+    lock_path = path.parent / f".{path.name}.lock"
+    with flock(lock_path):
+        try:
+            data = read_json(path)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return False
+        if (
+            data.get("context_id") != context.context_id
+            or data.get("ticket_id") != ticket_id
+            or data.get("active") is False
+        ):
+            return False
+        data["last_seen"] = (now or datetime.now(UTC)).isoformat()
+        write_json(path, data)
+    return True
+
+
+def clear_ticket_execution_contexts(
+    base: Path,
+    ticket_id: str,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    contexts_root = execution_context_root(base)
+    if not contexts_root.exists():
+        return []
+
+    timestamp = (now or datetime.now(UTC)).isoformat()
+    cleared = []
+    for path in sorted(contexts_root.glob("*.json")):
+        lock_path = path.parent / f".{path.name}.lock"
+        with flock(lock_path):
+            try:
+                data = read_json(path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            if data.get("ticket_id") != ticket_id:
+                continue
+            data["ticket_id"] = None
+            data["last_seen"] = timestamp
+            data["unbound_at"] = timestamp
+            write_json(path, data)
+            context_id = data.get("context_id")
+            if isinstance(context_id, str):
+                cleared.append(context_id)
+    return cleared
+
+
+def parse_context_last_seen(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp
+
+
+def list_execution_contexts(
+    base: Path,
+    *,
+    feature: str | None = None,
+    stale_after: timedelta = DEFAULT_CONTEXT_STALE_AFTER,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    contexts_root = execution_context_root(base)
+    if not contexts_root.exists():
+        return []
+
+    current_time = now or datetime.now(UTC)
+    normalized_feature = normalize_branch_name(feature) if feature else None
+    records: list[tuple[datetime, dict[str, Any]]] = []
+    for path in contexts_root.glob("*.json"):
+        try:
+            data = read_json(path)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+        if normalized_feature and data.get("feature") != normalized_feature:
+            continue
+        if not isinstance(data.get("context_id"), str) or not isinstance(data.get("host"), str):
+            continue
+        last_seen = parse_context_last_seen(data.get("last_seen"))
+        if last_seen is None:
+            continue
+        record = dict(data)
+        record["role"] = data.get("role") if isinstance(data.get("role"), str) else "agent"
+        record["active"] = data.get("active") is not False
+        record["stale"] = current_time - last_seen > stale_after
+        records.append((last_seen, record))
+
+    records.sort(key=lambda item: item[0], reverse=True)
+    return [record for _, record in records]
+
+
+def prune_stale_execution_contexts(
+    base: Path,
+    *,
+    feature: str | None = None,
+    stale_after: timedelta = DEFAULT_CONTEXT_STALE_AFTER,
+    now: datetime | None = None,
+) -> list[str]:
+    current_time = now or datetime.now(UTC)
+    stale_contexts = [
+        context
+        for context in list_execution_contexts(base, feature=feature, stale_after=stale_after, now=current_time)
+        if context["stale"]
+    ]
+    stale_ids = {context["context_id"] for context in stale_contexts}
+    if not stale_ids:
+        return []
+
+    removed = []
+    stale_legacy_bindings: dict[tuple[object, object], datetime] = {}
+    exact_legacy_bindings: dict[Path, tuple[object, object]] = {}
+    for path in execution_context_root(base).glob("*.json"):
+        lock_path = path.parent / f".{path.name}.lock"
+        with flock(lock_path):
+            try:
+                data = read_json(path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            context_id = data.get("context_id")
+            last_seen = parse_context_last_seen(data.get("last_seen"))
+            if context_id not in stale_ids or last_seen is None or current_time - last_seen <= stale_after:
+                continue
+            path.unlink(missing_ok=True)
+            removed.append(context_id)
+            binding = (data.get("ticket_id"), data.get("feature"))
+            if all(binding):
+                existing = stale_legacy_bindings.get(binding)
+                if existing is None or last_seen > existing:
+                    stale_legacy_bindings[binding] = last_seen
+                legacy_path = legacy_terminal_context_path(base, data)
+                if legacy_path is not None:
+                    exact_legacy_bindings[legacy_path] = binding
+
+    for path in terminal_context_root(base).glob("*.json"):
+        lock_path = path.parent / f".{path.name}.lock"
+        with flock(lock_path):
+            try:
+                data = read_json(path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            binding = (data.get("ticket_id"), data.get("feature"))
+            if exact_legacy_bindings.get(path) == binding:
+                path.unlink(missing_ok=True)
+                continue
+            stale_last_seen = stale_legacy_bindings.get(binding)
+            if stale_last_seen is None:
+                continue
+            updated_at = parse_context_last_seen(data.get("updated_at"))
+            if updated_at is not None and updated_at > stale_last_seen:
+                continue
+            path.unlink(missing_ok=True)
+    return sorted(removed)
+
+
+def execution_context_is_stale(
+    context: ExecutionContext,
+    *,
+    stale_after: timedelta,
+    now: datetime | None = None,
+) -> bool:
+    return (now or datetime.now(UTC)) - context.last_seen > stale_after
+
+
+def terminal_context_identity(session_id: str | None = None) -> str | None:
+    terminal_identity = terminal_fallback_identity()
+    if terminal_identity:
+        source, value = terminal_identity
+        prefix = "tty" if source == "TTY" else source
+        return f"{prefix}:{value}"
 
     if session_id:
         return f"session:{session_id}"
@@ -256,8 +629,27 @@ def terminal_context_path(base: Path, session_id: str | None = None) -> Path | N
     identity = terminal_context_identity(session_id)
     if identity is None:
         return None
+    return terminal_context_path_for_identity(base, identity)
+
+
+def terminal_context_path_for_identity(base: Path, identity: str) -> Path:
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return terminal_context_root(base) / f"{key}.json"
+
+
+def legacy_terminal_context_path(base: Path, context: dict[str, Any]) -> Path | None:
+    source = context.get("source")
+    session_id = context.get("session_id")
+    if not isinstance(source, str) or not isinstance(session_id, str):
+        return None
+    if source == "hook":
+        return terminal_context_path_for_identity(base, f"session:{session_id}")
+    if source not in TERMINAL_CONTEXT_ENV_VARS:
+        return None
+    identity = session_id
+    if source == "TTY" and session_id.startswith("TTY:"):
+        identity = f"tty:{session_id.removeprefix('TTY:')}"
+    return terminal_context_path_for_identity(base, identity)
 
 
 def record_terminal_ticket_context(
@@ -271,16 +663,13 @@ def record_terminal_ticket_context(
     path = terminal_context_path(base, session_id)
     if path is None:
         return
-    ensure_dir(path.parent)
-    write_json(
-        path,
-        {
-            "ticket_id": ticket_id,
-            "feature": normalize_branch_name(feature),
-            "location": location or f"branch:{normalize_branch_name(feature)}",
-            "updated_at": datetime.now(UTC).isoformat(),
-        },
-    )
+    record = {
+        "ticket_id": ticket_id,
+        "feature": normalize_branch_name(feature),
+        "location": location or f"branch:{normalize_branch_name(feature)}",
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    locked_json_update(path, lambda _current: record)
 
 
 def read_terminal_ticket_context(base: Path, session_id: str | None = None) -> dict[str, Any] | None:
@@ -295,6 +684,31 @@ def read_terminal_ticket_context(base: Path, session_id: str | None = None) -> d
     if not isinstance(ticket_id, str) or not ticket_id:
         return None
     return data
+
+
+def clear_terminal_ticket_contexts(
+    base: Path,
+    ticket_id: str,
+    *,
+    now: datetime | None = None,
+) -> int:
+    contexts_root = terminal_context_root(base)
+    if not contexts_root.exists():
+        return 0
+
+    cleared = 0
+    for path in sorted(contexts_root.glob("*.json")):
+        lock_path = path.parent / f".{path.name}.lock"
+        with flock(lock_path):
+            try:
+                data = read_json(path)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            if data.get("ticket_id") != ticket_id:
+                continue
+            path.unlink(missing_ok=True)
+            cleared += 1
+    return cleared
 
 
 def logs_root(base: Path, feature: str) -> Path:
@@ -349,15 +763,31 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 @contextmanager
-def flock(lock_path: Path) -> Iterator[None]:
-    """Hold an exclusive advisory lock on *lock_path* for the duration of the block."""
+def flock(lock_path: Path, *, timeout_seconds: float | None = None) -> Iterator[None]:
+    """Hold an exclusive advisory lock, optionally failing after a timeout."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fp = open(lock_path, "a+b")  # noqa: SIM115
+    acquired = False
     try:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        if timeout_seconds is None:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            acquired = True
+        else:
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                try:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"Timed out waiting for lock: {lock_path}") from None
+                    time.sleep(min(0.05, remaining))
         yield
     finally:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        if acquired:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
         fp.close()
 
 
@@ -404,6 +834,8 @@ def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, P
     if create_gitignore and not gitignore_path.exists():
         gitignore_content = """# Operational state (not tracked)
 *.json
+*.json.lock
+.*.lock
 *.jsonl
 *.log
 *.session
@@ -447,8 +879,6 @@ def ensure_branch_layout(base: Path, branch: str) -> Path:
     """Create branch-specific structure under .kd/branches/<normalized-branch>/. Idempotent.
 
     Creates:
-        - .kd/branches/<normalized-branch>/design.md (empty file)
-        - .kd/branches/<normalized-branch>/breakdown.md (empty file)
         - .kd/branches/<normalized-branch>/tickets/
         - .kd/branches/<normalized-branch>/logs/
         - .kd/branches/<normalized-branch>/sessions/
@@ -477,19 +907,11 @@ def ensure_branch_layout(base: Path, branch: str) -> Path:
     if not state_path.exists():
         write_json(state_path, {})
 
-    # Create markdown files if not exist (touch)
-    design_path = branch_dir / "design.md"
-    if not design_path.exists():
-        design_path.write_text("", encoding="utf-8")
-
-    breakdown_path = branch_dir / "breakdown.md"
-    if not breakdown_path.exists():
-        breakdown_path.write_text("", encoding="utf-8")
-
     return branch_dir
 
 
 def set_current_run(base: Path, feature: str) -> None:
+    """Set the repository's fallback branch without binding an execution context."""
     ensure_dir(state_root(base))
     current_path = state_root(base) / "current"
     current_path.write_text(f"{feature}\n", encoding="utf-8")
@@ -524,17 +946,17 @@ def resolve_current_run(base: Path) -> str:
 
     Resolution order:
     1. Current invocation worktree git branch matched against .kd/branches/
-    2. Explicit .kd/current file (repo default, set by ``kd start`` / ``kd switch``)
+    2. Explicit .kd/current file (repository default set by ``kd start``)
     3. Error with helpful message
 
     The invocation branch intentionally wins over ``.kd/current`` so long-lived
-    sibling worktrees can share one ``.kd/`` directory without forcing every
-    checkout onto the same active session.
+    sibling worktrees and execution contexts can share one ``.kd/`` directory
+    without inheriting one process's workspace default.
     """
     current_path = state_root(base) / "current"
 
     # 1. Prefer the branch of the worktree where kd was invoked. A shared
-    # .kd/current file should not force every human worktree onto one session.
+    # .kd/current should not force every worktree or execution context onto one branch.
     git_branch = get_current_git_branch()
     if git_branch:
         try:
@@ -556,4 +978,4 @@ def resolve_current_run(base: Path) -> str:
 
             # Stale pointer — fall through to the helpful error below.
 
-    raise RuntimeError("No active session. Use `kd start <feature>` or switch to a tracked branch.")
+    raise RuntimeError("No active session. Use `kd start <feature>` to select a tracked branch.")

@@ -32,18 +32,20 @@ src/kingdom/
 
 ## Data Flow
 
-### Workflow Phases
+### Core Workflow
 
 ```
-kd start → kd design → kd council ask → kd breakdown → kd ticket work → kd done
+kd start → kd tk create/start → work/log/test → kd tk close → kd status --check
 ```
 
-1. **Start** — `state.py` creates `.kd/branches/<branch>/` directory structure, sets `current` pointer.
-2. **Design** — `design.py` generates a `design.md` template. User fills it in, optionally marks approved.
-3. **Council** — `council/council.py` fans out a prompt to multiple AI backends in parallel via `ThreadPoolExecutor`. Each `CouncilMember` runs a subprocess (Claude Code, Codex, etc.), streams output to a log file, and writes the response as a message in a thread directory.
-4. **Breakdown** — `breakdown.py` produces a prompt to convert the design into tickets. Agent creates ticket files.
-5. **Work** — `harness.py` runs an autonomous loop: build prompt from ticket + worklog → call agent CLI → parse response → append to worklog → check stop conditions (done/blocked/failed).
-6. **Done** — Archives the branch directory to `.kd/archive/`, clears current pointer.
+1. **Start** — `state.py` initializes, resumes, or selects the branch workspace and repository fallback.
+2. **Tickets** — ticket Markdown records executable work, relationships, acceptance criteria, and durable Worklogs.
+3. **Work** — a direct agent or optional peasant implements and verifies one ticket at a time.
+4. **Close** — `kd tk close` records a terminal resolution and clears active bindings for that ticket.
+5. **Readiness** — `kd status --check` derives workspace readiness from ticket state without changing it.
+
+Design documents, council consultation, breakdown generation, and autonomous
+workers are optional layers around this core loop.
 
 ### File Storage
 

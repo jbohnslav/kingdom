@@ -649,6 +649,39 @@ def parse_response(config: AgentConfig, stdout: str, stderr: str, code: int) -> 
     return parser(stdout, stderr, code)
 
 
+def extract_token_count(backend: str, raw: str) -> int | None:
+    """Return the token count reported by a backend response, when available.
+
+    Claude reports cache reads and writes separately from ordinary input,
+    while Codex reports cached input as a subset of input. Prefer an explicit
+    total when present and otherwise apply the backend's accounting shape.
+    """
+    usage: dict[str, object] | None = None
+    for line in raw.strip().splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        candidate = event.get("usage")
+        if isinstance(candidate, dict):
+            usage = candidate
+
+    if usage is None:
+        return None
+
+    total = usage.get("total_tokens")
+    if isinstance(total, int) and not isinstance(total, bool):
+        return total
+
+    keys = ["input_tokens", "output_tokens"]
+    if backend == "claude_code":
+        keys.extend(["cache_creation_input_tokens", "cache_read_input_tokens"])
+    counts = [usage[key] for key in keys if isinstance(usage.get(key), int) and not isinstance(usage[key], bool)]
+    return sum(counts) if counts else None
+
+
 def extract_error(config: AgentConfig, stdout: str, stderr: str, code: int) -> str | None:
     """Extract a backend-aware error message from CLI output."""
     extractor = ERROR_EXTRACTORS.get(config.backend)

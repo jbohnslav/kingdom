@@ -28,14 +28,19 @@ import json
 import os
 import re
 import shutil
-from dataclasses import dataclass, field
+import threading
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.parsing import parse_frontmatter, parse_iso_datetime, serialize_frontmatter
+from kingdom.state import flock
 
 STATUSES = {"open", "in_progress", "in_review", "closed"}
 TICKET_TYPES = {"task", "bug", "feature", "epic"}
+# Terminal outcomes written by ``kd tk close --resolution``.
+TICKET_RESOLUTIONS = ("completed", "wont-do", "duplicate", "superseded", "invalid")
 
 
 @dataclass
@@ -53,11 +58,18 @@ class Ticket:
     title: str = ""
     body: str = ""
     closed_at: datetime | None = None
+    resolution: str | None = None
+    close_reason: str | None = None
+    # Stable execution-context ID that invoked close, when one was available.
+    closed_context: str | None = None
     # Optional fields that may be present in some tickets
     tags: list[str] = field(default_factory=list)
     parent: str | None = None
     external_ref: str | None = None
     duplicate_of: str | None = None
+    superseded_by: str | None = None
+    source_content: str | None = field(default=None, init=False, repr=False, compare=False)
+    source_path: Path | None = field(default=None, init=False, repr=False, compare=False)
 
 
 def clamp_priority(value: int | str | None) -> int:
@@ -116,6 +128,23 @@ def coerce_to_str_list(value: str | int | list[str] | None) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+def parse_close_reason(content: str, value: object) -> str | None:
+    """Decode JSON quoting only for the ticket ``close_reason`` field."""
+    if not value:
+        return None
+
+    frontmatter = content.split("---", 2)[1]
+    match = re.search(r"^close_reason:\s*(.*)$", frontmatter, flags=re.MULTILINE)
+    if match is None or not match.group(1).startswith('"'):
+        return str(value)
+
+    try:
+        decoded = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return str(value)
+    return str(decoded)
+
+
 def parse_ticket(content: str) -> Ticket:
     frontmatter_dict, body_content = parse_frontmatter(content)
 
@@ -145,7 +174,7 @@ def parse_ticket(content: str) -> Ticket:
     links = coerce_to_str_list(frontmatter_dict.get("links", []))
     tags = coerce_to_str_list(frontmatter_dict.get("tags", []))
 
-    return Ticket(
+    ticket = Ticket(
         id=str(frontmatter_dict.get("id", "")),
         status=str(frontmatter_dict.get("status", "open")),
         deps=deps,
@@ -157,11 +186,19 @@ def parse_ticket(content: str) -> Ticket:
         title=title,
         body=body,
         closed_at=closed_at,
+        resolution=(str(frontmatter_dict.get("resolution")) if frontmatter_dict.get("resolution") else None),
+        close_reason=parse_close_reason(content, frontmatter_dict.get("close_reason")),
+        closed_context=(
+            str(frontmatter_dict.get("closed_context")) if frontmatter_dict.get("closed_context") else None
+        ),
         tags=tags,
         parent=str(frontmatter_dict.get("parent")) if frontmatter_dict.get("parent") else None,
         external_ref=(str(frontmatter_dict.get("external-ref")) if frontmatter_dict.get("external-ref") else None),
         duplicate_of=(str(frontmatter_dict.get("duplicate-of")) if frontmatter_dict.get("duplicate-of") else None),
+        superseded_by=(str(frontmatter_dict.get("superseded-by")) if frontmatter_dict.get("superseded-by") else None),
     )
+    ticket.source_content = content
+    return ticket
 
 
 def serialize_ticket(ticket: Ticket) -> str:
@@ -178,11 +215,15 @@ def serialize_ticket(ticket: Ticket) -> str:
             ("type", ticket.type),
             ("priority", ticket.priority),
             ("closed_at", closed_str),
+            ("resolution", ticket.resolution),
+            ("close_reason", json.dumps(ticket.close_reason, ensure_ascii=False) if ticket.close_reason else None),
+            ("closed_context", ticket.closed_context),
             ("assignee", ticket.assignee),
             ("external-ref", ticket.external_ref),
             ("parent", ticket.parent),
             ("tags", ticket.tags or None),
             ("duplicate-of", ticket.duplicate_of),
+            ("superseded-by", ticket.superseded_by),
         ]
     )
 
@@ -199,13 +240,189 @@ def read_ticket(path: Path) -> Ticket:
         raise FileNotFoundError(f"Ticket file not found: {path}")
 
     content = path.read_text(encoding="utf-8")
-    return parse_ticket(content)
+    ticket = parse_ticket(content)
+    ticket.source_path = path.resolve()
+    return ticket
+
+
+def ticket_lock_path(path: Path) -> Path:
+    return path.parent / f".{path.name}.lock"
+
+
+@contextlib.contextmanager
+def ticket_locks(paths: Iterable[Path]) -> Iterator[None]:
+    """Lock ticket paths in stable order so multi-path mutations cannot deadlock."""
+    lock_paths = sorted({ticket_lock_path(path).resolve() for path in paths}, key=str)
+    with contextlib.ExitStack() as stack:
+        for lock_path in lock_paths:
+            stack.enter_context(flock(lock_path))
+        yield
+
+
+def split_markdown_body(body: str) -> tuple[str, list[tuple[str, int]], dict[tuple[str, int], str]]:
+    """Split a ticket body into its preamble and second-level sections."""
+    preamble: list[str] = []
+    section_lines: list[str] = []
+    section_order: list[tuple[str, int]] = []
+    sections: dict[tuple[str, int], str] = {}
+    section_key: tuple[str, int] | None = None
+    heading_counts: dict[str, int] = {}
+
+    for line in body.splitlines():
+        if line.startswith("## "):
+            if section_key is not None:
+                sections[section_key] = "\n".join(section_lines).strip()
+            heading = line[3:].strip()
+            occurrence = heading_counts.get(heading, 0)
+            heading_counts[heading] = occurrence + 1
+            section_key = (heading, occurrence)
+            section_order.append(section_key)
+            section_lines = []
+        elif section_key is None:
+            preamble.append(line)
+        else:
+            section_lines.append(line)
+
+    if section_key is not None:
+        sections[section_key] = "\n".join(section_lines).strip()
+    return "\n".join(preamble).strip(), section_order, sections
+
+
+def merge_ticket_body(original: str, proposed: str, current: str) -> str:
+    """Three-way merge a body at Markdown section boundaries.
+
+    A section changed by the proposed (last locked) writer wins even when the
+    current writer changed that same section. Sections the proposed writer did
+    not change retain the current value, including concurrent Worklog appends.
+    """
+    missing = object()
+    original_preamble, _original_order, original_sections = split_markdown_body(original)
+    proposed_preamble, proposed_order, proposed_sections = split_markdown_body(proposed)
+    current_preamble, current_order, current_sections = split_markdown_body(current)
+
+    preamble = proposed_preamble if proposed_preamble != original_preamble else current_preamble
+    keys = [*proposed_order, *(key for key in current_order if key not in proposed_order)]
+    selected_sections: list[tuple[tuple[str, int], str]] = []
+    for key in keys:
+        original_value = original_sections.get(key, missing)
+        proposed_value = proposed_sections.get(key, missing)
+        current_value = current_sections.get(key, missing)
+        selected = proposed_value if proposed_value != original_value else current_value
+        if selected is not missing:
+            selected_sections.append((key, str(selected)))
+
+    parts = [preamble] if preamble else []
+    for (heading, _occurrence), content in selected_sections:
+        section = f"## {heading}"
+        if content:
+            section = f"{section}\n\n{content}"
+        parts.append(section)
+    return "\n\n".join(parts)
+
+
+def merge_ticket_update(ticket: Ticket, path: Path) -> Ticket:
+    """Merge fields untouched by a stale caller from the current file.
+
+    A caller's change wins when both writers changed the same field. Concurrent
+    changes to fields left at their read-snapshot value are preserved. Ticket
+    bodies use the same rule per second-level Markdown section.
+    """
+    if ticket.source_content is None or ticket.source_path != path.resolve():
+        return ticket
+    if not path.exists():
+        raise FileNotFoundError(f"Ticket moved or deleted since it was read: {path}")
+
+    current_content = path.read_text(encoding="utf-8")
+    if current_content == ticket.source_content:
+        return ticket
+
+    original = parse_ticket(ticket.source_content)
+    current = parse_ticket(current_content)
+    values = {}
+    for ticket_field in fields(Ticket):
+        name = ticket_field.name
+        if name in {"source_content", "source_path"}:
+            continue
+        proposed_value = getattr(ticket, name)
+        original_value = getattr(original, name)
+        current_value = getattr(current, name)
+        if name == "body" and proposed_value != original_value and current_value != original_value:
+            values[name] = merge_ticket_body(original_value, proposed_value, current_value)
+        else:
+            values[name] = proposed_value if proposed_value != original_value else current_value
+    return Ticket(**values)
+
+
+def update_ticket_snapshot(ticket: Ticket, written: Ticket, path: Path, content: str) -> None:
+    for ticket_field in fields(Ticket):
+        name = ticket_field.name
+        if name in {"source_content", "source_path"}:
+            continue
+        setattr(ticket, name, getattr(written, name))
+    ticket.source_content = content
+    ticket.source_path = path.resolve()
 
 
 def write_ticket(ticket: Ticket, path: Path) -> None:
-    content = serialize_ticket(ticket)
+    with flock(ticket_lock_path(path)):
+        written = merge_ticket_update(ticket, path)
+        content = serialize_ticket(written)
+        atomic_write_ticket_content(path, content)
+        update_ticket_snapshot(ticket, written, path, content)
+
+
+def write_ticket_content(path: Path, content: str) -> None:
+    with flock(ticket_lock_path(path)):
+        atomic_write_ticket_content(path, content)
+
+
+def atomic_write_ticket_content(path: Path, content: str) -> None:
+    """Replace a ticket atomically while the caller holds its mutation lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        if path.exists():
+            temporary.chmod(path.stat().st_mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def replace_ticket_assignee(content: str, assignee: str) -> str:
+    """Change only the assignee line while preserving the rest of a ticket verbatim."""
+    lines = content.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("Content must start with YAML frontmatter (---)")
+
+    closing_index = next(
+        (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+        None,
+    )
+    if closing_index is None:
+        raise ValueError("Invalid frontmatter: missing closing ---")
+
+    for index in range(1, closing_index):
+        if lines[index].partition(":")[0].strip() != "assignee":
+            continue
+        newline = "\r\n" if lines[index].endswith("\r\n") else "\n"
+        if not lines[index].endswith(("\n", "\r")):
+            newline = ""
+        lines[index] = f"assignee: {assignee}{newline}"
+        return "".join(lines)
+
+    newline = "\r\n" if lines[0].endswith("\r\n") else "\n"
+    lines.insert(closing_index, f"assignee: {assignee}{newline}")
+    return "".join(lines)
+
+
+def write_ticket_assignee(path: Path, assignee: str) -> None:
+    """Persist a migration-only assignee change without canonicalizing Markdown."""
+    with flock(ticket_lock_path(path)):
+        content = path.read_text(encoding="utf-8")
+        updated = replace_ticket_assignee(content, assignee)
+        if updated != content:
+            atomic_write_ticket_content(path, updated)
 
 
 def list_tickets(directory: Path) -> list[Ticket]:
@@ -231,26 +448,32 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False, include_do
     and backlog/tickets/.
     With include_archive=True, also searches archive/*/tickets/.
     """
-    from kingdom.state import archive_root, backlog_root, branches_root
+    from kingdom.state import archive_root, backlog_root, branch_root, branches_root, resolve_current_run
 
     all_tickets: list[Ticket] = []
 
     branches_dir = branches_root(base)
     if branches_dir.exists():
-        for branch_dir in branches_dir.iterdir():
-            if branch_dir.is_dir():
-                state_path = branch_dir / "state.json"
-                if not include_done and state_path.exists():
-                    try:
-                        state = json.loads(state_path.read_text())
-                        if state.get("status") == "done":
-                            continue
-                    except (json.JSONDecodeError, OSError):
-                        pass
+        current_branch_dir: Path | None = None
+        with contextlib.suppress(RuntimeError, ValueError, OSError):
+            current_branch_dir = branch_root(base, resolve_current_run(base))
+        branch_dirs = sorted(
+            (path for path in branches_dir.iterdir() if path.is_dir()),
+            key=lambda path: (path != current_branch_dir, path.name),
+        )
+        for branch_dir in branch_dirs:
+            state_path = branch_dir / "state.json"
+            if not include_done and state_path.exists():
+                try:
+                    state = json.loads(state_path.read_text())
+                    if state.get("status") == "done":
+                        continue
+                except (json.JSONDecodeError, OSError):
+                    pass
 
-                tickets_dir = branch_dir / "tickets"
-                if tickets_dir.exists():
-                    all_tickets.extend(list_tickets(tickets_dir))
+            tickets_dir = branch_dir / "tickets"
+            if tickets_dir.exists():
+                all_tickets.extend(list_tickets(tickets_dir))
 
     backlog_tickets = backlog_root(base) / "tickets"
     if backlog_tickets.exists():
@@ -275,6 +498,27 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False, include_do
     return deduped
 
 
+def collect_ticket_statuses(base: Path) -> dict[str, str]:
+    """Return dependency statuses from every live, done, backlog, and archived workspace."""
+    tickets = collect_all_tickets(base, include_archive=True, include_done=True)
+    return {ticket.id: ticket.status for ticket in tickets}
+
+
+def resolve_ticket_dependencies(
+    base: Path,
+    ticket: Ticket,
+    status_by_id: dict[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    """Resolve a ticket's dependency IDs to the statuses used by readiness gates."""
+    statuses = status_by_id if status_by_id is not None else collect_ticket_statuses(base)
+    return [(dep_id, statuses.get(dep_id, "unknown")) for dep_id in ticket.deps]
+
+
+def blocking_dependencies(dependencies: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Return dependencies whose resolved status still blocks work."""
+    return [(dep_id, status) for dep_id, status in dependencies if status != "closed"]
+
+
 def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
     """Find tickets that become unblocked when a ticket is closed.
 
@@ -292,7 +536,7 @@ def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
     """
     all_tickets = collect_all_tickets(base)
 
-    status_by_id = {t.id: t.status for t in all_tickets}
+    status_by_id = collect_ticket_statuses(base)
     status_by_id[closed_ticket_id] = "closed"
 
     newly_unblocked = []
@@ -431,20 +675,63 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> Ticke
 
 
 def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
-    if not ticket_path.exists():
-        raise FileNotFoundError(f"Ticket file not found: {ticket_path}")
-
     dest_dir.mkdir(parents=True, exist_ok=True)
     new_path = dest_dir / ticket_path.name
-    if new_path.exists():
-        raise FileExistsError(f"Destination already exists: {new_path}")
-    try:
-        ticket_path.rename(new_path)
-    except OSError:
-        # Cross-filesystem rename; fall back to copy-then-delete
-        shutil.copy2(str(ticket_path), str(new_path))
-        ticket_path.unlink()
+    with ticket_locks([ticket_path, new_path]):
+        if not ticket_path.exists():
+            raise FileNotFoundError(f"Ticket file not found: {ticket_path}")
+        if new_path.exists():
+            raise FileExistsError(f"Destination already exists: {new_path}")
+        try:
+            ticket_path.rename(new_path)
+        except OSError:
+            # Cross-filesystem rename; fall back to copy-then-delete
+            shutil.copy2(str(ticket_path), str(new_path))
+            ticket_path.unlink()
     return new_path
+
+
+def delete_ticket(ticket_path: Path) -> None:
+    """Delete a ticket while participating in its mutation lock."""
+    with flock(ticket_lock_path(ticket_path)):
+        if not ticket_path.exists():
+            raise FileNotFoundError(f"Ticket file not found: {ticket_path}")
+        ticket_path.unlink()
+
+
+def insert_markdown_section_entry(content: str, section: str, entry: str) -> str:
+    """Append an entry to a second-level Markdown section, creating it if needed."""
+    heading = f"## {section}"
+    lines = content.split("\n")
+
+    section_index = None
+    for index, line in enumerate(lines):
+        if line.strip() == heading:
+            section_index = index
+            break
+
+    if section_index is not None:
+        insert_index = len(lines)
+        for index in range(section_index + 1, len(lines)):
+            if lines[index].startswith("## "):
+                insert_index = index
+                break
+
+        while insert_index > section_index + 1 and lines[insert_index - 1].strip() == "":
+            insert_index -= 1
+
+        lines.insert(insert_index, entry)
+        if insert_index + 1 < len(lines) and lines[insert_index + 1].strip() != "":
+            lines.insert(insert_index + 1, "")
+    else:
+        while lines and lines[-1].strip() == "":
+            lines.pop()
+        lines.extend(["", heading, "", entry])
+
+    if lines and lines[-1] != "":
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def insert_worklog_entry(content: str, entry: str) -> str:
@@ -454,40 +741,63 @@ def insert_worklog_entry(content: str, entry: str) -> str:
     at the end of that section (before the next ``## `` heading or EOF), and
     returns the new content.  Creates the section if it doesn't exist.
     """
-    lines = content.split("\n")
+    return insert_markdown_section_entry(content, "Worklog", entry)
 
-    worklog_idx = None
-    for i, line in enumerate(lines):
-        if line.strip() == "## Worklog":
-            worklog_idx = i
-            break
 
-    if worklog_idx is not None:
-        insert_idx = len(lines)
-        for i in range(worklog_idx + 1, len(lines)):
-            if lines[i].startswith("## "):
-                insert_idx = i
-                break
+def effective_resolution(ticket: Ticket) -> str | None:
+    """Return the active resolution, including legacy closed-ticket inference."""
+    if ticket.status != "closed":
+        return None
+    if ticket.resolution:
+        return ticket.resolution
+    if ticket.duplicate_of:
+        return "duplicate"
+    if ticket.superseded_by:
+        return "superseded"
+    return "completed"
 
-        actual_insert = insert_idx
-        while actual_insert > worklog_idx + 1 and lines[actual_insert - 1].strip() == "":
-            actual_insert -= 1
 
-        lines.insert(actual_insert, entry)
-        if actual_insert + 1 < len(lines) and lines[actual_insert + 1].strip() != "":
-            lines.insert(actual_insert + 1, "")
-    else:
-        while lines and lines[-1].strip() == "":
-            lines.pop()
-        lines.append("")
-        lines.append("## Worklog")
-        lines.append("")
-        lines.append(entry)
+def effective_close_reason(ticket: Ticket) -> str | None:
+    """Return the active reason, deriving it for legacy reference-based closures."""
+    if ticket.status != "closed":
+        return None
+    if ticket.close_reason and ticket.close_reason.strip():
+        return ticket.close_reason.strip()
+    if ticket.resolution is None:
+        if ticket.duplicate_of:
+            return f"Duplicate of {ticket.duplicate_of}"
+        if ticket.superseded_by:
+            return f"Superseded by {ticket.superseded_by}"
+    return None
 
-    if lines and lines[-1] != "":
-        lines.append("")
 
-    return "\n".join(lines)
+def validate_terminal_evidence(ticket: Ticket) -> list[str]:
+    """Return validation errors for a ticket's active terminal evidence."""
+    if ticket.status != "closed":
+        return [f"status is {ticket.status}, expected closed"]
+
+    resolution = effective_resolution(ticket)
+    if resolution not in TICKET_RESOLUTIONS:
+        return [f"unknown resolution '{resolution}'"]
+
+    errors = []
+    if resolution != "completed" and effective_close_reason(ticket) is None:
+        errors.append(f"resolution {resolution} requires close_reason")
+
+    if resolution == "duplicate":
+        if not ticket.duplicate_of:
+            errors.append("resolution duplicate requires duplicate-of")
+        if ticket.superseded_by:
+            errors.append("resolution duplicate cannot also set superseded-by")
+    elif resolution == "superseded":
+        if not ticket.superseded_by:
+            errors.append("resolution superseded requires superseded-by")
+        if ticket.duplicate_of:
+            errors.append("resolution superseded cannot also set duplicate-of")
+    elif ticket.duplicate_of or ticket.superseded_by:
+        errors.append(f"resolution {resolution} cannot use duplicate-of or superseded-by")
+
+    return errors
 
 
 def append_worklog_entry(
@@ -519,9 +829,10 @@ def append_worklog_entry(
     author_tag = f" [{author}]" if author else ""
     entry = f"- {timestamp_text}{author_tag} — {formatted}"
 
-    content = path.read_text(encoding="utf-8")
-    new_content = insert_worklog_entry(content, entry)
-    path.write_text(new_content, encoding="utf-8")
+    with flock(ticket_lock_path(path)):
+        content = path.read_text(encoding="utf-8")
+        new_content = insert_worklog_entry(content, entry)
+        atomic_write_ticket_content(path, new_content)
     return entry
 
 
