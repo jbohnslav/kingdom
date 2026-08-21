@@ -13,7 +13,14 @@ from typer.testing import CliRunner
 from kingdom.cli.peasant import peasant_app, resolve_invocation_git_root, resolve_peasant_context
 from kingdom.cli.ticket import ticket_app
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
-from kingdom.state import backlog_root, ensure_branch_layout, logs_root, normalize_branch_name, set_current_run
+from kingdom.state import (
+    backlog_root,
+    branch_root,
+    ensure_branch_layout,
+    logs_root,
+    normalize_branch_name,
+    set_current_run,
+)
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
@@ -45,6 +52,28 @@ def create_test_ticket(base: Path, ticket_id: str = "kin-test", status: str = "o
 
 
 class TestPeasantStart:
+    def test_start_allows_closed_dependency_from_another_workspace(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            target_path = create_test_ticket(base)
+            target = read_ticket(target_path)
+            target.deps = ["done"]
+            write_ticket(target, target_path)
+
+            dependency_dir = branch_root(base, "completed-work") / "tickets"
+            dependency_dir.mkdir(parents=True)
+            write_ticket(
+                Ticket(id="done", status="closed", title="Completed elsewhere", created=datetime.now(UTC)),
+                dependency_dir / "done.md",
+            )
+
+            with patch("kingdom.cli.launch_work_background", return_value=12345):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            assert "blocked by" not in result.output
+
     def test_start_creates_session_and_thread(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

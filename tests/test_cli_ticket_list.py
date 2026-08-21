@@ -901,6 +901,25 @@ class TestTicketListTable:
         assert result.exit_code == 0
         assert "dddd \u2713" in result.output
 
+    def test_ready_resolves_closed_dependency_from_archive(self, cli_project: Path) -> None:
+        archive_tickets = cli_project / ".kd" / "archive" / "finished" / "tickets"
+        archive_tickets.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="done", status="closed", title="Archived dependency", created=datetime.now(UTC)),
+            archive_tickets / "done.md",
+        )
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="next", status="open", title="Ready after archive", deps=["done"], created=datetime.now(UTC)),
+            tickets_dir / "next.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--ready"])
+
+        assert result.exit_code == 0, result.output
+        assert "next" in result.output
+        assert "Ready after archive" in result.output
+
     def test_table_all_shows_location_column(self, cli_project: Path) -> None:
         """With --all flag, the Location column should be present."""
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"

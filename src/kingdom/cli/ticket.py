@@ -50,7 +50,9 @@ from kingdom.ticket import (
     Ticket,
     append_worklog_entry,
     atomic_write_ticket_content,
+    blocking_dependencies,
     collect_all_tickets,
+    collect_ticket_statuses,
     collect_tickets_by_location,
     delete_ticket,
     effective_resolution,
@@ -65,6 +67,7 @@ from kingdom.ticket import (
     move_ticket,
     read_ticket,
     replace_ticket_assignee,
+    resolve_ticket_dependencies,
     write_ticket,
     write_ticket_assignee,
 )
@@ -215,24 +218,12 @@ def render_ticket_table(
     console.print(table)
 
 
-def resolve_dep_status(base: Path, dep_id: str) -> str:
-    """Look up a dependency ticket's status by its ID.
-
-    Args:
-        base: Project root directory.
-        dep_id: Full or partial ticket ID.
-
-    Returns:
-        The ticket's status string, or "unknown" if the ticket can't be found.
-    """
-    try:
-        result = find_ticket(base, dep_id)
-    except AmbiguousTicketMatch:
-        return "unknown"
-    if result is None:
-        return "unknown"
-    dep_ticket, _ = result
-    return dep_ticket.status
+def format_dependency_gate(dependencies: list[tuple[str, str]]) -> str:
+    blockers = blocking_dependencies(dependencies)
+    if blockers:
+        details = ", ".join(f"{dep_id} ({status})" for dep_id, status in blockers)
+        return f"blocked by {details}."
+    return "clear — not blocked; all dependencies are closed."
 
 
 def ticket_to_json(t: Ticket, *, detailed: bool = False, base: Path | None = None, path: Path | None = None) -> dict:
@@ -240,6 +231,7 @@ def ticket_to_json(t: Ticket, *, detailed: bool = False, base: Path | None = Non
 
     With ``detailed=True``, includes body, path, and enriched deps ``[{id, status}]``.
     """
+    resolved_deps = resolve_ticket_dependencies(base, t) if detailed and base else []
     data: dict = {
         "id": t.id,
         "status": t.status,
@@ -247,7 +239,9 @@ def ticket_to_json(t: Ticket, *, detailed: bool = False, base: Path | None = Non
         "type": t.type,
         "title": t.title,
         "assignee": t.assignee,
-        "deps": ([{"id": d, "status": resolve_dep_status(base, d)} for d in t.deps] if detailed and base else t.deps),
+        "deps": (
+            [{"id": dep_id, "status": status} for dep_id, status in resolved_deps] if detailed and base else t.deps
+        ),
         "links": t.links,
         "tags": t.tags,
         "parent": t.parent,
@@ -261,6 +255,13 @@ def ticket_to_json(t: Ticket, *, detailed: bool = False, base: Path | None = Non
     }
     if detailed:
         data["body"] = t.body
+        if base is not None:
+            data["dependency_gate"] = {
+                "blocked": bool(blocking_dependencies(resolved_deps)),
+                "blockers": [
+                    {"id": dep_id, "status": status} for dep_id, status in blocking_dependencies(resolved_deps)
+                ],
+            }
         if path is not None:
             data["path"] = str(path)
     return data
@@ -307,13 +308,14 @@ def render_ticket_panel(
     if ticket.superseded_by:
         meta.add_row("superseded by", ticket.superseded_by)
 
-    if ticket.deps:
+    resolved_deps = resolve_ticket_dependencies(base, ticket)
+    if resolved_deps:
         dep_parts = []
-        for dep_id in ticket.deps:
-            dep_status = resolve_dep_status(base, dep_id)
+        for dep_id, dep_status in resolved_deps:
             dep_color = STATUS_COLORS.get(dep_status, "white")
             dep_parts.append(f"{dep_id} [{dep_color}]{dep_status}[/{dep_color}]")
         meta.add_row("deps", ", ".join(dep_parts))
+        meta.add_row("dependency gate", format_dependency_gate(resolved_deps))
 
     if ticket.links:
         meta.add_row("links", ", ".join(ticket.links))
@@ -336,12 +338,8 @@ def render_ticket_panel(
     relations: list[str] = []
 
     # Blockers: unclosed deps
-    if ticket.deps:
-        blockers = []
-        for dep_id in ticket.deps:
-            dep_status = resolve_dep_status(base, dep_id)
-            if dep_status != "closed":
-                blockers.append(f"- {dep_id} ({dep_status})")
+    if resolved_deps:
+        blockers = [f"- {dep_id} ({status})" for dep_id, status in blocking_dependencies(resolved_deps)]
         if blockers:
             relations.append("**Blockers**\n" + "\n".join(blockers))
 
@@ -644,10 +642,8 @@ def ticket_list(
         resolved_parent_id = parent_ticket.id
         all_tickets = True
 
-    # Build a global status lookup for dep-based filtering and dep annotations.
-    # Always include done branches so deps in done branches get correct ✓ marks.
-    all_known_tickets = collect_all_tickets(base, include_archive=recently_closed, include_done=True)
-    status_by_id = {t.id: t.status for t in all_known_tickets}
+    # Readiness is global: dependencies may already be closed in another workspace or archive.
+    status_by_id = collect_ticket_statuses(base)
 
     if backlog:
         backlog_dir = backlog_root(base) / "tickets"
@@ -747,7 +743,7 @@ def ticket_show(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
     rich: Annotated[bool, typer.Option("--rich", help="Render the human-friendly Rich panel view.")] = False,
 ) -> None:
-    """Display one or more tickets as raw Markdown by default.
+    """Display raw Markdown plus resolved dependency readiness by default.
 
     Use --rich for the framed human view. With no args, shows the ticket assigned to 'hand'.
     """
@@ -806,10 +802,17 @@ def ticket_show(
                 console.print()  # separator between tickets
             console.print(render_ticket_panel(ticket, ticket_path, base, all_tickets=cached_tickets))
     else:
-        for i, (_, ticket_path) in enumerate(pairs):
+        for i, (ticket, ticket_path) in enumerate(pairs):
             if i > 0:
                 typer.echo()
             typer.echo(ticket_path.read_text(encoding="utf-8").rstrip())
+            resolved_deps = resolve_ticket_dependencies(base, ticket)
+            if resolved_deps:
+                typer.echo()
+                typer.echo("Resolved dependencies:")
+                for dep_id, status in resolved_deps:
+                    typer.echo(f"  {dep_id} ({status})")
+                typer.echo(f"Dependency gate: {format_dependency_gate(resolved_deps)}")
             typer.echo()
             typer.echo(f"File: {ticket_path.resolve()}")
 
@@ -1194,13 +1197,14 @@ def ticket_current(
             f"P{ticket.priority}  "
             f"{ticket.type}"
         )
-        if ticket.deps:
+        resolved_deps = resolve_ticket_dependencies(base, ticket)
+        if resolved_deps:
             dep_parts = []
-            for dep_id in ticket.deps:
-                dep_status = resolve_dep_status(base, dep_id)
+            for dep_id, dep_status in resolved_deps:
                 dep_color = STATUS_COLORS.get(dep_status, "white")
                 dep_parts.append(f"{dep_id} [{dep_color}]{dep_status}[/{dep_color}]")
             console.print(f"[dim]deps:[/dim] {', '.join(dep_parts)}")
+            console.print(f"[dim]dependency gate:[/dim] {format_dependency_gate(resolved_deps)}")
         if ticket.links:
             links_str = ", ".join(ticket.links)
             console.print(f"[dim]links:[/dim] {links_str}")

@@ -199,6 +199,20 @@ class TestGetStartableChildren:
         assert len(startable) == 1
         assert startable[0][1] == "ch01"
 
+    def test_includes_child_with_closed_dependency_from_another_workspace(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", deps=["done"])
+        dependency_dir = branch_root(project_with_run, "completed-work") / "tickets"
+        dependency_dir.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="done", status="closed", title="Completed elsewhere", created=datetime.now(UTC)),
+            dependency_dir / "done.md",
+        )
+
+        startable = get_startable_children(project_with_run, BRANCH, "epic1")
+
+        assert [ticket_id for _, ticket_id in startable] == ["ch01"]
+
     def test_excludes_active_peasant(self, project_with_run: Path) -> None:
         make_epic(project_with_run)
         make_child(project_with_run, "ch01", "epic1")
@@ -722,6 +736,20 @@ class TestGetChildrenSummary:
         # ch01 has no deps, ch02 has one dep on ch01 (open)
         assert summary[0][3] == ()  # ch01 no deps
         assert summary[1][3] == (("ch01", "open"),)  # ch02 depends on ch01
+
+    def test_includes_cross_workspace_dependency_status(self, project_with_run: Path) -> None:
+        make_epic(project_with_run)
+        make_child(project_with_run, "ch01", "epic1", deps=["done"])
+        dependency_dir = branch_root(project_with_run, "completed-work") / "tickets"
+        dependency_dir.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="done", status="closed", title="Completed elsewhere", created=datetime.now(UTC)),
+            dependency_dir / "done.md",
+        )
+
+        summary = get_children_summary(project_with_run, BRANCH, "epic1")
+
+        assert summary[0][3] == (("done", "closed"),)
 
     def test_snapshot_changes_when_dep_closes(self, project_with_run: Path) -> None:
         """Closing a dependency should change the snapshot (wakes the lord)."""

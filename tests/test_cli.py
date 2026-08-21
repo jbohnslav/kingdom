@@ -231,6 +231,7 @@ def test_doctor_json_reports_pinned_model_and_effort(tmp_path) -> None:
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor", "--json"])
 

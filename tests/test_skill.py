@@ -99,6 +99,14 @@ class TestBody:
         assert "kd tk create --parent <epic-id>" in default_workflow
         assert "kd design" not in default_workflow
 
+    def test_dependency_guidance_distinguishes_edges_from_blockers(self) -> None:
+        skill_text = SKILL_MD.read_text()
+        ticket_reference = (SKILL_DIR / "references" / "tickets.md").read_text()
+
+        assert "A dependency edge alone is not a blocker" in skill_text
+        assert "only non-closed dependencies as" in skill_text
+        assert "mere presence of `deps`" in ticket_reference
+
 
 class TestReferences:
     def test_references_directory_exists(self) -> None:

@@ -63,6 +63,11 @@ kd tk reopen <id>        # reopen if needed
 
 Tickets can depend on other tickets. A ticket with unresolved dependencies won't show in `kd tk list --ready`.
 
+`kd tk show <id>` resolves every dependency's current status and prints a
+dependency gate. A dependency edge does not necessarily block work: only a
+dependency whose resolved status is not `closed` is a blocker. Report the gate,
+not the mere presence of `deps`.
+
 ```bash
 kd tk deps add <id> <dep-id>      # id depends on dep-id
 kd tk deps remove <id> <dep-id>   # remove dependency
@@ -83,7 +88,7 @@ kd tk unassign <id>          # clear assignment
 kd tk list                   # list all tickets on current branch
 kd tk list --recently-closed # show closed tickets ordered by most recent close
 kd tk list --recent --limit 10  # short alias plus result limit
-kd tk show <id>              # print raw ticket Markdown (LLM-friendly)
+kd tk show <id>              # print raw Markdown plus resolved dependency readiness
 kd tk show <id> --rich       # show framed human-friendly ticket details
 kd tk defer <id>... --reason "..."  # return selected work to backlog
 kd tk pull <id>...                  # select backlog work for current branch
@@ -127,8 +132,9 @@ do not replace ownership of the ticket's final state.
 
 - No obvious active ticket: run `kd tk current`, then resolve branch and session
   context with `kd status`.
-- Close fails because dependencies are unmet: inspect
-  `kd tk deps tree <id>` and work or report the blocker.
+- Work is not ready because dependencies are unmet: inspect the resolved
+  dependency gate in `kd tk show <id>`, use `kd tk deps tree <id>` for deeper
+  context, and work or report only the dependencies that are not closed.
 - Selected work is no longer timely: use `kd tk defer <id> --reason "..."`, not a
   worklog note pretending the lifecycle did not change.
 - Work belongs on another branch: defer it, check out the target Git branch,

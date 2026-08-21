@@ -48,6 +48,11 @@ not implementation exploration. Stop as soon as you can answer:
 Do not create a duplicate umbrella ticket because the current session or epic
 was overlooked.
 
+When a ticket has dependencies, use the resolved statuses and dependency gate
+shown by `kd tk show <id>`. A dependency edge alone is not a blocker: report a
+ticket as blocked only when its gate identifies a dependency whose status is not
+`closed`.
+
 ### 2. Update existing work or create a small ticket
 
 - **Existing request:** use the existing ticket. Update its requirements,
@@ -156,6 +161,9 @@ Before declaring work complete:
 - For bugs, write and run a failing regression test before the fix.
 - Do not silently decide architectural, product, or UX ambiguity; ask the King or
   consult the council, then record the decision.
+- Do not infer that a ticket is blocked merely because it has dependencies;
+  inspect their resolved statuses and treat only non-closed dependencies as
+  blockers.
 - Do not swallow failed `kd` commands. Diagnose them and preserve blockers in the
   ticket.
 - Commit `.kd/` state and worklogs alongside the code they explain.

@@ -448,26 +448,32 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False, include_do
     and backlog/tickets/.
     With include_archive=True, also searches archive/*/tickets/.
     """
-    from kingdom.state import archive_root, backlog_root, branches_root
+    from kingdom.state import archive_root, backlog_root, branch_root, branches_root, resolve_current_run
 
     all_tickets: list[Ticket] = []
 
     branches_dir = branches_root(base)
     if branches_dir.exists():
-        for branch_dir in branches_dir.iterdir():
-            if branch_dir.is_dir():
-                state_path = branch_dir / "state.json"
-                if not include_done and state_path.exists():
-                    try:
-                        state = json.loads(state_path.read_text())
-                        if state.get("status") == "done":
-                            continue
-                    except (json.JSONDecodeError, OSError):
-                        pass
+        current_branch_dir: Path | None = None
+        with contextlib.suppress(RuntimeError, ValueError, OSError):
+            current_branch_dir = branch_root(base, resolve_current_run(base))
+        branch_dirs = sorted(
+            (path for path in branches_dir.iterdir() if path.is_dir()),
+            key=lambda path: (path != current_branch_dir, path.name),
+        )
+        for branch_dir in branch_dirs:
+            state_path = branch_dir / "state.json"
+            if not include_done and state_path.exists():
+                try:
+                    state = json.loads(state_path.read_text())
+                    if state.get("status") == "done":
+                        continue
+                except (json.JSONDecodeError, OSError):
+                    pass
 
-                tickets_dir = branch_dir / "tickets"
-                if tickets_dir.exists():
-                    all_tickets.extend(list_tickets(tickets_dir))
+            tickets_dir = branch_dir / "tickets"
+            if tickets_dir.exists():
+                all_tickets.extend(list_tickets(tickets_dir))
 
     backlog_tickets = backlog_root(base) / "tickets"
     if backlog_tickets.exists():
@@ -492,6 +498,27 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False, include_do
     return deduped
 
 
+def collect_ticket_statuses(base: Path) -> dict[str, str]:
+    """Return dependency statuses from every live, done, backlog, and archived workspace."""
+    tickets = collect_all_tickets(base, include_archive=True, include_done=True)
+    return {ticket.id: ticket.status for ticket in tickets}
+
+
+def resolve_ticket_dependencies(
+    base: Path,
+    ticket: Ticket,
+    status_by_id: dict[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    """Resolve a ticket's dependency IDs to the statuses used by readiness gates."""
+    statuses = status_by_id if status_by_id is not None else collect_ticket_statuses(base)
+    return [(dep_id, statuses.get(dep_id, "unknown")) for dep_id in ticket.deps]
+
+
+def blocking_dependencies(dependencies: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Return dependencies whose resolved status still blocks work."""
+    return [(dep_id, status) for dep_id, status in dependencies if status != "closed"]
+
+
 def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
     """Find tickets that become unblocked when a ticket is closed.
 
@@ -509,7 +536,7 @@ def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
     """
     all_tickets = collect_all_tickets(base)
 
-    status_by_id = {t.id: t.status for t in all_tickets}
+    status_by_id = collect_ticket_statuses(base)
     status_by_id[closed_ticket_id] = "closed"
 
     newly_unblocked = []

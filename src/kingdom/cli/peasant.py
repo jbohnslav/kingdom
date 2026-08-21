@@ -33,7 +33,14 @@ from kingdom.state import (
     read_json,
     resolve_current_run,
 )
-from kingdom.ticket import Ticket, list_tickets, move_ticket, read_ticket, write_ticket
+from kingdom.ticket import (
+    Ticket,
+    blocking_dependencies,
+    move_ticket,
+    read_ticket,
+    resolve_ticket_dependencies,
+    write_ticket,
+)
 from kingdom.worktree import (
     check_uncommitted_changes,
     create_worktree,
@@ -358,9 +365,7 @@ def launch_peasant(
         )
         raise typer.Exit(code=1)
 
-    tickets_dir = branch_root(base, feature) / "tickets"
-    status_by_id = {candidate.id: candidate.status for candidate in list_tickets(tickets_dir)}
-    blockers = [(dep, status_by_id.get(dep, "unknown")) for dep in ticket.deps if status_by_id.get(dep) != "closed"]
+    blockers = blocking_dependencies(resolve_ticket_dependencies(base, ticket))
     if blockers:
         details = ", ".join(f"{dep} ({status})" for dep, status in blockers)
         print_error(f"Cannot start work on {full_ticket_id}: blocked by {details}")

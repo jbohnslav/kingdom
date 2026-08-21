@@ -36,6 +36,35 @@ def setup_project(base: Path) -> None:
 
 
 class TestTicketCurrent:
+    def test_current_shows_resolved_dependency_gate(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            tickets_dir = branch_root(base, BRANCH) / "tickets"
+            write_ticket(
+                Ticket(id="done", status="closed", title="Done", created=datetime.now(UTC)),
+                tickets_dir / "done.md",
+            )
+            write_ticket(
+                Ticket(
+                    id="next",
+                    status="open",
+                    title="Ready next",
+                    deps=["done"],
+                    created=datetime.now(UTC),
+                ),
+                tickets_dir / "next.md",
+            )
+
+            with patch.dict(os.environ, {"KD_CONTEXT": "dependency-reader"}, clear=True):
+                assert runner.invoke(ticket_app, ["start", "next"]).exit_code == 0
+                result = runner.invoke(ticket_app, ["current"])
+
+            assert result.exit_code == 0, result.output
+            assert "done closed" in result.output
+            assert "dependency gate:" in result.output
+            assert "clear — not blocked; all dependencies are closed." in result.output
+
     def test_current_migration_completes_without_nested_ticket_lock_deadlock(self, tmp_path: Path) -> None:
         setup_project(tmp_path)
         ticket_path = branch_root(tmp_path, BRANCH) / "tickets" / "only.md"

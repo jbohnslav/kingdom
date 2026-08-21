@@ -18,6 +18,7 @@ from kingdom.ticket import (
     append_worklog_entry,
     coerce_to_str_list,
     collect_all_tickets,
+    collect_ticket_statuses,
     collect_tickets_by_location,
     effective_resolution,
     filter_tickets,
@@ -1270,6 +1271,34 @@ class TestFindNewlyUnblocked:
         result = find_newly_unblocked("cb01", tmp_path)
         assert len(result) == 0
 
+    def test_archived_closed_dependency_does_not_hide_unblocked_ticket(self, tmp_path: Path) -> None:
+        tickets_dir = self.setup_branch(tmp_path)
+        created = datetime.now(UTC)
+        write_ticket(
+            Ticket(id="just", status="closed", title="Just closed", created=created),
+            tickets_dir / "just.md",
+        )
+        write_ticket(
+            Ticket(
+                id="next",
+                status="open",
+                title="Now ready",
+                deps=["just", "arch"],
+                created=created,
+            ),
+            tickets_dir / "next.md",
+        )
+        archive_tickets = tmp_path / ".kd" / "archive" / "finished" / "tickets"
+        archive_tickets.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="arch", status="closed", title="Archived prerequisite", created=created),
+            archive_tickets / "arch.md",
+        )
+
+        result = find_newly_unblocked("just", tmp_path)
+
+        assert [ticket.id for ticket in result] == ["next"]
+
     def test_closed_dependents_excluded(self, tmp_path: Path) -> None:
         """Already-closed dependents are excluded from unblocked list."""
         tickets_dir = self.setup_branch(tmp_path)
@@ -1898,6 +1927,27 @@ class TestCollectAllTicketsDedup:
         all_tickets = collect_all_tickets(tmp_path)
         ids = [t.id for t in all_tickets]
         assert ids.count("dup2") == 1
+
+    def test_status_collection_prefers_current_workspace_copy(self, tmp_path: Path) -> None:
+        from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
+
+        ensure_base_layout(tmp_path)
+        other_dir = ensure_branch_layout(tmp_path, "aaa-other") / "tickets"
+        current_dir = ensure_branch_layout(tmp_path, "zzz-current") / "tickets"
+        set_current_run(tmp_path, "zzz-current")
+        created = datetime.now(UTC)
+        write_ticket(
+            Ticket(id="same", status="closed", title="Stale copy", created=created),
+            other_dir / "same.md",
+        )
+        write_ticket(
+            Ticket(id="same", status="open", title="Current copy", created=created),
+            current_dir / "same.md",
+        )
+
+        statuses = collect_ticket_statuses(tmp_path)
+
+        assert statuses["same"] == "open"
 
 
 class TestCoerceToStrListDedup:

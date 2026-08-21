@@ -27,10 +27,11 @@ from kingdom.state import logs_root
 from kingdom.ticket import (
     Ticket,
     append_worklog_entry,
+    collect_ticket_statuses,
     filter_worklog_lines,
     find_ticket,
-    list_tickets,
     read_ticket,
+    resolve_ticket_dependencies,
 )
 
 logger = logging.getLogger("kingdom.lord_harness")
@@ -105,12 +106,7 @@ def get_startable_children(
     if not children:
         return []
 
-    # Build status map for dep checking
-    from kingdom.state import branch_root
-
-    tickets_dir = branch_root(base, branch) / "tickets"
-    all_tickets = list_tickets(tickets_dir)
-    status_by_id = {t.id: t.status for t in all_tickets}
+    status_by_id = collect_ticket_statuses(base)
 
     startable = []
     for ticket_path in children:
@@ -294,22 +290,17 @@ def get_children_summary(
     dep_statuses is a sorted tuple of (dep_id, dep_status) so the snapshot changes
     when an external dependency closes (making a child newly startable).
     """
-    from kingdom.state import branch_root
-
     if children is None:
         children = discover_epic_children(base, branch, epic_id)
 
-    # Build status map for deps (includes all tickets, not just epic children)
-    tickets_dir = branch_root(base, branch) / "tickets"
-    all_tickets = list_tickets(tickets_dir)
-    status_by_id = {t.id: t.status for t in all_tickets}
+    status_by_id = collect_ticket_statuses(base)
 
     summary = []
     for child_path in children:
         ticket = tickets[child_path.stem] if tickets else read_ticket(child_path)
         session_name = f"peasant-{ticket.id}"
         state = get_agent_state(base, branch, session_name)
-        dep_statuses = tuple(sorted((d, status_by_id.get(d, "unknown")) for d in ticket.deps))
+        dep_statuses = tuple(sorted(resolve_ticket_dependencies(base, ticket, status_by_id)))
         summary.append((ticket.id, ticket.status, state.status, dep_statuses))
     return tuple(sorted(summary))
 
@@ -487,7 +478,7 @@ def build_lord_prompt(
     parts.append("`kd peasant status --json` — Check all active peasant statuses")
     parts.append("`kd peasant show <ticket-id> --json` — Show detailed peasant history")
     parts.append(f"`kd tk list --parent {epic_id}` — List all epic children")
-    parts.append("`kd tk show <ticket-id>` — Print raw ticket Markdown")
+    parts.append("`kd tk show <ticket-id>` — Print raw ticket Markdown and resolved dependency gate")
     parts.append("`kd tk show <ticket-id> --rich` — Show framed ticket details")
     parts.append("")
     parts.append("### Reviewing completed work")
