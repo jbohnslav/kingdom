@@ -269,6 +269,7 @@ def test_release_runs_automatically_on_version_bump_with_manual_recovery() -> No
     assert 'if [ "$RELEASE_REF" != "refs/heads/master" ]; then' in workflow
     assert 'if [ "$EVENT_NAME" = "push" ]; then' in workflow
     assert 'git show "${BEFORE_SHA}:pyproject.toml"' in workflow
+    assert 'previous_version=""' in workflow
     assert 'if [ "$previous_version" = "$project_version" ]; then' in workflow
     assert 'if [ "$REQUESTED_VERSION" != "$project_version" ]; then' in workflow
     assert 'release_notes="docs/releases/${project_version}.md"' in workflow
@@ -289,7 +290,7 @@ def test_release_runs_automatically_on_version_bump_with_manual_recovery() -> No
     )
     positions = [workflow.index(step) for step in ordered_steps]
     assert positions == sorted(positions)
-    assert "group: release" in workflow
+    assert "group: release-${{ needs.prepare.outputs.version }}" in workflow
     assert "cancel-in-progress: false" in workflow
 
 

@@ -11,16 +11,13 @@ on:
         required: true
         type: string
 
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
-  release:
+  prepare:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      release_notes: ${{ steps.release.outputs.release_notes }}
+      version: ${{ steps.release.outputs.version }}
 
     steps:
       - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98 # v4
@@ -42,7 +39,11 @@ jobs:
           fi
           project_version=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           if [ "$EVENT_NAME" = "push" ]; then
-            previous_version=$(git show "${BEFORE_SHA}:pyproject.toml" | python3 -c "import sys, tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])")
+            if git show "${BEFORE_SHA}:pyproject.toml" > /tmp/previous-pyproject.toml 2>/dev/null; then
+              previous_version=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('/tmp/previous-pyproject.toml').read_text())['project']['version'])")
+            else
+              previous_version=""
+            fi
             if [ "$previous_version" = "$project_version" ]; then
               echo "publish=false" >> "$GITHUB_OUTPUT"
               echo "Version unchanged; skipping release."
@@ -66,49 +67,54 @@ jobs:
           echo "version=$project_version" >> "$GITHUB_OUTPUT"
           echo "release_notes=$release_notes" >> "$GITHUB_OUTPUT"
 
+  release:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98 # v4
+
       - name: Set up uv
-        if: steps.release.outputs.publish == 'true'
         uses: astral-sh/setup-uv@04224aa8caab79e9c08d41c1ef06d6394aafe6a0 # v5
 
       - name: Set up Python
-        if: steps.release.outputs.publish == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Install dependencies
-        if: steps.release.outputs.publish == 'true'
         run: uv sync --all-groups
 
       - name: Run pre-commit
-        if: steps.release.outputs.publish == 'true'
         run: uv run pre-commit run --all-files
 
       - name: Run tests
-        if: steps.release.outputs.publish == 'true'
         run: uv run pytest
 
       - name: Validate documented CLI workflow
-        if: steps.release.outputs.publish == 'true'
         run: bash scripts/smoke.sh
 
       - name: Build
-        if: steps.release.outputs.publish == 'true'
         run: |
           rm -rf dist/
           uv build
 
       - name: Validate artifacts
-        if: steps.release.outputs.publish == 'true'
         run: uv run --with twine python -m twine check dist/*
 
       - name: Create GitHub Release
-        if: steps.release.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v${{ steps.release.outputs.version }}"
-          release_notes="${{ steps.release.outputs.release_notes }}"
+          tag="v${{ needs.prepare.outputs.version }}"
+          release_notes="${{ needs.prepare.outputs.release_notes }}"
           if gh release view "$tag" > /dev/null 2>&1; then
             gh release edit "$tag" --notes-file "$release_notes"
             gh release upload "$tag" dist/*.tar.gz dist/*.whl --clobber
@@ -120,5 +126,4 @@ jobs:
           fi
 
       - name: Publish to PyPI
-        if: steps.release.outputs.publish == 'true'
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
