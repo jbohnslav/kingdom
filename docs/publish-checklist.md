@@ -63,8 +63,11 @@ Version Bump` workflow automatically:
 
 1. The workflow confirms that the version changed and that the matching
    checked-in `docs/releases/X.Y.Z.md` file exists.
-2. It runs the documented CLI smoke test, builds the sdist and wheel, and
-   validates both artifacts before publication.
+2. It runs pre-commit, the full test suite, and the documented CLI smoke test,
+   then builds the sdist and wheel and validates both artifacts before
+   publication. The branch-local `kd status --check` gate runs before merge, as
+   described above, because runtime workspace selection is intentionally not
+   committed to the repository.
 3. The checked-in release notes become the GitHub Release body, then the
    validated artifacts are uploaded to GitHub and PyPI.
 4. Verify:

@@ -131,7 +131,7 @@ def test_release_notes_document_automatic_publication() -> None:
     assert "`kd tk add-note`" in text
     assert "## Artifact validation and publication" in text
     assert "Artifact validation is performed separately" in text
-    assert "automatically runs those checks" in normalized
+    assert "automatically reruns pre-commit" in normalized
     assert "publishes the validated artifacts to PyPI" in normalized
     for ticket_id in (
         "473d",
@@ -268,6 +268,7 @@ def test_release_runs_automatically_on_version_bump_with_manual_recovery() -> No
     assert "required: true" in trigger
     assert 'if [ "$RELEASE_REF" != "refs/heads/master" ]; then' in workflow
     assert 'if [ "$EVENT_NAME" = "push" ]; then' in workflow
+    assert 'git show "${BEFORE_SHA}:pyproject.toml"' in workflow
     assert 'if [ "$previous_version" = "$project_version" ]; then' in workflow
     assert 'if [ "$REQUESTED_VERSION" != "$project_version" ]; then' in workflow
     assert 'release_notes="docs/releases/${project_version}.md"' in workflow
@@ -276,6 +277,10 @@ def test_release_runs_automatically_on_version_bump_with_manual_recovery() -> No
     ordered_steps = (
         "Validate release version",
         "Set up uv",
+        "Set up Python",
+        "Install dependencies",
+        "Run pre-commit",
+        "Run tests",
         "Validate documented CLI workflow",
         "Build",
         "Validate artifacts",
@@ -284,6 +289,8 @@ def test_release_runs_automatically_on_version_bump_with_manual_recovery() -> No
     )
     positions = [workflow.index(step) for step in ordered_steps]
     assert positions == sorted(positions)
+    assert "group: release" in workflow
+    assert "cancel-in-progress: false" in workflow
 
 
 def test_upgrade_guide_documents_recoverable_lazy_migration() -> None:

@@ -11,6 +11,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -27,6 +31,7 @@ jobs:
         id: release
         shell: bash
         env:
+          BEFORE_SHA: ${{ github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_REF: ${{ github.ref }}
           REQUESTED_VERSION: ${{ inputs.version }}
@@ -37,7 +42,7 @@ jobs:
           fi
           project_version=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           if [ "$EVENT_NAME" = "push" ]; then
-            previous_version=$(git show HEAD^:pyproject.toml | python3 -c "import sys, tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])")
+            previous_version=$(git show "${BEFORE_SHA}:pyproject.toml" | python3 -c "import sys, tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])")
             if [ "$previous_version" = "$project_version" ]; then
               echo "publish=false" >> "$GITHUB_OUTPUT"
               echo "Version unchanged; skipping release."
@@ -64,6 +69,24 @@ jobs:
       - name: Set up uv
         if: steps.release.outputs.publish == 'true'
         uses: astral-sh/setup-uv@04224aa8caab79e9c08d41c1ef06d6394aafe6a0 # v5
+
+      - name: Set up Python
+        if: steps.release.outputs.publish == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.release.outputs.publish == 'true'
+        run: uv sync --all-groups
+
+      - name: Run pre-commit
+        if: steps.release.outputs.publish == 'true'
+        run: uv run pre-commit run --all-files
+
+      - name: Run tests
+        if: steps.release.outputs.publish == 'true'
+        run: uv run pytest
 
       - name: Validate documented CLI workflow
         if: steps.release.outputs.publish == 'true'
