@@ -269,7 +269,11 @@ def council_ask(
     from kingdom.thread import add_message, create_thread, thread_dir
 
     base = require_project_root()
-    feature = resolve_current_run(base)
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
 
     console = Console()
 

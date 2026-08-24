@@ -1,11 +1,14 @@
 ---
 id: "b1de"
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-08-19T21:46:02Z
 type: epic
 priority: 2
+closed_at: 2026-08-24T19:52:45Z
+resolution: completed
+closed_context: codex:f1fe48bc0e4e0556
 ---
 # Make Council reliable across sessions and repository states
 
@@ -26,15 +29,15 @@ than worked around silently.
 
 ## Acceptance Criteria
 
-- [ ] Council list and ask commands handle missing active context without tracebacks or ambiguous fallback.
-- [ ] Council review handles dirty repositories safely and gives an exact recovery path when it cannot proceed.
-- [ ] Council chat queues messages without losing, overwriting, or silently reordering them.
-- [ ] Doctor distinguishes an installed agent CLI from runtime, authentication, and configuration failures.
-- [ ] Repository-configured Council backends remain consistent across primary and linked worktrees, including environments that intentionally use Cursor instead of Codex.
-- [ ] Provider model and capability checks follow account-visible CLI behavior without putting Kingdom on a hardcoded model-name treadmill.
-- [ ] Human errors and machine-readable behavior are covered by focused regressions and manual CLI checks.
-- [ ] The post-1.0.0 workflow is dogfooded end to end with `uv run kd`; discovered workflow friction is captured as backlog work, and `uv run kd status --check` passes before the epic closes.
-- [ ] Every child ticket is closed with full-suite verification before the epic closes.
+- [x] Council list and ask commands handle missing active context without tracebacks or ambiguous fallback.
+- [x] Council review handles dirty repositories safely and gives an exact recovery path when it cannot proceed.
+- [x] Council chat queues messages without losing, overwriting, or silently reordering them.
+- [x] Doctor distinguishes an installed agent CLI from runtime, authentication, and configuration failures.
+- [x] Repository-configured Council backends remain consistent across primary and linked worktrees, including environments that intentionally use Cursor instead of Codex.
+- [x] Provider model and capability checks follow account-visible CLI behavior without putting Kingdom on a hardcoded model-name treadmill.
+- [x] Human errors and machine-readable behavior are covered by focused regressions and manual CLI checks.
+- [x] The post-1.0.0 workflow is dogfooded end to end with `uv run kd`; discovered workflow friction is captured as backlog work, and `uv run kd status --check` passes immediately after epic closure and before PR creation.
+- [x] Every child ticket is closed with full-suite verification before the epic closes.
 
 ## Children
 
@@ -57,3 +60,9 @@ and recovery.
 
 - [2026-08-24 15:11] [codex:f1fe48bc] — Confirmed branch setup and made this a post-1.0.0 dogfooding epic; workflow friction must be captured as backlog work and the readiness gate must pass before closure.
 - [2026-08-24 15:16] [codex:f1fe48bc] — Epic execution started after the branch initialization commit; first direct child is fe67, with independent children delegated selectively to native sub-agents.
+- [2026-08-24 15:52] [codex:f1fe48bc] — Epic implementation and owner review complete. All six children are closed. Final verification passed: `uv run pytest` (2272 passed, 41 skipped, 1 xfailed), all 38 separately enabled Textual integration tests passed on the Council queue slice, repository-wide Ruff check and format check passed, `git diff --check` passed, and changed CLI commands were manually inspected. Post-1.0 dogfooding captured workflow friction as backlog tickets cc98, bc87, 0ad6, 8828, and 34b7. The first pre-close `uv run kd status --check` correctly failed only because this epic remained in progress; ticket 34b7 records the sequencing ambiguity, and the gate will be rerun immediately after closure.
+- [2026-08-24 15:52] [codex:f1fe48bc] — Post-closure readiness gate passed: uv run kd status --check reports 7 closed tickets, zero nonterminal tickets, and Readiness: ready.
+
+## Lifecycle
+
+- 2026-08-24T19:52:45Z [codex:f1fe48bc0e4e0556] — closed (completed)

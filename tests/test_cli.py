@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 import kingdom.cli as cli_mod
 from kingdom.cli import app
+from kingdom.cli.config import AgentRuntimeCheck
 from kingdom.cli.helpers import verbose_echo
 from kingdom.cli.peasant import launch_work_tmux
 from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
@@ -20,7 +21,11 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def mock_doctor_model_check():
-    with patch("kingdom.cli.check_agent_model", return_value=("unchecked", None)):
+    runtime = AgentRuntimeCheck(status="available", version="provider-cli 1.0")
+    with (
+        patch("kingdom.cli.check_agent_model", return_value=("unchecked", None)),
+        patch("kingdom.cli.check_agent_runtime", return_value=runtime),
+    ):
         yield
 
 
@@ -102,18 +107,19 @@ def test_doctor_all_installed(tmp_path: Path) -> None:
         assert "✓" in result.output
         assert "claude" in result.output
         assert "codex" in result.output
+        assert "version: provider-cli 1.0" in result.output
 
 
 def test_doctor_missing_cli() -> None:
     """Test doctor command when a CLI is missing."""
 
-    def mock_check(command: list[str]) -> tuple[bool, str | None]:
-        if "codex" in command:
-            return (False, "Command not found")
-        return (True, None)
+    def mock_check(agent):
+        if agent.backend == "codex":
+            return AgentRuntimeCheck(status="missing", error="Command not found", recovery=agent.install_hint)
+        return AgentRuntimeCheck(status="available", version="provider-cli 1.0")
 
     with (
-        patch("kingdom.cli.check_cli", side_effect=mock_check),
+        patch("kingdom.cli.check_agent_runtime", side_effect=mock_check),
         patch("kingdom.cli.check_config", return_value=(True, None)),
     ):
         result = runner.invoke(app, ["doctor"])
@@ -179,13 +185,17 @@ def test_check_agent_model_rejects_unsupported_codex_effort() -> None:
 
 
 def test_doctor_shows_actual_cli_probe_error(tmp_path: Path) -> None:
-    def mock_check(command: list[str]) -> tuple[bool, str | None]:
-        if "codex" in command:
-            return (False, "Command timed out")
-        return (True, None)
+    def mock_check(agent):
+        if agent.backend == "codex":
+            return AgentRuntimeCheck(
+                status="version_failed",
+                error="Version probe timed out",
+                recovery="Reinstall Codex CLI, then run `kd doctor`.",
+            )
+        return AgentRuntimeCheck(status="available", version="provider-cli 1.0")
 
     with (
-        patch("kingdom.cli.check_cli", side_effect=mock_check),
+        patch("kingdom.cli.check_agent_runtime", side_effect=mock_check),
         patch("kingdom.cli.check_config", return_value=(True, None)),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
@@ -193,7 +203,7 @@ def test_doctor_shows_actual_cli_probe_error(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "codex" in result.output
-    assert "Command timed out" in result.output
+    assert "Version probe timed out" in result.output
 
 
 def test_doctor_json_output(tmp_path: Path) -> None:
@@ -212,9 +222,12 @@ def test_doctor_json_output(tmp_path: Path) -> None:
         data = json.loads(result.output)
         assert data["agents"]["claude"]["installed"] is True
         assert data["agents"]["codex"]["installed"] is True
+        assert data["agents"]["claude"]["status"] == "available"
+        assert data["agents"]["claude"]["version"] == "provider-cli 1.0"
         assert data["agents"]["claude"]["model"] == "inherited"
         assert data["agents"]["claude"]["model_source"] == "provider"
         assert data["agents"]["claude"]["effort"] == "inherited"
+        assert data["agents"]["claude"]["effort_source"] == "provider"
         assert data["config"]["valid"] is True
 
 
@@ -248,13 +261,13 @@ def test_doctor_json_reports_pinned_model_and_effort(tmp_path) -> None:
 def test_doctor_json_with_missing() -> None:
     """Test doctor JSON output with missing CLI."""
 
-    def mock_check(command: list[str]) -> tuple[bool, str | None]:
-        if "codex" in command:
-            return (False, "Command not found")
-        return (True, None)
+    def mock_check(agent):
+        if agent.backend == "codex":
+            return AgentRuntimeCheck(status="missing", error="Command not found", recovery=agent.install_hint)
+        return AgentRuntimeCheck(status="available", version="provider-cli 1.0")
 
     with (
-        patch("kingdom.cli.check_cli", side_effect=mock_check),
+        patch("kingdom.cli.check_agent_runtime", side_effect=mock_check),
         patch("kingdom.cli.check_config", return_value=(True, None)),
     ):
         result = runner.invoke(app, ["doctor", "--json"])

@@ -51,7 +51,14 @@ from kingdom.ticket import (
 )
 from kingdom.worktree import create_worktree, remove_worktree, worktree_path_for  # noqa: F401
 
-from .config import check_agent_model, check_cli, check_config, config_app, get_doctor_checks
+from .config import (
+    check_agent_model,
+    check_agent_runtime,
+    check_cli,  # noqa: F401 (re-export)
+    check_config,
+    config_app,
+    get_doctor_checks,
+)
 from .council import council_app
 from .design import design_app, get_branch_paths, get_doc_status  # noqa: F401 (re-export)
 from .display import error_console, print_error, styled_echo
@@ -618,23 +625,31 @@ def doctor(
     if config_ok:
         doctor_checks = get_doctor_checks(base)
         for check in doctor_checks:
-            installed, error = check_cli(check["command"])
-            model_status, model_error = check_agent_model(check["agent"]) if installed else ("unchecked", None)
+            runtime = check_agent_runtime(check["agent"])
+            installed = runtime.status != "missing"
+            model_status, model_error = (
+                check_agent_model(check["agent"]) if runtime.status == "available" else ("unchecked", None)
+            )
             cli_results[check["name"]] = {
                 "backend": check["agent"].backend,
                 "installed": installed,
-                "error": error,
+                "status": runtime.status,
+                "version": runtime.version,
+                "error": runtime.error,
+                "recovery": runtime.recovery,
                 "model": check["model"],
                 "model_source": check["model_source"],
                 "effort": check["effort"],
+                "effort_source": check["effort_source"],
                 "model_check": model_status,
                 "model_error": model_error,
             }
-            if not installed:
-                hint = f"{error}. {check['install_hint']}" if error else check["install_hint"]
+            if runtime.status != "available":
+                hint = f"{runtime.error}. {runtime.recovery}" if runtime.error else runtime.recovery
                 cli_issues.append({"name": check["name"], "hint": hint})
             elif model_status == "unavailable":
-                cli_issues.append({"name": check["name"], "hint": model_error or "Model unavailable"})
+                recovery = "Choose a model and effort shown by the provider CLI, then run `kd doctor`."
+                cli_issues.append({"name": check["name"], "hint": f"{model_error or 'Model unavailable'}. {recovery}"})
 
     bindings = binding_issues(base)
     contexts = context_issues(base)
@@ -670,25 +685,38 @@ def doctor(
             for check in doctor_checks:
                 name = check["name"]
                 result = cli_results[name]
-                if result["installed"] and result["model_check"] == "unavailable":
+                version = result["version"] or "unknown"
+                model = result["model"]
+                model_source = result["model_source"]
+                effort = result["effort"]
+                effort_source = result["effort_source"]
+                model_check = result["model_check"]
+                if result["status"] != "available":
                     styled_echo(
-                        f"  ✗ {name:12} ({result['backend']}; installed; {result['model_error']})",
+                        f"  ✗ {name:12} ({result['backend']}; {result['status']}; "
+                        f"version: {version}; {result['error'] or 'unavailable'})",
                         fg=typer.colors.RED,
                     )
-                elif result["installed"]:
-                    model = result["model"]
-                    source = result["model_source"]
-                    effort = result["effort"]
-                    model_check = result["model_check"]
+                elif model_check == "unavailable":
                     styled_echo(
-                        f"  ✓ {name:12} ({result['backend']}; installed; "
-                        f"model: {model} [{source}, {model_check}]; effort: {effort})",
-                        fg=typer.colors.GREEN,
+                        f"  ✗ {name:12} ({result['backend']}; version: {version}; "
+                        f"model: {model} [{model_source}, {model_check}]; "
+                        f"effort: {effort} [{effort_source}]; {result['model_error']})",
+                        fg=typer.colors.RED,
+                    )
+                elif model_check == "unchecked" and result["model_error"]:
+                    styled_echo(
+                        f"  ○ {name:12} ({result['backend']}; version: {version}; "
+                        f"model: {model} [{model_source}, unchecked]; "
+                        f"effort: {effort} [{effort_source}]; {result['model_error']})",
+                        fg=typer.colors.YELLOW,
                     )
                 else:
                     styled_echo(
-                        f"  ✗ {name:12} ({result['backend']}; {result['error'] or 'unavailable'})",
-                        fg=typer.colors.RED,
+                        f"  ✓ {name:12} ({result['backend']}; version: {version}; "
+                        f"model: {model} [{model_source}, {model_check}]; "
+                        f"effort: {effort} [{effort_source}])",
+                        fg=typer.colors.GREEN,
                     )
 
             if cli_issues:

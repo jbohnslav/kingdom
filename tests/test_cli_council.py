@@ -83,6 +83,18 @@ def make_responses(*names: str) -> dict[str, AgentResponse]:
 
 
 class TestCouncilAsk:
+    def test_ask_without_active_session_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+
+            result = runner.invoke(council_app, ["ask", "Question"])
+
+            assert result.exit_code == 1
+            assert "No active session" in result.output
+            assert "kd start <feature>" in result.output
+            assert "Traceback" not in result.output
+
     def test_ask_creates_thread_on_first_use(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
