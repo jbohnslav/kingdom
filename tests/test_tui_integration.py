@@ -451,12 +451,16 @@ class TestSendLifecycle:
         resumed_app = make_app(project, thread_id)
         with patch.object(Council, "create", return_value=resumed_council):
             async with resumed_app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause(delay=0.3)
+                await wait_until(
+                    pilot,
+                    lambda: len(list_messages(project, BRANCH, thread_id)) == 3,
+                    timeout=5.0,
+                )
 
                 messages = list_messages(project, BRANCH, thread_id)
-                assert len(messages) == 1
+                assert len(messages) == 3
                 assert messages[0].delivery_id == delivery_id
-                assert all(not member.prompts for member in resumed_council.members)
+                assert all(len(member.prompts) == 1 for member in resumed_council.members)
                 assert not pending_path.exists()
 
 

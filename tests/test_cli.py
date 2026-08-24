@@ -297,6 +297,36 @@ def test_doctor_invalid_config(tmp_path) -> None:
         assert "Skipped" in result.output
 
 
+@pytest.mark.parametrize("output_json", [False, True], ids=["human", "json"])
+def test_doctor_reports_config_source_resolution_failure(tmp_path: Path, output_json: bool) -> None:
+    """Doctor should preserve config recovery guidance instead of tracebacking."""
+    ensure_base_layout(tmp_path)
+    error = "Cannot resolve repository-owner config. Restore worktree discovery or set KD_BASE."
+    args = ["doctor", *(["--json"] if output_json else [])]
+
+    with (
+        patch("kingdom.cli.require_project_root", return_value=tmp_path),
+        patch("kingdom.config.config_source_path", side_effect=ValueError(error)),
+    ):
+        result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    if output_json:
+        config = json.loads(result.output)["config"]
+        assert config == {
+            "source": None,
+            "exists": False,
+            "valid": False,
+            "error": error,
+            "council_members": [],
+            "review_members": [],
+        }
+    else:
+        assert error in result.output
+        assert "Agent CLIs:" in result.output
+        assert "Skipped (fix config first)" in result.output
+
+
 def test_doctor_no_config_shows_defaults(tmp_path) -> None:
     """Test doctor shows 'using defaults' when no config file exists."""
     kd_dir = tmp_path / ".kd"

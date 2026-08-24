@@ -820,16 +820,13 @@ class ChatApp(App):
         log.mount(king_panel)
 
     def restore_pending_deliveries(self, tdir: Path) -> None:
-        """Load undelivered messages and reconcile a completed promotion."""
+        """Load deliveries whose Council dispatch did not finish."""
         pending = load_pending_deliveries(tdir)
         persisted_ids = {message.delivery_id for message in list_messages(self.base, self.branch, self.thread_id)}
-        restored = deque(delivery for delivery in pending if delivery.delivery_id not in persisted_ids)
-        if len(restored) != len(pending):
-            write_pending_deliveries(tdir, restored)
-
-        self.delivery_queue = restored
+        self.delivery_queue = pending
         for delivery in self.delivery_queue:
-            self.render_king_message(delivery)
+            if delivery.delivery_id not in persisted_ids:
+                self.render_king_message(delivery)
 
     async def drain_delivery_queue(self) -> None:
         """Deliver submitted messages one at a time in FIFO order."""
@@ -839,6 +836,8 @@ class ChatApp(App):
                 self.interrupted = False
                 self.generation += 1
                 await self.deliver_message(delivery, self.generation)
+                self.delivery_queue.popleft()
+                write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
                 self.poll_updates()
         finally:
             self.delivery_active = False
@@ -859,8 +858,6 @@ class ChatApp(App):
             )
             prior_messages.append(message)
         self.rendered_message_sequences.add(message.sequence)
-        self.delivery_queue.popleft()
-        write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
 
         targets = list(delivery.targets)
         tdir = thread_dir(self.base, self.branch, self.thread_id)

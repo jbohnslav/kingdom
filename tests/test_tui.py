@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import deque
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2778,6 +2779,41 @@ class TestStatusSlashCommand:
 
 class TestSendMessageQueue:
     """Test that send_message queues behind an in-flight delivery."""
+
+    def test_persisted_prompt_remains_pending_for_restart_dispatch(self, project: Path) -> None:
+        """A persisted King prompt is not proof that its Council round completed."""
+        from unittest.mock import MagicMock
+
+        from kingdom.thread import add_message, thread_dir
+        from kingdom.tui.app import ChatApp, QueuedDelivery, write_pending_deliveries
+
+        tid = "council-restart"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        delivery = QueuedDelivery(
+            delivery_id="delivery-before-crash",
+            body="Persisted before crash",
+            targets=("claude",),
+            to="claude",
+        )
+        tdir = thread_dir(project, BRANCH, tid)
+        write_pending_deliveries(tdir, deque([delivery]))
+        add_message(
+            project,
+            BRANCH,
+            tid,
+            from_="king",
+            to="claude",
+            body=delivery.body,
+            delivery_id=delivery.delivery_id,
+        )
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        app_instance.render_king_message = MagicMock()
+
+        app_instance.restore_pending_deliveries(tdir)
+
+        assert list(app_instance.delivery_queue) == [delivery]
+        app_instance.render_king_message.assert_not_called()
 
     def test_queued_send_keeps_existing_wait_panels(self, project: Path) -> None:
         """A follow-up must not disturb the exchange that is still running."""

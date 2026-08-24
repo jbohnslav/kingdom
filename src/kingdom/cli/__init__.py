@@ -583,22 +583,30 @@ def doctor(
     has_issues = False
 
     # 1. Config validation
-    config_path = config_source_path(base)
-    config_ok, config_error = check_config(base)
+    config_path: Path | None = None
+    config_ok = False
+    config_error: str | None = None
     council_members: list[dict[str, str]] = []
     review_members: list[dict[str, str]] = []
-    if config_ok:
-        cfg = load_config(base)
-        council_members = [{"name": name, "backend": cfg.agents[name].backend} for name in cfg.council.members]
-        review_members = [{"name": name, "backend": cfg.agents[name].backend} for name in cfg.council.review_members]
+    try:
+        config_path = config_source_path(base)
+        config_ok, config_error = check_config(base)
+        if config_ok:
+            cfg = load_config(base)
+            council_members = [{"name": name, "backend": cfg.agents[name].backend} for name in cfg.council.members]
+            review_members = [
+                {"name": name, "backend": cfg.agents[name].backend} for name in cfg.council.review_members
+            ]
+    except ValueError as exc:
+        config_error = str(exc)
 
     if not config_ok:
         has_issues = True
 
     if output_json:
         config_result = {
-            "source": str(config_path),
-            "exists": config_path.exists(),
+            "source": str(config_path) if config_path else None,
+            "exists": config_path.exists() if config_path else False,
             "valid": config_ok,
             "error": config_error,
             "council_members": council_members,
@@ -606,7 +614,9 @@ def doctor(
         }
     else:
         typer.echo("\nConfig:")
-        if not config_path.exists():
+        if config_path is None:
+            styled_echo(f"  ✗ config source unavailable: {config_error}", fg=typer.colors.RED)
+        elif not config_path.exists():
             styled_echo(f"  ○ {config_path} not found (using defaults)", fg=typer.colors.YELLOW)
         elif config_ok:
             styled_echo(f"  ✓ config.json valid: {config_path}", fg=typer.colors.GREEN)
