@@ -36,10 +36,10 @@ def test_readme_documents_canonical_ruff_checks() -> None:
 def test_release_metadata_has_final_version_and_direct_click_dependency() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
 
-    assert pyproject["project"]["version"] == "1.0.0"
+    assert pyproject["project"]["version"] == "1.0.1"
     assert any(dependency.startswith("click") for dependency in pyproject["project"]["dependencies"])
 
     lock = (REPO_ROOT / "uv.lock").read_text()
     package_block = lock.split('name = "kingdom-cli"', 1)[1].split("\n[[package]]", 1)[0]
-    assert 'version = "1.0.0"' in package_block
+    assert 'version = "1.0.1"' in package_block
     assert '{ name = "click" }' in package_block

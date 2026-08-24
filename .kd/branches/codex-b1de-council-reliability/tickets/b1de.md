@@ -6,7 +6,7 @@ links: []
 created: 2026-08-19T21:46:02Z
 type: epic
 priority: 2
-closed_at: 2026-08-24T19:52:45Z
+closed_at: 2026-08-24T20:11:33Z
 resolution: completed
 closed_context: codex:f1fe48bc0e4e0556
 ---
@@ -62,7 +62,10 @@ and recovery.
 - [2026-08-24 15:16] [codex:f1fe48bc] — Epic execution started after the branch initialization commit; first direct child is fe67, with independent children delegated selectively to native sub-agents.
 - [2026-08-24 15:52] [codex:f1fe48bc] — Epic implementation and owner review complete. All six children are closed. Final verification passed: `uv run pytest` (2272 passed, 41 skipped, 1 xfailed), all 38 separately enabled Textual integration tests passed on the Council queue slice, repository-wide Ruff check and format check passed, `git diff --check` passed, and changed CLI commands were manually inspected. Post-1.0 dogfooding captured workflow friction as backlog tickets cc98, bc87, 0ad6, 8828, and 34b7. The first pre-close `uv run kd status --check` correctly failed only because this epic remained in progress; ticket 34b7 records the sequencing ambiguity, and the gate will be rerun immediately after closure.
 - [2026-08-24 15:52] [codex:f1fe48bc] — Post-closure readiness gate passed: uv run kd status --check reports 7 closed tickets, zero nonterminal tickets, and Readiness: ready.
+- [2026-08-24 16:11] [codex:f1fe48bc] — Release preparation completed for Kingdom 1.0.1. The release notes explicitly preserve this epic's dogfooding purpose and verification covered pre-commit, smoke, focused packaging checks, and the full test suite.
 
 ## Lifecycle
 
 - 2026-08-24T19:52:45Z [codex:f1fe48bc0e4e0556] — closed (completed)
+- 2026-08-24T20:09:25Z [codex:f1fe48bc0e4e0556] — reopened (previous: completed)
+- 2026-08-24T20:11:33Z [codex:f1fe48bc0e4e0556] — closed (completed)
