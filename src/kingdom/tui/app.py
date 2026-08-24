@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import deque
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
+from uuid import uuid4
 
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
@@ -20,6 +23,7 @@ from textual.widgets import Static, TextArea
 from kingdom.agent import resolve_all_agents
 from kingdom.config import load_config
 from kingdom.council import Council
+from kingdom.state import read_json, write_json
 from kingdom.thread import (
     add_message,
     format_thread_history,
@@ -45,6 +49,56 @@ from .widgets import (
 logger = logging.getLogger(__name__)
 
 MENTION_RE = re.compile(r"(?<!\w)@(\w+)")
+PENDING_MESSAGES_FILENAME = ".pending-messages.json"
+
+
+@dataclass(frozen=True)
+class QueuedDelivery:
+    """A King message waiting for its turn to reach the council."""
+
+    delivery_id: str
+    body: str
+    targets: tuple[str, ...]
+    to: str
+
+
+def load_pending_deliveries(tdir: Path) -> deque[QueuedDelivery]:
+    path = tdir / PENDING_MESSAGES_FILENAME
+    if not path.exists():
+        return deque()
+
+    data = read_json(path)
+    return deque(
+        QueuedDelivery(
+            delivery_id=str(item["id"]),
+            body=str(item["body"]),
+            targets=tuple(str(target) for target in item["targets"]),
+            to=str(item["to"]),
+        )
+        for item in data.get("deliveries", [])
+    )
+
+
+def write_pending_deliveries(tdir: Path, deliveries: deque[QueuedDelivery]) -> None:
+    path = tdir / PENDING_MESSAGES_FILENAME
+    if not deliveries:
+        path.unlink(missing_ok=True)
+        return
+
+    write_json(
+        path,
+        {
+            "deliveries": [
+                {
+                    "id": delivery.delivery_id,
+                    "body": delivery.body,
+                    "targets": list(delivery.targets),
+                    "to": delivery.to,
+                }
+                for delivery in deliveries
+            ]
+        },
+    )
 
 
 def mention_bump(response_text: str, remaining: list[str], valid_members: list[str]) -> list[str]:
@@ -402,6 +456,9 @@ class ChatApp(App):
         self.chat_mode: str = "natural"
         self.auto_rounds: int = 1
         self.reply_target: str | None = None
+        self.delivery_queue: deque[QueuedDelivery] = deque()
+        self.delivery_active = False
+        self.rendered_message_sequences: set[int] = set()
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -461,8 +518,13 @@ class ChatApp(App):
 
         # Load existing messages from thread history
         self.load_history()
+        self.restore_pending_deliveries(tdir)
 
         self.set_interval(0.1, self.poll_updates)
+
+        if self.delivery_queue:
+            self.delivery_active = True
+            self.run_worker(self.drain_delivery_queue(), exclusive=False)
 
         # Focus the input area
         input_area = self.query_one("#input-area", TextArea)
@@ -722,60 +784,113 @@ class ChatApp(App):
             input_area.load_text(text)
             return
 
-        self.interrupted = False
-        self.generation += 1
-        gen = self.generation
-
         # Parse @mentions
         targets = self.parse_targets(text)
 
-        # Write king message to thread files
         to = targets[0] if len(targets) == 1 else "all"
-        add_message(self.base, self.branch, self.thread_id, from_="king", to=to, body=text)
+        delivery = QueuedDelivery(
+            delivery_id=uuid4().hex,
+            body=text,
+            targets=tuple(targets),
+            to=to,
+        )
+        queued = self.delivery_active
+        self.delivery_queue.append(delivery)
+        write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
 
-        # Render king message immediately (don't wait for poll cycle)
+        self.render_king_message(delivery)
+
+        if queued:
+            self.notify(f"Message queued ({len(self.delivery_queue)} waiting)")
+            return
+
+        self.delivery_active = True
+        self.run_worker(self.drain_delivery_queue(), exclusive=False)
+
+    def render_king_message(self, delivery: QueuedDelivery) -> None:
+        """Render a submitted message before its council delivery begins."""
         log = self.query_one("#message-log", MessageLog)
         log.scroll_if_following()  # capture intent BEFORE mounts
-        king_panel = MessagePanel(sender="king", body=text, member_names=self.member_names, id=f"king-{id(text)}")
+        king_panel = MessagePanel(
+            sender="king",
+            body=delivery.body,
+            member_names=self.member_names,
+            id=f"king-{delivery.delivery_id}",
+        )
         log.mount(king_panel)
 
-        # Update poller so it doesn't re-report this king message
-        if self.poller:
-            self.poller.last_sequence += 1
+    def restore_pending_deliveries(self, tdir: Path) -> None:
+        """Load undelivered messages and reconcile a completed promotion."""
+        pending = load_pending_deliveries(tdir)
+        persisted_ids = {message.delivery_id for message in list_messages(self.base, self.branch, self.thread_id)}
+        restored = deque(delivery for delivery in pending if delivery.delivery_id not in persisted_ids)
+        if len(restored) != len(pending):
+            write_pending_deliveries(tdir, restored)
 
+        self.delivery_queue = restored
+        for delivery in self.delivery_queue:
+            self.render_king_message(delivery)
+
+    async def drain_delivery_queue(self) -> None:
+        """Deliver submitted messages one at a time in FIFO order."""
+        try:
+            while self.delivery_queue:
+                delivery = self.delivery_queue[0]
+                self.interrupted = False
+                self.generation += 1
+                await self.deliver_message(delivery, self.generation)
+                self.poll_updates()
+        finally:
+            self.delivery_active = False
+
+    async def deliver_message(self, delivery: QueuedDelivery, generation: int) -> None:
+        """Persist and dispatch one queued king message."""
+        prior_messages = list_messages(self.base, self.branch, self.thread_id)
+        message = next((item for item in prior_messages if item.delivery_id == delivery.delivery_id), None)
+        if message is None:
+            message = add_message(
+                self.base,
+                self.branch,
+                self.thread_id,
+                from_="king",
+                to=delivery.to,
+                body=delivery.body,
+                delivery_id=delivery.delivery_id,
+            )
+            prior_messages.append(message)
+        self.rendered_message_sequences.add(message.sequence)
+        self.delivery_queue.popleft()
+        write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
+
+        targets = list(delivery.targets)
         tdir = thread_dir(self.base, self.branch, self.thread_id)
-
-        # Clean up any in-flight panels from previous exchange to avoid
-        # duplicate widget IDs when mounting new WaitingPanels.
+        log = self.query_one("#message-log", MessageLog)
         for name in targets:
-            self.remove_member_panels(log, name)
+            await self.await_remove_member_panels(log, name)
 
-        if to == "all":
-            # Sequential modes (round_robin, manual): only show WaitingPanel for
-            # the first target; each mode mounts panels as it queries.
-            # Parallel modes (natural, broadcast): show all panels upfront.
+        if delivery.to == "all":
             sequential = self.chat_mode in ("round_robin", "manual")
             panel_targets = targets[:1] if sequential else targets
             for name in panel_targets:
                 if not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
-            prior_messages = list_messages(self.base, self.branch, self.thread_id)
-            is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
-            self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
-        else:
-            # Directed @mention: single query, no auto-turns
-            if not log.query(f"#wait-{targets[0]}"):
-                log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
-            member = self.council.get_member(targets[0]) if self.council else None
-            if member:
-                stream_path = tdir / f".stream-{targets[0]}.jsonl"
-                self.run_worker(self.run_query(member, stream_path, generation=gen), exclusive=False)
+            is_first_exchange = not any(item.from_ != "king" for item in prior_messages)
+            await self.run_chat_round(targets, generation, tdir, is_first_exchange)
+            return
+
+        name = targets[0]
+        if not log.query(f"#wait-{name}"):
+            log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+        member = self.council.get_member(name) if self.council else None
+        if member:
+            stream_path = tdir / f".stream-{name}.jsonl"
+            await self.run_query(member, stream_path, generation=generation)
 
     async def run_query(self, member, stream_path: Path, generation: int | None = None) -> str | None:
         """Run a member query with full thread context, then persist and clean up.
 
         When *generation* is passed, the response is discarded if ``self.generation``
-        has moved on (meaning the user sent a new message while this query was in flight).
+        has moved on and superseded this delivery.
 
         Returns the response body text, or None if discarded/errored.
         """
@@ -1189,6 +1304,10 @@ class ChatApp(App):
 
     def handle_new_message(self, log: MessageLog, event: NewMessage) -> None:
         """Replace waiting/streaming/thinking/interrupted panel in-place with a finalized message."""
+        if event.sequence in self.rendered_message_sequences:
+            self.rendered_message_sequences.discard(event.sequence)
+            return
+
         waiting_id = f"wait-{event.sender}"
         streaming_id = f"stream-{event.sender}"
         thinking_id = f"thinking-{event.sender}"

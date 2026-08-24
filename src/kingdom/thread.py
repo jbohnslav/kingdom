@@ -80,6 +80,7 @@ class Message:
     effort: str | None = None
     effort_source: str | None = None
     cli_version: str | None = None
+    delivery_id: str | None = None
 
 
 @dataclass
@@ -436,6 +437,7 @@ def add_message(
     effort: str | None = None,
     effort_source: str | None = None,
     cli_version: str | None = None,
+    delivery_id: str | None = None,
 ) -> Message:
     """Write the next sequential message file to a thread.
 
@@ -454,6 +456,7 @@ def add_message(
         effort: Configured effort or ``unknown``.
         effort_source: Whether effort was configured or provider-selected.
         cli_version: Provider CLI version used for the response.
+        delivery_id: Stable ID used to promote a queued message exactly once.
 
     Returns:
         Message instance with sequence number set.
@@ -486,6 +489,7 @@ def add_message(
         effort=effort,
         effort_source=effort_source,
         cli_version=cli_version,
+        delivery_id=delivery_id,
     )
 
     # Build frontmatter
@@ -502,6 +506,7 @@ def add_message(
             ("effort", effort),
             ("effort_source", effort_source),
             ("cli_version", cli_version),
+            ("delivery_id", delivery_id),
         ]
     )
     lines = [fm, "", body, ""]
@@ -557,6 +562,7 @@ def parse_message(path: Path) -> Message:
     effort = fm.get("effort")
     effort_source = fm.get("effort_source")
     cli_version = fm.get("cli_version")
+    delivery_id = fm.get("delivery_id")
 
     return Message(
         from_=str(fm.get("from", "")),
@@ -572,6 +578,7 @@ def parse_message(path: Path) -> Message:
         effort=str(effort) if effort is not None else None,
         effort_source=str(effort_source) if effort_source is not None else None,
         cli_version=str(cli_version) if cli_version is not None else None,
+        delivery_id=str(delivery_id) if delivery_id is not None else None,
     )
 
 

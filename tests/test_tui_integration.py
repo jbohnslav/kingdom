@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,7 +21,7 @@ import pytest
 from kingdom.agent import AgentConfig
 from kingdom.council import Council
 from kingdom.council.base import AgentResponse
-from kingdom.thread import add_message, create_thread, thread_dir
+from kingdom.thread import add_message, create_thread, list_messages, thread_dir
 from kingdom.tui.app import ChatApp, InputArea, MessageLog
 from kingdom.tui.poll import StreamDelta, StreamFinished, StreamStarted, ThinkingDelta
 from kingdom.tui.widgets import ErrorPanel, MessagePanel, StreamingPanel, ThinkingPanel, WaitingPanel
@@ -76,6 +76,7 @@ class FakeMember:
     writable: bool = False
     agent_prompt: str = ""
     phase_prompt: str = ""
+    prompts: list[str] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -86,6 +87,7 @@ class FakeMember:
     ) -> AgentResponse:
         import time
 
+        self.prompts.append(prompt)
         if self.delay:
             time.sleep(self.delay)
 
@@ -321,6 +323,141 @@ class TestSendLifecycle:
                 # Only claude should be queried, not codex
                 assert "claude" in waiting_names
                 assert "codex" not in waiting_names
+
+    async def test_follow_ups_queue_behind_active_exchange(self, project, thread_id) -> None:
+        council = make_fake_council(["claude", "codex"], delay=0.15)
+        app = make_app(project, thread_id)
+
+        with patch.object(Council, "create", return_value=council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                input_area = app.query_one("#input-area", InputArea)
+                input_area.insert("First question")
+                await pilot.press("enter")
+
+                await wait_until(pilot, lambda: all(member.prompts for member in council.members))
+
+                input_area.insert("Queued follow-up")
+                await pilot.press("enter")
+
+                input_area.insert("Final follow-up")
+                await pilot.press("enter")
+
+                await wait_until(
+                    pilot,
+                    lambda: len(list_messages(project, BRANCH, thread_id)) == 9,
+                    timeout=5.0,
+                )
+                await pilot.pause(delay=0.2)
+
+                log = app.query_one("#message-log", MessageLog)
+                king_panels = [panel for panel in log.query(MessagePanel) if panel.sender == "king"]
+                assert [panel.body for panel in king_panels] == [
+                    "First question",
+                    "Queued follow-up",
+                    "Final follow-up",
+                ]
+
+        messages = list_messages(project, BRANCH, thread_id)
+        assert messages[0].body == "First question"
+        assert messages[3].body == "Queued follow-up"
+        assert messages[6].body == "Final follow-up"
+
+        for offset in (0, 3, 6):
+            assert messages[offset].from_ == "king"
+            assert {message.from_ for message in messages[offset + 1 : offset + 3]} == {"claude", "codex"}
+
+        for member in council.members:
+            assert len(member.prompts) == 3
+            assert "First question" in member.prompts[0]
+            assert "Queued follow-up" not in member.prompts[0]
+            assert "Final follow-up" not in member.prompts[0]
+            assert "Queued follow-up" in member.prompts[1]
+            assert "Final follow-up" not in member.prompts[1]
+            assert "Final follow-up" in member.prompts[2]
+
+    async def test_pending_follow_ups_resume_after_restart(self, project, thread_id) -> None:
+        first_app = make_app(project, thread_id)
+        first_council = make_fake_council(["claude", "codex"])
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+
+        with patch.object(Council, "create", return_value=first_council):
+            async with first_app.run_test(size=(120, 40)) as pilot:
+                first_app.delivery_active = True
+                input_area = first_app.query_one("#input-area", InputArea)
+                input_area.insert("Queued before restart")
+                await pilot.press("enter")
+                input_area.insert("Second after restart")
+                await pilot.press("enter")
+                await pilot.pause()
+
+                pending = json.loads(pending_path.read_text(encoding="utf-8"))
+                assert [item["body"] for item in pending["deliveries"]] == [
+                    "Queued before restart",
+                    "Second after restart",
+                ]
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(
+                    pilot,
+                    lambda: len(list_messages(project, BRANCH, thread_id)) == 6,
+                    timeout=5.0,
+                )
+                await pilot.pause(delay=0.2)
+
+                log = resumed_app.query_one("#message-log", MessageLog)
+                king_panels = [panel for panel in log.query(MessagePanel) if panel.sender == "king"]
+                assert [panel.body for panel in king_panels] == [
+                    "Queued before restart",
+                    "Second after restart",
+                ]
+
+        messages = list_messages(project, BRANCH, thread_id)
+        assert [messages[0].body, messages[3].body] == ["Queued before restart", "Second after restart"]
+        assert not pending_path.exists()
+        for member in resumed_council.members:
+            assert len(member.prompts) == 2
+            assert "Second after restart" not in member.prompts[0]
+            assert "Second after restart" in member.prompts[1]
+
+    async def test_restart_reconciles_already_persisted_pending_message(self, project, thread_id) -> None:
+        first_app = make_app(project, thread_id)
+        first_council = make_fake_council(["claude", "codex"])
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+
+        with patch.object(Council, "create", return_value=first_council):
+            async with first_app.run_test(size=(120, 40)) as pilot:
+                first_app.delivery_active = True
+                input_area = first_app.query_one("#input-area", InputArea)
+                input_area.insert("Persisted before crash")
+                await pilot.press("enter")
+                await pilot.pause()
+
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        delivery_id = pending["deliveries"][0]["id"]
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="all",
+            body="Persisted before crash",
+            delivery_id=delivery_id,
+        )
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause(delay=0.3)
+
+                messages = list_messages(project, BRANCH, thread_id)
+                assert len(messages) == 1
+                assert messages[0].delivery_id == delivery_id
+                assert all(not member.prompts for member in resumed_council.members)
+                assert not pending_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -603,11 +740,11 @@ class TestAutoTurn:
     async def test_follow_up_sequential_round_robin(self, project, thread_id) -> None:
         """After first exchange, follow-up queries proceed sequentially with correct budget and order."""
         council = make_fake_council(["claude", "codex"])
-        council.auto_messages = 2  # exactly 2 follow-up messages
 
         app = make_app(project, thread_id)
         with patch.object(Council, "create", return_value=council):
             async with app.run_test(size=(120, 40)) as pilot:
+                app.chat_mode = "round_robin"
                 tdir = thread_dir(project, BRANCH, thread_id)
 
                 # First exchange — seed king + member messages

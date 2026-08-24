@@ -22,7 +22,7 @@ def config_show() -> None:
     """Print the effective config with source annotations (config file vs defaults)."""
     import dataclasses
 
-    from kingdom.config import load_config, load_raw_config
+    from kingdom.config import config_source_path, load_config, load_raw_config
 
     base = require_project_root()
     try:
@@ -34,8 +34,10 @@ def config_show() -> None:
     raw = load_raw_config(base)
 
     verbose_echo(f"base: {base}")
-    config_path = base / ".kd" / "config.json"
+    config_path = config_source_path(base)
     verbose_echo(f"config path: {config_path} ({'exists' if config_path.exists() else 'not found'})")
+    source_status = "config file" if config_path.exists() else "not found; built-in defaults"
+    typer.echo(f"Config source: {config_path} ({source_status})")
 
     def flatten(obj, prefix=""):
         items = []
@@ -184,10 +186,9 @@ def check_config(base: Path) -> tuple[bool, str | None]:
     Returns (True, None) if config is valid or doesn't exist.
     Returns (False, message) if config has errors.
     """
-    from kingdom.config import load_config
-    from kingdom.state import state_root
+    from kingdom.config import config_source_path, load_config
 
-    config_path = state_root(base) / "config.json"
+    config_path = config_source_path(base)
     if not config_path.exists():
         return True, None
 

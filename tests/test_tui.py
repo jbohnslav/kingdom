@@ -2776,11 +2776,11 @@ class TestStatusSlashCommand:
         assert "work" in message
 
 
-class TestSendMessageCleansUpPanels:
-    """Test that send_message removes in-flight panels before mounting new ones."""
+class TestSendMessageQueue:
+    """Test that send_message queues behind an in-flight delivery."""
 
-    def test_send_removes_existing_wait_panels(self, project: Path) -> None:
-        """Sending a second message should clean up WaitingPanels from the first."""
+    def test_queued_send_keeps_existing_wait_panels(self, project: Path) -> None:
+        """A follow-up must not disturb the exchange that is still running."""
         from unittest.mock import MagicMock
 
         from kingdom.tui.app import ChatApp, MessageLog
@@ -2819,14 +2819,16 @@ class TestSendMessageCleansUpPanels:
 
         app_instance.query_one = fake_query_one
         app_instance.run_worker = MagicMock()
+        app_instance.delivery_active = True
 
         app_instance.send_message()
 
-        # remove_member_panels should have been called for "claude"
-        assert "claude" in removed
+        assert removed == []
+        assert len(app_instance.delivery_queue) == 1
+        app_instance.run_worker.assert_not_called()
 
-    def test_no_duplicate_mount_when_panel_exists(self, project: Path) -> None:
-        """WaitingPanel should not be mounted if one already exists (DuplicateIds guard)."""
+    def test_queued_send_does_not_mount_another_waiting_panel(self, project: Path) -> None:
+        """Waiting UI belongs to the active exchange, not queued follow-ups."""
         from unittest.mock import MagicMock
 
         from kingdom.tui.app import ChatApp, MessageLog
@@ -2858,15 +2860,16 @@ class TestSendMessageCleansUpPanels:
 
         app_instance.query_one = fake_query_one
         app_instance.run_worker = MagicMock()
+        app_instance.delivery_active = True
 
         app_instance.send_message()
 
-        # mount is called for the king MessagePanel but should NOT mount any WaitingPanel
         from kingdom.tui.widgets import WaitingPanel
 
         for call in mock_log.mount.call_args_list:
             widget = call[0][0]
-            assert not isinstance(widget, WaitingPanel), "WaitingPanel should not be mounted when one already exists"
+            assert not isinstance(widget, WaitingPanel)
+        app_instance.run_worker.assert_not_called()
 
 
 class TestRemoveMemberPanels:

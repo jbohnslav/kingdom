@@ -641,6 +641,7 @@ def build_review_prompt(
     ticket_body: str = "",
     ticket_path: str = "",
     worklog: str = "",
+    include_worktree: bool = False,
 ) -> str:
     """Build the shared agent-facing review prompt.
 
@@ -687,6 +688,8 @@ def build_review_prompt(
     if base_branch:
         parts.append(f"- `git diff {base_branch}...HEAD` — full diff")
         parts.append(f"- `git log --oneline {base_branch}..HEAD` — commit history")
+        if include_worktree:
+            parts.append("- `git diff HEAD` — staged and unstaged changes")
     else:
         parts.append("- `git diff HEAD~N` or `git log --oneline` — inspect recent changes")
     if ticket_path:

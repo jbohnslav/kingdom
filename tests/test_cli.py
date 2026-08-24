@@ -237,6 +237,9 @@ def test_doctor_json_reports_pinned_model_and_effort(tmp_path) -> None:
 
     assert result.exit_code == 0
     data = json.loads(result.output)
+    assert data["config"]["source"] == str(kd_dir / "config.json")
+    assert data["config"]["council_members"] == [{"name": "claude", "backend": "claude_code"}]
+    assert data["agents"]["claude"]["backend"] == "claude_code"
     assert data["agents"]["claude"]["model"] == "opus"
     assert data["agents"]["claude"]["model_source"] == "configured"
     assert data["agents"]["claude"]["effort"] == "high"
@@ -312,6 +315,8 @@ def test_doctor_valid_config(tmp_path) -> None:
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "config.json valid" in result.output
+        assert str(kd_dir / "config.json") in result.output
+        assert "Council: claude [claude_code], codex [codex]" in result.output
 
 
 def test_doctor_json_invalid_config(tmp_path) -> None:
@@ -384,6 +389,7 @@ def test_config_show_with_overrides(tmp_path) -> None:
     ):
         result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0
+        assert f"Config source: {kd_dir / 'config.json'}" in result.output
         assert "council.timeout" in result.output
         assert "300" in result.output
         assert "config" in result.output  # source annotation for overridden value
