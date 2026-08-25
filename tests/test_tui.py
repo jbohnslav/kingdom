@@ -2780,6 +2780,26 @@ class TestStatusSlashCommand:
 class TestSendMessageQueue:
     """Test that send_message queues behind an in-flight delivery."""
 
+    def test_pending_delivery_progress_roundtrips(self, project: Path) -> None:
+        from kingdom.thread import thread_dir
+        from kingdom.tui.app import QueuedDelivery, load_pending_deliveries, write_pending_deliveries
+
+        tid = "council-progress"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+        delivery = QueuedDelivery(
+            delivery_id="partial-delivery",
+            body="Resume only unfinished members",
+            targets=("claude", "codex"),
+            to="all",
+            completed_targets=("claude",),
+            first_exchange=True,
+        )
+        tdir = thread_dir(project, BRANCH, tid)
+
+        write_pending_deliveries(tdir, deque([delivery]))
+
+        assert list(load_pending_deliveries(tdir)) == [delivery]
+
     def test_persisted_prompt_remains_pending_for_restart_dispatch(self, project: Path) -> None:
         """A persisted King prompt is not proof that its Council round completed."""
         from unittest.mock import MagicMock

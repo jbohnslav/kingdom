@@ -6,7 +6,7 @@ links: []
 created: 2026-08-19T21:46:02Z
 type: epic
 priority: 2
-closed_at: 2026-08-24T20:27:10Z
+closed_at: 2026-08-25T00:53:08Z
 resolution: completed
 closed_context: codex:f1fe48bc0e4e0556
 ---
@@ -64,6 +64,7 @@ and recovery.
 - [2026-08-24 15:52] [codex:f1fe48bc] — Post-closure readiness gate passed: uv run kd status --check reports 7 closed tickets, zero nonterminal tickets, and Readiness: ready.
 - [2026-08-24 16:11] [codex:f1fe48bc] — Release preparation completed for Kingdom 1.0.1. The release notes explicitly preserve this epic's dogfooding purpose and verification covered pre-commit, smoke, focused packaging checks, and the full test suite.
 - [2026-08-24 16:27] [codex:f1fe48bc] — PR 56 Codex review findings resolved in child 6b9d: durable Council dispatch recovery and graceful linked-worktree doctor diagnostics, with focused, full-suite, Textual integration, hook, smoke, and manual CLI verification.
+- [2026-08-24 20:53] [codex:f1fe48bc] — Follow-up PR 56 P1 resolved in reopened child 6b9d: per-member delivery completion survives restart and resumes only unfinished occurrences, including later round-robin rounds. Full and integration verification passed.
 
 ## Lifecycle
 
@@ -72,3 +73,5 @@ and recovery.
 - 2026-08-24T20:11:33Z [codex:f1fe48bc0e4e0556] — closed (completed)
 - 2026-08-24T20:21:28Z [codex:f1fe48bc0e4e0556] — reopened (previous: completed)
 - 2026-08-24T20:27:10Z [codex:f1fe48bc0e4e0556] — closed (completed)
+- 2026-08-25T00:45:30Z [codex:f1fe48bc0e4e0556] — reopened (previous: completed)
+- 2026-08-25T00:53:08Z [codex:f1fe48bc0e4e0556] — closed (completed)
