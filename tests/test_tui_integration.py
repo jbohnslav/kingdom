@@ -503,6 +503,54 @@ class TestSendLifecycle:
         assert len(resumed_council.get_member("claude").prompts) == 0
         assert len(resumed_council.get_member("codex").prompts) == 1
 
+    async def test_restart_reconciles_response_persisted_before_completion(self, project, thread_id) -> None:
+        delivery_id = "response-before-completion"
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+        pending_path.write_text(
+            json.dumps(
+                {
+                    "deliveries": [
+                        {
+                            "id": delivery_id,
+                            "body": "Do not query Claude twice",
+                            "targets": ["claude"],
+                            "to": "claude",
+                            "completed_targets": [],
+                            "first_exchange": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="claude",
+            body="Do not query Claude twice",
+            delivery_id=delivery_id,
+        )
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="claude",
+            to="king",
+            body="Already completed",
+            delivery_id=delivery_id,
+        )
+
+        resumed_council = make_fake_council(["claude"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(pilot, lambda: not pending_path.exists(), timeout=5.0)
+
+        assert len(list_messages(project, BRANCH, thread_id)) == 2
+        assert len(resumed_council.get_member("claude").prompts) == 0
+
     async def test_round_robin_restart_resumes_the_unfinished_occurrence(self, project, thread_id) -> None:
         config_path = project / ".kd" / "config.json"
         config_path.write_text(

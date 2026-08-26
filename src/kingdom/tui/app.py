@@ -875,6 +875,18 @@ class ChatApp(App):
             self.delivery_queue[0] = delivery
             write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
 
+        persisted_targets = Counter(
+            item.from_ for item in prior_messages if item.delivery_id == delivery.delivery_id and item.from_ != "king"
+        )
+        recovered_targets = persisted_targets - Counter(delivery.completed_targets)
+        if recovered_targets:
+            delivery = replace(
+                delivery,
+                completed_targets=(*delivery.completed_targets, *recovered_targets.elements()),
+            )
+            self.delivery_queue[0] = delivery
+            write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
+
         self.active_delivery_id = delivery.delivery_id
         self.completed_delivery_targets = Counter(delivery.completed_targets)
         self.seen_delivery_targets = Counter()
@@ -987,6 +999,7 @@ class ChatApp(App):
                 from_=member.name,
                 to="king",
                 body=body,
+                delivery_id=self.active_delivery_id,
                 **response.thread_metadata(),
             )
             persisted = True
@@ -995,7 +1008,15 @@ class ChatApp(App):
             # Persist the exception as an error message
             logger.exception("Member query failed for %s", member.name)
             error_body = f"*Error: {exc}*"
-            add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=error_body)
+            add_message(
+                self.base,
+                self.branch,
+                self.thread_id,
+                from_=member.name,
+                to="king",
+                body=error_body,
+                delivery_id=self.active_delivery_id,
+            )
             persisted = True
         finally:
             if persisted:

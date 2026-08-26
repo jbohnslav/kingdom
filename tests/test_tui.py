@@ -1042,6 +1042,7 @@ class TestRunQuery:
 
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         list(app_instance.compose())
+        app_instance.active_delivery_id = "delivery-rq1"
 
         # Fake member that returns a successful response
         fake_response = AgentResponse(
@@ -1072,6 +1073,7 @@ class TestRunQuery:
         assert messages[0].model == "claude-opus-4-8"
         assert messages[0].model_source == "observed"
         assert messages[0].cli_version == "claude-cli 2.1.123"
+        assert messages[0].delivery_id == "delivery-rq1"
 
     def test_run_query_preserves_stream_file(self, project: Path) -> None:
         """run_query must NOT delete the stream file — poller drains it."""
