@@ -6,6 +6,13 @@ dedicated tests are removed, and current architecture documentation is corrected
 The legacy council bundle reader remains for a later compatibility pass.
 Locations below describe the audited revision, before those deletions.
 
+**Full follow-up scope:** Epic `1465` covers the remaining six cleanup areas
+through children `79a4`, `80d2`, `aeec`, `dcab`, `8456`, and `67f9`. The King
+explicitly waived preserving compatibility for the 508 old closed tickets.
+Historical-data preservation and cross-repository inventory cautions below are
+audit context, not gates on this authorized cleanup. The follow-up includes
+retiring that compatibility; it does not require deleting historical files.
+
 There is concrete deletion work here. The strongest candidates are abandoned
 features kept alive by their tests, internal compatibility interfaces, and tests
 that assert prose or mocks instead of application behavior. A conservative count
