@@ -1,13 +1,17 @@
 """Tests for configuration system."""
 
 import json
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from kingdom.config import (
+    config_source_path,
     default_config,
     load_config,
+    load_raw_config,
     validate_config,
 )
 
@@ -483,6 +487,100 @@ class TestLoadConfig:
         assert cfg.agents["claude"].model == "opus-4-6"
         assert cfg.council.members == ["claude"]
         assert cfg.council.timeout == 120
+
+    def test_linked_worktree_uses_primary_checkout_config(self, tmp_path: Path) -> None:
+        primary = tmp_path / "primary"
+        linked = tmp_path / "linked"
+        (primary / ".git").mkdir(parents=True)
+        (linked / ".git").parent.mkdir(parents=True)
+        (linked / ".git").write_text("gitdir: ../primary/.git/worktrees/linked\n")
+        (primary / ".kd").mkdir()
+        (linked / ".kd").mkdir()
+
+        data = {
+            "agents": {"cursor": {"backend": "cursor"}},
+            "council": {"members": ["cursor", "claude"]},
+        }
+        (primary / ".kd" / "config.json").write_text(json.dumps(data))
+        worktrees = (
+            f"worktree {primary}\nHEAD abc\nbranch refs/heads/main\n\n"
+            f"worktree {linked}\nHEAD def\nbranch refs/heads/topic\n"
+        )
+
+        with patch(
+            "kingdom.state.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                ["git", "worktree", "list", "--porcelain"],
+                0,
+                stdout=worktrees,
+                stderr="",
+            ),
+        ):
+            primary_cfg = load_config(primary)
+            linked_cfg = load_config(linked)
+            linked_raw = load_raw_config(linked)
+            linked_source = config_source_path(linked)
+
+        assert primary_cfg.council.members == ["cursor", "claude"]
+        assert linked_cfg.council.members == primary_cfg.council.members
+        assert linked_raw == data
+        assert linked_source == primary / ".kd" / "config.json"
+        assert [linked_cfg.agents[name].backend for name in linked_cfg.council.members] == [
+            "cursor",
+            "claude_code",
+        ]
+
+    def test_linked_worktree_fails_if_primary_config_owner_cannot_be_found(self, tmp_path: Path) -> None:
+        linked = tmp_path / "linked"
+        linked.mkdir()
+        (linked / ".git").write_text("gitdir: ../primary/.git/worktrees/linked\n")
+        (linked / ".kd").mkdir()
+
+        unavailable = subprocess.CompletedProcess(
+            ["git", "worktree", "list", "--porcelain"],
+            1,
+            stdout="",
+            stderr="git unavailable",
+        )
+        with (
+            patch("kingdom.state.subprocess.run", return_value=unavailable),
+            pytest.raises(ValueError, match="repository-owner config"),
+        ):
+            load_config(linked)
+
+    def test_explicit_kd_base_keeps_linked_checkout_config(self, tmp_path: Path) -> None:
+        primary = tmp_path / "primary"
+        linked = tmp_path / "linked"
+        (primary / ".git").mkdir(parents=True)
+        linked.mkdir()
+        (linked / ".git").write_text("gitdir: ../primary/.git/worktrees/linked\n")
+        (primary / ".kd").mkdir()
+        (linked / ".kd").mkdir()
+        (primary / ".kd" / "config.json").write_text(json.dumps({"council": {"members": ["claude", "codex"]}}))
+        linked_data = {
+            "agents": {"cursor": {"backend": "cursor"}},
+            "council": {"members": ["cursor", "claude"]},
+        }
+        (linked / ".kd" / "config.json").write_text(json.dumps(linked_data))
+        worktrees = f"worktree {primary}\nHEAD abc\n\nworktree {linked}\nHEAD def\n"
+
+        with (
+            patch.dict("os.environ", {"KD_BASE": str(linked)}),
+            patch(
+                "kingdom.state.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    ["git", "worktree", "list", "--porcelain"],
+                    0,
+                    stdout=worktrees,
+                    stderr="",
+                ),
+            ),
+        ):
+            cfg = load_config(linked)
+            source = config_source_path(linked)
+
+        assert source == linked / ".kd" / "config.json"
+        assert cfg.council.members == ["cursor", "claude"]
 
     def test_invalid_json_raises(self, tmp_path: Path) -> None:
         kd = tmp_path / ".kd"

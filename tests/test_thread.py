@@ -164,6 +164,21 @@ class TestAddMessage:
         assert "src/main.py" in content
         assert "Check this out" in content
 
+    def test_delivery_id_roundtrips(self, project: Path) -> None:
+        create_thread(project, BRANCH, "test", ["king", "claude"], "direct")
+        add_message(
+            project,
+            BRANCH,
+            "test",
+            from_="king",
+            to="claude",
+            body="Queued message",
+            delivery_id="delivery-123",
+        )
+
+        [message] = list_messages(project, BRANCH, "test")
+        assert message.delivery_id == "delivery-123"
+
     def test_missing_thread_raises(self, project: Path) -> None:
         with pytest.raises(FileNotFoundError):
             add_message(project, BRANCH, "nonexistent", from_="king", to="all", body="Hi")
