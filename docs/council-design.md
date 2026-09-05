@@ -101,9 +101,9 @@ Abstract base class handling common logic:
 class CouncilMember(ABC):
     """Base class for council agents."""
 
-    name: str                       # e.g., "claude", "codex", "agent"
-    session_id: str | None = None   # for --continue/--resume
-    log_path: Path | None = None    # for optional tmux viewing
+    name: str  # e.g., "claude", "codex", "agent"
+    session_id: str | None = None  # for --continue/--resume
+    log_path: Path | None = None  # for optional tmux viewing
 
     @abstractmethod
     def build_command(self, prompt: str) -> list[str]:
@@ -122,9 +122,7 @@ class CouncilMember(ABC):
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            text, new_session, error = self.parse_response(
-                result.stdout, result.stderr, result.returncode
-            )
+            text, new_session, error = self.parse_response(result.stdout, result.stderr, result.returncode)
         except subprocess.TimeoutExpired:
             text, new_session, error = "", None, f"Timeout after {timeout}s"
 
@@ -249,10 +247,7 @@ class Council:
     def query(self, prompt: str) -> dict[str, AgentResponse]:
         """Query all members in parallel."""
         with ThreadPoolExecutor(max_workers=len(self.members)) as pool:
-            futures = {
-                pool.submit(m.query, prompt, self.timeout): m.name
-                for m in self.members
-            }
+            futures = {pool.submit(m.query, prompt, self.timeout): m.name for m in self.members}
             return {futures[f]: f.result() for f in as_completed(futures)}
 
     def reset_sessions(self) -> None:
