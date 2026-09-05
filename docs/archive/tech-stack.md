@@ -40,15 +40,11 @@ That's it. Everything else is `subprocess.run()`:
 
 ```python
 # Structured output when available
-result = subprocess.run(
-    ["git", "status", "--porcelain"],
-    capture_output=True, text=True
-)
+result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
 
 # tmux list parsing
 result = subprocess.run(
-    ["tmux", "-L", "kd-kingdom", "list-windows", "-F", "#{window_name}"],
-    capture_output=True, text=True
+    ["tmux", "-L", "kd-kingdom", "list-windows", "-F", "#{window_name}"], capture_output=True, text=True
 )
 windows = result.stdout.strip().split("\n")
 ```
