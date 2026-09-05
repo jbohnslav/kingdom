@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import deque
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1041,6 +1042,7 @@ class TestRunQuery:
 
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         list(app_instance.compose())
+        app_instance.active_delivery_id = "delivery-rq1"
 
         # Fake member that returns a successful response
         fake_response = AgentResponse(
@@ -1071,6 +1073,7 @@ class TestRunQuery:
         assert messages[0].model == "claude-opus-4-8"
         assert messages[0].model_source == "observed"
         assert messages[0].cli_version == "claude-cli 2.1.123"
+        assert messages[0].delivery_id == "delivery-rq1"
 
     def test_run_query_preserves_stream_file(self, project: Path) -> None:
         """run_query must NOT delete the stream file — poller drains it."""
@@ -2776,11 +2779,68 @@ class TestStatusSlashCommand:
         assert "work" in message
 
 
-class TestSendMessageCleansUpPanels:
-    """Test that send_message removes in-flight panels before mounting new ones."""
+class TestSendMessageQueue:
+    """Test that send_message queues behind an in-flight delivery."""
 
-    def test_send_removes_existing_wait_panels(self, project: Path) -> None:
-        """Sending a second message should clean up WaitingPanels from the first."""
+    def test_pending_delivery_progress_roundtrips(self, project: Path) -> None:
+        from kingdom.thread import thread_dir
+        from kingdom.tui.app import QueuedDelivery, load_pending_deliveries, write_pending_deliveries
+
+        tid = "council-progress"
+        create_thread(project, BRANCH, tid, ["king", "claude", "codex"], "council")
+        delivery = QueuedDelivery(
+            delivery_id="partial-delivery",
+            body="Resume only unfinished members",
+            targets=("claude", "codex"),
+            to="all",
+            completed_targets=("claude",),
+            first_exchange=True,
+            chat_mode="round_robin",
+            auto_rounds=2,
+        )
+        tdir = thread_dir(project, BRANCH, tid)
+
+        write_pending_deliveries(tdir, deque([delivery]))
+
+        assert list(load_pending_deliveries(tdir)) == [delivery]
+
+    def test_persisted_prompt_remains_pending_for_restart_dispatch(self, project: Path) -> None:
+        """A persisted King prompt is not proof that its Council round completed."""
+        from unittest.mock import MagicMock
+
+        from kingdom.thread import add_message, thread_dir
+        from kingdom.tui.app import ChatApp, QueuedDelivery, write_pending_deliveries
+
+        tid = "council-restart"
+        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
+        delivery = QueuedDelivery(
+            delivery_id="delivery-before-crash",
+            body="Persisted before crash",
+            targets=("claude",),
+            to="claude",
+        )
+        tdir = thread_dir(project, BRANCH, tid)
+        write_pending_deliveries(tdir, deque([delivery]))
+        add_message(
+            project,
+            BRANCH,
+            tid,
+            from_="king",
+            to="claude",
+            body=delivery.body,
+            delivery_id=delivery.delivery_id,
+        )
+
+        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
+        app_instance.render_king_message = MagicMock()
+
+        app_instance.restore_pending_deliveries(tdir)
+
+        assert list(app_instance.delivery_queue) == [delivery]
+        app_instance.render_king_message.assert_not_called()
+
+    def test_queued_send_keeps_existing_wait_panels(self, project: Path) -> None:
+        """A follow-up must not disturb the exchange that is still running."""
         from unittest.mock import MagicMock
 
         from kingdom.tui.app import ChatApp, MessageLog
@@ -2819,14 +2879,16 @@ class TestSendMessageCleansUpPanels:
 
         app_instance.query_one = fake_query_one
         app_instance.run_worker = MagicMock()
+        app_instance.delivery_active = True
 
         app_instance.send_message()
 
-        # remove_member_panels should have been called for "claude"
-        assert "claude" in removed
+        assert removed == []
+        assert len(app_instance.delivery_queue) == 1
+        app_instance.run_worker.assert_not_called()
 
-    def test_no_duplicate_mount_when_panel_exists(self, project: Path) -> None:
-        """WaitingPanel should not be mounted if one already exists (DuplicateIds guard)."""
+    def test_queued_send_does_not_mount_another_waiting_panel(self, project: Path) -> None:
+        """Waiting UI belongs to the active exchange, not queued follow-ups."""
         from unittest.mock import MagicMock
 
         from kingdom.tui.app import ChatApp, MessageLog
@@ -2858,15 +2920,16 @@ class TestSendMessageCleansUpPanels:
 
         app_instance.query_one = fake_query_one
         app_instance.run_worker = MagicMock()
+        app_instance.delivery_active = True
 
         app_instance.send_message()
 
-        # mount is called for the king MessagePanel but should NOT mount any WaitingPanel
         from kingdom.tui.widgets import WaitingPanel
 
         for call in mock_log.mount.call_args_list:
             widget = call[0][0]
-            assert not isinstance(widget, WaitingPanel), "WaitingPanel should not be mounted when one already exists"
+            assert not isinstance(widget, WaitingPanel)
+        app_instance.run_worker.assert_not_called()
 
 
 class TestRemoveMemberPanels:
