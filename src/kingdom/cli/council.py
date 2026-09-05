@@ -502,7 +502,11 @@ def council_review(
 ) -> None:
     """Generate a changed-files summary and ask the council to review it."""
     base = require_project_root()
-    feature = resolve_current_run(base)  # Validate active session
+    try:
+        feature = resolve_current_run(base)  # Validate active session
+    except RuntimeError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
 
     if base_branch is None:
         base_branch = detect_base_branch()

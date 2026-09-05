@@ -2795,6 +2795,8 @@ class TestSendMessageQueue:
             to="all",
             completed_targets=("claude",),
             first_exchange=True,
+            chat_mode="round_robin",
+            auto_rounds=2,
         )
         tdir = thread_dir(project, BRANCH, tid)
 

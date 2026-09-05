@@ -590,9 +590,9 @@ def doctor(
     review_members: list[dict[str, str]] = []
     try:
         config_path = config_source_path(base)
-        config_ok, config_error = check_config(base)
+        config_ok, config_error = check_config(base, config_path=config_path)
         if config_ok:
-            cfg = load_config(base)
+            cfg = load_config(base, config_path=config_path)
             council_members = [{"name": name, "backend": cfg.agents[name].backend} for name in cfg.council.members]
             review_members = [
                 {"name": name, "backend": cfg.agents[name].backend} for name in cfg.council.review_members
@@ -633,7 +633,7 @@ def doctor(
     cli_issues: list[dict[str, str]] = []
 
     if config_ok:
-        doctor_checks = get_doctor_checks(base)
+        doctor_checks = get_doctor_checks(base, config_path=config_path)
         for check in doctor_checks:
             runtime = check_agent_runtime(check["agent"])
             installed = runtime.status != "missing"

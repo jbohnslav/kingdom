@@ -171,3 +171,13 @@ def test_provider_inherited_model_is_not_pinned_by_doctor(backend: str) -> None:
 
     assert (status, error) == ("unchecked", None)
     run.assert_not_called()
+
+
+def test_pinned_model_without_catalog_discovery_is_quietly_unchecked() -> None:
+    agent = resolve_agent("claude", AgentDef(backend="claude_code", model="claude-opus-4-1"))
+
+    with patch("kingdom.cli.config.subprocess.run") as run:
+        status, error = check_agent_model(agent)
+
+    assert (status, error) == ("unchecked", None)
+    run.assert_not_called()

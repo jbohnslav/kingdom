@@ -58,15 +58,15 @@ def config_show() -> None:
 
     base = require_project_root()
     try:
-        cfg = load_config(base)
+        config_path = config_source_path(base)
+        cfg = load_config(base, config_path=config_path)
     except ValueError as e:
         styled_echo(f"Error: invalid config — {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from None
 
-    raw = load_raw_config(base)
+    raw = load_raw_config(base, config_path=config_path)
 
     verbose_echo(f"base: {base}")
-    config_path = config_source_path(base)
     verbose_echo(f"config path: {config_path} ({'exists' if config_path.exists() else 'not found'})")
     source_status = "config file" if config_path.exists() else "not found; built-in defaults"
     typer.echo(f"Config source: {config_path} ({source_status})")
@@ -263,7 +263,7 @@ def check_agent_model(agent: AgentConfig) -> tuple[str, str | None]:
 
     catalog_command = CATALOG_COMMANDS.get(agent.backend)
     if catalog_command is None:
-        return "unchecked", "Provider CLI does not expose model catalog discovery"
+        return "unchecked", None
 
     executable = shlex.split(agent.cli)[0]
     env = clean_agent_env(role="doctor", agent_name=agent.name)
@@ -309,12 +309,12 @@ def check_agent_model(agent: AgentConfig) -> tuple[str, str | None]:
     return "available", None
 
 
-def get_doctor_checks(base: Path) -> list[dict[str, object]]:
+def get_doctor_checks(base: Path, *, config_path: Path | None = None) -> list[dict[str, object]]:
     """Build doctor checks from agent configs."""
     from kingdom.agent import resolve_all_agents
     from kingdom.config import load_config
 
-    cfg = load_config(base)
+    cfg = load_config(base, config_path=config_path)
     agents = resolve_all_agents(cfg.agents)
     active_names = {
         *cfg.council.members,
@@ -343,7 +343,7 @@ def get_doctor_checks(base: Path) -> list[dict[str, object]]:
     return checks
 
 
-def check_config(base: Path) -> tuple[bool, str | None]:
+def check_config(base: Path, *, config_path: Path | None = None) -> tuple[bool, str | None]:
     """Validate .kd/config.json and return (ok, error_message).
 
     Returns (True, None) if config is valid or doesn't exist.
@@ -351,12 +351,12 @@ def check_config(base: Path) -> tuple[bool, str | None]:
     """
     from kingdom.config import config_source_path, load_config
 
-    config_path = config_source_path(base)
+    config_path = config_path or config_source_path(base)
     if not config_path.exists():
         return True, None
 
     try:
-        load_config(base)
+        load_config(base, config_path=config_path)
         return True, None
     except ValueError as e:
         return False, str(e)

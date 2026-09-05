@@ -62,6 +62,8 @@ class QueuedDelivery:
     to: str
     completed_targets: tuple[str, ...] = ()
     first_exchange: bool | None = None
+    chat_mode: str | None = None
+    auto_rounds: int | None = None
 
 
 def load_pending_deliveries(tdir: Path) -> deque[QueuedDelivery]:
@@ -78,6 +80,8 @@ def load_pending_deliveries(tdir: Path) -> deque[QueuedDelivery]:
             to=str(item["to"]),
             completed_targets=tuple(str(target) for target in item.get("completed_targets", [])),
             first_exchange=item.get("first_exchange"),
+            chat_mode=item.get("chat_mode"),
+            auto_rounds=item.get("auto_rounds"),
         )
         for item in data.get("deliveries", [])
     )
@@ -100,6 +104,8 @@ def write_pending_deliveries(tdir: Path, deliveries: deque[QueuedDelivery]) -> N
                     "to": delivery.to,
                     "completed_targets": list(delivery.completed_targets),
                     "first_exchange": delivery.first_exchange,
+                    "chat_mode": delivery.chat_mode,
+                    "auto_rounds": delivery.auto_rounds,
                 }
                 for delivery in deliveries
             ]
@@ -802,6 +808,8 @@ class ChatApp(App):
             body=text,
             targets=tuple(targets),
             to=to,
+            chat_mode=self.chat_mode,
+            auto_rounds=self.auto_rounds,
         )
         queued = self.delivery_active
         self.delivery_queue.append(delivery)
@@ -875,6 +883,15 @@ class ChatApp(App):
             self.delivery_queue[0] = delivery
             write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
 
+        if delivery.chat_mode is None or delivery.auto_rounds is None:
+            delivery = replace(
+                delivery,
+                chat_mode=delivery.chat_mode or self.chat_mode,
+                auto_rounds=self.auto_rounds if delivery.auto_rounds is None else delivery.auto_rounds,
+            )
+            self.delivery_queue[0] = delivery
+            write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
+
         persisted_targets = Counter(
             item.from_ for item in prior_messages if item.delivery_id == delivery.delivery_id and item.from_ != "king"
         )
@@ -914,12 +931,21 @@ class ChatApp(App):
                 await self.await_remove_member_panels(log, name)
 
         if delivery.to == "all":
-            sequential = self.chat_mode in ("round_robin", "manual")
+            mode = delivery.chat_mode or self.chat_mode
+            auto_rounds = self.auto_rounds if delivery.auto_rounds is None else delivery.auto_rounds
+            sequential = mode in ("round_robin", "manual")
             panel_targets = targets[:1] if sequential else targets
             for name in panel_targets:
                 if self.delivery_target_pending(name) and not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
-            await self.run_chat_round(targets, generation, tdir, is_first_exchange)
+            await self.run_chat_round(
+                targets,
+                generation,
+                tdir,
+                is_first_exchange,
+                mode=mode,
+                auto_rounds=auto_rounds,
+            )
             return
 
         name = targets[0]
@@ -1042,7 +1068,15 @@ class ChatApp(App):
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         return stream_path.parent / f".debug-stream-{member_name}-{timestamp}.jsonl"
 
-    async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
+    async def run_chat_round(
+        self,
+        targets: list[str],
+        generation: int,
+        tdir: Path,
+        is_first_exchange: bool,
+        mode: str | None = None,
+        auto_rounds: int | None = None,
+    ) -> None:
         """Coordinate a chat round after the king sends a message.
 
         Dispatches to mode-specific logic:
@@ -1054,19 +1088,22 @@ class ChatApp(App):
         if not self.council:
             return
 
-        mode = self.chat_mode
+        mode = mode or self.chat_mode
+        auto_rounds = self.auto_rounds if auto_rounds is None else auto_rounds
 
         if mode == "manual":
             await self.run_mode_manual(targets, generation, tdir)
         elif mode == "broadcast":
-            await self.run_mode_broadcast(targets, generation, tdir, is_first_exchange)
+            await self.run_mode_broadcast(targets, generation, tdir, is_first_exchange, auto_rounds)
         elif mode == "round_robin":
-            await self.run_mode_round_robin(targets, generation, tdir)
+            await self.run_mode_round_robin(targets, generation, tdir, auto_rounds)
         else:
             # natural (default)
-            await self.run_mode_natural(targets, generation, tdir, is_first_exchange)
+            await self.run_mode_natural(targets, generation, tdir, is_first_exchange, auto_rounds)
 
-    async def run_mode_natural(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
+    async def run_mode_natural(
+        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool, auto_rounds: int
+    ) -> None:
         """Natural mode: parallel broadcast first turn, then shuffled round-robin."""
         if is_first_exchange:
             # First exchange: parallel broadcast, no auto-turns
@@ -1074,9 +1111,9 @@ class ChatApp(App):
             return
 
         # Follow-up: shuffled sequential only — each member responds once
-        await self.sequential_auto_turns(targets, generation, tdir, shuffle=True)
+        await self.sequential_auto_turns(targets, generation, tdir, shuffle=True, auto_rounds=auto_rounds)
 
-    async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
+    async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path, auto_rounds: int) -> None:
         """Round-robin mode: no initial broadcast, fixed-order sequential turns."""
         # First turn: sequential through targets, mounting WaitingPanel per-agent
         for name in targets:
@@ -1096,7 +1133,7 @@ class ChatApp(App):
             await self.run_query(member, stream_path, generation=generation)
 
         # Auto-turns: fixed-order sequential
-        await self.sequential_auto_turns(targets, generation, tdir, shuffle=False)
+        await self.sequential_auto_turns(targets, generation, tdir, shuffle=False, auto_rounds=auto_rounds)
 
     async def run_mode_manual(self, targets: list[str], generation: int, tdir: Path) -> None:
         """Manual mode: only query @mentioned targets, no auto-turns."""
@@ -1118,7 +1155,7 @@ class ChatApp(App):
             await self.run_query(member, stream_path, generation=generation)
 
     async def run_mode_broadcast(
-        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool
+        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool, auto_rounds: int
     ) -> None:
         """Broadcast mode: parallel to all each turn, auto_rounds additional rounds."""
         # First turn: parallel (WaitingPanels mounted by send_message)
@@ -1131,9 +1168,9 @@ class ChatApp(App):
             return
 
         # Additional broadcast rounds
-        if self.auto_rounds <= 0:
+        if auto_rounds <= 0:
             return
-        for _round in range(self.auto_rounds):
+        for _round in range(auto_rounds):
             if self.interrupted or self.generation != generation:
                 return
             log = self.query_one("#message-log", MessageLog)
@@ -1167,15 +1204,16 @@ class ChatApp(App):
         generation: int,
         tdir: Path,
         shuffle: bool,
+        auto_rounds: int,
     ) -> None:
         """Run sequential auto-turn rounds through eligible members.
 
         After each response, parses @mentions and bumps mentioned members
         to the front of the remaining queue for the current round.
         """
-        if self.auto_rounds <= 0:
+        if auto_rounds <= 0:
             return
-        for _round in range(self.auto_rounds):
+        for _round in range(auto_rounds):
             active = targets.copy()
             if shuffle:
                 import random

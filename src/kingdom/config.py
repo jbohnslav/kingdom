@@ -522,9 +522,9 @@ def config_source_path(base: Path) -> Path:
     return state_root(owner) / "config.json"
 
 
-def load_raw_config(base: Path) -> dict:
+def load_raw_config(base: Path, *, config_path: Path | None = None) -> dict:
     """Return the raw dict from .kd/config.json, or {} if absent/empty."""
-    config_path = config_source_path(base)
+    config_path = config_path or config_source_path(base)
     if not config_path.exists():
         return {}
     text = config_path.read_text(encoding="utf-8").strip()
@@ -534,7 +534,7 @@ def load_raw_config(base: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def load_config(base: Path) -> KingdomConfig:
+def load_config(base: Path, *, config_path: Path | None = None) -> KingdomConfig:
     """Load configuration from .kd/config.json, falling back to defaults.
 
     Returns default_config() if the file doesn't exist or is empty.
@@ -543,7 +543,7 @@ def load_config(base: Path) -> KingdomConfig:
         ValueError: If the file exists but contains invalid JSON or fails
             validation.
     """
-    config_path = config_source_path(base)
+    config_path = config_path or config_source_path(base)
     if not config_path.exists():
         return default_config()
 

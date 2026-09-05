@@ -643,6 +643,69 @@ class TestSendLifecycle:
         assert resumed_council.get_member("claude").prompts
         assert resumed_council.get_member("codex").prompts == []
 
+    @pytest.mark.parametrize(
+        ("saved_mode", "saved_rounds", "live_mode", "live_rounds", "expected_calls"),
+        [
+            ("round_robin", 0, "broadcast", 2, 1),
+            ("broadcast", 1, "round_robin", 0, 2),
+        ],
+    )
+    async def test_restart_preserves_delivery_mode_and_auto_rounds(
+        self,
+        project,
+        thread_id,
+        saved_mode,
+        saved_rounds,
+        live_mode,
+        live_rounds,
+        expected_calls,
+    ) -> None:
+        """A queued delivery resumes with the schedule selected at submission."""
+        config_path = project / ".kd" / "config.json"
+        config_path.write_text(
+            json.dumps({"council": {"chat": {"mode": live_mode, "auto_rounds": live_rounds}}}),
+            encoding="utf-8",
+        )
+        delivery_id = f"schedule-{saved_mode}-{saved_rounds}"
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+        pending_path.write_text(
+            json.dumps(
+                {
+                    "deliveries": [
+                        {
+                            "id": delivery_id,
+                            "body": "Resume the original schedule",
+                            "targets": ["claude", "codex"],
+                            "to": "all",
+                            "completed_targets": [],
+                            "first_exchange": False,
+                            "chat_mode": saved_mode,
+                            "auto_rounds": saved_rounds,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="all",
+            body="Resume the original schedule",
+            delivery_id=delivery_id,
+        )
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(pilot, lambda: not pending_path.exists(), timeout=5.0)
+
+        assert len(resumed_council.get_member("claude").prompts) == expected_calls
+        assert len(resumed_council.get_member("codex").prompts) == expected_calls
+
 
 # ---------------------------------------------------------------------------
 # Scenario 4: Stream lifecycle — waiting → streaming → finalized

@@ -1262,6 +1262,18 @@ def init_git_repo():
 
 
 class TestCouncilReview:
+    def test_review_without_active_session_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+
+            result = runner.invoke(council_app, ["review", "--base", "master"])
+
+            assert result.exit_code == 1
+            assert "No active session" in result.output
+            assert "kd start <feature>" in result.output
+            assert "Traceback" not in result.output
+
     def test_review_untracked_only_exits_with_recovery(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()

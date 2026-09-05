@@ -343,6 +343,22 @@ def test_doctor_no_config_shows_defaults(tmp_path) -> None:
         assert "using defaults" in result.output
 
 
+def test_doctor_resolves_config_source_once(tmp_path: Path) -> None:
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config_path = kd_dir / "config.json"
+
+    with (
+        patch("kingdom.cli.require_project_root", return_value=tmp_path),
+        patch("kingdom.config.config_source_path", return_value=config_path) as source_path,
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
+    ):
+        result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    source_path.assert_called_once_with(tmp_path)
+
+
 def test_doctor_valid_config(tmp_path) -> None:
     """Test doctor shows config valid when config exists and is valid."""
     kd_dir = tmp_path / ".kd"
@@ -417,6 +433,21 @@ def test_config_show_defaults(tmp_path) -> None:
         # Spot-check a few known defaults
         assert any("peasant.agent" in ln and "claude" in ln for ln in lines)
         assert any("council.timeout" in ln and "600" in ln for ln in lines)
+
+
+def test_config_show_resolves_config_source_once(tmp_path: Path) -> None:
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config_path = kd_dir / "config.json"
+
+    with (
+        patch("kingdom.cli.config.require_project_root", return_value=tmp_path),
+        patch("kingdom.config.config_source_path", return_value=config_path) as source_path,
+    ):
+        result = runner.invoke(app, ["config", "show"])
+
+    assert result.exit_code == 0, result.output
+    source_path.assert_called_once_with(tmp_path)
 
 
 def test_config_show_with_overrides(tmp_path) -> None:
