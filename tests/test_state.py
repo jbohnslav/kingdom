@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 import pytest
@@ -15,15 +18,28 @@ from kingdom.state import (
     branch_root,
     branches_root,
     check_no_legacy_runs,
+    clear_terminal_ticket_contexts,
     ensure_base_layout,
     ensure_branch_layout,
+    execution_context_is_stale,
+    execution_context_path,
     find_project_root,
+    flock,
+    list_execution_contexts,
     normalize_branch_name,
     parse_worktree_list,
+    prune_stale_execution_contexts,
+    read_execution_ticket_context,
+    read_terminal_ticket_context,
+    record_execution_ticket_context,
+    record_terminal_ticket_context,
     resolve_current_run,
+    resolve_execution_context,
     set_current_run,
     state_root,
     terminal_context_identity,
+    terminal_context_path,
+    write_json,
 )
 
 
@@ -168,6 +184,269 @@ class TestTerminalContextIdentity:
         assert pane_two == "TMUX_PANE:%2"
 
 
+class TestClearTerminalTicketContexts:
+    def test_clears_every_matching_legacy_binding(self, tmp_path: Path) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            record_terminal_ticket_context(tmp_path, "target", feature="main", session_id="one")
+            record_terminal_ticket_context(tmp_path, "target", feature="main", session_id="two")
+            record_terminal_ticket_context(tmp_path, "other", feature="main", session_id="three")
+
+            assert clear_terminal_ticket_contexts(tmp_path, "target") == 2
+            assert read_terminal_ticket_context(tmp_path, session_id="one") is None
+            assert read_terminal_ticket_context(tmp_path, session_id="two") is None
+            assert read_terminal_ticket_context(tmp_path, session_id="three")["ticket_id"] == "other"
+
+    def test_record_waits_for_the_terminal_context_mutation_lock(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
+            path = terminal_context_path(tmp_path, session_id="shared-terminal")
+            assert path is not None
+            lock_path = path.parent / f".{path.name}.lock"
+            started = Event()
+            finished = Event()
+
+            def record() -> None:
+                started.set()
+                record_terminal_ticket_context(
+                    tmp_path,
+                    "new-ticket",
+                    feature="feature/context",
+                    session_id="shared-terminal",
+                )
+                finished.set()
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                with flock(lock_path):
+                    future = pool.submit(record)
+                    assert started.wait(timeout=2)
+                    assert not finished.wait(timeout=0.2)
+                future.result(timeout=2)
+
+            assert read_terminal_ticket_context(tmp_path, session_id="shared-terminal")["ticket_id"] == "new-ticket"
+
+
+class TestExecutionContext:
+    def test_explicit_context_takes_precedence(self) -> None:
+        env = {
+            "KD_CONTEXT": "explicit-session",
+            "CODEX_THREAD_ID": "codex-thread",
+            "TERM_SESSION_ID": "terminal-session",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            context = resolve_execution_context(host="codex", session_id="hook-session")
+
+        assert context is not None
+        assert context.host == "codex"
+        assert context.session_id == "explicit-session"
+        assert context.source == "KD_CONTEXT"
+        assert context.context_id.startswith("codex:")
+
+    def test_hook_session_takes_precedence_over_codex_and_terminal(self) -> None:
+        env = {"CODEX_THREAD_ID": "codex-thread", "TERM_SESSION_ID": "terminal-session"}
+        with patch.dict(os.environ, env, clear=True):
+            context = resolve_execution_context(host="claude", session_id="hook-session")
+
+        assert context is not None
+        assert context.host == "claude"
+        assert context.session_id == "hook-session"
+        assert context.source == "hook"
+
+    def test_codex_thread_precedes_terminal_fallback(self) -> None:
+        env = {"CODEX_THREAD_ID": "codex-thread", "TERM_SESSION_ID": "terminal-session"}
+        with patch.dict(os.environ, env, clear=True):
+            context = resolve_execution_context()
+
+        assert context is not None
+        assert context.host == "codex"
+        assert context.session_id == "codex-thread"
+        assert context.source == "CODEX_THREAD_ID"
+
+    def test_terminal_identity_is_the_final_fallback(self) -> None:
+        with patch.dict(os.environ, {"TMUX_PANE": "%7"}, clear=True):
+            context = resolve_execution_context()
+
+        assert context is not None
+        assert context.host == "terminal"
+        assert context.session_id == "TMUX_PANE:%7"
+        assert context.source == "TMUX_PANE"
+
+    def test_missing_identity_returns_none(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            assert resolve_execution_context() is None
+
+    def test_rejects_prompt_like_explicit_context(self) -> None:
+        with (
+            patch.dict(os.environ, {"KD_CONTEXT": "first line\nsecond line"}, clear=True),
+            pytest.raises(ValueError, match="single-line identifier"),
+        ):
+            resolve_execution_context()
+
+    def test_records_atomic_human_readable_ticket_binding(self, tmp_path: Path) -> None:
+        ensure_base_layout(tmp_path)
+        now = datetime(2026, 8, 2, 15, 30, tzinfo=UTC)
+        with patch.dict(os.environ, {"CODEX_THREAD_ID": "thread-123"}, clear=True):
+            context = resolve_execution_context(cwd=tmp_path, now=now)
+
+        assert context is not None
+        record_execution_ticket_context(
+            tmp_path,
+            context,
+            "abcd",
+            feature="feature/context",
+            location="branch:feature-context",
+        )
+
+        path = execution_context_path(tmp_path, context)
+        assert path.name.startswith("codex-")
+        assert not list(path.parent.glob("*.tmp"))
+        assert read_execution_ticket_context(tmp_path, context) == {
+            "active": True,
+            "agent_type": None,
+            "context_id": context.context_id,
+            "cwd": str(tmp_path),
+            "feature": "feature-context",
+            "host": "codex",
+            "last_seen": "2026-08-02T15:30:00+00:00",
+            "location": "branch:feature-context",
+            "parent_agent_id": None,
+            "role": "agent",
+            "schema_version": 1,
+            "session_id": "thread-123",
+            "source": "CODEX_THREAD_ID",
+            "ticket_id": "abcd",
+        }
+
+    def test_context_bindings_are_isolated(self, tmp_path: Path) -> None:
+        ensure_base_layout(tmp_path)
+        with patch.dict(os.environ, {"KD_CONTEXT": "first"}, clear=True):
+            first = resolve_execution_context(host="codex", cwd=tmp_path)
+        with patch.dict(os.environ, {"KD_CONTEXT": "second"}, clear=True):
+            second = resolve_execution_context(host="codex", cwd=tmp_path)
+
+        assert first is not None
+        assert second is not None
+        record_execution_ticket_context(tmp_path, first, "aaaa", feature="feature/context")
+        record_execution_ticket_context(tmp_path, second, "bbbb", feature="feature/context")
+
+        assert read_execution_ticket_context(tmp_path, first)["ticket_id"] == "aaaa"
+        assert read_execution_ticket_context(tmp_path, second)["ticket_id"] == "bbbb"
+
+    def test_record_waits_for_the_context_mutation_lock(self, tmp_path: Path) -> None:
+        ensure_base_layout(tmp_path)
+        with patch.dict(os.environ, {"KD_CONTEXT": "shared"}, clear=True):
+            context = resolve_execution_context(host="codex", cwd=tmp_path)
+        assert context is not None
+        path = execution_context_path(tmp_path, context)
+        lock_path = path.parent / f".{path.name}.lock"
+        started = Event()
+        finished = Event()
+
+        def record() -> None:
+            started.set()
+            record_execution_ticket_context(tmp_path, context, "new-ticket", feature="feature/context")
+            finished.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with flock(lock_path):
+                future = pool.submit(record)
+                assert started.wait(timeout=2)
+                assert not finished.wait(timeout=0.2)
+            future.result(timeout=2)
+
+        assert read_execution_ticket_context(tmp_path, context)["ticket_id"] == "new-ticket"
+
+    def test_prune_preserves_a_fresh_terminal_binding_for_the_same_ticket(self, tmp_path: Path) -> None:
+        stale_time = datetime(2026, 1, 1, tzinfo=UTC)
+        with patch.dict(os.environ, {"KD_CONTEXT": "stale-context"}, clear=True):
+            context = resolve_execution_context(host="codex", cwd=tmp_path, now=stale_time)
+        assert context is not None
+        record_execution_ticket_context(tmp_path, context, "shared", feature="feature/context")
+        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
+            record_terminal_ticket_context(tmp_path, "shared", feature="feature/context", session_id="live-terminal")
+
+        removed = prune_stale_execution_contexts(
+            tmp_path,
+            feature="feature/context",
+            stale_after=timedelta(hours=1),
+            now=datetime.now(UTC),
+        )
+
+        assert removed == [context.context_id]
+        assert read_terminal_ticket_context(tmp_path, session_id="live-terminal")["ticket_id"] == "shared"
+        context_lock = execution_context_path(tmp_path, context).with_name(
+            f".{execution_context_path(tmp_path, context).name}.lock"
+        )
+        assert context_lock.exists()
+
+    def test_prune_rechecks_a_stale_context_after_acquiring_its_lock(self, tmp_path: Path) -> None:
+        stale_time = datetime(2026, 1, 1, tzinfo=UTC)
+        fresh_time = datetime(2026, 1, 3, tzinfo=UTC)
+        with patch.dict(os.environ, {"KD_CONTEXT": "refreshed-context"}, clear=True):
+            stale_context = resolve_execution_context(host="codex", cwd=tmp_path, now=stale_time)
+            fresh_context = resolve_execution_context(host="codex", cwd=tmp_path, now=fresh_time)
+        assert stale_context is not None
+        assert fresh_context is not None
+        record_execution_ticket_context(tmp_path, stale_context, "shared", feature="feature/context")
+        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
+            record_terminal_ticket_context(tmp_path, "shared", feature="feature/context", session_id="live-terminal")
+            terminal_path = terminal_context_path(tmp_path, session_id="live-terminal")
+        assert terminal_path is not None
+        write_json(
+            terminal_path,
+            {
+                "ticket_id": "shared",
+                "feature": "feature-context",
+                "location": "branch:feature-context",
+                "updated_at": stale_time.isoformat(),
+            },
+        )
+
+        stale_snapshot = list_execution_contexts(
+            tmp_path,
+            feature="feature/context",
+            stale_after=timedelta(hours=1),
+            now=fresh_time,
+        )
+
+        def snapshot_then_refresh(*args, **kwargs):
+            record_execution_ticket_context(tmp_path, fresh_context, "shared", feature="feature/context")
+            return stale_snapshot
+
+        with patch("kingdom.state.list_execution_contexts", side_effect=snapshot_then_refresh):
+            removed = prune_stale_execution_contexts(
+                tmp_path,
+                feature="feature/context",
+                stale_after=timedelta(hours=1),
+                now=fresh_time,
+            )
+
+        assert removed == []
+        assert read_execution_ticket_context(tmp_path, fresh_context)["last_seen"] == fresh_time.isoformat()
+        assert read_terminal_ticket_context(tmp_path, session_id="live-terminal")["ticket_id"] == "shared"
+
+    def test_stale_context_uses_last_seen(self) -> None:
+        last_seen = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+        with patch.dict(os.environ, {"KD_CONTEXT": "session"}, clear=True):
+            context = resolve_execution_context(now=last_seen)
+
+        assert context is not None
+        assert not execution_context_is_stale(
+            context,
+            stale_after=timedelta(hours=2),
+            now=last_seen + timedelta(minutes=90),
+        )
+        assert execution_context_is_stale(
+            context,
+            stale_after=timedelta(hours=2),
+            now=last_seen + timedelta(hours=3),
+        )
+
+
 class TestEnsureBaseLayout:
     """Tests for ensure_base_layout function."""
 
@@ -224,6 +503,7 @@ class TestEnsureBaseLayout:
         assert gitignore_path.exists()
         content = gitignore_path.read_text()
         assert "**/logs/" in content
+        assert "*.json.lock" in content
 
 
 class TestEnsureBranchLayout:
@@ -235,15 +515,13 @@ class TestEnsureBranchLayout:
         assert result.is_dir()
         assert result == tmp_path / ".kd" / "branches" / "feature-test"
 
-    def test_creates_design_md(self, tmp_path: Path) -> None:
-        """ensure_branch_layout creates design.md file."""
+    def test_does_not_create_design_md(self, tmp_path: Path) -> None:
         branch_dir = ensure_branch_layout(tmp_path, "main")
-        assert (branch_dir / "design.md").is_file()
+        assert not (branch_dir / "design.md").exists()
 
-    def test_creates_breakdown_md(self, tmp_path: Path) -> None:
-        """ensure_branch_layout creates breakdown.md file."""
+    def test_does_not_create_breakdown_md(self, tmp_path: Path) -> None:
         branch_dir = ensure_branch_layout(tmp_path, "main")
-        assert (branch_dir / "breakdown.md").is_file()
+        assert not (branch_dir / "breakdown.md").exists()
 
     def test_does_not_create_learnings_md(self, tmp_path: Path) -> None:
         """ensure_branch_layout no longer creates learnings.md."""
@@ -283,12 +561,13 @@ class TestEnsureBranchLayout:
     def test_idempotent(self, tmp_path: Path) -> None:
         """ensure_branch_layout can be called multiple times safely."""
         branch_dir = ensure_branch_layout(tmp_path, "main")
-        # Write some content to design.md
         (branch_dir / "design.md").write_text("# Design", encoding="utf-8")
-        # Call again
+        (branch_dir / "breakdown.md").write_text("# Breakdown", encoding="utf-8")
+
         ensure_branch_layout(tmp_path, "main")
-        # Content should be preserved
+
         assert (branch_dir / "design.md").read_text() == "# Design"
+        assert (branch_dir / "breakdown.md").read_text() == "# Breakdown"
 
     def test_returns_branch_path(self, tmp_path: Path) -> None:
         """ensure_branch_layout returns the branch directory path."""

@@ -1,6 +1,6 @@
 [project]
 name = "kingdom-cli"
-version = "0.6.1"
+version = "1.0.1"
 description = "A markdown file-based CLI for software development with multi-agent council design, markdown tickets, and background worker loops."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ classifiers = [
 ]
 license-files = ["LICENSE"]
 dependencies = [
-    "click>=8.0.0",
+    "click>=8.3.1",
     "rich>=14.3.1",
     "textual>=7.5.0",
     "typer>=0.21.1",
@@ -42,6 +42,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "kingdom.skill" = ["*.md", "references/*.md"]
+"kingdom.codex_plugin" = [".codex-plugin/*.json", "hooks/*.json"]
 "kingdom.tui" = ["*.tcss"]
 
 [dependency-groups]
@@ -49,7 +50,8 @@ dev = [
     "pre-commit>=4.0.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
-    "ruff>=0.8.6",
+    # Keep in sync with the ruff-pre-commit revision.
+    "ruff==0.15.0",
 ]
 
 [tool.ruff]

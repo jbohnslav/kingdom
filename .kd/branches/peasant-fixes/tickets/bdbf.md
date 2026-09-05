@@ -1,11 +1,16 @@
 ---
 id: "bdbf"
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-02-17T20:57:53Z
 type: task
 priority: 2
+closed_at: 2026-08-03T19:47:44Z
+resolution: superseded
+close_reason: "Implemented review fixes were retained; f240 replaced the obsolete Git/logical-branch equality rule with exact cross-context safety."
+closed_context: codex:a775e0448cdb5a76
+superseded-by: f240
 ---
 # Fix review findings: merge safety, duplicate harness, test gaps
 
@@ -76,3 +81,12 @@ A king reject is an explicit "start over" signal, so the counter resets to 0 whe
 - [ ] `FileNotFoundError` fallback has test coverage
 - [ ] `parse_verdict` strips markdown decoration before matching
 - [ ] "Has verdict line" warning check also strips markdown decoration
+
+## Worklog
+
+- [2026-08-03 15:47] [codex:a775e044] — The original review findings were implemented by commits f3fa87a, 8095246, and c32c8b0, including hand-mode state/flows, reject safety, council-feedback and file-state assertions, three-dot worktree diffs, FileNotFound coverage, and decorated-verdict parsing. Its remaining literal branch-equality rule was later deliberately replaced by completed ticket f240: acceptance now identifies one unique owning reviewed session and exact ticket branch while allowing the logical Kingdom feature to differ from the intentional integration checkout. The original specification is therefore superseded by the newer safety invariant.
+- [15:47] [codex:a775e0448cdb5a76] — Closed: Implemented review fixes were retained; f240 replaced the obsolete Git/logical-branch equality rule with exact cross-context safety.
+
+## Lifecycle
+
+- 2026-08-03T19:47:44Z [codex:a775e0448cdb5a76] — closed (superseded) [reference: f240]: Implemented review fixes were retained; f240 replaced the obsolete Git/logical-branch equality rule with exact cross-context safety.

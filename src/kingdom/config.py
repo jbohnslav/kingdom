@@ -8,10 +8,11 @@ are provided for zero-config operation.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from kingdom.state import state_root
+from kingdom.state import find_kd_base_from_git_worktrees, state_root
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -505,9 +506,25 @@ def validate_config(data: dict) -> KingdomConfig:
 # ---------------------------------------------------------------------------
 
 
-def load_raw_config(base: Path) -> dict:
+def config_source_path(base: Path) -> Path:
+    """Return the repository owner's config path for a checkout."""
+    local_path = state_root(base) / "config.json"
+    explicit_base = os.environ.get("KD_BASE")
+    if not (base / ".git").is_file() or (explicit_base and Path(explicit_base).resolve() == base.resolve()):
+        return local_path
+
+    owner = find_kd_base_from_git_worktrees(base)
+    if owner is None:
+        raise ValueError(
+            f"Cannot resolve repository-owner config for linked checkout {base}. "
+            "Restore git worktree discovery or set KD_BASE to the intended checkout."
+        )
+    return state_root(owner) / "config.json"
+
+
+def load_raw_config(base: Path, *, config_path: Path | None = None) -> dict:
     """Return the raw dict from .kd/config.json, or {} if absent/empty."""
-    config_path = state_root(base) / "config.json"
+    config_path = config_path or config_source_path(base)
     if not config_path.exists():
         return {}
     text = config_path.read_text(encoding="utf-8").strip()
@@ -517,7 +534,7 @@ def load_raw_config(base: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def load_config(base: Path) -> KingdomConfig:
+def load_config(base: Path, *, config_path: Path | None = None) -> KingdomConfig:
     """Load configuration from .kd/config.json, falling back to defaults.
 
     Returns default_config() if the file doesn't exist or is empty.
@@ -526,7 +543,7 @@ def load_config(base: Path) -> KingdomConfig:
         ValueError: If the file exists but contains invalid JSON or fails
             validation.
     """
-    config_path = state_root(base) / "config.json"
+    config_path = config_path or config_source_path(base)
     if not config_path.exists():
         return default_config()
 

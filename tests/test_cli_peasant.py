@@ -4,16 +4,30 @@ from __future__ import annotations
 
 import os
 import signal
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
-from kingdom.cli.peasant import peasant_app, resolve_invocation_git_root, resolve_peasant_context
-from kingdom.cli.ticket import ticket_app
+from kingdom.cli.peasant import peasant_app, resolve_invocation_git_root, resolve_peasant_context, start_peasant
+from kingdom.cli.ticket import ticket_app, ticket_start
+from kingdom.doctor import execution_context_issues
 from kingdom.session import AgentState, get_agent_state, set_agent_state, update_agent_state
-from kingdom.state import backlog_root, ensure_branch_layout, logs_root, normalize_branch_name, set_current_run
+from kingdom.state import (
+    backlog_root,
+    branch_root,
+    ensure_branch_layout,
+    logs_root,
+    normalize_branch_name,
+    read_execution_ticket_context,
+    resolve_execution_context,
+    set_current_run,
+)
 from kingdom.thread import add_message, create_thread, list_messages, thread_dir
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
@@ -45,6 +59,77 @@ def create_test_ticket(base: Path, ticket_id: str = "kin-test", status: str = "o
 
 
 class TestPeasantStart:
+    def test_start_does_not_overwrite_concurrent_native_owner(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base)
+            peasant_context = resolve_peasant_context("kin-test")
+            native = resolve_execution_context(
+                session_id="native-owner",
+                host="codex",
+                cwd=base,
+                prefer_session_id=True,
+            )
+            assert native is not None
+
+            peasant_reached_worktree = Event()
+            release_peasant = Event()
+
+            def delayed_create_worktree(*args: object, **kwargs: object) -> Path:
+                peasant_reached_worktree.set()
+                assert release_peasant.wait(timeout=2)
+                return base / ".kd" / "worktrees" / "kin-test"
+
+            with (
+                patch("kingdom.cli.peasant.create_worktree", side_effect=delayed_create_worktree),
+                patch("kingdom.cli.launch_work_background", return_value=12345),
+                patch("kingdom.cli.ticket.resolve_execution_context", return_value=native),
+                ThreadPoolExecutor(max_workers=1) as pool,
+            ):
+                peasant_future = pool.submit(
+                    start_peasant,
+                    peasant_context,
+                    agent="claude",
+                    hand=False,
+                    tmux=False,
+                    no_preflight=True,
+                )
+                assert peasant_reached_worktree.wait(timeout=2)
+                ticket_start("kin-test")
+                release_peasant.set()
+                with pytest.raises(typer.Exit):
+                    peasant_future.result(timeout=2)
+
+            ticket = read_ticket(ticket_path)
+            binding = read_execution_ticket_context(base, native)
+            assert ticket.assignee == native.context_id
+            assert binding is not None
+            assert binding["ticket_id"] == ticket.id
+            assert execution_context_issues(base) == []
+
+    def test_start_allows_closed_dependency_from_another_workspace(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            target_path = create_test_ticket(base)
+            target = read_ticket(target_path)
+            target.deps = ["done"]
+            write_ticket(target, target_path)
+
+            dependency_dir = branch_root(base, "completed-work") / "tickets"
+            dependency_dir.mkdir(parents=True)
+            write_ticket(
+                Ticket(id="done", status="closed", title="Completed elsewhere", created=datetime.now(UTC)),
+                dependency_dir / "done.md",
+            )
+
+            with patch("kingdom.cli.launch_work_background", return_value=12345):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            assert "blocked by" not in result.output
+
     def test_start_creates_session_and_thread(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -205,6 +290,20 @@ class TestPeasantStart:
             # Verify the ticket was transitioned to in_progress
             ticket = read_ticket(ticket_path)
             assert ticket.status == "in_progress"
+
+    def test_start_preserves_custom_nonterminal_status(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            ticket_path = create_test_ticket(base, status="waiting")
+
+            with patch("kingdom.cli.launch_work_background", return_value=12345):
+                result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
+
+            assert result.exit_code == 0, result.output
+            ticket = read_ticket(ticket_path)
+            assert ticket.status == "waiting"
+            assert ticket.assignee == "peasant-kin-test"
 
     def test_start_with_watch_calls_peasant_watch(self) -> None:
         with runner.isolated_filesystem():
@@ -530,6 +629,96 @@ class TestPeasantStatus:
             assert "kin-042" in result.output
             assert "working" in result.output
             assert "claude" in result.output
+
+    def test_terminal_elapsed_freezes_at_last_activity(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+
+            for status in ("done", "failed", "stopped"):
+                set_agent_state(
+                    base,
+                    BRANCH,
+                    f"peasant-kin-{status}",
+                    AgentState(
+                        name=f"peasant-kin-{status}",
+                        status=status,
+                        ticket=f"kin-{status}",
+                        started_at="2026-08-03T12:00:00+00:00",
+                        last_activity="2026-08-03T12:30:00+00:00",
+                    ),
+                )
+
+            with patch("kingdom.cli.peasant.datetime") as clock:
+                clock.now.return_value = datetime(2026, 8, 3, 14, 0, tzinfo=UTC)
+                result = runner.invoke(peasant_app, ["status", "--all", "--json"])
+
+            assert result.exit_code == 0, result.output
+            rows = json.loads(result.output)
+            assert {row["status"]: row["elapsed_minutes"] for row in rows} == {
+                "done": 30,
+                "failed": 30,
+                "stopped": 30,
+            }
+
+    def test_active_elapsed_continues_using_current_time(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-active",
+                AgentState(
+                    name="peasant-kin-active",
+                    status="working",
+                    pid=99999,
+                    ticket="kin-active",
+                    started_at="2026-08-03T12:00:00+00:00",
+                    last_activity="2026-08-03T12:30:00+00:00",
+                ),
+            )
+
+            with (
+                patch("kingdom.cli.peasant.datetime") as clock,
+                patch("os.kill"),
+            ):
+                clock.now.return_value = datetime(2026, 8, 3, 14, 0, tzinfo=UTC)
+                result = runner.invoke(peasant_app, ["status", "--json"])
+
+            assert result.exit_code == 0, result.output
+            rows = json.loads(result.output)
+            assert rows[0]["elapsed_minutes"] == 120
+
+    def test_failed_status_exposes_infrastructure_failure_kind(self) -> None:
+        import json
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            set_agent_state(
+                base,
+                BRANCH,
+                "peasant-kin-auth",
+                AgentState(
+                    name="peasant-kin-auth",
+                    status="failed",
+                    failure_kind="authentication",
+                    ticket="kin-auth",
+                ),
+            )
+
+            json_result = runner.invoke(peasant_app, ["status", "--all", "--json"])
+            human_result = runner.invoke(peasant_app, ["status", "--all"])
+
+            assert json_result.exit_code == 0, json_result.output
+            assert json.loads(json_result.output)[0]["failure_kind"] == "authentication"
+            assert human_result.exit_code == 0, human_result.output
+            assert "failed/authentication" in human_result.output
 
     def test_status_ignores_non_peasant_sessions(self) -> None:
         with runner.isolated_filesystem():
@@ -1580,8 +1769,51 @@ class TestPeasantReview:
             ticket, _ = ticket_result
             assert ticket.status == "closed"
 
-    def test_review_accept_wrong_branch_fails(self) -> None:
-        """--accept should hard-fail if HEAD is not on the feature branch."""
+    def test_review_accept_rejects_unrelated_checkout_branch(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            from kingdom.state import branch_root, read_json, write_json
+
+            state_path = branch_root(base, BRANCH) / "state.json"
+            workspace_state = read_json(state_path)
+            workspace_state["branch"] = BRANCH
+            write_json(state_path, workspace_state)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(name=session_name, status="needs_king_review", ticket="kin-test"),
+            )
+
+            def mock_run(cmd, **kwargs):
+                result = MagicMock()
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result.returncode = 0
+                    result.stdout = "master\n"
+                    result.stderr = ""
+                else:
+                    raise AssertionError(f"Unexpected subprocess call: {cmd}")
+                return result
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 1
+            assert BRANCH in result.output
+            assert "master" in result.output
+            assert "git switch" in result.output
+
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "in_review"
+
+    def test_review_accept_rejects_session_for_unrelated_ticket(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
             setup_project(base)
@@ -1592,27 +1824,42 @@ class TestPeasantReview:
                 base,
                 BRANCH,
                 session_name,
-                AgentState(name=session_name, status="needs_king_review"),
+                AgentState(name=session_name, status="needs_king_review", ticket="kin-other"),
             )
 
-            def mock_run(cmd, **kwargs):
-                result = MagicMock()
-                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
-                    result.returncode = 0
-                    result.stdout = "master\n"
-                    result.stderr = ""
-                else:
-                    result.returncode = 0
-                    result.stdout = ""
-                    result.stderr = ""
-                return result
-
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.subprocess.run") as mock_run:
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
-            assert "Cannot accept" in result.output
-            assert "master" in result.output
+            assert "records ticket 'kin-other'" in result.output
+            assert "kd peasant review kin-test" in result.output
+            mock_run.assert_not_called()
+
+    def test_review_accept_rejects_duplicate_sessions_across_features(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+            ensure_branch_layout(base, BRANCH_B)
+
+            session_name = "peasant-kin-test"
+            for feature in (BRANCH, BRANCH_B):
+                set_agent_state(
+                    base,
+                    feature,
+                    session_name,
+                    AgentState(name=session_name, status="needs_king_review", ticket="kin-test"),
+                )
+
+            with patch("kingdom.cli.subprocess.run") as mock_run:
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 1
+            assert "multiple Kingdom features" in result.output
+            assert normalize_branch_name(BRANCH) in result.output
+            assert normalize_branch_name(BRANCH_B) in result.output
+            assert "kd peasant accept kin-test" in result.output
+            mock_run.assert_not_called()
 
     def test_accept_slash_branch_with_stored_name(self) -> None:
         """Accept should work for branches with slashes when state.json has the original name."""
@@ -1714,6 +1961,52 @@ class TestPeasantReview:
             # Session should be done
             state = get_agent_state(base, BRANCH, session_name)
             assert state.status == "done"
+
+    def test_review_accept_hand_mode_allows_different_physical_checkout(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            create_test_ticket(base, status="in_review")
+
+            from kingdom.state import branch_root, read_json, write_json
+
+            state_path = branch_root(base, BRANCH) / "state.json"
+            workspace_state = read_json(state_path)
+            workspace_state["branch"] = BRANCH
+            write_json(state_path, workspace_state)
+
+            session_name = "peasant-kin-test"
+            set_agent_state(
+                base,
+                BRANCH,
+                session_name,
+                AgentState(
+                    name=session_name,
+                    status="needs_king_review",
+                    ticket="kin-test",
+                    hand_mode=True,
+                ),
+            )
+
+            def mock_run(cmd, **kwargs):
+                if cmd and "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                    result = MagicMock()
+                    result.returncode = 0
+                    result.stdout = "master\n"
+                    result.stderr = ""
+                    return result
+                raise AssertionError(f"Unexpected subprocess call: {cmd}")
+
+            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+                result = runner.invoke(peasant_app, ["accept", "kin-test"])
+
+            assert result.exit_code == 0, result.output
+            assert "Hand mode — changes already on master, skipping merge" in result.output
+
+            ticket_result = find_ticket(base, "kin-test")
+            assert ticket_result is not None
+            ticket, _ = ticket_result
+            assert ticket.status == "closed"
 
     def test_review_reject_hand_mode_relaunches_in_place(self) -> None:
         """In hand mode, --reject should relaunch using base dir, not worktree."""

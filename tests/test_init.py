@@ -7,8 +7,27 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from kingdom.cli import app
-from kingdom.cli.helpers import install_skill, skill_install_targets
-from kingdom.state import branch_root, ensure_base_layout
+from kingdom.cli.helpers import (
+    SKILL_MANIFEST,
+    content_hash,
+    install_skill,
+    install_skill_target,
+    read_skill_manifest,
+    skill_install_targets,
+    write_skill_bundle,
+)
+from kingdom.state import (
+    branch_root,
+    ensure_base_layout,
+    ensure_branch_layout,
+    read_execution_ticket_context,
+    read_json,
+    record_execution_ticket_context,
+    resolve_execution_context,
+    set_current_run,
+    write_json,
+)
+from kingdom.ticket import Ticket, write_ticket
 
 SKILL_REFERENCE_FILES = {"council.md", "peasants.md", "tickets.md"}
 
@@ -70,8 +89,29 @@ def test_cli_start_kd_base_unset_keeps_auto_init() -> None:
     with runner.isolated_filesystem():
         subprocess.run(["git", "init", "-q"], check=True)
         result = runner.invoke(app, ["start", "test-feature"])
-    assert result.exit_code == 0
-    assert "Auto-initializing" in result.output
+
+        assert result.exit_code == 0
+        assert "Auto-initializing" in result.output
+        assert (Path.cwd() / ".kd" / "branches" / "test-feature").is_dir()
+
+
+def test_cli_start_preserves_legacy_runs_hard_boundary() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        ensure_base_layout(base)
+        legacy_runs = base / ".kd" / "runs"
+        legacy_runs.mkdir()
+        (legacy_runs / "old-feature").mkdir()
+
+        result = runner.invoke(app, ["start", "test-feature"])
+
+        assert result.exit_code == 1
+        output = " ".join(result.output.splitlines())
+        assert "Legacy .kd/runs/ directory found. Rename it to .kd/branches/ manually and retry." in output
+        assert "Auto-initializing" not in result.output
+        assert not (base / ".kd" / "branches" / "test-feature").exists()
 
 
 def test_cli_start_auto_init_from_subdirectory_uses_git_root() -> None:
@@ -151,8 +191,24 @@ def test_cli_start_auto_init_installs_skill(tmp_path: Path) -> None:
     assert (skill_dir / "SKILL.md").exists()
 
 
-def test_cli_start_initializes_design_and_prints_path() -> None:
-    """kd start should create design.md from template and print its location."""
+def test_cli_start_existing_workspace_does_not_refresh_skill() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        ensure_base_layout(base)
+        ensure_branch_layout(base, "feature/existing")
+
+        with patch("kingdom.cli.install_skill") as installer:
+            resume_result = runner.invoke(app, ["start", "feature/existing"])
+            new_branch_result = runner.invoke(app, ["start", "feature/new"])
+
+        assert resume_result.exit_code == 0
+        assert new_branch_result.exit_code == 0
+        installer.assert_not_called()
+
+
+def test_cli_start_initializes_ticket_workspace_without_planning_docs() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         base = Path.cwd()
@@ -162,16 +218,18 @@ def test_cli_start_initializes_design_and_prints_path() -> None:
         result = runner.invoke(app, ["start", branch])
 
         assert result.exit_code == 0
-        assert f"Started session for branch {branch}" in result.output
+        assert f"Started workspace for branch {branch}" in result.output
 
-        design_path = branch_root(base, branch) / "design.md"
-        assert design_path.exists()
-        assert "Design: feature/test-start" in design_path.read_text(encoding="utf-8")
-        assert f"Design: {design_path}" in result.output
+        branch_dir = branch_root(base, branch)
+        assert (branch_dir / "tickets").is_dir()
+        assert not (branch_dir / "design.md").exists()
+        assert not (branch_dir / "breakdown.md").exists()
+        assert "Tickets: 0 branch, 0 backlog" in result.output
+        assert 'Next: kd tk create "<title>"' in result.output
+        assert "--type epic" in result.output
 
 
-def test_cli_design_prints_path_after_start() -> None:
-    """Running kd design after kd start should print the design path."""
+def test_cli_start_resumes_existing_workspace_without_overwriting_content() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         base = Path.cwd()
@@ -181,13 +239,173 @@ def test_cli_design_prints_path_after_start() -> None:
         start_result = runner.invoke(app, ["start", branch])
         assert start_result.exit_code == 0
 
-        design_path = branch_root(base, branch) / "design.md"
-        before = design_path.read_text(encoding="utf-8")
+        branch_dir = branch_root(base, branch)
+        design_path = branch_dir / "design.md"
+        design_path.write_text("# Legacy design\n", encoding="utf-8")
+        write_ticket(Ticket(id="task1", status="open", title="Existing task"), branch_dir / "tickets" / "task1.md")
 
-        design_result = runner.invoke(app, ["design"])
-        assert design_result.exit_code == 0
-        assert design_result.output.strip().endswith("design.md")
-        assert design_path.read_text(encoding="utf-8") == before
+        resume_result = runner.invoke(app, ["start", branch])
+
+        assert resume_result.exit_code == 0
+        assert f"Resumed workspace for branch {branch}" in resume_result.output
+        assert "Tickets: 1 branch, 0 backlog" in resume_result.output
+        assert "Next: kd tk list --ready" in resume_result.output
+        assert design_path.read_text(encoding="utf-8") == "# Legacy design\n"
+
+
+def test_cli_start_changes_workspace_default_without_force() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        ensure_branch_layout(base, "feature/previous")
+        set_current_run(base, "feature-previous")
+
+        result = runner.invoke(app, ["start", "feature/next"])
+
+        assert result.exit_code == 0
+        assert (base / ".kd" / "current").read_text(encoding="utf-8") == "feature-next\n"
+        assert "Started workspace for branch feature/next" in result.output
+
+
+def test_cli_start_selects_existing_workspace_as_default() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        ensure_branch_layout(base, "feature/previous")
+        ensure_branch_layout(base, "feature/existing")
+        set_current_run(base, "feature-previous")
+
+        result = runner.invoke(app, ["start", "feature/existing"])
+
+        assert result.exit_code == 0, result.output
+        assert (base / ".kd" / "current").read_text(encoding="utf-8") == "feature-existing\n"
+        assert "Resumed workspace for branch feature/existing" in result.output
+
+
+def test_cli_start_help_describes_workspace_selection() -> None:
+    result = CliRunner().invoke(app, ["start", "--help"])
+
+    assert result.exit_code == 0
+    assert "Initialize, resume, or select a branch workspace" in " ".join(result.output.split())
+
+
+def test_cli_start_reactivates_done_workspace_without_changing_tickets() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        branch = "feature/legacy-done"
+        branch_dir = ensure_branch_layout(base, branch)
+        ticket_path = branch_dir / "tickets" / "done1.md"
+        write_ticket(Ticket(id="done1", status="closed", title="Finished task"), ticket_path)
+        ticket_history = ticket_path.read_text(encoding="utf-8")
+        write_json(
+            branch_dir / "state.json",
+            {
+                "branch": branch,
+                "status": "done",
+                "done_at": "2026-08-01T12:00:00+00:00",
+            },
+        )
+
+        result = runner.invoke(app, ["start", branch])
+
+        assert result.exit_code == 0, result.output
+        state = read_json(branch_dir / "state.json")
+        assert state == {"branch": branch}
+        assert ticket_path.read_text(encoding="utf-8") == ticket_history
+
+
+def test_cli_start_does_not_move_execution_context_binding() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        source = "feature/context-owner"
+        target = "feature/selected-default"
+        ensure_branch_layout(base, source)
+        ensure_branch_layout(base, target)
+        set_current_run(base, source)
+
+        with patch.dict("os.environ", {"KD_CONTEXT": "start-independence"}, clear=True):
+            context = resolve_execution_context()
+            assert context is not None
+            record_execution_ticket_context(base, context, "task1", feature=source)
+            binding = read_execution_ticket_context(base, context)
+            result = runner.invoke(app, ["start", target])
+            updated_binding = read_execution_ticket_context(base, context)
+
+        assert result.exit_code == 0, result.output
+        assert (base / ".kd" / "current").read_text(encoding="utf-8") == "feature-selected-default\n"
+        assert updated_binding == binding
+        assert updated_binding is not None
+        assert updated_binding["feature"] == "feature-context-owner"
+
+
+def test_cli_start_with_only_closed_tickets_suggests_new_work() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        branch = "feature/complete"
+        branch_dir = ensure_branch_layout(base, branch)
+        write_ticket(
+            Ticket(id="done1", status="closed", title="Finished task"),
+            branch_dir / "tickets" / "done1.md",
+        )
+
+        result = runner.invoke(app, ["start", branch])
+
+        assert result.exit_code == 0
+        assert 'Next: kd tk create "<title>"' in result.output
+        assert "kd tk list --ready" not in result.output
+
+
+def test_cli_start_with_blocked_tickets_suggests_blocked_list() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+        branch = "feature/blocked"
+        branch_dir = ensure_branch_layout(base, branch)
+        write_ticket(
+            Ticket(id="wait1", status="open", title="Waiting task", deps=["missing"]),
+            branch_dir / "tickets" / "wait1.md",
+        )
+
+        result = runner.invoke(app, ["start", branch])
+
+        assert result.exit_code == 0
+        assert "Next: kd tk list --blocked" in result.output
+        assert "kd tk list --ready" not in result.output
+
+
+def test_cli_start_uses_global_dependency_status_for_ready_work() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        subprocess.run(["git", "init", "-q"], check=True)
+
+        done_dir = ensure_branch_layout(base, "feature/done")
+        write_ticket(
+            Ticket(id="done1", status="closed", title="Completed dependency"),
+            done_dir / "tickets" / "done1.md",
+        )
+        write_json(done_dir / "state.json", {"branch": "feature/done", "status": "done"})
+
+        branch = "feature/dependent"
+        branch_dir = ensure_branch_layout(base, branch)
+        write_ticket(
+            Ticket(id="next1", status="open", title="Ready task", deps=["done1"]),
+            branch_dir / "tickets" / "next1.md",
+        )
+
+        start_result = runner.invoke(app, ["start", branch])
+        ready_result = runner.invoke(app, ["tk", "list", "--ready"])
+
+        assert start_result.exit_code == 0
+        assert ready_result.exit_code == 0
+        assert "Next: kd tk list --ready" in start_result.output
+        assert "next1" in ready_result.output
 
 
 def test_install_skill_copies_files(tmp_path: Path) -> None:
@@ -204,6 +422,18 @@ def test_install_skill_copies_files(tmp_path: Path) -> None:
 
     # Verify content is non-empty
     assert len((skill_dir / "SKILL.md").read_text()) > 100
+
+
+def test_install_skill_uses_explicit_target_home(monkeypatch, tmp_path: Path) -> None:
+    skill_home = tmp_path / "isolated-agent-home"
+    skill_home.mkdir()
+    monkeypatch.setenv("KD_SKILL_HOME", str(skill_home))
+
+    with patch("kingdom.cli.helpers.Path.home", side_effect=AssertionError("host home was read")):
+        result = install_skill()
+
+    assert result == "refreshed"
+    assert_skill_files_copied(skill_home / ".claude" / "skills" / "kingdom")
 
 
 def test_skill_install_targets_include_cursor_and_codex_when_roots_exist(tmp_path: Path) -> None:
@@ -305,10 +535,272 @@ def test_install_skill_idempotent(tmp_path: Path) -> None:
 
     with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
         assert install_skill() == "refreshed"
-        assert install_skill() == "refreshed"
+        assert install_skill() == "skipped"
 
     skill_dir = fake_home / ".claude" / "skills" / "kingdom"
     assert (skill_dir / "SKILL.md").exists()
+
+
+def test_install_skill_target_removes_unmodified_retired_files(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    current_files = {
+        "SKILL.md": b"current skill\n",
+        "references/retired.md": b"retired reference\n",
+    }
+    next_files = {"SKILL.md": b"current skill\n"}
+    write_skill_bundle(target, current_files)
+
+    status, note = install_skill_target(target, next_files)
+
+    assert (status, note) == ("updated", "managed files refreshed")
+    assert not (target / "references" / "retired.md").exists()
+    assert read_skill_manifest(target / SKILL_MANIFEST) == {"SKILL.md": content_hash(next_files["SKILL.md"])}
+
+
+def test_install_skill_target_preserves_modified_retired_files(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    current_files = {
+        "SKILL.md": b"old skill\n",
+        "references/retired.md": b"managed reference\n",
+    }
+    next_files = {"SKILL.md": b"new skill\n"}
+    write_skill_bundle(target, current_files)
+    retired = target / "references" / "retired.md"
+    retired.write_bytes(b"user customization\n")
+
+    status, note = install_skill_target(target, next_files)
+
+    assert (status, note) == ("updated", "managed files refreshed")
+    assert (target / "SKILL.md").read_bytes() == next_files["SKILL.md"]
+    assert retired.read_bytes() == b"user customization\n"
+    assert read_skill_manifest(target / SKILL_MANIFEST) == {"SKILL.md": content_hash(next_files["SKILL.md"])}
+    assert install_skill_target(target, next_files) == ("skipped", "already current")
+    assert retired.read_bytes() == b"user customization\n"
+
+
+def test_install_skill_target_rejects_manifest_paths_outside_target(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(b"previously managed\n")
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"../outside.md": content_hash(outside.read_bytes())},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert outside.read_bytes() == b"previously managed\n"
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_retired_file_through_symlinked_parent(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    retired = outside / "retired.md"
+    retired.write_bytes(b"previously managed\n")
+    (target / "references").symlink_to(outside, target_is_directory=True)
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"references/retired.md": content_hash(retired.read_bytes())},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert retired.read_bytes() == b"previously managed\n"
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_retired_file_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(b"previously managed\n")
+    retired = target / "retired.md"
+    retired.symlink_to(outside)
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"retired.md": content_hash(outside.read_bytes())},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert retired.is_symlink()
+    assert outside.read_bytes() == b"previously managed\n"
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_nul_manifest_path(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"references/retired\0.md": content_hash(b"managed\n")},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_manifest_path_resolution_error(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    loop = target / "loop"
+    loop.symlink_to(loop)
+    write_json(
+        target / SKILL_MANIFEST,
+        {
+            "schema_version": 1,
+            "files": {"loop/retired.md": content_hash(b"managed\n")},
+        },
+    )
+
+    result = install_skill_target(target, {"SKILL.md": b"current skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_new_file_through_symlinked_parent(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (target / "references").symlink_to(outside, target_is_directory=True)
+
+    result = install_skill_target(target, {"references/new.md": b"new reference\n"})
+
+    assert result == ("manual", "bundled skill paths are invalid")
+    assert not (outside / "new.md").exists()
+    assert not (target / SKILL_MANIFEST).exists()
+
+
+def test_install_skill_target_rejects_live_manifest_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_bytes(b"old skill\n")
+    outside_manifest = tmp_path / "outside-manifest.json"
+    write_json(
+        outside_manifest,
+        {
+            "schema_version": 1,
+            "files": {"SKILL.md": content_hash(skill.read_bytes())},
+        },
+    )
+    original_manifest = outside_manifest.read_bytes()
+    (target / SKILL_MANIFEST).symlink_to(outside_manifest)
+
+    result = install_skill_target(target, {"SKILL.md": b"new skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert skill.read_bytes() == b"old skill\n"
+    assert outside_manifest.read_bytes() == original_manifest
+
+
+def test_install_skill_target_rejects_dangling_manifest_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    target.mkdir()
+    outside_manifest = tmp_path / "missing" / "outside-manifest.json"
+    manifest = target / SKILL_MANIFEST
+    manifest.symlink_to(outside_manifest)
+
+    result = install_skill_target(target, {"SKILL.md": b"new skill\n"})
+
+    assert result == ("manual", "managed-file manifest is invalid")
+    assert manifest.is_symlink()
+    assert not outside_manifest.exists()
+    assert not (target / "SKILL.md").exists()
+
+
+def test_install_skill_target_rejects_regular_file_as_incoming_parent(tmp_path: Path) -> None:
+    target = tmp_path / "kingdom"
+    current_files = {
+        "SKILL.md": b"old skill\n",
+        "retired.md": b"retired reference\n",
+    }
+    write_skill_bundle(target, current_files)
+    manifest = target / SKILL_MANIFEST
+    original_manifest = manifest.read_bytes()
+    references = target / "references"
+    references.write_bytes(b"user file\n")
+
+    result = install_skill_target(
+        target,
+        {
+            "SKILL.md": b"new skill\n",
+            "references/new.md": b"new reference\n",
+        },
+    )
+
+    assert result == ("manual", "bundled skill paths are invalid")
+    assert (target / "SKILL.md").read_bytes() == current_files["SKILL.md"]
+    assert (target / "retired.md").read_bytes() == current_files["retired.md"]
+    assert references.read_bytes() == b"user file\n"
+    assert manifest.read_bytes() == original_manifest
+
+
+def test_install_skill_reports_each_supported_host(tmp_path: Path, capsys) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        result = install_skill()
+
+    output = capsys.readouterr().out
+    assert result == "refreshed"
+    assert "claude: updated" in output
+    assert "codex: skipped" in output
+    assert "cursor: skipped" in output
+
+
+def test_install_skill_preserves_unknown_existing_skill(tmp_path: Path, capsys) -> None:
+    fake_home = tmp_path / "home"
+    skill_dir = fake_home / ".claude" / "skills" / "kingdom"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("user customization\n", encoding="utf-8")
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        result = install_skill()
+
+    assert result == "failed"
+    assert skill_file.read_text(encoding="utf-8") == "user customization\n"
+    assert "claude: manual action needed" in capsys.readouterr().out
+
+
+def test_install_skill_preserves_modified_managed_skill(tmp_path: Path, capsys) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
+        assert install_skill() == "refreshed"
+        skill_file = fake_home / ".claude" / "skills" / "kingdom" / "SKILL.md"
+        skill_file.write_text("managed, then customized\n", encoding="utf-8")
+        result = install_skill()
+
+    assert result == "failed"
+    assert skill_file.read_text(encoding="utf-8") == "managed, then customized\n"
+    assert "claude: manual action needed" in capsys.readouterr().out
 
 
 def test_install_skill_permission_error_warns(tmp_path: Path) -> None:

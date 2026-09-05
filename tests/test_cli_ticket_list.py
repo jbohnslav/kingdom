@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -13,6 +15,7 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     ensure_branch_layout,
+    resolve_execution_context,
 )
 from kingdom.ticket import Ticket, write_ticket
 
@@ -485,6 +488,118 @@ class TestTicketListRecentlyClosed:
         assert data[0]["location"] == "archive:backlog"
 
 
+class TestTicketListResolution:
+    def test_resolution_filter_includes_only_matching_closed_tickets(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(
+                id="done",
+                status="closed",
+                title="Completed",
+                resolution="completed",
+                close_reason="Shipped",
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "done.md",
+        )
+        write_ticket(
+            Ticket(
+                id="nope",
+                status="closed",
+                title="Won't do",
+                resolution="wont-do",
+                close_reason="Out of scope",
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "nope.md",
+        )
+        write_ticket(
+            Ticket(id="open", status="open", title="Still open", created=datetime.now(UTC)),
+            tickets_dir / "open.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--resolution", "wont-do"])
+
+        assert result.exit_code == 0, result.output
+        assert "nope" in result.output
+        assert "wont-do" in result.output
+        assert "done" not in result.output
+        assert "open" not in result.output
+
+    def test_resolution_filter_understands_legacy_duplicates(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(
+                id="legacy",
+                status="closed",
+                title="Legacy duplicate",
+                duplicate_of="original",
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "legacy.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--resolution", "duplicate"])
+
+        assert result.exit_code == 0, result.output
+        assert "legacy" in result.output
+        assert "duplicate" in result.output
+
+    def test_list_json_includes_closure_fields(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(
+                id="done",
+                status="closed",
+                title="Completed",
+                resolution="completed",
+                close_reason="Shipped",
+                closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+                closed_context="codex:abc",
+                created=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            tickets_dir / "done.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--resolution", "completed", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data[0]["resolution"] == "completed"
+        assert data[0]["close_reason"] == "Shipped"
+        assert data[0]["closed_at"] == "2026-01-02T00:00:00+00:00"
+        assert data[0]["closed_context"] == "codex:abc"
+
+    def test_invalid_resolution_filter_lists_choices(self, cli_project: Path) -> None:
+        result = runner.invoke(ticket_app, ["list", "--resolution", "abandoned"])
+
+        assert result.exit_code == 2
+        assert "completed" in result.output
+        assert "wont-do" in result.output
+        assert "duplicate" in result.output
+        assert "superseded" in result.output
+        assert "invalid" in result.output
+
+    def test_resolution_filter_excludes_active_ticket_with_stale_metadata(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(
+                id="stale",
+                status="in_progress",
+                title="Still active",
+                resolution="wont-do",
+                close_reason="Stale reason",
+                created=datetime.now(UTC),
+            ),
+            tickets_dir / "stale.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--resolution", "wont-do"])
+
+        assert result.exit_code == 0, result.output
+        assert "stale" not in result.output
+
+
 class TestTicketListPriority:
     def test_priority_filter_branch(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -543,6 +658,113 @@ class TestTicketListPriority:
 class TestTicketListTable:
     """Tests for Rich table formatting in tk list."""
 
+    def test_parent_table_preserves_six_child_hierarchy_at_common_widths(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        parent = Ticket(
+            id="c759",
+            status="open",
+            title="Migration, dogfood, and release safety",
+            body="",
+            type="epic",
+            created=datetime.now(UTC),
+        )
+        children = [
+            Ticket(
+                id="7e3e",
+                status="open",
+                title="Regression-test peasant and lord flows with council review still default",
+                body="",
+                deps=["d456", "7c7d"],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="b507",
+                status="open",
+                title="Dogfood three to five concurrent hands on one branch",
+                body="",
+                deps=["7070", "ca34"],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="990d",
+                status="open",
+                title="Ship migration docs, staged deprecations, and release evidence",
+                body="",
+                deps=[
+                    "473d",
+                    "b507",
+                    "7e3e",
+                    "366d",
+                    "7c7d",
+                    "ab52",
+                    "648d",
+                    "045e",
+                    "3af0",
+                    "3732",
+                    "2974",
+                    "b529",
+                    "beb1",
+                    "4e2f",
+                    "a431",
+                ],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="366d",
+                status="open",
+                title="Run the supported-host end-to-end integration matrix",
+                body="",
+                deps=["d023", "92ca", "9353", "ca34", "f5b6", "1a28"],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="473d",
+                status="open",
+                title="Build upgrade, rollback, and doctor support for existing repositories",
+                body="",
+                deps=["09c8", "781f"],
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+            Ticket(
+                id="4e2f",
+                status="open",
+                title="Prove multi-epic dependency scheduling and lord coordination",
+                body="",
+                parent=parent.id,
+                created=datetime.now(UTC),
+            ),
+        ]
+        write_ticket(parent, tickets_dir / f"{parent.id}.md")
+        for child in children:
+            write_ticket(child, tickets_dir / f"{child.id}.md")
+
+        for width in (60, 120, 180):
+            with patch("kingdom.cli.ticket.console_width", return_value=width):
+                result = runner.invoke(ticket_app, ["list", "--parent", parent.id])
+
+            assert result.exit_code == 0, result.output
+            assert "ID" in result.output
+            assert "Status" in result.output
+            assert "Title" in result.output
+            assert "Deps" in result.output
+            assert "Location" not in result.output
+            assert {child.id for child in children} <= set(result.output.split())
+            assert "d456" in result.output
+            assert "a431" in result.output
+            table_lines = [line for line in result.output.splitlines() if line[:1] in "┏┃┡│└"]
+            assert table_lines
+            assert all(len(line) <= width for line in table_lines)
+            assert all(line[-1] in "┓┃┩│┘" for line in table_lines)
+
+        json_result = runner.invoke(ticket_app, ["list", "--parent", parent.id, "--json"])
+        assert json_result.exit_code == 0, json_result.output
+        assert {ticket["id"] for ticket in json.loads(json_result.output)} == {child.id for child in children}
+
     def test_table_has_header_row(self, cli_project: Path) -> None:
         """The table should include column headers."""
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -583,19 +805,23 @@ class TestTicketListTable:
         assert result.exit_code == 0
         assert "@alice" in result.output
 
-    def test_table_shows_hand_assignee_after_start(self, cli_project: Path) -> None:
+    def test_table_shows_context_assignee_after_start(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         ticket = Ticket(id="hand", status="open", title="Hand ticket", body="", created=datetime.now(UTC))
         write_ticket(ticket, tickets_dir / "hand.md")
 
-        start_result = runner.invoke(ticket_app, ["start", "hand"])
-        assert start_result.exit_code == 0, start_result.output
-
-        result = runner.invoke(ticket_app, ["list"])
+        with patch.dict(os.environ, {"KD_CONTEXT": "list-session"}, clear=True):
+            start_result = runner.invoke(ticket_app, ["start", "hand"])
+            assert start_result.exit_code == 0, start_result.output
+            context = resolve_execution_context()
+            result = runner.invoke(ticket_app, ["list"])
 
         assert result.exit_code == 0, result.output
+        assert context is not None
         assert "hand" in result.output
-        assert "@hand" in result.output
+        host, digest = context.context_id.split(":", 1)
+        assert f"@{host}:{digest[:8]}" in result.output
+        assert context.context_id not in result.output
 
     def test_table_shows_deps(self, cli_project: Path) -> None:
         """Dependencies should be visible in the table."""
@@ -674,6 +900,25 @@ class TestTicketListTable:
 
         assert result.exit_code == 0
         assert "dddd \u2713" in result.output
+
+    def test_ready_resolves_closed_dependency_from_archive(self, cli_project: Path) -> None:
+        archive_tickets = cli_project / ".kd" / "archive" / "finished" / "tickets"
+        archive_tickets.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="done", status="closed", title="Archived dependency", created=datetime.now(UTC)),
+            archive_tickets / "done.md",
+        )
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        write_ticket(
+            Ticket(id="next", status="open", title="Ready after archive", deps=["done"], created=datetime.now(UTC)),
+            tickets_dir / "next.md",
+        )
+
+        result = runner.invoke(ticket_app, ["list", "--ready"])
+
+        assert result.exit_code == 0, result.output
+        assert "next" in result.output
+        assert "Ready after archive" in result.output
 
     def test_table_all_shows_location_column(self, cli_project: Path) -> None:
         """With --all flag, the Location column should be present."""

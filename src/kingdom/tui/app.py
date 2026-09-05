@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import Counter, deque
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
+from uuid import uuid4
 
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
@@ -20,6 +23,7 @@ from textual.widgets import Static, TextArea
 from kingdom.agent import resolve_all_agents
 from kingdom.config import load_config
 from kingdom.council import Council
+from kingdom.state import read_json, write_json
 from kingdom.thread import (
     add_message,
     format_thread_history,
@@ -45,6 +49,68 @@ from .widgets import (
 logger = logging.getLogger(__name__)
 
 MENTION_RE = re.compile(r"(?<!\w)@(\w+)")
+PENDING_MESSAGES_FILENAME = ".pending-messages.json"
+
+
+@dataclass(frozen=True)
+class QueuedDelivery:
+    """A King message waiting for its turn to reach the council."""
+
+    delivery_id: str
+    body: str
+    targets: tuple[str, ...]
+    to: str
+    completed_targets: tuple[str, ...] = ()
+    first_exchange: bool | None = None
+    chat_mode: str | None = None
+    auto_rounds: int | None = None
+
+
+def load_pending_deliveries(tdir: Path) -> deque[QueuedDelivery]:
+    path = tdir / PENDING_MESSAGES_FILENAME
+    if not path.exists():
+        return deque()
+
+    data = read_json(path)
+    return deque(
+        QueuedDelivery(
+            delivery_id=str(item["id"]),
+            body=str(item["body"]),
+            targets=tuple(str(target) for target in item["targets"]),
+            to=str(item["to"]),
+            completed_targets=tuple(str(target) for target in item.get("completed_targets", [])),
+            first_exchange=item.get("first_exchange"),
+            chat_mode=item.get("chat_mode"),
+            auto_rounds=item.get("auto_rounds"),
+        )
+        for item in data.get("deliveries", [])
+    )
+
+
+def write_pending_deliveries(tdir: Path, deliveries: deque[QueuedDelivery]) -> None:
+    path = tdir / PENDING_MESSAGES_FILENAME
+    if not deliveries:
+        path.unlink(missing_ok=True)
+        return
+
+    write_json(
+        path,
+        {
+            "deliveries": [
+                {
+                    "id": delivery.delivery_id,
+                    "body": delivery.body,
+                    "targets": list(delivery.targets),
+                    "to": delivery.to,
+                    "completed_targets": list(delivery.completed_targets),
+                    "first_exchange": delivery.first_exchange,
+                    "chat_mode": delivery.chat_mode,
+                    "auto_rounds": delivery.auto_rounds,
+                }
+                for delivery in deliveries
+            ]
+        },
+    )
 
 
 def mention_bump(response_text: str, remaining: list[str], valid_members: list[str]) -> list[str]:
@@ -120,10 +186,12 @@ def build_branch_context(base: Path, branch: str) -> str:
         Tickets:
           e0eb  in_progress  P2  kd chat: inject branch context
           a1b2  open         P1  Fix parsing bug
+        Contexts (concurrent agent sessions):
+          codex:abc123  codex/agent  e0eb
 
     Returns an empty string if no branch info is available.
     """
-    from kingdom.state import branch_root
+    from kingdom.state import branch_root, compact_context_id, list_execution_contexts
     from kingdom.ticket import list_tickets
 
     lines = ["[Branch context]", f"Branch: {branch}"]
@@ -135,6 +203,24 @@ def build_branch_context(base: Path, branch: str) -> str:
         for t in tickets:
             status = t.status.replace("_", " ")
             lines.append(f"  {t.id}  {status:12s}  P{t.priority}  {t.title}")
+
+    contexts = [context for context in list_execution_contexts(base, feature=branch) if context.get("ticket_id")]
+    if contexts:
+        lines.append("Contexts (concurrent agent sessions):")
+        for context in contexts:
+            states = []
+            if context["stale"]:
+                states.append("stale")
+            if not context["active"]:
+                states.append("completed")
+            state = f" ({', '.join(states)})" if states else ""
+            agent_type = f"/{context['agent_type']}" if context.get("agent_type") else ""
+            parent = context.get("parent_agent_id")
+            parent_label = f" child-of:{compact_context_id(parent)}" if isinstance(parent, str) else ""
+            lines.append(
+                f"  {compact_context_id(context['context_id'])}  "
+                f"{context['host']}/{context['role']}{agent_type}{state}{parent_label}  {context['ticket_id']}"
+            )
 
     return "\n".join(lines) + "\n\n"
 
@@ -382,6 +468,12 @@ class ChatApp(App):
         self.chat_mode: str = "natural"
         self.auto_rounds: int = 1
         self.reply_target: str | None = None
+        self.delivery_queue: deque[QueuedDelivery] = deque()
+        self.delivery_active = False
+        self.active_delivery_id: str | None = None
+        self.completed_delivery_targets: Counter[str] = Counter()
+        self.seen_delivery_targets: Counter[str] = Counter()
+        self.rendered_message_sequences: set[int] = set()
 
     def compose(self) -> ComposeResult:
         # Load thread metadata for header
@@ -441,8 +533,13 @@ class ChatApp(App):
 
         # Load existing messages from thread history
         self.load_history()
+        self.restore_pending_deliveries(tdir)
 
         self.set_interval(0.1, self.poll_updates)
+
+        if self.delivery_queue:
+            self.delivery_active = True
+            self.run_worker(self.drain_delivery_queue(), exclusive=False)
 
         # Focus the input area
         input_area = self.query_one("#input-area", TextArea)
@@ -702,64 +799,200 @@ class ChatApp(App):
             input_area.load_text(text)
             return
 
-        self.interrupted = False
-        self.generation += 1
-        gen = self.generation
-
         # Parse @mentions
         targets = self.parse_targets(text)
 
-        # Write king message to thread files
         to = targets[0] if len(targets) == 1 else "all"
-        add_message(self.base, self.branch, self.thread_id, from_="king", to=to, body=text)
+        delivery = QueuedDelivery(
+            delivery_id=uuid4().hex,
+            body=text,
+            targets=tuple(targets),
+            to=to,
+            chat_mode=self.chat_mode,
+            auto_rounds=self.auto_rounds,
+        )
+        queued = self.delivery_active
+        self.delivery_queue.append(delivery)
+        write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
 
-        # Render king message immediately (don't wait for poll cycle)
+        if queued:
+            self.notify(f"Message queued ({len(self.delivery_queue)} waiting)")
+            return
+
+        self.render_king_message(delivery)
+        self.delivery_active = True
+        self.run_worker(self.drain_delivery_queue(), exclusive=False)
+
+    def render_king_message(self, delivery: QueuedDelivery) -> None:
+        """Render a submitted message before its council delivery begins."""
         log = self.query_one("#message-log", MessageLog)
         log.scroll_if_following()  # capture intent BEFORE mounts
-        king_panel = MessagePanel(sender="king", body=text, member_names=self.member_names, id=f"king-{id(text)}")
+        king_panel = MessagePanel(
+            sender="king",
+            body=delivery.body,
+            member_names=self.member_names,
+            id=f"king-{delivery.delivery_id}",
+        )
         log.mount(king_panel)
 
-        # Update poller so it doesn't re-report this king message
-        if self.poller:
-            self.poller.last_sequence += 1
+    def restore_pending_deliveries(self, tdir: Path) -> None:
+        """Load deliveries whose Council dispatch did not finish."""
+        self.delivery_queue = load_pending_deliveries(tdir)
 
+    async def drain_delivery_queue(self) -> None:
+        """Deliver submitted messages one at a time in FIFO order."""
+        try:
+            while self.delivery_queue:
+                delivery = self.delivery_queue[0]
+                self.interrupted = False
+                self.generation += 1
+                await self.deliver_message(delivery, self.generation)
+                self.delivery_queue.popleft()
+                write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
+                self.poll_updates()
+        finally:
+            self.delivery_active = False
+
+    async def deliver_message(self, delivery: QueuedDelivery, generation: int) -> None:
+        """Persist and dispatch one queued king message."""
+        prior_messages = list_messages(self.base, self.branch, self.thread_id)
+        message = next((item for item in prior_messages if item.delivery_id == delivery.delivery_id), None)
+        if message is None:
+            log = self.query_one("#message-log", MessageLog)
+            if not log.query(f"#king-{delivery.delivery_id}"):
+                self.render_king_message(delivery)
+            message = add_message(
+                self.base,
+                self.branch,
+                self.thread_id,
+                from_="king",
+                to=delivery.to,
+                body=delivery.body,
+                delivery_id=delivery.delivery_id,
+            )
+            prior_messages.append(message)
+        self.rendered_message_sequences.add(message.sequence)
+
+        is_first_exchange = delivery.first_exchange
+        if is_first_exchange is None:
+            is_first_exchange = not any(item.from_ != "king" for item in prior_messages)
+            delivery = replace(delivery, first_exchange=is_first_exchange)
+            self.delivery_queue[0] = delivery
+            write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
+
+        if delivery.chat_mode is None or delivery.auto_rounds is None:
+            delivery = replace(
+                delivery,
+                chat_mode=delivery.chat_mode or self.chat_mode,
+                auto_rounds=self.auto_rounds if delivery.auto_rounds is None else delivery.auto_rounds,
+            )
+            self.delivery_queue[0] = delivery
+            write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
+
+        persisted_targets = Counter(
+            item.from_ for item in prior_messages if item.delivery_id == delivery.delivery_id and item.from_ != "king"
+        )
+        recovered_targets = persisted_targets - Counter(delivery.completed_targets)
+        if recovered_targets:
+            delivery = replace(
+                delivery,
+                completed_targets=(*delivery.completed_targets, *recovered_targets.elements()),
+            )
+            self.delivery_queue[0] = delivery
+            write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
+
+        self.active_delivery_id = delivery.delivery_id
+        self.completed_delivery_targets = Counter(delivery.completed_targets)
+        self.seen_delivery_targets = Counter()
+
+        try:
+            await self.dispatch_delivery(delivery, generation, is_first_exchange)
+        finally:
+            self.active_delivery_id = None
+            self.completed_delivery_targets.clear()
+            self.seen_delivery_targets.clear()
+
+    async def dispatch_delivery(
+        self,
+        delivery: QueuedDelivery,
+        generation: int,
+        is_first_exchange: bool,
+    ) -> None:
+        """Run the persisted delivery schedule, skipping completed occurrences."""
+
+        targets = list(delivery.targets)
         tdir = thread_dir(self.base, self.branch, self.thread_id)
-
-        # Clean up any in-flight panels from previous exchange to avoid
-        # duplicate widget IDs when mounting new WaitingPanels.
+        log = self.query_one("#message-log", MessageLog)
         for name in targets:
-            self.remove_member_panels(log, name)
+            if self.delivery_target_pending(name):
+                await self.await_remove_member_panels(log, name)
 
-        if to == "all":
-            # Sequential modes (round_robin, manual): only show WaitingPanel for
-            # the first target; each mode mounts panels as it queries.
-            # Parallel modes (natural, broadcast): show all panels upfront.
-            sequential = self.chat_mode in ("round_robin", "manual")
+        if delivery.to == "all":
+            mode = delivery.chat_mode or self.chat_mode
+            auto_rounds = self.auto_rounds if delivery.auto_rounds is None else delivery.auto_rounds
+            sequential = mode in ("round_robin", "manual")
             panel_targets = targets[:1] if sequential else targets
             for name in panel_targets:
-                if not log.query(f"#wait-{name}"):
+                if self.delivery_target_pending(name) and not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
-            prior_messages = list_messages(self.base, self.branch, self.thread_id)
-            is_first_exchange = not any(m.from_ != "king" for m in prior_messages)
-            self.run_worker(self.run_chat_round(targets, gen, tdir, is_first_exchange), exclusive=False)
-        else:
-            # Directed @mention: single query, no auto-turns
-            if not log.query(f"#wait-{targets[0]}"):
-                log.mount(WaitingPanel(sender=targets[0], id=f"wait-{targets[0]}"))
-            member = self.council.get_member(targets[0]) if self.council else None
-            if member:
-                stream_path = tdir / f".stream-{targets[0]}.jsonl"
-                self.run_worker(self.run_query(member, stream_path, generation=gen), exclusive=False)
+            await self.run_chat_round(
+                targets,
+                generation,
+                tdir,
+                is_first_exchange,
+                mode=mode,
+                auto_rounds=auto_rounds,
+            )
+            return
+
+        name = targets[0]
+        if not self.claim_delivery_target(name):
+            return
+        if not log.query(f"#wait-{name}"):
+            log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
+        member = self.council.get_member(name) if self.council else None
+        if member:
+            stream_path = tdir / f".stream-{name}.jsonl"
+            await self.run_query(member, stream_path, generation=generation)
+
+    def delivery_target_pending(self, name: str) -> bool:
+        """Return whether the next planned query for a member is unfinished."""
+        if self.active_delivery_id is None:
+            return True
+        return self.seen_delivery_targets[name] + 1 > self.completed_delivery_targets[name]
+
+    def claim_delivery_target(self, name: str) -> bool:
+        """Record a planned query occurrence and return whether it must run."""
+        if self.active_delivery_id is None:
+            return True
+        self.seen_delivery_targets[name] += 1
+        return self.seen_delivery_targets[name] > self.completed_delivery_targets[name]
+
+    def complete_delivery_target(self, name: str) -> None:
+        """Persist completion of one member query in the active delivery."""
+        if self.active_delivery_id is None:
+            return
+        for index, delivery in enumerate(self.delivery_queue):
+            if delivery.delivery_id != self.active_delivery_id:
+                continue
+            self.delivery_queue[index] = replace(
+                delivery,
+                completed_targets=(*delivery.completed_targets, name),
+            )
+            self.completed_delivery_targets[name] += 1
+            write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
+            return
 
     async def run_query(self, member, stream_path: Path, generation: int | None = None) -> str | None:
         """Run a member query with full thread context, then persist and clean up.
 
         When *generation* is passed, the response is discarded if ``self.generation``
-        has moved on (meaning the user sent a new message while this query was in flight).
+        has moved on and superseded this delivery.
 
         Returns the response body text, or None if discarded/errored.
         """
         body = None
+        persisted = False
         try:
             timeout = self.council.timeout if self.council else 600
             tdir = thread_dir(self.base, self.branch, self.thread_id)
@@ -789,15 +1022,29 @@ class ChatApp(App):
                 from_=member.name,
                 to="king",
                 body=body,
+                delivery_id=self.active_delivery_id,
                 **response.thread_metadata(),
             )
+            persisted = True
 
         except (OSError, RuntimeError, ValueError) as exc:
             # Persist the exception as an error message
             logger.exception("Member query failed for %s", member.name)
             error_body = f"*Error: {exc}*"
-            add_message(self.base, self.branch, self.thread_id, from_=member.name, to="king", body=error_body)
+            add_message(
+                self.base,
+                self.branch,
+                self.thread_id,
+                from_=member.name,
+                to="king",
+                body=error_body,
+                delivery_id=self.active_delivery_id,
+            )
+            persisted = True
         finally:
+            if persisted:
+                self.complete_delivery_target(member.name)
+
             # Chat is stateless — clear session_id so the next query doesn't
             # pass --resume to the agent.  Thread history injection provides
             # full context; accumulating session_id causes cross-talk (0f27).
@@ -818,7 +1065,15 @@ class ChatApp(App):
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         return stream_path.parent / f".debug-stream-{member_name}-{timestamp}.jsonl"
 
-    async def run_chat_round(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
+    async def run_chat_round(
+        self,
+        targets: list[str],
+        generation: int,
+        tdir: Path,
+        is_first_exchange: bool,
+        mode: str | None = None,
+        auto_rounds: int | None = None,
+    ) -> None:
         """Coordinate a chat round after the king sends a message.
 
         Dispatches to mode-specific logic:
@@ -830,19 +1085,22 @@ class ChatApp(App):
         if not self.council:
             return
 
-        mode = self.chat_mode
+        mode = mode or self.chat_mode
+        auto_rounds = self.auto_rounds if auto_rounds is None else auto_rounds
 
         if mode == "manual":
             await self.run_mode_manual(targets, generation, tdir)
         elif mode == "broadcast":
-            await self.run_mode_broadcast(targets, generation, tdir, is_first_exchange)
+            await self.run_mode_broadcast(targets, generation, tdir, is_first_exchange, auto_rounds)
         elif mode == "round_robin":
-            await self.run_mode_round_robin(targets, generation, tdir)
+            await self.run_mode_round_robin(targets, generation, tdir, auto_rounds)
         else:
             # natural (default)
-            await self.run_mode_natural(targets, generation, tdir, is_first_exchange)
+            await self.run_mode_natural(targets, generation, tdir, is_first_exchange, auto_rounds)
 
-    async def run_mode_natural(self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool) -> None:
+    async def run_mode_natural(
+        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool, auto_rounds: int
+    ) -> None:
         """Natural mode: parallel broadcast first turn, then shuffled round-robin."""
         if is_first_exchange:
             # First exchange: parallel broadcast, no auto-turns
@@ -850,14 +1108,16 @@ class ChatApp(App):
             return
 
         # Follow-up: shuffled sequential only — each member responds once
-        await self.sequential_auto_turns(generation, tdir, shuffle=True)
+        await self.sequential_auto_turns(targets, generation, tdir, shuffle=True, auto_rounds=auto_rounds)
 
-    async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
+    async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path, auto_rounds: int) -> None:
         """Round-robin mode: no initial broadcast, fixed-order sequential turns."""
         # First turn: sequential through targets, mounting WaitingPanel per-agent
         for name in targets:
             if self.interrupted or self.generation != generation:
                 return
+            if not self.claim_delivery_target(name):
+                continue
             member = self.council.get_member(name)
             if not member:
                 continue
@@ -870,7 +1130,7 @@ class ChatApp(App):
             await self.run_query(member, stream_path, generation=generation)
 
         # Auto-turns: fixed-order sequential
-        await self.sequential_auto_turns(generation, tdir, shuffle=False)
+        await self.sequential_auto_turns(targets, generation, tdir, shuffle=False, auto_rounds=auto_rounds)
 
     async def run_mode_manual(self, targets: list[str], generation: int, tdir: Path) -> None:
         """Manual mode: only query @mentioned targets, no auto-turns."""
@@ -878,6 +1138,8 @@ class ChatApp(App):
         for name in targets:
             if self.interrupted or self.generation != generation:
                 return
+            if not self.claim_delivery_target(name):
+                continue
             member = self.council.get_member(name)
             if not member:
                 continue
@@ -890,7 +1152,7 @@ class ChatApp(App):
             await self.run_query(member, stream_path, generation=generation)
 
     async def run_mode_broadcast(
-        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool
+        self, targets: list[str], generation: int, tdir: Path, is_first_exchange: bool, auto_rounds: int
     ) -> None:
         """Broadcast mode: parallel to all each turn, auto_rounds additional rounds."""
         # First turn: parallel (WaitingPanels mounted by send_message)
@@ -903,19 +1165,20 @@ class ChatApp(App):
             return
 
         # Additional broadcast rounds
-        if self.auto_rounds <= 0:
+        if auto_rounds <= 0:
             return
-        for _round in range(self.auto_rounds):
+        for _round in range(auto_rounds):
             if self.interrupted or self.generation != generation:
                 return
-            active = [n for n in self.member_names if n not in self.muted]
             log = self.query_one("#message-log", MessageLog)
             log.scroll_if_following()
-            for name in active:
+            for name in targets:
+                if not self.delivery_target_pending(name):
+                    continue
                 await self.await_remove_member_panels(log, name)
                 if not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
-            await self.parallel_query(active, generation, tdir)
+            await self.parallel_query(targets, generation, tdir)
             if self.generation != generation:
                 return
 
@@ -923,6 +1186,8 @@ class ChatApp(App):
         """Run queries for all targets in parallel."""
         coros = []
         for name in targets:
+            if not self.claim_delivery_target(name):
+                continue
             member = self.council.get_member(name)
             if member:
                 stream_path = tdir / f".stream-{name}.jsonl"
@@ -930,26 +1195,34 @@ class ChatApp(App):
         if coros:
             await asyncio.gather(*coros)
 
-    async def sequential_auto_turns(self, generation: int, tdir: Path, shuffle: bool) -> None:
+    async def sequential_auto_turns(
+        self,
+        targets: list[str],
+        generation: int,
+        tdir: Path,
+        shuffle: bool,
+        auto_rounds: int,
+    ) -> None:
         """Run sequential auto-turn rounds through eligible members.
 
         After each response, parses @mentions and bumps mentioned members
         to the front of the remaining queue for the current round.
         """
-        if self.auto_rounds <= 0:
+        if auto_rounds <= 0:
             return
-        for _round in range(self.auto_rounds):
-            active = [n for n in self.member_names if n not in self.muted]
+        for _round in range(auto_rounds):
+            active = targets.copy()
             if shuffle:
                 import random
 
-                active = active.copy()
                 random.shuffle(active)
             queue = list(active)
             while queue:
                 if self.interrupted or self.generation != generation:
                     return
                 name = queue.pop(0)
+                if not self.claim_delivery_target(name):
+                    continue
                 member = self.council.get_member(name)
                 if not member:
                     continue
@@ -1015,6 +1288,8 @@ class ChatApp(App):
             self.cmd_copy(arg)
         elif cmd in ("/writable", "/writeable"):
             self.cmd_writable()
+        elif cmd == "/status":
+            self.cmd_status()
         elif cmd in ("/help", "/h"):
             self.cmd_help()
         elif cmd in ("/quit", "/exit"):
@@ -1098,6 +1373,10 @@ class ChatApp(App):
         label = "ON — members can edit files and run commands" if self.writable else "OFF — advisory only"
         self.show_system_message(f"Writable mode: {label}")
 
+    def cmd_status(self) -> None:
+        """Show the branch's tickets and execution-context assignments."""
+        self.show_system_message(build_branch_context(self.base, self.branch).rstrip())
+
     def cmd_help(self) -> None:
         """Show available commands."""
         help_text = (
@@ -1105,6 +1384,7 @@ class ChatApp(App):
             "/unmute <member> — re-include member in queries\n"
             "/copy [member]   — copy last agent response to clipboard\n"
             "/writable        — toggle writable mode (file edits, commands)\n"
+            "/status          — show branch tickets and concurrent agent contexts\n"
             "/mute            — show currently muted members\n"
             "/help            — show this help\n"
             "/quit or /exit   — quit kd council chat\n"
@@ -1162,6 +1442,10 @@ class ChatApp(App):
 
     def handle_new_message(self, log: MessageLog, event: NewMessage) -> None:
         """Replace waiting/streaming/thinking/interrupted panel in-place with a finalized message."""
+        if event.sequence in self.rendered_message_sequences:
+            self.rendered_message_sequences.discard(event.sequence)
+            return
+
         waiting_id = f"wait-{event.sender}"
         streaming_id = f"stream-{event.sender}"
         thinking_id = f"thinking-{event.sender}"

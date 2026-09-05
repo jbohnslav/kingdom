@@ -1,0 +1,34 @@
+{
+  "name": "kingdom",
+  "version": "1.0.0",
+  "description": "Persistent Markdown tickets and lifecycle logging for coding agents.",
+  "author": {
+    "name": "James Robinson-Bohnslav"
+  },
+  "homepage": "https://github.com/jbohnslav/kingdom",
+  "repository": "https://github.com/jbohnslav/kingdom",
+  "license": "Apache-2.0",
+  "keywords": [
+    "agents",
+    "markdown",
+    "tickets",
+    "workflow"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Kingdom",
+    "shortDescription": "Persistent Markdown tickets for coding agents",
+    "longDescription": "Track agent work in durable Markdown tickets and connect Codex lifecycle events to the Kingdom workflow.",
+    "developerName": "James Robinson-Bohnslav",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/jbohnslav/kingdom",
+    "defaultPrompt": [
+      "Use Kingdom tickets to track this task."
+    ],
+    "brandColor": "#6B4F2A"
+  }
+}

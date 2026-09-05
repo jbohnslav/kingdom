@@ -1,22 +1,35 @@
-"""Tests for ticket lifecycle commands: create, close, reopen, delete, move, pull, add-note."""
+"""Tests for ticket lifecycle commands."""
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, current_thread
 from unittest.mock import patch
 
+import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
-from kingdom.cli.ticket import ticket_app
+from kingdom.cli.ticket import ticket_app, ticket_pull, ticket_reopen, ticket_start
+from kingdom.doctor import binding_issues, execution_context_issues, legacy_context_issues
 from kingdom.state import (
+    ExecutionContext,
     archive_root,
     backlog_root,
     branch_root,
+    clear_ticket_execution_contexts,
     ensure_branch_layout,
+    list_execution_contexts,
+    read_execution_ticket_context,
     read_terminal_ticket_context,
+    record_execution_ticket_context,
+    record_terminal_ticket_context,
+    resolve_execution_context,
 )
 from kingdom.ticket import Ticket, find_ticket, read_ticket, write_ticket
 
@@ -326,7 +339,7 @@ class TestTicketCloseArchive:
         archived_path = archive_dir / "kin-strt.md"
         write_ticket(ticket, archived_path)
 
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-backlog-terminal-test"}):
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-backlog-terminal-test"}, clear=True):
             result = runner.invoke(ticket_app, ["start", "kin-strt"])
 
             assert result.exit_code == 0, result.output
@@ -339,18 +352,21 @@ class TestTicketCloseArchive:
         assert context["ticket_id"] == "kin-strt"
         assert context["location"] == "backlog"
 
-    def test_start_assigns_ticket_to_hand(self, cli_project: Path) -> None:
+    def test_start_assigns_ticket_to_execution_context(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         ticket_path = create_ticket_in(branch_dir, "kin-hand")
 
-        result = runner.invoke(ticket_app, ["start", "kin-hand"])
+        with patch.dict(os.environ, {"KD_CONTEXT": "assignment-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["start", "kin-hand"])
+            context = resolve_execution_context()
 
         assert result.exit_code == 0, result.output
+        assert context is not None
         ticket = read_ticket(ticket_path)
         assert ticket.status == "in_progress"
-        assert ticket.assignee == "hand"
+        assert ticket.assignee == context.context_id
 
-    def test_start_overwrites_existing_assignee_with_hand(self, cli_project: Path) -> None:
+    def test_start_overwrites_existing_assignee_with_context(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         ticket = Ticket(
             id="kin-asgn",
@@ -363,10 +379,300 @@ class TestTicketCloseArchive:
         ticket_path = branch_dir / "kin-asgn.md"
         write_ticket(ticket, ticket_path)
 
-        result = runner.invoke(ticket_app, ["start", "kin-asgn"])
+        with patch.dict(os.environ, {"KD_CONTEXT": "replacement-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["start", "kin-asgn"])
+            context = resolve_execution_context()
 
         assert result.exit_code == 0, result.output
-        assert read_ticket(ticket_path).assignee == "hand"
+        assert context is not None
+        assert read_ticket(ticket_path).assignee == context.context_id
+
+    def test_start_reassignment_replaces_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-reassign")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "first-owner", "TERM_SESSION_ID": "first-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-reassign"]).exit_code == 0
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "second-owner", "TERM_SESSION_ID": "second-terminal"},
+            clear=True,
+        ):
+            result = runner.invoke(ticket_app, ["start", "kin-reassign"])
+
+        assert result.exit_code == 0, result.output
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "first-terminal"}, clear=True):
+            previous = read_terminal_ticket_context(cli_project)
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "second-terminal"}, clear=True):
+            replacement = read_terminal_ticket_context(cli_project)
+        assert previous is None
+        assert replacement is not None
+        assert replacement["ticket_id"] == "kin-reassign"
+        assert legacy_context_issues(cli_project) == []
+
+    def test_concurrent_starts_by_one_context_leave_one_ticket_bound(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        first_path = create_ticket_in(branch_dir, "kin-race-a")
+        second_path = create_ticket_in(branch_dir, "kin-race-b")
+        context = resolve_execution_context(
+            session_id="shared-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        assert context is not None
+
+        first_reached_record = Event()
+        second_finished_record = Event()
+        release_first = Event()
+
+        def delayed_record(
+            base: Path,
+            current: ExecutionContext,
+            ticket_id: str,
+            *,
+            feature: str,
+            location: str | None = None,
+        ) -> None:
+            if current_thread().name.endswith("_0"):
+                first_reached_record.set()
+                assert release_first.wait(timeout=2)
+            record_execution_ticket_context(
+                base,
+                current,
+                ticket_id,
+                feature=feature,
+                location=location,
+            )
+            if current_thread().name.endswith("_1"):
+                second_finished_record.set()
+
+        with (
+            patch("kingdom.cli.ticket.resolve_execution_context", return_value=context),
+            patch("kingdom.cli.ticket.record_execution_ticket_context", side_effect=delayed_record),
+            patch("kingdom.cli.ticket.record_terminal_ticket_context"),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="starter") as pool,
+        ):
+            first_future = pool.submit(ticket_start, "kin-race-a")
+            assert first_reached_record.wait(timeout=2)
+            second_future = pool.submit(ticket_start, "kin-race-b")
+            assert not second_finished_record.wait(timeout=0.5)
+            release_first.set()
+            first_future.result(timeout=2)
+            second_future.result(timeout=2)
+
+        binding = read_execution_ticket_context(cli_project, context)
+        assert read_ticket(first_path).assignee is None
+        assert read_ticket(second_path).assignee == context.context_id
+        assert binding is not None
+        assert binding["ticket_id"] == "kin-race-b"
+        assert binding_issues(cli_project) == []
+        assert execution_context_issues(cli_project) == []
+
+    def test_concurrent_reassignment_does_not_unassign_new_owner(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        next_path = create_ticket_in(branch_dir, "kin-next")
+        previous_path = create_ticket_in(branch_dir, "kin-previous")
+        first = resolve_execution_context(
+            session_id="first-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        second = resolve_execution_context(
+            session_id="second-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        assert first is not None
+        assert second is not None
+        previous = read_ticket(previous_path)
+        previous.status = "in_progress"
+        previous.assignee = first.context_id
+        write_ticket(previous, previous_path)
+        record_execution_ticket_context(
+            cli_project,
+            first,
+            previous.id,
+            feature=BRANCH,
+            location=f"branch:{BRANCH}",
+        )
+
+        first_reached_stale_write = Event()
+        second_finished = Event()
+        release_first = Event()
+
+        def current_context() -> ExecutionContext:
+            return first if current_thread().name.endswith("_0") else second
+
+        def delayed_write(ticket: Ticket, path: Path) -> None:
+            if current_thread().name.endswith("_0") and ticket.id == previous.id and ticket.assignee is None:
+                first_reached_stale_write.set()
+                assert release_first.wait(timeout=2)
+            write_ticket(ticket, path)
+
+        def start_as_second() -> None:
+            ticket_start(previous.id)
+            second_finished.set()
+
+        with (
+            patch("kingdom.cli.ticket.resolve_execution_context", side_effect=current_context),
+            patch("kingdom.cli.ticket.write_ticket", side_effect=delayed_write),
+            patch("kingdom.cli.ticket.record_terminal_ticket_context"),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="starter") as pool,
+        ):
+            first_future = pool.submit(ticket_start, "kin-next")
+            assert first_reached_stale_write.wait(timeout=2)
+            second_future = pool.submit(start_as_second)
+            assert not second_finished.wait(timeout=0.5)
+            release_first.set()
+            first_future.result(timeout=2)
+            second_future.result(timeout=2)
+
+        contexts = {
+            binding["context_id"]: binding["ticket_id"]
+            for binding in list_execution_contexts(cli_project, feature=BRANCH)
+            if binding.get("active") and binding.get("ticket_id")
+        }
+        assert read_ticket(next_path).assignee == first.context_id
+        assert read_ticket(previous_path).assignee == second.context_id
+        assert contexts == {
+            first.context_id: "kin-next",
+            second.context_id: previous.id,
+        }
+        assert binding_issues(cli_project) == []
+        assert execution_context_issues(cli_project) == []
+
+    def test_pull_start_serializes_with_direct_start(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        direct_path = create_ticket_in(branch_dir, "kin-direct-race")
+        pulled_path = create_ticket_in(backlog_root(cli_project) / "tickets", "kin-pull-race")
+        context = resolve_execution_context(
+            session_id="shared-pull-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        assert context is not None
+
+        direct_reached_record = Event()
+        pull_finished = Event()
+        release_direct = Event()
+
+        def delayed_record(
+            base: Path,
+            current: ExecutionContext,
+            ticket_id: str,
+            *,
+            feature: str,
+            location: str | None = None,
+        ) -> None:
+            if current_thread().name.endswith("_0"):
+                direct_reached_record.set()
+                assert release_direct.wait(timeout=2)
+            record_execution_ticket_context(
+                base,
+                current,
+                ticket_id,
+                feature=feature,
+                location=location,
+            )
+
+        def pull_and_start() -> None:
+            ticket_pull(["kin-pull-race"], start=True)
+            pull_finished.set()
+
+        with (
+            patch("kingdom.cli.ticket.resolve_execution_context", return_value=context),
+            patch("kingdom.cli.ticket.record_execution_ticket_context", side_effect=delayed_record),
+            patch("kingdom.cli.ticket.record_terminal_ticket_context"),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="starter") as pool,
+        ):
+            direct_future = pool.submit(ticket_start, "kin-direct-race")
+            assert direct_reached_record.wait(timeout=2)
+            pull_future = pool.submit(pull_and_start)
+            assert not pull_finished.wait(timeout=0.5)
+            release_direct.set()
+            direct_future.result(timeout=2)
+            pull_future.result(timeout=2)
+
+        pulled_path = branch_dir / pulled_path.name
+        binding = read_execution_ticket_context(cli_project, context)
+        assert read_ticket(direct_path).assignee is None
+        assert read_ticket(pulled_path).assignee == context.context_id
+        assert binding is not None
+        assert binding["ticket_id"] == "kin-pull-race"
+        assert binding_issues(cli_project) == []
+        assert execution_context_issues(cli_project) == []
+
+    def test_reopen_serializes_ticket_clear_with_direct_start(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(branch_dir, "kin-reopen-race")
+        ticket = read_ticket(ticket_path)
+        ticket.status = "closed"
+        ticket.closed_at = datetime.now(UTC)
+        ticket.resolution = "completed"
+        write_ticket(ticket, ticket_path)
+        reopening = resolve_execution_context(
+            session_id="reopening-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        starting = resolve_execution_context(
+            session_id="starting-owner",
+            host="codex",
+            cwd=cli_project,
+            prefer_session_id=True,
+        )
+        assert reopening is not None
+        assert starting is not None
+
+        reopen_reached_clear = Event()
+        start_finished = Event()
+        release_reopen = Event()
+
+        def current_context() -> ExecutionContext:
+            return reopening if current_thread().name.endswith("_0") else starting
+
+        def delayed_clear(base: Path, ticket_id: str, *, now: datetime | None = None) -> list[str]:
+            if current_thread().name.endswith("_0"):
+                reopen_reached_clear.set()
+                assert release_reopen.wait(timeout=2)
+            return clear_ticket_execution_contexts(base, ticket_id, now=now)
+
+        def start_ticket() -> None:
+            ticket_start("kin-reopen-race")
+            start_finished.set()
+
+        with (
+            patch("kingdom.cli.ticket.resolve_execution_context", side_effect=current_context),
+            patch("kingdom.cli.ticket.clear_ticket_execution_contexts", side_effect=delayed_clear),
+            patch("kingdom.cli.ticket.record_terminal_ticket_context"),
+            ThreadPoolExecutor(max_workers=2, thread_name_prefix="starter") as pool,
+        ):
+            reopen_future = pool.submit(ticket_reopen, "kin-reopen-race")
+            assert reopen_reached_clear.wait(timeout=2)
+            start_future = pool.submit(start_ticket)
+            assert not start_finished.wait(timeout=0.5)
+            release_reopen.set()
+            reopen_future.result(timeout=2)
+            start_future.result(timeout=2)
+
+        binding = read_execution_ticket_context(cli_project, starting)
+        ticket = read_ticket(ticket_path)
+        assert ticket.status == "in_progress"
+        assert ticket.assignee == starting.context_id
+        assert binding is not None
+        assert binding["ticket_id"] == ticket.id
+        assert binding_issues(cli_project) == []
+        assert execution_context_issues(cli_project) == []
 
     def test_start_without_active_session_does_not_mutate_ticket(self) -> None:
         with runner.isolated_filesystem():
@@ -386,7 +692,7 @@ class TestTicketCloseArchive:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
         create_ticket_in(branch_dir, "kin-term")
 
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "terminal-ticket-test"}):
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "terminal-ticket-test"}, clear=True):
             result = runner.invoke(ticket_app, ["start", "kin-term"])
 
             assert result.exit_code == 0, result.output
@@ -401,7 +707,7 @@ class TestTicketCloseArchive:
         backlog_dir = backlog_root(cli_project) / "tickets"
         create_ticket_in(backlog_dir, "kin-bctx")
 
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "backlog-terminal-ticket-test"}):
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "backlog-terminal-ticket-test"}, clear=True):
             result = runner.invoke(ticket_app, ["start", "kin-bctx"])
 
             assert result.exit_code == 0, result.output
@@ -416,7 +722,7 @@ class TestTicketCloseArchive:
         archive_dir = archive_root(cli_project) / "old-feature" / "tickets"
         create_ticket_in(archive_dir, "kin-actx")
 
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-branch-terminal-test"}):
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "archived-branch-terminal-test"}, clear=True):
             result = runner.invoke(ticket_app, ["start", "kin-actx"])
 
             assert result.exit_code == 0, result.output
@@ -424,7 +730,8 @@ class TestTicketCloseArchive:
 
         ticket = read_ticket(archive_dir / "kin-actx.md")
         assert ticket.status == "in_progress"
-        assert ticket.assignee == "hand"
+        assert ticket.assignee is not None
+        assert ticket.assignee.startswith("terminal:")
         assert context is not None
         assert context["ticket_id"] == "kin-actx"
         assert context["feature"] == "feature-ticket-test"
@@ -453,6 +760,39 @@ class TestTicketStatus:
         assert result.exit_code == 0, result.output
         assert "in_review → waiting" in result.output
 
+    def test_status_leaving_in_progress_clears_native_assignee(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-unassign")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "status-unassign"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-unassign"]).exit_code == 0
+            context = resolve_execution_context()
+            assert context is not None
+
+            result = runner.invoke(ticket_app, ["status", "kin-unassign", "blocked"])
+            binding = read_execution_ticket_context(cli_project, context)
+
+        assert result.exit_code == 0, result.output
+        assert read_ticket(path).assignee is None
+        assert binding is None
+
+    def test_status_leaving_in_progress_clears_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-status-terminal")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "status-session", "TERM_SESSION_ID": "status-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-status-terminal"]).exit_code == 0
+            assert read_terminal_ticket_context(cli_project) is not None
+            result = runner.invoke(ticket_app, ["status", "kin-status-terminal", "blocked"])
+            assert read_terminal_ticket_context(cli_project) is None
+
+        assert result.exit_code == 0, result.output
+        assert legacy_context_issues(cli_project) == []
+
 
 class TestTicketCloseIdempotent:
     def test_close_already_archived_ticket_is_noop(self, cli_project: Path) -> None:
@@ -477,6 +817,144 @@ class TestTicketCloseIdempotent:
         assert archived_path.exists()
         # Should NOT be in backlog
         assert not (backlog_root(cli_project) / "tickets" / "kin-idem.md").exists()
+
+    def test_close_rejects_changing_an_existing_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-final",
+            status="closed",
+            title="Already completed",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            resolution="completed",
+        )
+        path = branch_dir / "kin-final.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(
+            ticket_app,
+            ["close", "kin-final", "--resolution", "wont-do", "--reason", "Changed our mind"],
+        )
+
+        assert result.exit_code == 1
+        assert "already closed with resolution completed" in result.output
+        assert "reopen kin-final" in result.output
+        unchanged = read_ticket(path)
+        assert unchanged.resolution == "completed"
+        assert unchanged.closed_at == ticket.closed_at
+
+    def test_close_rejects_new_reason_on_closed_ticket(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-rerun",
+            status="closed",
+            title="Already completed",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            resolution="completed",
+        )
+        path = branch_dir / "kin-rerun.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-rerun", "--reason", "New evidence"])
+
+        assert result.exit_code == 1
+        assert "already closed" in result.output
+        assert "reopen kin-rerun" in result.output
+        unchanged = read_ticket(path)
+        assert unchanged.body == "Body"
+        assert unchanged.closed_at == ticket.closed_at
+
+    def test_legacy_duplicate_infers_duplicate_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-ldup",
+            status="closed",
+            title="Legacy duplicate",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-ldup.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-ldup"])
+
+        assert result.exit_code == 0, result.output
+        assert "already closed (duplicate)" in result.output
+        unchanged = read_ticket(path)
+        assert unchanged.resolution is None
+        assert unchanged.duplicate_of == "kin-original"
+        assert unchanged.closed_at == ticket.closed_at
+
+    def test_closed_duplicate_validates_identical_duplicate_target(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-original")
+        ticket = Ticket(
+            id="kin-ldup",
+            status="closed",
+            title="Legacy duplicate",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-ldup.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-ldup", "--duplicate-of", "kin-original"])
+
+        assert result.exit_code == 0, result.output
+        assert "already closed (duplicate)" in result.output
+        assert read_ticket(path).closed_at == ticket.closed_at
+
+    def test_closed_ticket_does_not_bypass_duplicate_target_validation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-ldup",
+            status="closed",
+            title="Legacy duplicate",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-ldup.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-ldup", "--duplicate-of", "nonexistent"])
+
+        assert result.exit_code == 1
+        assert "Duplicate target not found" in result.output
+        assert read_ticket(path).closed_at == ticket.closed_at
+
+    def test_closed_duplicate_rejects_different_existing_target(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-original")
+        create_ticket_in(branch_dir, "kin-other")
+        ticket = Ticket(
+            id="kin-ldup",
+            status="closed",
+            title="Legacy duplicate",
+            body="Body",
+            created=datetime.now(UTC),
+            closed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-ldup.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["close", "kin-ldup", "--duplicate-of", "kin-other"])
+
+        assert result.exit_code == 1
+        assert "already closed" in result.output
+        assert "reopen kin-ldup" in result.output
+        unchanged = read_ticket(path)
+        assert unchanged.duplicate_of == "kin-original"
+        assert unchanged.closed_at == ticket.closed_at
 
 
 class TestTicketCloseReason:
@@ -516,6 +994,376 @@ class TestTicketCloseReason:
         assert "## Worklog" not in content
 
 
+class TestTicketCloseResolution:
+    def test_close_defaults_to_completed(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-done")
+
+        result = runner.invoke(ticket_app, ["close", "kin-done"])
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(path)
+        assert ticket.resolution == "completed"
+        assert ticket.closed_at is not None
+
+    def test_close_accepts_each_non_completed_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+
+        for resolution in ("wont-do", "invalid"):
+            ticket_id = f"kin-{resolution[:4]}"
+            path = create_ticket_in(branch_dir, ticket_id)
+
+            result = runner.invoke(
+                ticket_app,
+                ["close", ticket_id, "--resolution", resolution, "--reason", f"Marked {resolution}"],
+            )
+
+            assert result.exit_code == 0, result.output
+            assert read_ticket(path).resolution == resolution
+
+    def test_reference_resolutions_require_reference_without_mutation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+
+        for resolution, option in (("duplicate", "--duplicate-of"), ("superseded", "--superseded-by")):
+            ticket_id = f"kin-missing-{resolution}"
+            path = create_ticket_in(branch_dir, ticket_id)
+            with patch.dict(os.environ, {"KD_CONTEXT": f"missing-{resolution}"}, clear=True):
+                assert runner.invoke(ticket_app, ["start", ticket_id]).exit_code == 0
+                context = resolve_execution_context()
+                assert context is not None
+                original = path.read_text(encoding="utf-8")
+
+                result = runner.invoke(
+                    ticket_app,
+                    ["close", ticket_id, "--resolution", resolution, "--reason", f"Marked {resolution}"],
+                )
+                binding = read_execution_ticket_context(cli_project, context)
+
+            assert result.exit_code == 1
+            assert f"requires {option}" in result.output
+            assert path.read_text(encoding="utf-8") == original
+            assert binding is not None
+            assert binding["ticket_id"] == ticket_id
+
+    def test_non_completed_resolution_requires_reason_without_mutation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-nore")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "resolution-validation"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-nore"]).exit_code == 0
+            context = resolve_execution_context()
+            assert context is not None
+
+            result = runner.invoke(ticket_app, ["close", "kin-nore", "--resolution", "wont-do", "-m", "   "])
+
+            binding = read_execution_ticket_context(cli_project, context)
+
+        assert result.exit_code == 1
+        assert "requires a non-empty --reason" in result.output
+        assert "kin-nore --resolution wont-do --reason" in result.output
+        ticket = read_ticket(path)
+        assert ticket.status == "in_progress"
+        assert ticket.resolution is None
+        assert ticket.closed_at is None
+        assert binding is not None
+        assert binding["ticket_id"] == "kin-nore"
+
+    def test_invalid_resolution_lists_valid_choices(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-badr")
+
+        result = runner.invoke(ticket_app, ["close", "kin-badr", "--resolution", "abandoned", "-m", "No"])
+
+        assert result.exit_code == 2
+        assert "completed" in result.output
+        assert "wont-do" in result.output
+        assert "duplicate" in result.output
+        assert "superseded" in result.output
+        assert "invalid" in result.output
+        assert read_ticket(path).status == "open"
+
+    def test_close_records_context_and_uses_one_timestamp_for_binding_cleanup(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-attr")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "resolution-attribution"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-attr"]).exit_code == 0
+            context = resolve_execution_context()
+            assert context is not None
+
+            result = runner.invoke(ticket_app, ["close", "kin-attr"])
+
+            binding = read_execution_ticket_context(cli_project, context)
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(path)
+        assert ticket.closed_context == context.context_id
+        assert ticket.closed_at is not None
+        assert binding is None
+
+        context_path = next((cli_project / ".kd" / "runtime" / "contexts").glob("*.json"))
+        context_data = json.loads(context_path.read_text())
+        assert context_data["unbound_at"] == ticket.closed_at.isoformat()
+
+
+class TestTicketLifecycleHistory:
+    def test_close_records_structured_reason_and_lifecycle_event(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-hist")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "lifecycle-close"}, clear=True):
+            result = runner.invoke(
+                ticket_app,
+                ["close", "kin-hist", "--resolution", "wont-do", "--reason", "Out of scope: later"],
+            )
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(path)
+        assert ticket.close_reason == "Out of scope: later"
+        assert "## Lifecycle" in ticket.body
+        assert "closed (wont-do)" in ticket.body
+        assert "Out of scope: later" in ticket.body
+        assert ticket.closed_context in ticket.body
+        content = path.read_text()
+        assert "close_reason:" in content
+        assert "## Worklog" in content
+        assert "Closed: Out of scope: later" in content
+
+    def test_close_reopen_close_history_is_append_only(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-cycle")
+        create_ticket_in(branch_dir, "kin-next")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "lifecycle-cycle"}, clear=True):
+            first_close = runner.invoke(
+                ticket_app,
+                ["close", "kin-cycle", "--resolution", "wont-do", "--reason", "First decision"],
+            )
+            reopen = runner.invoke(ticket_app, ["reopen", "kin-cycle"])
+            second_close = runner.invoke(ticket_app, ["close", "kin-cycle", "--superseded-by", "kin-next"])
+
+        assert first_close.exit_code == 0, first_close.output
+        assert reopen.exit_code == 0, reopen.output
+        assert second_close.exit_code == 0, second_close.output
+        ticket = read_ticket(path)
+        assert ticket.resolution == "superseded"
+        assert ticket.close_reason == "Superseded by kin-next"
+        assert ticket.superseded_by == "kin-next"
+        assert ticket.body.count("— closed (") == 2
+        assert ticket.body.count("— reopened") == 1
+        first_position = ticket.body.index("First decision")
+        reopen_position = ticket.body.index("— reopened")
+        second_position = ticket.body.index("Superseded by kin-next", reopen_position)
+        assert first_position < reopen_position < second_position
+
+    def test_reopen_clears_active_closure_and_preserves_legacy_history(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-open",
+            status="closed",
+            title="Reopen me",
+            body=(
+                "Legacy details\n\n## Worklog\n\n- old close note\n\n"
+                "## Lifecycle\n\n- 2026-01-01T00:00:00Z — closed (duplicate): Same work"
+            ),
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            resolution="duplicate",
+            close_reason="Same work",
+            closed_context="codex:old",
+            duplicate_of="kin-original",
+        )
+        path = branch_dir / "kin-open.md"
+        write_ticket(ticket, path)
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "lifecycle-reopen"}, clear=True):
+            result = runner.invoke(ticket_app, ["reopen", "kin-open"])
+
+        assert result.exit_code == 0, result.output
+        reopened = read_ticket(path)
+        assert reopened.status == "open"
+        assert reopened.closed_at is None
+        assert reopened.resolution is None
+        assert reopened.close_reason is None
+        assert reopened.closed_context is None
+        assert reopened.duplicate_of is None
+        assert reopened.superseded_by is None
+        assert "Legacy details" in reopened.body
+        assert "- old close note" in reopened.body
+        assert "closed (duplicate): Same work" in reopened.body
+        assert "— reopened (previous: duplicate)" in reopened.body
+
+    def test_reopen_clears_stale_native_assignee(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket = Ticket(
+            id="kin-reopen-owner",
+            status="closed",
+            title="Reopen stale owner",
+            created=datetime(2026, 1, 1, tzinfo=UTC),
+            closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            resolution="completed",
+            assignee="codex:stale-owner",
+        )
+        path = branch_dir / "kin-reopen-owner.md"
+        write_ticket(ticket, path)
+
+        result = runner.invoke(ticket_app, ["reopen", "kin-reopen-owner"])
+
+        assert result.exit_code == 0, result.output
+        assert read_ticket(path).assignee is None
+
+    def test_close_and_reopen_reject_malformed_context_without_mutation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        close_path = create_ticket_in(branch_dir, "kin-bad-close")
+        reopen_path = branch_dir / "kin-bad-reopen.md"
+        write_ticket(
+            Ticket(
+                id="kin-bad-reopen",
+                status="closed",
+                title="Closed ticket",
+                created=datetime(2026, 1, 1, tzinfo=UTC),
+                closed_at=datetime(2026, 1, 2, tzinfo=UTC),
+                resolution="completed",
+            ),
+            reopen_path,
+        )
+        original_close = close_path.read_text(encoding="utf-8")
+        original_reopen = reopen_path.read_text(encoding="utf-8")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "malformed\ncontext"}, clear=True):
+            close_result = runner.invoke(ticket_app, ["close", "kin-bad-close"])
+            reopen_result = runner.invoke(ticket_app, ["reopen", "kin-bad-reopen"])
+
+        for result in (close_result, reopen_result):
+            assert result.exit_code == 1
+            assert "KD_CONTEXT must be a single-line identifier" in result.output
+            assert "Traceback" not in result.output
+        assert close_path.read_text(encoding="utf-8") == original_close
+        assert reopen_path.read_text(encoding="utf-8") == original_reopen
+
+    def test_superseded_by_rejects_missing_target_without_mutation(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-old")
+
+        result = runner.invoke(ticket_app, ["close", "kin-old", "--superseded-by", "missing"])
+
+        assert result.exit_code == 1
+        assert "Superseding ticket not found" in result.output
+        ticket = read_ticket(path)
+        assert ticket.status == "open"
+        assert ticket.resolution is None
+        assert ticket.superseded_by is None
+
+
+class TestTicketContextLifecycle:
+    def test_start_without_execution_context_does_not_mutate_ticket(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(branch_dir, "kin-noctx")
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            result = runner.invoke(ticket_app, ["start", "kin-noctx"])
+
+        assert result.exit_code == 1
+        assert "Set KD_CONTEXT" in result.output
+        assert read_ticket(ticket_path).status == "open"
+
+    def test_close_clears_execution_context_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-ctxc")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "close-session"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-ctxc"]).exit_code == 0
+            context = resolve_execution_context()
+            assert context is not None
+            assert read_execution_ticket_context(cli_project, context) is not None
+
+            result = runner.invoke(ticket_app, ["close", "kin-ctxc"])
+
+            assert result.exit_code == 0, result.output
+            assert read_execution_ticket_context(cli_project, context) is None
+
+            assert runner.invoke(ticket_app, ["reopen", "kin-ctxc"]).exit_code == 0
+            current = runner.invoke(ticket_app, ["current"])
+
+            assert current.exit_code == 1
+            assert "No ticket bound" in current.output
+
+    def test_close_clears_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-term-close")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "close-session", "TERM_SESSION_ID": "close-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-term-close"]).exit_code == 0
+            result = runner.invoke(ticket_app, ["close", "kin-term-close"])
+
+        assert result.exit_code == 0, result.output
+        with patch.dict(os.environ, {"TERM_SESSION_ID": "close-terminal"}, clear=True):
+            assert read_terminal_ticket_context(cli_project) is None
+        assert legacy_context_issues(cli_project) == []
+
+    def test_reopen_clears_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-term-reopen")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "reopen-session", "TERM_SESSION_ID": "reopen-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-term-reopen"]).exit_code == 0
+            assert read_terminal_ticket_context(cli_project) is not None
+
+            result = runner.invoke(ticket_app, ["reopen", "kin-term-reopen"])
+
+            assert result.exit_code == 0, result.output
+            assert read_terminal_ticket_context(cli_project) is None
+        assert legacy_context_issues(cli_project) == []
+
+    def test_reopen_clears_terminal_binding_retained_after_interrupted_close(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(branch_dir, "kin-term-interrupted")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "interrupted-session", "TERM_SESSION_ID": "interrupted-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-term-interrupted"]).exit_code == 0
+            ticket = read_ticket(ticket_path)
+            ticket.status = "closed"
+            ticket.closed_at = datetime.now(UTC)
+            ticket.resolution = "completed"
+            write_ticket(ticket, ticket_path)
+            assert legacy_context_issues(cli_project)
+
+            result = runner.invoke(ticket_app, ["reopen", "kin-term-interrupted"])
+
+            assert result.exit_code == 0, result.output
+            assert read_terminal_ticket_context(cli_project) is None
+        assert legacy_context_issues(cli_project) == []
+
+    def test_start_switches_binding_and_unassigns_previous_ticket(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        first_path = create_ticket_in(branch_dir, "kin-one1")
+        second_path = create_ticket_in(branch_dir, "kin-two2")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "switch-session"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-one1"]).exit_code == 0
+            assert runner.invoke(ticket_app, ["start", "kin-two2"]).exit_code == 0
+            current = runner.invoke(ticket_app, ["current", "--id"])
+
+        assert current.output.strip() == "kin-two2"
+        assert read_ticket(first_path).assignee is None
+        assert read_ticket(second_path).assignee is not None
+
+
 class TestTicketCloseDuplicate:
     def test_duplicate_of_sets_field_and_closes(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -529,6 +1377,51 @@ class TestTicketCloseDuplicate:
         ticket = read_ticket(branch_dir / "kin-dup1.md")
         assert ticket.status == "closed"
         assert ticket.duplicate_of == "kin-orig"
+        assert ticket.resolution == "duplicate"
+        assert ticket.close_reason == "Duplicate of kin-orig"
+        assert "reference: kin-orig" in ticket.body
+
+    def test_duplicate_of_accepts_matching_explicit_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-dupe")
+        create_ticket_in(branch_dir, "kin-original")
+
+        result = runner.invoke(
+            ticket_app,
+            ["close", "kin-dupe", "--resolution", "duplicate", "--duplicate-of", "kin-original"],
+        )
+
+        assert result.exit_code == 0, result.output
+        ticket = read_ticket(branch_dir / "kin-dupe.md")
+        assert ticket.resolution == "duplicate"
+        assert ticket.duplicate_of == "kin-original"
+
+    def test_duplicate_of_rejects_conflicting_resolution(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-conf")
+        create_ticket_in(branch_dir, "kin-original")
+
+        result = runner.invoke(
+            ticket_app,
+            [
+                "close",
+                "kin-conf",
+                "--resolution",
+                "superseded",
+                "--duplicate-of",
+                "kin-original",
+                "--reason",
+                "Conflicting options",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "--duplicate-of requires --resolution duplicate" in result.output
+        assert "omit --resolution" in result.output
+        ticket = read_ticket(path)
+        assert ticket.status == "open"
+        assert ticket.resolution is None
+        assert ticket.duplicate_of is None
 
     def test_duplicate_of_adds_worklog(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
@@ -865,6 +1758,36 @@ class TestTicketDelete:
         assert "kin-del1" in result.output
         assert not path.exists()
 
+    def test_delete_clears_legacy_terminal_binding(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        create_ticket_in(branch_dir, "kin-delete-terminal")
+
+        with patch.dict(
+            os.environ,
+            {"KD_CONTEXT": "delete-session", "TERM_SESSION_ID": "delete-terminal"},
+            clear=True,
+        ):
+            assert runner.invoke(ticket_app, ["start", "kin-delete-terminal"]).exit_code == 0
+            assert read_terminal_ticket_context(cli_project) is not None
+            result = runner.invoke(ticket_app, ["delete", "kin-delete-terminal", "--force"])
+            assert read_terminal_ticket_context(cli_project) is None
+
+        assert result.exit_code == 0, result.output
+        assert legacy_context_issues(cli_project) == []
+
+    def test_delete_prevents_a_stale_snapshot_from_resurrecting_the_ticket(self, cli_project: Path) -> None:
+        branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        path = create_ticket_in(branch_dir, "kin-stale-delete")
+        stale_ticket = read_ticket(path)
+
+        result = runner.invoke(ticket_app, ["delete", "kin-stale-delete", "--force"])
+        stale_ticket.status = "closed"
+
+        assert result.exit_code == 0, result.output
+        with pytest.raises(FileNotFoundError, match="moved or deleted"):
+            write_ticket(stale_ticket, path)
+        assert not path.exists()
+
     def test_delete_not_found(self, cli_project: Path) -> None:
         result = runner.invoke(ticket_app, ["delete", "nope", "--force"])
 
@@ -911,163 +1834,227 @@ class TestTicketDelete:
         assert path.exists()  # file should NOT have been deleted
 
 
-class TestTicketMove:
-    def test_move_defaults_to_current_branch(self, cli_project: Path) -> None:
-        backlog_dir = backlog_root(cli_project) / "tickets"
-        create_ticket_in(backlog_dir, "kin-mv01")
+class TestRemovedCompatibilityCommands:
+    def test_move_is_unregistered(self) -> None:
+        result = runner.invoke(ticket_app, ["move", "--help"])
 
-        result = runner.invoke(ticket_app, ["move", "kin-mv01"])
+        assert result.exit_code == 2
+        assert "No such command 'move'." in result.output
 
-        assert result.exit_code == 0, result.output
-        assert "Moved" in result.output
-        assert "branch 'feature-ticket-test'" in result.output
-        branch_tickets = branch_root(cli_project, BRANCH) / "tickets" / "kin-mv01.md"
-        assert branch_tickets.exists()
-        # Source must be removed (no duplicate in backlog)
-        assert not (backlog_dir / "kin-mv01.md").exists()
+    def test_add_note_is_unregistered(self) -> None:
+        result = runner.invoke(ticket_app, ["add-note", "--help"])
 
-    def test_move_to_backlog_shows_backlog_label(self, cli_project: Path) -> None:
+        assert result.exit_code == 2
+        assert "No such command 'add-note'." in result.output
+
+
+class TestTicketDefer:
+    def test_requires_nonempty_reason_before_moving(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-mv04")
+        ticket_path = create_ticket_in(tickets_dir, "kin-rsn1")
 
-        result = runner.invoke(ticket_app, ["move", "kin-mv04", "--to", "backlog"])
+        missing = runner.invoke(ticket_app, ["defer", "kin-rsn1"])
+        blank = runner.invoke(ticket_app, ["defer", "kin-rsn1", "--reason", "   "])
 
-        assert result.exit_code == 0, result.output
-        assert "Moved kin-mv04 to backlog" in result.output
-        # Verify actual file state, not just CLI output
-        assert not (tickets_dir / "kin-mv04.md").exists(), "Source ticket should be removed"
-        assert (backlog_root(cli_project) / "tickets" / "kin-mv04.md").exists(), "Ticket should exist in backlog"
+        assert missing.exit_code != 0
+        assert blank.exit_code == 1
+        assert "non-empty" in blank.output
+        assert ticket_path.exists()
 
-    def test_move_already_in_destination(self, cli_project: Path) -> None:
+    def test_batch_preflight_prevents_partial_defer(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-mv02")
+        first_path = create_ticket_in(tickets_dir, "kin-first")
+        closed_path = tickets_dir / "kin-done1.md"
+        write_ticket(
+            Ticket(id="kin-done1", status="closed", title="Closed", body="", created=datetime.now(UTC)),
+            closed_path,
+        )
 
-        result = runner.invoke(ticket_app, ["move", "kin-mv02"])
+        result = runner.invoke(
+            ticket_app,
+            ["defer", "kin-first", "kin-done1", "--reason", "Not this sprint"],
+        )
+
+        assert result.exit_code == 1
+        assert "closed" in result.output
+        assert first_path.exists()
+        assert closed_path.exists()
+        assert not (backlog_root(cli_project) / "tickets" / first_path.name).exists()
+
+    def test_rejects_archived_ticket(self, cli_project: Path) -> None:
+        archive_path = archive_root(cli_project) / "old-feature" / "tickets" / "kin-arch.md"
+        write_ticket(
+            Ticket(id="kin-arch", status="closed", title="Archived", body="", created=datetime.now(UTC)),
+            archive_path,
+        )
+
+        result = runner.invoke(ticket_app, ["defer", "kin-arch", "--reason", "Later"])
+
+        assert result.exit_code == 1
+        assert "archived" in result.output
+        assert archive_path.exists()
+
+    def test_defers_ticket_from_another_live_branch(self, cli_project: Path) -> None:
+        other_branch = "feature/other"
+        other_dir = ensure_branch_layout(cli_project, other_branch) / "tickets"
+        source_path = create_ticket_in(other_dir, "kin-other")
+
+        result = runner.invoke(ticket_app, ["defer", "kin-other", "--reason", "Move to another sprint"])
 
         assert result.exit_code == 0, result.output
-        assert "already in branch 'feature-ticket-test'" in result.output
+        assert not source_path.exists()
+        destination = backlog_root(cli_project) / "tickets" / source_path.name
+        assert destination.exists()
+        assert f"source: branch:{other_branch.replace('/', '-')}" in read_ticket(destination).body
 
-    def test_move_no_active_branch_errors(self) -> None:
-        """Move without an active branch should error with guidance."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            # Don't set current run
-            backlog_dir = backlog_root(base) / "tickets"
-            create_ticket_in(backlog_dir, "kin-mv03")
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv03"])
-
-            assert result.exit_code == 1
-            assert "No current branch active" in result.output
-            assert "kd start" in result.output
-
-    def test_move_to_branch_resolves_current_branch(self, cli_project: Path) -> None:
-        """--to branch should resolve to the current branch, not literal 'branch'."""
-        backlog_dir = backlog_root(cli_project) / "tickets"
-        create_ticket_in(backlog_dir, "kin-mv05")
-
-        result = runner.invoke(ticket_app, ["move", "kin-mv05", "--to", "branch"])
-
-        assert result.exit_code == 0, result.output
-        assert "Moved" in result.output
-        assert f"branch '{BRANCH}'" in result.output
-        branch_tickets = branch_root(cli_project, BRANCH) / "tickets" / "kin-mv05.md"
-        assert branch_tickets.exists()
-        assert not (backlog_dir / "kin-mv05.md").exists()
-
-    def test_move_to_nonexistent_branch_errors(self) -> None:
-        """--to with a branch that doesn't exist in .kd/branches/ errors."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            from kingdom.state import set_current_run
-
-            set_current_run(base, BRANCH)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-mv06")
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv06", "--to", "feature/nope"])
-
-            assert result.exit_code == 1
-            assert "not found" in result.output
-
-    def test_move_across_branches(self) -> None:
-        """kd tk move <id> --to <branch> moves ticket between branches."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            ensure_branch_layout(base, "feature/other")
-            from kingdom.state import set_current_run
-
-            set_current_run(base, BRANCH)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-mv07")
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv07", "--to", "feature/other"])
-
-            assert result.exit_code == 0, result.output
-            assert "Moved" in result.output
-            # Verify file moved
-            assert not (tickets_dir / "kin-mv07.md").exists()
-            assert (branch_root(base, "feature/other") / "tickets" / "kin-mv07.md").exists()
-
-    def test_move_blocked_by_active_peasant(self) -> None:
-        """Moving a ticket with an active peasant is blocked."""
+    def test_rejects_active_peasant(self, cli_project: Path) -> None:
         from kingdom.session import AgentState, set_agent_state
-        from kingdom.state import set_current_run
 
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            ensure_branch_layout(base, "feature/other")
-            set_current_run(base, BRANCH)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-mv08")
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(tickets_dir, "kin-peas")
+        set_agent_state(
+            cli_project,
+            BRANCH,
+            "peasant-kin-peas",
+            AgentState(name="peasant-kin-peas", status="working", ticket="kin-peas"),
+        )
 
-            # Create an active peasant session for this ticket
-            set_agent_state(
-                base,
-                BRANCH,
-                "peasant-kin-mv08",
-                AgentState(name="peasant-kin-mv08", status="working", ticket="kin-mv08"),
+        result = runner.invoke(ticket_app, ["defer", "kin-peas", "--reason", "Later"])
+
+        assert result.exit_code == 1
+        assert "active peasant" in result.output
+        assert ticket_path.exists()
+
+    def test_rejects_another_execution_context_owner(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        ticket_path = create_ticket_in(tickets_dir, "kin-owned")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "other-owner"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-owned"]).exit_code == 0
+            owner = resolve_execution_context()
+            assert owner is not None
+            binding = read_execution_ticket_context(cli_project, owner)
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "caller"}, clear=True):
+            result = runner.invoke(ticket_app, ["defer", "kin-owned", "--reason", "Later"])
+
+        assert result.exit_code == 1
+        assert "owned by another execution context" in result.output
+        assert ticket_path.exists()
+        assert read_execution_ticket_context(cli_project, owner) == binding
+
+    def test_defer_resets_and_preserves_ticket_with_lifecycle_history(self, cli_project: Path) -> None:
+        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
+        source_path = tickets_dir / "kin-def1.md"
+        write_ticket(
+            Ticket(
+                id="kin-def1",
+                status="open",
+                title="Deferred ticket",
+                body="Original body.\n\n## Worklog\n\n- Existing history",
+                deps=["dep1"],
+                links=["link1"],
+                parent="epic1",
+                created=datetime.now(UTC),
+            ),
+            source_path,
+        )
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "ticket-owner"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-def1"]).exit_code == 0
+            owner = resolve_execution_context()
+            assert owner is not None
+
+        peer = resolve_execution_context(session_id="peer-session", host="hook", cwd=cli_project)
+        assert peer is not None
+        record_execution_ticket_context(cli_project, peer, "kin-def1", feature=BRANCH)
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            record_terminal_ticket_context(cli_project, "kin-def1", feature=BRANCH, session_id="legacy-one")
+            record_terminal_ticket_context(cli_project, "kin-def1", feature=BRANCH, session_id="legacy-two")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "ticket-owner"}, clear=True):
+            result = runner.invoke(
+                ticket_app,
+                ["defer", "kin-def1", "--reason", "Waiting for upstream"],
             )
 
-            result = runner.invoke(ticket_app, ["move", "kin-mv08", "--to", "feature/other"])
+        assert result.exit_code == 0, result.output
+        assert "Deferred kin-def1 to backlog" in result.output
+        assert not source_path.exists()
+        destination = backlog_root(cli_project) / "tickets" / source_path.name
+        ticket = read_ticket(destination)
+        assert ticket.status == "open"
+        assert ticket.assignee is None
+        assert ticket.deps == ["dep1"]
+        assert ticket.links == ["link1"]
+        assert ticket.parent == "epic1"
+        assert "Original body." in ticket.body
+        assert "- Existing history" in ticket.body
+        assert "## Lifecycle" in ticket.body
+        assert owner.context_id in ticket.body
+        assert f"source: branch:{BRANCH.replace('/', '-')}" in ticket.body
+        assert "previous status: in_progress" in ticket.body
+        assert f"previous assignee: {owner.context_id}" in ticket.body
+        assert "Waiting for upstream" in ticket.body
+        assert read_execution_ticket_context(cli_project, owner) is None
+        assert read_execution_ticket_context(cli_project, peer) is None
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            assert read_terminal_ticket_context(cli_project, session_id="legacy-one") is None
+            assert read_terminal_ticket_context(cli_project, session_id="legacy-two") is None
 
-            assert result.exit_code == 1
-            assert "active peasant" in result.output
+    def test_already_backlogged_is_idempotent_without_history(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        ticket_path = create_ticket_in(backlog_dir, "kin-later")
+        before = ticket_path.read_bytes()
 
-    def test_move_allowed_after_done_peasant(self) -> None:
-        """Moving a ticket whose peasant is done/failed/stopped should succeed."""
-        from kingdom.session import AgentState, set_agent_state
-        from kingdom.state import set_current_run
+        result = runner.invoke(ticket_app, ["defer", "kin-later", "--reason", "Still later"])
 
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, BRANCH)
-            ensure_branch_layout(base, "feature/other")
-            set_current_run(base, BRANCH)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            create_ticket_in(tickets_dir, "kin-mv09")
-
-            # Peasant finished — terminal status should not block the move
-            set_agent_state(
-                base,
-                BRANCH,
-                "peasant-kin-mv09",
-                AgentState(name="peasant-kin-mv09", status="done", ticket="kin-mv09"),
-            )
-
-            result = runner.invoke(ticket_app, ["move", "kin-mv09", "--to", "feature/other"])
-
-            assert result.exit_code == 0, result.output
-            assert "Moved" in result.output
-            assert not (tickets_dir / "kin-mv09.md").exists()
-            assert (branch_root(base, "feature/other") / "tickets" / "kin-mv09.md").exists()
+        assert result.exit_code == 0, result.output
+        assert "already in backlog" in result.output
+        assert ticket_path.read_bytes() == before
 
 
 class TestTicketPull:
+    def test_pull_preserves_markdown_and_relationships_byte_for_byte(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        backlog_dir.mkdir(parents=True, exist_ok=True)
+        source_path = backlog_dir / "meta.md"
+        source = """---
+id: "meta"
+status: open
+deps: [dep1, dep2]
+links: [link1, link2]
+created: 2026-08-03T12:00:00Z
+type: task
+priority: 1
+parent: epic
+---
+# Preserve this ticket
+
+Formatting, links, and relationships must survive exactly.
+
+## Worklog
+
+- Existing history
+"""
+        source_path.write_text(source)
+
+        result = runner.invoke(ticket_app, ["pull", "meta"])
+
+        assert result.exit_code == 0, result.output
+        destination = branch_root(cli_project, BRANCH) / "tickets" / "meta.md"
+        assert destination.read_bytes() == source.encode()
+        ticket = read_ticket(destination)
+        assert ticket.deps == ["dep1", "dep2"]
+        assert ticket.links == ["link1", "link2"]
+        assert ticket.parent == "epic"
+
     def test_pull_single_ticket(self, cli_project: Path) -> None:
         backlog_dir = backlog_root(cli_project) / "tickets"
         create_ticket_in(backlog_dir, "kin-pull")
@@ -1097,15 +2084,96 @@ class TestTicketPull:
         assert (branch_dir / "kin-aa01.md").exists()
         assert (branch_dir / "kin-bb02.md").exists()
 
-    def test_pull_not_in_backlog_errors(self, cli_project: Path) -> None:
-        # Create ticket on branch, not backlog
+    def test_pull_and_start_binds_only_calling_context(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        workspace_dir = branch_root(cli_project, BRANCH)
+        branch_dir = workspace_dir / "tickets"
+        peer_path = create_ticket_in(branch_dir, "kin-peer")
+        target_path = create_ticket_in(backlog_dir, "kin-bind")
+        assert not (workspace_dir / "design.md").exists()
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "peer-session"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-peer"]).exit_code == 0
+            peer_context = resolve_execution_context()
+            assert peer_context is not None
+            peer_binding = read_execution_ticket_context(cli_project, peer_context)
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "pull-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["pull", "kin-bind", "--start"])
+            pull_context = resolve_execution_context()
+            assert pull_context is not None
+            pull_binding = read_execution_ticket_context(cli_project, pull_context)
+
+        assert result.exit_code == 0, result.output
+        assert "Pulled and started kin-bind" in result.output
+        destination = branch_dir / target_path.name
+        pulled = read_ticket(destination)
+        assert pulled.status == "in_progress"
+        assert pulled.assignee == pull_context.context_id
+        assert pull_binding is not None
+        assert pull_binding["ticket_id"] == "kin-bind"
+        assert pull_binding["location"] == f"branch:{BRANCH.replace('/', '-')}"
+        assert read_execution_ticket_context(cli_project, peer_context) == peer_binding
+        assert read_ticket(peer_path).assignee == peer_context.context_id
+        assert not (workspace_dir / "design.md").exists()
+
+    def test_pull_and_start_without_context_does_not_move_ticket(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        source = create_ticket_in(backlog_dir, "kin-noctx")
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.ttyname", side_effect=OSError),
+        ):
+            result = runner.invoke(ticket_app, ["pull", "kin-noctx", "--start"])
+
+        assert result.exit_code == 1
+        assert "Set KD_CONTEXT" in result.output
+        assert source.exists()
+        assert not (branch_root(cli_project, BRANCH) / "tickets" / source.name).exists()
+
+    def test_pull_and_start_rejects_multiple_tickets_before_moving(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        first = create_ticket_in(backlog_dir, "kin-one1")
+        second = create_ticket_in(backlog_dir, "kin-two2")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "pull-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["pull", "kin-one1", "kin-two2", "--start"])
+
+        assert result.exit_code == 1
+        assert "exactly one ticket" in result.output
+        assert first.exists()
+        assert second.exists()
+
+    def test_pull_ticket_already_selected_reports_precise_conflict(self, cli_project: Path) -> None:
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(branch_dir, "kin-brnc")
+        branch_path = create_ticket_in(branch_dir, "kin-brnc")
 
         result = runner.invoke(ticket_app, ["pull", "kin-brnc"])
 
         assert result.exit_code == 1
-        assert "not found in backlog" in result.output
+        assert "already selected" in result.output
+        assert BRANCH.replace("/", "-") in result.output
+        assert branch_path.exists()
+
+    def test_pull_in_progress_ticket_does_not_steal_binding(self, cli_project: Path) -> None:
+        backlog_dir = backlog_root(cli_project) / "tickets"
+        source = create_ticket_in(backlog_dir, "kin-busy")
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "owner-session"}, clear=True):
+            assert runner.invoke(ticket_app, ["start", "kin-busy"]).exit_code == 0
+            owner_context = resolve_execution_context()
+            assert owner_context is not None
+            owner_binding = read_execution_ticket_context(cli_project, owner_context)
+
+        with patch.dict(os.environ, {"KD_CONTEXT": "pull-session"}, clear=True):
+            result = runner.invoke(ticket_app, ["pull", "kin-busy", "--start"])
+
+        assert result.exit_code == 1
+        assert "already in progress" in result.output
+        assert source.exists()
+        assert read_execution_ticket_context(cli_project, owner_context) == owner_binding
+        assert read_ticket(source).assignee == owner_context.context_id
 
     def test_pull_not_found_errors(self, cli_project: Path) -> None:
         result = runner.invoke(ticket_app, ["pull", "kin-nope"])
@@ -1168,16 +2236,28 @@ class TestTicketPull:
         assert not (backlog_dir / "kin-dupe.md").exists()
 
     def test_pull_already_on_branch_errors(self, cli_project: Path) -> None:
-        """Pulling a ticket that's already on the current branch should error."""
+        """A destination conflict is caught before other tickets move."""
+        backlog_dir = backlog_root(cli_project) / "tickets"
         branch_dir = branch_root(cli_project, BRANCH) / "tickets"
+        first = create_ticket_in(backlog_dir, "kin-first")
+        duplicate = create_ticket_in(backlog_dir, "kin-here")
         create_ticket_in(branch_dir, "kin-here")
 
-        result = runner.invoke(ticket_app, ["pull", "kin-here"])
+        result = runner.invoke(ticket_app, ["pull", "kin-first", "kin-here"])
 
         assert result.exit_code == 1
-        assert "not found in backlog" in result.output
-        # Ticket should still be on the branch
+        assert "already selected" in result.output
+        assert first.exists()
+        assert duplicate.exists()
         assert (branch_dir / "kin-here.md").exists()
+
+    def test_pull_help_describes_backlog_work_selection(self) -> None:
+        result = runner.invoke(ticket_app, ["pull", "--help"])
+        output = unstyle(result.output)
+
+        assert result.exit_code == 0, result.output
+        assert "Select backlog tickets for work" in output
+        assert "--start" in output
 
     def test_pull_ticket_appears_in_ready(self, cli_project: Path) -> None:
         """After pulling, the ticket should appear in `tk ready`."""
@@ -1259,24 +2339,6 @@ class TestTicketFind:
 
         assert result.exit_code == 0, result.output
         assert result.output.strip() == str(ticket_path.resolve())
-
-
-class TestTicketAddNote:
-    """Tests for kd tk add-note."""
-
-    def test_adds_note_to_ticket(self, cli_project: Path) -> None:
-        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        write_ticket(
-            Ticket(id="aaaa", status="open", title="Test", body="Body.", created=datetime.now(UTC)),
-            tickets_dir / "aaaa.md",
-        )
-        result = runner.invoke(ticket_app, ["add-note", "aaaa", "This is a note"])
-        assert result.exit_code == 0
-        assert "note added" in result.output
-
-        content = (tickets_dir / "aaaa.md").read_text()
-        assert "This is a note" in content
-        assert "**Note (" in content
 
 
 class TestTicketParent:
