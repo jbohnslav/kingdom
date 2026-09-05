@@ -325,7 +325,7 @@ class TestSendLifecycle:
                 assert "codex" not in waiting_names
 
     async def test_follow_ups_queue_behind_active_exchange(self, project, thread_id) -> None:
-        council = make_fake_council(["claude", "codex"], delay=0.15)
+        council = make_fake_council(["claude", "codex"], delay=0.5)
         app = make_app(project, thread_id)
 
         with patch.object(Council, "create", return_value=council):
@@ -342,6 +342,10 @@ class TestSendLifecycle:
                 input_area.insert("Final follow-up")
                 await pilot.press("enter")
 
+                log = app.query_one("#message-log", MessageLog)
+                visible_king_prompts = [panel.body for panel in log.query(MessagePanel) if panel.sender == "king"]
+                assert visible_king_prompts == ["First question"]
+
                 await wait_until(
                     pilot,
                     lambda: len(list_messages(project, BRANCH, thread_id)) == 9,
@@ -349,7 +353,6 @@ class TestSendLifecycle:
                 )
                 await pilot.pause(delay=0.2)
 
-                log = app.query_one("#message-log", MessageLog)
                 king_panels = [panel for panel in log.query(MessagePanel) if panel.sender == "king"]
                 assert [panel.body for panel in king_panels] == [
                     "First question",

@@ -815,12 +815,11 @@ class ChatApp(App):
         self.delivery_queue.append(delivery)
         write_pending_deliveries(thread_dir(self.base, self.branch, self.thread_id), self.delivery_queue)
 
-        self.render_king_message(delivery)
-
         if queued:
             self.notify(f"Message queued ({len(self.delivery_queue)} waiting)")
             return
 
+        self.render_king_message(delivery)
         self.delivery_active = True
         self.run_worker(self.drain_delivery_queue(), exclusive=False)
 
@@ -838,12 +837,7 @@ class ChatApp(App):
 
     def restore_pending_deliveries(self, tdir: Path) -> None:
         """Load deliveries whose Council dispatch did not finish."""
-        pending = load_pending_deliveries(tdir)
-        persisted_ids = {message.delivery_id for message in list_messages(self.base, self.branch, self.thread_id)}
-        self.delivery_queue = pending
-        for delivery in self.delivery_queue:
-            if delivery.delivery_id not in persisted_ids:
-                self.render_king_message(delivery)
+        self.delivery_queue = load_pending_deliveries(tdir)
 
     async def drain_delivery_queue(self) -> None:
         """Deliver submitted messages one at a time in FIFO order."""
@@ -864,6 +858,9 @@ class ChatApp(App):
         prior_messages = list_messages(self.base, self.branch, self.thread_id)
         message = next((item for item in prior_messages if item.delivery_id == delivery.delivery_id), None)
         if message is None:
+            log = self.query_one("#message-log", MessageLog)
+            if not log.query(f"#king-{delivery.delivery_id}"):
+                self.render_king_message(delivery)
             message = add_message(
                 self.base,
                 self.branch,
