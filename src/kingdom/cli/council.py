@@ -269,7 +269,11 @@ def council_ask(
     from kingdom.thread import add_message, create_thread, thread_dir
 
     base = require_project_root()
-    feature = resolve_current_run(base)
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
 
     console = Console()
 
@@ -498,14 +502,27 @@ def council_review(
 ) -> None:
     """Generate a changed-files summary and ask the council to review it."""
     base = require_project_root()
-    feature = resolve_current_run(base)  # Validate active session
+    try:
+        feature = resolve_current_run(base)  # Validate active session
+    except RuntimeError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
 
     if base_branch is None:
         base_branch = detect_base_branch()
 
-    # Get changed file stats
+    merge_base_result = subprocess.run(
+        ["git", "merge-base", base_branch, "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if merge_base_result.returncode != 0:
+        print_error(f"Failed to find merge base with {base_branch}: {merge_base_result.stderr.strip()}")
+        raise typer.Exit(code=1)
+
+    merge_base = merge_base_result.stdout.strip()
     stat_result = subprocess.run(
-        ["git", "diff", "--stat", f"{base_branch}...HEAD"],
+        ["git", "diff", "--stat", merge_base],
         capture_output=True,
         text=True,
     )
@@ -514,8 +531,31 @@ def council_review(
         raise typer.Exit(code=1)
 
     stat_output = stat_result.stdout.strip()
+    untracked_result = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+    )
+    if untracked_result.returncode != 0:
+        error = os.fsdecode(untracked_result.stderr).strip()
+        print_error(f"Failed to inspect untracked files: {error}")
+        raise typer.Exit(code=1)
+
+    untracked_paths = [os.fsdecode(path) for path in untracked_result.stdout.split(b"\0") if path]
+    if untracked_paths:
+        if stat_output:
+            typer.echo("Warning: untracked files are excluded from the review:")
+        else:
+            typer.echo("Untracked files cannot be included in the review:")
+        for path in untracked_paths[:10]:
+            typer.echo(f"  {json.dumps(path)}")
+        if len(untracked_paths) > 10:
+            typer.echo(f"  ... and {len(untracked_paths) - 10} more")
+        typer.echo(f"Run `git add <paths>` (or commit them), then rerun `kd council review --base {base_branch}`.")
+        if not stat_output:
+            raise typer.Exit(code=1)
+
     if not stat_output:
-        typer.echo(f"No changes between {base_branch} and HEAD.")
+        typer.echo(f"No changes since {base_branch}: no committed, staged, or unstaged changes.")
         raise typer.Exit(code=0)
 
     # Get commit log and current branch for context
@@ -567,6 +607,7 @@ def council_review(
         ticket_body=ticket_body,
         ticket_path=ticket_path_str,
         worklog=worklog,
+        include_worktree=True,
     )
 
     # Delegate to council_ask — new thread by default now
@@ -784,7 +825,11 @@ def council_list(
     )
 
     base = require_project_root()
-    feature = resolve_current_run(base)
+    try:
+        feature = resolve_current_run(base)
+    except RuntimeError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
     current = get_current_thread(base, feature)
     console = Console()
 

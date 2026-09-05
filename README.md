@@ -1,19 +1,12 @@
 # Kingdom
 
-Kingdom (`kd`) is a markdown file-based CLI for software development: design with a multi-agent council, track work as markdown tickets, and run background RALPH loops with worker peasants.
+Kingdom (`kd`) is a ticket-first CLI for software development with multiple AI
+agents. Work lives in plain Markdown tickets and epics, each agent session gets
+its own execution context, and decisions and verification stay durable in the
+ticket worklog.
 
-The kingdom metaphor is intentional: you are the King, debate your design documents with a council of frontier coding agent CLIs you already use (Claude Code and Codex), break the design into modular markdown tickets, and then peasants execute those tickets in parallel worktrees.
-
-Gastown minus the polecats.
-
-## Why
-
-- **Multi-agent council** — get perspectives from multiple frontier coding models, not just one opinion. Different models catch different things.
-- **Ticket-based execution** — breaking work into scoped tickets fights context rot, lets you use cheaper models for already-designed work, or run tickets in parallel.
-- **Multi-agent reviews** — reviews across models consistently catch bugs that single-agent reviews miss.
-- **Plain markdown files** — tickets, designs, and council threads are all markdown. Your coding agents are already good at finding, reading, and updating markdown.
-- **CLI + TUI** — the TUI is for humans; agent CLIs use `kd` directly to ask the council or other agents for opinions.
-- **Worklog audit trail** — peasant worklogs capture decisions, bugs encountered, and test results in the ticket markdown, committed to git. You can always see *why* something was done, not just the diff.
+Start with the small loop. Add the TUI, multi-model council, reviewed peasant
+workers, or an epic-level lord only when the work benefits from them.
 
 ## Install
 
@@ -21,91 +14,311 @@ Gastown minus the polecats.
 uv tool install kingdom-cli  # add --python 3.11 if Python 3.11+ is not installed yet
 ```
 
-## Workflow Scales
-
-`kd` scales down gracefully. You pick the parts of the workflow that fit the size of the work.
-
-### Full workflow (new features)
-
-Design with the council, break into tickets, dispatch peasants, review, and merge.
-
-```bash
-kd start                   # initialize branch session
-kd council chat --new      # discuss design with the council TUI
-kd design approve          # lock in the design
-# create tickets from the design (via the kingdom skill or manually)
-kd peasant start <id>      # dispatch parallel workers
-kd peasant review <id>     # review completed work
-kd peasant accept <id>     # accept and close, or reject with feedback
-kd done                    # archive and clean up
-```
-
-### Medium workflow (refactors, smaller features)
-
-Pull tickets into a branch, work them directly or with peasants. No design phase needed.
+Then initialize the current Git branch:
 
 ```bash
 kd start
-kd tk pull <id> <id>       # pull backlog tickets onto this branch
-kd tk start <id>           # work tickets one at a time
-kd tk close <id>
-kd done
 ```
 
-### Lightweight workflow (bug fixes)
-
-Work a single ticket, close it, make a PR. Or batch several bug-fix tickets on one branch.
+Codex users can install the Kingdom skill and lifecycle hooks as one local
+plugin:
 
 ```bash
-kd start
-kd tk create "fix: login redirect loop"
+kd plugin install codex
+```
+
+Start a new Codex task after installation, then use `/hooks` to review and trust
+the Kingdom hooks. Later `kd update` runs refresh an existing plugin along with
+the CLI and skill files; they do not install the Codex plugin unless you opted in.
+
+See the dated [supported host integration matrix](docs/support-matrix.md) for
+verified versions, evidence levels, and known Claude, Codex, and Cursor limits.
+
+## Core ticket loop
+
+The everyday workflow is create or find, select and start, keep the worklog
+current, then close with evidence.
+
+### 1. Create or find the work
+
+Create one small ticket for genuinely new work:
+
+```bash
+kd tk create "Fix login redirect loop"
+kd tk find <id>                 # print the canonical Markdown file path
+```
+
+If the request may already exist, inspect the current and recent work before
+creating another ticket:
+
+```bash
+kd tk current
+kd tk list
+kd tk list --recently-closed --limit 10
+kd tk show <id>
+```
+
+Tickets are living Markdown documents. Edit the file directly for requirements,
+acceptance criteria, relationships, and rich worklog entries.
+
+### 2. Pull or start it
+
+Capture unplanned work in the backlog, then select it when it becomes timely:
+
+```bash
+kd tk create --backlog "Improve retry diagnostics"
+kd tk pull <id>
 kd tk start <id>
-# ... fix the bug ...
-kd tk close <id>
-kd done
 ```
 
-Design docs, council sessions, and peasant workers are all optional. A branch with one ticket and no design doc is a perfectly valid `kd` workflow.
+`kd tk start` binds only the calling execution context. Other agent sessions can
+start and own different tickets concurrently.
 
-## Getting Started
+### 3. Log and close
+
+Record durable findings while they are fresh, not only at the end:
 
 ```bash
-kd start                   # start a session on the current branch
+# Plain-text-only notes without shell metacharacters may be inline.
+kd tk log <id> "Root cause confirmed; regression test now passes"
+kd tk close <id>
 ```
 
-Configure council agent CLIs in `.kd/config.json` (check effective config with `kd config show`).
+Send command-rich or multiline notes through stdin with a quoted delimiter so
+the shell cannot expand backticks, `$()`, variables, or quotes:
 
-## Chat Modes
-
-The council chat TUI (`kd council chat`) supports four modes, configured via `council.chat.mode`:
-
-| Mode | First turn | Auto-turns | Default |
-|------|-----------|------------|---------|
-| `natural` | parallel broadcast | shuffled round-robin | yes |
-| `round_robin` | sequential fixed-order | sequential fixed-order | |
-| `manual` | only @mentioned | only @mentioned | |
-| `broadcast` | parallel to all | parallel to all | |
-
-LLM-to-LLM @mentions in responses automatically bump the mentioned member to the front of the auto-turn queue.
-
-## How It Works
-
-All state lives in `.kd/` as plain Markdown and JSON files, tracked in git alongside your code:
-
+```bash
+kd tk log <id> <<'WORKLOG'
+Verified `uv run pytest`; literal $HOME and $(pwd) were not expanded.
+Record the second line here.
+WORKLOG
 ```
+
+Alternatively, edit the ticket's `## Worklog` as direct Markdown. Before
+closing, check off acceptance criteria and record changed files, decisions,
+verification commands, results, and remaining concerns.
+
+### 4. Organize related work with epics
+
+An epic is a parent ticket for a concrete outcome. Its children remain normal,
+independently executable tickets:
+
+```bash
+kd tk create --type epic "Ship account recovery"
+kd tk create --parent <epic-id> "Add recovery-token storage"
+kd tk create --parent <epic-id> "Implement recovery endpoint"
+kd tk list --parent <epic-id>
+```
+
+### 5. Check workspace readiness
+
+Status is the end of the loop; there is no separate workspace-finalization step:
+
+```bash
+kd status                      # inspect tickets and active contexts
+kd status --check              # exit nonzero unless every ticket is terminal and valid
+```
+
+`kd status --check` is read-only, so it is safe for local review, CI, and release
+gates. Workspace readiness is derived from ticket state rather than stored as a
+separate branch lifecycle transition.
+
+## Concurrent agent contexts
+
+Each terminal, Codex task, Claude session, or native subagent can have a distinct
+execution context. Starting a ticket in one context does not replace another
+context's current ticket.
+
+```bash
+# Agent session A
+kd tk start api1
+kd tk current                  # api1
+
+# Agent session B, at the same time
+kd tk start ui2
+kd tk current                  # ui2
+
+kd status                      # branch-wide tickets and all agent contexts
+```
+
+`kd status` shows each context's host, role, ticket, epic, activity, and parent
+context when available. The owning session remains responsible for integrating
+delegated results into the working tree and durable ticket—even when hooks record
+an automatic child handoff.
+
+### Compaction checkpoints
+
+Where a host exposes lifecycle hooks, Kingdom asks the exact bound context to
+update its ticket before compaction or handoff with decisions, completed work,
+verification, blockers, and next steps. If automatic compaction cannot give the
+model another turn first, the request is repeated immediately after compaction
+and on compact-resume.
+
+For hosts or modes without a usable pre-compaction hook, run `kd tk current`, edit
+that ticket's Markdown directly, and record the same five fields before
+compacting or handing off. See [Cursor hook capability](docs/cursor-hooks.md) for
+the supported Cursor events and remaining attribution gaps.
+
+## Resource cleanup
+
+Cleanup stays with the command that owns each resource; there is no global
+end-of-work cleanup command:
+
+- `kd tk close` and `kd tk defer` clear active bindings for the affected ticket.
+- `kd status --prune-stale` removes stale execution-context bindings.
+- `kd peasant accept` integrates reviewed work and cleans its worker state;
+  `kd peasant clean <id>` removes one retained worktree, and
+  `kd peasant prune` removes stale peasant sessions and orphaned state.
+
+## Execution choices
+
+### Direct work
+
+Use direct work for small, sequential, integration-sensitive tickets:
+
+```bash
+kd tk start <id>
+# implement, test, and update the Markdown worklog
+kd tk log <id> "Verified with: pytest tests/test_login.py"
+kd tk close <id>
+```
+
+### Bounded native subagent
+
+Use the current host's native subagent feature for a bounded research, review, or
+independent implementation slice. The owning session keeps ticket ownership,
+reviews the child's output, integrates the useful changes, and writes the durable
+conclusion into the ticket:
+
+```bash
+kd tk start <id>
+# delegate one bounded slice with the host's native subagent tool
+# owning session reviews and integrates the returned work
+kd tk log <id> "Integrated subagent audit; findings and verification recorded"
+```
+
+## Power tools
+
+These tools are optional. The core ticket loop works without any of them.
+
+### Reviewed peasant
+
+A peasant runs a well-scoped ticket unattended in an isolated worktree and uses
+council review by default. The owning session still performs the final
+integration review:
+
+```bash
+kd peasant start <id>
+kd peasant watch <id>
+kd peasant review <id>         # diff, worklog, and council feedback
+kd peasant accept <id>         # or: kd peasant reject <id> "feedback"
+```
+
+### TUI and council
+
+Use the council for genuine design ambiguity, product tradeoffs, or independent
+review blind spots. The chat TUI is a human-friendly way to hold the same
+multi-model discussion:
+
+```bash
+kd council ask "Which migration strategy best preserves rollback safety?"
+kd council chat                 # create a new thread
+```
+
+Council output advises the ticket owner; it does not replace the implementation
+worker or durable decision record.
+
+### Lords
+
+A lord supervises several ready child tickets under an epic, delegates them to
+reviewed peasants, and checks cross-ticket integration:
+
+```bash
+kd lord start <epic-id> --watch
+kd lord status
+```
+
+### Optional design documents
+
+Design documents are optional planning artifacts, not a prerequisite for tickets
+or backlog sprints. Use them when cross-cutting ambiguity merits a dedicated
+artifact; existing repositories and commands remain supported:
+
+```bash
+kd design                       # initialize and print the design path
+# edit the design document when the extra planning artifact is useful
+kd design show
+kd design approve
+```
+
+## Consolidated command replacements
+
+Kingdom 1.0.0 consolidates four command routes. Existing repositories keep their
+Markdown history; only the commands used for readiness, workspace selection,
+ticket movement, and Worklog entries change. See the
+[1.0.0 release notes](docs/releases/1.0.0.md) for the complete upgrade boundary.
+
+`kd tk defer <id>... --reason "..."` is the supported way to return selected
+branch work to backlog. It records the source, previous status and assignee,
+reason, time, and calling context in ticket lifecycle history, then resets the
+ticket to open/unassigned and clears active bindings. Pull it again when the work
+is timely.
+
+`kd done` was removed in v1.0.0. Use the read-only `kd status --check` readiness
+gate after closing tickets and epics. There is no replacement finalization
+transition and no `--force` bypass; readiness is derived from ticket state.
+
+`kd switch <branch>` was removed in v1.0.0. Use `kd start <branch>` to initialize,
+resume, or select a workspace through one idempotent entry point. For
+branch-to-branch ticket movement, defer the ticket, check out the target Git
+branch, run `kd start <branch>`, then pull the ticket there.
+
+`kd tk move` was removed in v1.0.0. Use `kd tk pull` for backlog→work movement,
+`kd tk defer --reason` for work→backlog movement, and the branch-to-branch flow
+above. The internal file-move primitive remains an implementation detail used by
+pull, defer, archive/restore, and peasant workflows.
+
+`kd tk add-note` was removed in v1.0.0. Use `kd tk log`; it preserves multiline
+input while adding the canonical Worklog timestamp and author attribution. The
+direct 0.6.x→1.0.0 upgrade crossed the alias's previously announced v0.8.0
+removal boundary.
+
+## Ticket closure outcomes
+
+`kd tk close <id>` records `resolution: completed` by default. The other terminal
+resolutions are `wont-do`, `duplicate`, `superseded`, and `invalid`; each requires
+a non-empty `--reason`. `--duplicate-of <id>` and `--superseded-by <id>` record
+their target ticket. Closing appends lifecycle history; reopening clears active
+closure fields without erasing that history.
+
+Use `kd tk list --resolution <value>` to filter terminal outcomes.
+`kd status --check` validates terminal evidence and reports the same resolution
+breakdown without changing workspace state. Resolution-less legacy closures
+remain readable and map to their compatible inferred outcome.
+
+## Upgrading existing repositories
+
+`kd update` refreshes the CLI and configured host integrations. Existing `.kd`
+repositories use a lazy, idempotent context migration that preserves ticket IDs
+and Markdown. Back up `.kd`, verify with the read-only `kd doctor`, and use the
+retained legacy context state if you need to roll back. See the complete
+[upgrade and rollback guide](docs/upgrading.md).
+
+## How it works
+
+All state lives in `.kd/` as plain Markdown and JSON tracked with the code:
+
+```text
 .kd/
-├── branches/                    # Active branch work
+├── branches/
 │   └── feature-oauth-refresh/
-│       ├── design.md            # Design document
-│       ├── breakdown.md         # Ticket breakdown
-│       ├── tickets/             # Branch-specific tickets
-│       │   ├── a1b2.md
-│       │   └── c3d4.md
-│       └── threads/             # Council discussion threads
-├── backlog/                     # Unassigned tickets
-│   └── tickets/
-├── archive/                     # Completed branches
-└── worktrees/                   # Git worktrees (gitignored)
+│       ├── tickets/             # active tickets and epics
+│       ├── design.md            # optional planning artifact
+│       ├── breakdown.md         # optional legacy planning artifact
+│       └── threads/             # council discussions and reviews
+├── backlog/tickets/             # work not selected yet
+├── archive/                     # completed branches and tickets
+└── worktrees/                   # peasant worktrees (gitignored)
 ```
 
 No database. No server. Just files on disk.
@@ -114,22 +327,31 @@ No database. No server. Just files on disk.
 
 | Group | Description |
 |-------|-------------|
-| `kd start` / `kd done` / `kd status` | Branch lifecycle — initialize, finish, and inspect sessions |
-| `kd design` | Manage design documents (`show`, `approve`) |
-| `kd council` | Multi-model council — `ask`, `chat`, `review`, `show`, `list`, `watch`, `reset`, `retry` |
-| `kd ticket` (alias `kd tk`) | Ticket management — `create`, `list`, `show`, `start`, `close`, `deps`, and more |
-| `kd peasant` | Worker agents — `start`, `stop`, `review`, `accept`, `reject`, `msg`, `read`, `watch` |
-| `kd config` | View and manage configuration |
-| `kd doctor` | Check config and agent CLIs |
+| `kd ticket` / `kd tk` | Create, find, pull, start, log, relate, and close tickets and epics |
+| `kd start [branch]` | Initialize, resume, or select a workspace |
+| `kd status [--check]` | Show ticket/context state and optionally enforce workspace readiness |
+| `kd council` | Power tool for multi-model questions, reviews, and the chat TUI |
+| `kd peasant` | Power tool for reviewed unattended ticket workers |
+| `kd lord` | Power tool for epic-level peasant orchestration |
+| `kd design` | Optional design-document planning (hidden from root help) |
+| `kd config` / `kd doctor` | Inspect configuration, repository state, and host integrations |
+| `kd plugin` / `kd update` | Install and refresh host integrations |
 
-Run `kd <command> --help` for full flags and options.
+Run `kd <command> --help` for exact flags.
 
 ## Development
 
+Inside a Kingdom checkout, always use `uv run kd` for dogfooding. Bare `kd` may
+resolve to a separately installed release instead of the working tree.
+
 ```bash
 uv sync
-source .venv/bin/activate
-pytest tests/
+uv run pytest tests/
+uv run ruff check .
+uv run ruff format --check .
+uv run pre-commit run ruff --all-files
+uv run pre-commit run ruff-format --all-files
+uv run kd status
 ```
 
 ## License

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
+from unittest.mock import patch
 
 import pytest
 
+from kingdom.state import flock
 from kingdom.ticket import (
     AmbiguousTicketMatch,
     Ticket,
@@ -14,7 +18,9 @@ from kingdom.ticket import (
     append_worklog_entry,
     coerce_to_str_list,
     collect_all_tickets,
+    collect_ticket_statuses,
     collect_tickets_by_location,
+    effective_resolution,
     filter_tickets,
     filter_tickets_by_deps,
     filter_tickets_by_status,
@@ -23,6 +29,7 @@ from kingdom.ticket import (
     find_ticket,
     generate_ticket_id,
     get_ticket_location,
+    insert_markdown_section_entry,
     insert_worklog_entry,
     list_tickets,
     move_ticket,
@@ -31,6 +38,7 @@ from kingdom.ticket import (
     read_ticket,
     serialize_ticket,
     write_ticket,
+    write_ticket_assignee,
 )
 
 
@@ -542,6 +550,63 @@ More content.
         assert reparsed.parent == ticket.parent
         assert reparsed.external_ref == ticket.external_ref
 
+    def test_round_trip_with_resolution_metadata(self) -> None:
+        ticket = Ticket(
+            id="kin-done",
+            status="closed",
+            created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
+            title="Finished ticket",
+            closed_at=datetime(2026, 2, 5, 12, 30, 0, tzinfo=UTC),
+            resolution="superseded",
+            closed_context="codex:abc123",
+            close_reason='Replaced by "v2":\nold path retired',
+            superseded_by="kin-v2",
+        )
+
+        reparsed = parse_ticket(serialize_ticket(ticket))
+
+        assert reparsed.resolution == "superseded"
+        assert reparsed.closed_context == "codex:abc123"
+        assert reparsed.close_reason == 'Replaced by "v2":\nold path retired'
+        assert reparsed.superseded_by == "kin-v2"
+
+    def test_legacy_ticket_without_resolution_remains_readable(self) -> None:
+        ticket = parse_ticket(
+            """---
+id: kin-old
+status: closed
+deps: []
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 2
+closed_at: 2026-02-05T12:30:00Z
+---
+# Legacy ticket
+"""
+        )
+
+        assert ticket.resolution is None
+        assert ticket.closed_context is None
+
+    def test_legacy_unquoted_close_reason_keeps_backslashes_literal(self) -> None:
+        ticket = parse_ticket(
+            r"""---
+id: kin-old
+status: closed
+deps: []
+links: []
+created: 2026-02-04T16:00:00Z
+type: task
+priority: 2
+close_reason: legacy\new-path
+---
+# Legacy ticket
+"""
+        )
+
+        assert ticket.close_reason == r"legacy\new-path"
+
 
 class TestReadWriteTicket:
     """Tests for read_ticket and write_ticket functions."""
@@ -577,6 +642,81 @@ class TestReadWriteTicket:
 
         write_ticket(ticket, path)
         assert path.exists()
+
+    def test_failed_atomic_replace_preserves_existing_ticket(self, tmp_path: Path) -> None:
+        path = tmp_path / "kin-test.md"
+        path.write_text("original ticket bytes\n", encoding="utf-8")
+        ticket = Ticket(id="kin-test", status="open", title="Replacement")
+
+        with (
+            patch("kingdom.ticket.os.replace", side_effect=OSError("interrupted")),
+            pytest.raises(OSError, match="interrupted"),
+        ):
+            write_ticket(ticket, path)
+
+        assert path.read_text(encoding="utf-8") == "original ticket bytes\n"
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_stale_full_write_preserves_concurrent_worklog_and_assignee_updates(self, tmp_path: Path) -> None:
+        path = tmp_path / "kin-test.md"
+        write_ticket(Ticket(id="kin-test", status="open", title="Concurrent work"), path)
+        stale_read_complete = Event()
+        allow_full_write = Event()
+
+        def close_from_stale_read() -> None:
+            ticket = read_ticket(path)
+            ticket.status = "closed"
+            ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", "- closed").strip()
+            stale_read_complete.set()
+            assert allow_full_write.wait(timeout=2)
+            write_ticket(ticket, path)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            full_write = pool.submit(close_from_stale_read)
+            assert stale_read_complete.wait(timeout=2)
+            append_worklog_entry(path, "Concurrent note")
+            write_ticket_assignee(path, "codex:peer")
+            allow_full_write.set()
+            full_write.result(timeout=2)
+
+        ticket = read_ticket(path)
+        assert ticket.status == "closed"
+        assert ticket.assignee == "codex:peer"
+        assert "## Lifecycle\n\n- closed" in ticket.body
+        assert "Concurrent note" in ticket.body
+
+    def test_same_body_section_uses_the_last_locked_writer(self, tmp_path: Path) -> None:
+        path = tmp_path / "kin-test.md"
+        write_ticket(Ticket(id="kin-test", status="open", title="Same section"), path)
+        stale_ticket = read_ticket(path)
+
+        append_worklog_entry(path, "Concurrent note")
+        stale_ticket.body = insert_markdown_section_entry(stale_ticket.body, "Worklog", "- Proposed note").strip()
+        write_ticket(stale_ticket, path)
+
+        body = read_ticket(path).body
+        assert "Proposed note" in body
+        assert "Concurrent note" not in body
+
+    def test_write_ticket_waits_for_the_ticket_mutation_lock(self, tmp_path: Path) -> None:
+        path = tmp_path / "kin-test.md"
+        lock_path = path.parent / f".{path.name}.lock"
+        started = Event()
+        finished = Event()
+
+        def write() -> None:
+            started.set()
+            write_ticket(Ticket(id="kin-test", status="open", title="Locked write"), path)
+            finished.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with flock(lock_path):
+                future = pool.submit(write)
+                assert started.wait(timeout=2)
+                assert not finished.wait(timeout=0.2)
+            future.result(timeout=2)
+
+        assert read_ticket(path).title == "Locked write"
 
     def test_read_nonexistent(self, tmp_path: Path) -> None:
         """read_ticket raises FileNotFoundError for missing file."""
@@ -905,6 +1045,86 @@ class TestMoveTicket:
         assert new_path.exists()
         assert dest_dir.exists()
 
+    @pytest.mark.parametrize("held_path", ["source", "destination"])
+    def test_move_waits_for_source_and_destination_locks(self, tmp_path: Path, held_path: str) -> None:
+        source_path = tmp_path / "source" / "kin-test.md"
+        destination = tmp_path / "dest" / source_path.name
+        write_ticket(Ticket(id="kin-test", status="open", title="Locked move"), source_path)
+        lock_target = source_path if held_path == "source" else destination
+        started = Event()
+        finished = Event()
+
+        def move() -> None:
+            started.set()
+            move_ticket(source_path, destination.parent)
+            finished.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with flock(lock_target.parent / f".{lock_target.name}.lock"):
+                future = pool.submit(move)
+                assert started.wait(timeout=2)
+                assert not finished.wait(timeout=0.2)
+            future.result(timeout=2)
+
+        assert destination.exists()
+        assert (source_path.parent / f".{source_path.name}.lock").exists()
+        assert (destination.parent / f".{destination.name}.lock").exists()
+
+    def test_stale_snapshot_cannot_resurrect_moved_ticket(self, tmp_path: Path) -> None:
+        source_path = tmp_path / "source" / "kin-test.md"
+        destination_dir = tmp_path / "dest"
+        write_ticket(Ticket(id="kin-test", status="open", title="Moved"), source_path)
+        stale_ticket = read_ticket(source_path)
+
+        destination = move_ticket(source_path, destination_dir)
+        stale_ticket.status = "closed"
+
+        with pytest.raises(FileNotFoundError, match="moved or deleted"):
+            write_ticket(stale_ticket, source_path)
+
+        assert not source_path.exists()
+        assert read_ticket(destination).status == "open"
+
+
+class TestDeleteTicket:
+    def test_delete_waits_for_ticket_lock_and_leaves_it_in_place(self, tmp_path: Path) -> None:
+        from kingdom.ticket import delete_ticket
+
+        path = tmp_path / "kin-test.md"
+        write_ticket(Ticket(id="kin-test", status="open", title="Locked delete"), path)
+        lock_path = path.parent / f".{path.name}.lock"
+        started = Event()
+        finished = Event()
+
+        def delete() -> None:
+            started.set()
+            delete_ticket(path)
+            finished.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with flock(lock_path):
+                future = pool.submit(delete)
+                assert started.wait(timeout=2)
+                assert not finished.wait(timeout=0.2)
+            future.result(timeout=2)
+
+        assert not path.exists()
+        assert lock_path.exists()
+
+    def test_stale_snapshot_cannot_resurrect_deleted_ticket(self, tmp_path: Path) -> None:
+        from kingdom.ticket import delete_ticket
+
+        path = tmp_path / "kin-test.md"
+        write_ticket(Ticket(id="kin-test", status="open", title="Deleted"), path)
+        stale_ticket = read_ticket(path)
+
+        delete_ticket(path)
+        stale_ticket.status = "closed"
+
+        with pytest.raises(FileNotFoundError, match="moved or deleted"):
+            write_ticket(stale_ticket, path)
+        assert not path.exists()
+
     def test_move_nonexistent_file(self, tmp_path: Path) -> None:
         """move_ticket raises FileNotFoundError for nonexistent file."""
         dest_dir = tmp_path / "dest"
@@ -1051,6 +1271,34 @@ class TestFindNewlyUnblocked:
         result = find_newly_unblocked("cb01", tmp_path)
         assert len(result) == 0
 
+    def test_archived_closed_dependency_does_not_hide_unblocked_ticket(self, tmp_path: Path) -> None:
+        tickets_dir = self.setup_branch(tmp_path)
+        created = datetime.now(UTC)
+        write_ticket(
+            Ticket(id="just", status="closed", title="Just closed", created=created),
+            tickets_dir / "just.md",
+        )
+        write_ticket(
+            Ticket(
+                id="next",
+                status="open",
+                title="Now ready",
+                deps=["just", "arch"],
+                created=created,
+            ),
+            tickets_dir / "next.md",
+        )
+        archive_tickets = tmp_path / ".kd" / "archive" / "finished" / "tickets"
+        archive_tickets.mkdir(parents=True)
+        write_ticket(
+            Ticket(id="arch", status="closed", title="Archived prerequisite", created=created),
+            archive_tickets / "arch.md",
+        )
+
+        result = find_newly_unblocked("just", tmp_path)
+
+        assert [ticket.id for ticket in result] == ["next"]
+
     def test_closed_dependents_excluded(self, tmp_path: Path) -> None:
         """Already-closed dependents are excluded from unblocked list."""
         tickets_dir = self.setup_branch(tmp_path)
@@ -1097,6 +1345,32 @@ class TestFindNewlyUnblocked:
 
 class TestAppendWorklogEntry:
     """Tests for append_worklog_entry function."""
+
+    def test_failed_atomic_replace_preserves_ticket_before_append(self, tmp_path: Path) -> None:
+        path = tmp_path / "worklog.md"
+        write_ticket(Ticket(id="work", status="in_progress", title="Work"), path)
+        before = path.read_bytes()
+
+        with (
+            patch("kingdom.ticket.os.replace", side_effect=OSError("interrupted")),
+            pytest.raises(OSError, match="interrupted"),
+        ):
+            append_worklog_entry(path, "New note")
+
+        assert path.read_bytes() == before
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_concurrent_appends_preserve_every_entry(self, tmp_path: Path) -> None:
+        path = tmp_path / "parallel.md"
+        write_ticket(Ticket(id="para", status="in_progress", title="Parallel work"), path)
+
+        messages = [f"worker {index}" for index in range(24)]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda message: append_worklog_entry(path, message), messages))
+
+        content = path.read_text(encoding="utf-8")
+        for message in messages:
+            assert content.count(f"— {message}\n") == 1
 
     def test_creates_worklog_section_when_missing(self, tmp_path: Path) -> None:
         """Creates ## Worklog section if it doesn't exist."""
@@ -1301,6 +1575,19 @@ class TestInsertWorklogEntry:
         result = insert_worklog_entry(content, "- entry")
         assert result != content
         assert "- entry" in result
+
+
+class TestEffectiveResolution:
+    def test_non_closed_ticket_ignores_stale_terminal_metadata(self) -> None:
+        ticket = Ticket(
+            id="stale",
+            status="in_progress",
+            title="Still active",
+            resolution="wont-do",
+            duplicate_of="old-target",
+        )
+
+        assert effective_resolution(ticket) is None
 
 
 class TestFilterTicketsByStatus:
@@ -1640,6 +1927,27 @@ class TestCollectAllTicketsDedup:
         all_tickets = collect_all_tickets(tmp_path)
         ids = [t.id for t in all_tickets]
         assert ids.count("dup2") == 1
+
+    def test_status_collection_prefers_current_workspace_copy(self, tmp_path: Path) -> None:
+        from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
+
+        ensure_base_layout(tmp_path)
+        other_dir = ensure_branch_layout(tmp_path, "aaa-other") / "tickets"
+        current_dir = ensure_branch_layout(tmp_path, "zzz-current") / "tickets"
+        set_current_run(tmp_path, "zzz-current")
+        created = datetime.now(UTC)
+        write_ticket(
+            Ticket(id="same", status="closed", title="Stale copy", created=created),
+            other_dir / "same.md",
+        )
+        write_ticket(
+            Ticket(id="same", status="open", title="Current copy", created=created),
+            current_dir / "same.md",
+        )
+
+        statuses = collect_ticket_statuses(tmp_path)
+
+        assert statuses["same"] == "open"
 
 
 class TestCoerceToStrListDedup:

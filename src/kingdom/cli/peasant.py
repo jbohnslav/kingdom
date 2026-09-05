@@ -24,13 +24,26 @@ from kingdom.parsing import parse_iso_datetime
 from kingdom.state import (
     backlog_root,
     branch_root,
+    branches_root,
+    clear_terminal_ticket_contexts,
+    clear_ticket_execution_contexts,
     find_git_root,
+    flock,
     get_current_git_branch,
     logs_root,
     normalize_branch_name,
+    read_json,
     resolve_current_run,
+    ticket_assignment_lock_path,
 )
-from kingdom.ticket import Ticket, move_ticket, write_ticket
+from kingdom.ticket import (
+    Ticket,
+    blocking_dependencies,
+    move_ticket,
+    read_ticket,
+    resolve_ticket_dependencies,
+    write_ticket,
+)
 from kingdom.worktree import (
     check_uncommitted_changes,
     create_worktree,
@@ -50,6 +63,8 @@ from .helpers import (
 )
 
 peasant_app = typer.Typer(name="peasant", help="Manage peasant agents.")
+
+PEASANT_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 class PeasantContext(NamedTuple):
@@ -298,12 +313,47 @@ def peasant_start(
     no_preflight: Annotated[bool, typer.Option("--no-preflight", help="Skip uncommitted-changes warning.")] = False,
 ) -> None:
     """Create worktree, session, thread, and launch agent harness in background."""
+    ctx = resolve_peasant_context(ticket_id, auto_pull=True)
+    start_peasant(ctx, agent=agent, hand=hand, tmux=tmux, no_preflight=no_preflight)
+
+    if watch:
+        typer.echo()
+        peasant_watch(ticket_id)
+
+
+def start_peasant(
+    ctx: PeasantContext,
+    *,
+    agent: str | None,
+    hand: bool,
+    tmux: bool,
+    no_preflight: bool,
+) -> None:
+    """Launch one peasant after serializing starts for its ticket."""
+    lock_path = ctx.ticket_path.parent / f".{ctx.ticket_path.name}.start.lock"
+    try:
+        with flock(lock_path, timeout_seconds=PEASANT_LOCK_TIMEOUT_SECONDS):
+            fresh_ctx = ctx._replace(ticket=read_ticket(ctx.ticket_path))
+            launch_peasant(fresh_ctx, agent=agent, hand=hand, tmux=tmux, no_preflight=no_preflight)
+    except TimeoutError:
+        print_error(f"Another start for {ctx.full_ticket_id} is still running. Retry shortly.")
+        raise typer.Exit(code=1) from None
+
+
+def launch_peasant(
+    ctx: PeasantContext,
+    *,
+    agent: str | None,
+    hand: bool,
+    tmux: bool,
+    no_preflight: bool,
+) -> None:
+    """Create one peasant's worktree, session, thread, and worker process."""
     import kingdom.cli as _cli
     from kingdom.config import load_config
     from kingdom.session import update_agent_state
     from kingdom.thread import create_thread
 
-    ctx = resolve_peasant_context(ticket_id, auto_pull=True)
     base, ticket, full_ticket_id, feature = ctx.base, ctx.ticket, ctx.full_ticket_id, ctx.feature
 
     # Block starting work on tickets that are in_review or closed
@@ -318,10 +368,11 @@ def peasant_start(
         )
         raise typer.Exit(code=1)
 
-    # Transition open → in_progress
-    if ticket.status == "open":
-        ticket.status = "in_progress"
-        write_ticket(ticket, ctx.ticket_path)
+    blockers = blocking_dependencies(resolve_ticket_dependencies(base, ticket))
+    if blockers:
+        details = ", ".join(f"{dep} ({status})" for dep, status in blockers)
+        print_error(f"Cannot start work on {full_ticket_id}: blocked by {details}")
+        raise typer.Exit(code=1)
 
     # Default agent from config if not specified on CLI
     if agent is None:
@@ -377,9 +428,22 @@ def peasant_start(
             print_error(str(exc))
             raise typer.Exit(code=1) from None
 
-    # Auto-assign ticket to the peasant session
-    ticket.assignee = session_name
-    write_ticket(ticket, ctx.ticket_path)
+    # Auto-assign only after slow setup, with a fresh eligibility check so a
+    # native owner that started while the worktree was created wins cleanly.
+    with flock(ticket_assignment_lock_path(base)):
+        ticket = read_ticket(ctx.ticket_path)
+        if ticket.status in ("in_review", "closed"):
+            print_error(f"Cannot start work on {full_ticket_id}: ticket is {ticket.status}")
+            raise typer.Exit(code=1)
+        if ticket.status == "in_progress" and ticket.assignee not in (None, "hand", session_name):
+            print_error(f"Cannot start work on {full_ticket_id}: ticket is owned by {ticket.assignee}")
+            raise typer.Exit(code=1)
+        if ticket.status == "open":
+            ticket.status = "in_progress"
+        ticket.assignee = session_name
+        write_ticket(ticket, ctx.ticket_path)
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
 
     # 2. Create work thread (ignore if already exists)
     with contextlib.suppress(FileExistsError):
@@ -443,10 +507,6 @@ def peasant_start(
     verbose_echo(f"thread dir: {tdir}")
     verbose_echo(f"hand mode: {hand}")
 
-    if watch:
-        typer.echo()
-        peasant_watch(ticket_id)
-
 
 TERMINAL_STATUSES = {"done", "failed", "stopped"}
 WATCH_TERMINAL_STATUSES = {"done", "failed", "stopped", "needs_king_review", "blocked"}
@@ -485,20 +545,22 @@ def peasant_status(
 
     def peasant_to_dict(p):
         ticket = p.ticket or p.name.replace("peasant-", "")
+        last_dt = None
+        if p.last_activity:
+            with contextlib.suppress(ValueError, TypeError):
+                last_dt = parse_iso_datetime(p.last_activity)
+
         elapsed_minutes = None
         if p.started_at:
             try:
                 started = parse_iso_datetime(p.started_at)
-                elapsed_minutes = int((now - started).total_seconds() / 60)
+                elapsed_at = last_dt if p.status in TERMINAL_STATUSES and last_dt else now
+                elapsed_minutes = int((elapsed_at - started).total_seconds() / 60)
             except (ValueError, TypeError):
                 pass
         last_activity_minutes = None
-        if p.last_activity:
-            try:
-                last_dt = parse_iso_datetime(p.last_activity)
-                last_activity_minutes = int((now - last_dt).total_seconds() / 60)
-            except (ValueError, TypeError):
-                pass
+        if last_dt:
+            last_activity_minutes = int((now - last_dt).total_seconds() / 60)
         # Effective status: report "dead" not "working" for dead processes
         effective_status = p.status
         if p.status == "working" and (not p.pid or not is_process_alive(p.pid)):
@@ -507,6 +569,7 @@ def peasant_status(
             "ticket": ticket,
             "agent": p.agent_backend or None,
             "status": effective_status,
+            "failure_kind": p.failure_kind,
             "elapsed_minutes": elapsed_minutes,
             "last_activity_minutes": last_activity_minutes,
             "pid": p.pid,
@@ -552,6 +615,9 @@ def peasant_status(
             "awaiting_council": "magenta",
             "needs_king_review": "cyan",
         }.get(d["status"], "")
+        status_label = d["status"]
+        if d["failure_kind"]:
+            status_label += f"/{d['failure_kind']}"
 
         elapsed = f"{d['elapsed_minutes']}m" if d["elapsed_minutes"] is not None else ""
         last = f"{d['last_activity_minutes']}m ago" if d["last_activity_minutes"] is not None else ""
@@ -559,7 +625,7 @@ def peasant_status(
         table.add_row(
             d["ticket"],
             d["agent"] or "?",
-            f"[{status_style}]{d['status']}[/{status_style}]" if status_style else d["status"],
+            f"[{status_style}]{status_label}[/{status_style}]" if status_style else status_label,
             elapsed,
             last,
         )
@@ -636,8 +702,6 @@ def peasant_show(
     else:
         # ctx.feature may be normalized (slashes→dashes); resolve the
         # original git branch name from state.json for a valid ref.
-        from kingdom.state import read_json
-
         st = read_json(branch_root(ctx.base, ctx.feature) / "state.json")
         git_ref = st.get("branch")
         if not git_ref:
@@ -1496,14 +1560,56 @@ def peasant_accept(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID.")],
 ) -> None:
     """Accept a peasant's completed work: merge changes and close the ticket."""
+    ctx = resolve_peasant_context(ticket_id)
+    lock_path = branch_root(ctx.base, ctx.feature) / ".peasant-accept.lock"
+    try:
+        with flock(lock_path, timeout_seconds=PEASANT_LOCK_TIMEOUT_SECONDS):
+            accept_peasant(ctx)
+    except TimeoutError:
+        print_error("Another peasant acceptance is still running. Retry shortly.")
+        raise typer.Exit(code=1) from None
+
+
+def accept_peasant(ctx: PeasantContext) -> None:
+    """Integrate one reviewed peasant while holding the branch accept lock."""
     from kingdom.session import get_agent_state, update_agent_state
 
-    ctx = resolve_peasant_context(ticket_id)
-    base, ticket, ticket_path = ctx.base, ctx.ticket, ctx.ticket_path
-    full_ticket_id, feature = ctx.full_ticket_id, ctx.feature
+    base = ctx.base
+    full_ticket_id = ctx.full_ticket_id
 
     session_name = peasant_session_name(full_ticket_id)
     branch_name = f"ticket/{full_ticket_id}"
+
+    owning_features: list[str] = []
+    branch_directory = branches_root(base)
+    if branch_directory.exists():
+        for feature_directory in sorted(branch_directory.iterdir()):
+            if not feature_directory.is_dir():
+                continue
+            session_file = feature_directory / "sessions" / f"{session_name}.json"
+            if not session_file.exists():
+                continue
+            session_data = read_json(session_file)
+            if session_data.get("status", "idle") != "idle":
+                owning_features.append(feature_directory.name)
+
+    if len(owning_features) != 1:
+        if owning_features:
+            features = ", ".join(owning_features)
+            print_error(f"Cannot accept: {session_name} exists in multiple Kingdom features: {features}.")
+        else:
+            print_error(f"Cannot accept: no active Kingdom session records {full_ticket_id}.")
+        error_console.print(f"Review the exact worker: `kd peasant review {full_ticket_id}`")
+        error_console.print(f"Retry exact acceptance: `kd peasant accept {full_ticket_id}`")
+        raise typer.Exit(code=1)
+
+    feature = owning_features[0]
+    ticket, ticket_path = resolve_ticket_or_exit(base, full_ticket_id, branch=feature)
+    state = get_agent_state(base, feature, session_name)
+    if state.ticket and state.ticket != full_ticket_id:
+        print_error(f"Cannot accept: {session_name} records ticket '{state.ticket}', not '{full_ticket_id}'.")
+        error_console.print(f"Review the exact worker: `kd peasant review {full_ticket_id}`")
+        raise typer.Exit(code=1)
 
     # Gate: ticket must be in_review
     if ticket.status != "in_review":
@@ -1513,43 +1619,45 @@ def peasant_accept(
     # Gate: session must be needs_king_review or done
     # A peasant may close the ticket prematurely (session → done) before the
     # normal council-review flow sets needs_king_review.  Both are acceptable.
-    state = get_agent_state(base, feature, session_name)
     acceptable_statuses = {"needs_king_review", "done"}
     if state.status not in acceptable_statuses:
         print_error(f"Cannot accept: session is '{state.status}', expected one of {sorted(acceptable_statuses)}.")
         raise typer.Exit(code=1)
 
-    # Gate: must be on the feature branch for merge safety
-    # Resolve the original git branch name from state.json (feature may be normalized)
-    from kingdom.state import read_json
-
-    state_json = read_json(branch_root(base, feature) / "state.json")
-    git_branch_name = state_json.get("branch", feature)
-
-    current_branch = subprocess.run(
+    current_branch_result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
         text=True,
         cwd=str(ctx.git_root),
-    ).stdout.strip()
-    if "branch" in state_json:
-        # Original git branch name stored — compare exactly
-        branch_match = current_branch == git_branch_name
-    else:
-        # No original name stored (legacy state) — fall back to normalized comparison
-        branch_match = normalize_branch_name(current_branch) == normalize_branch_name(feature)
-    if not branch_match:
-        print_error(
-            f"Cannot accept: expected to be on '{git_branch_name}' but HEAD is on '{current_branch}'.\n"
-            f"  (kd branch key: {feature})\n"
-            f"Run `git checkout {git_branch_name}` first, then retry."
-        )
+    )
+    current_branch = current_branch_result.stdout.strip()
+    if current_branch_result.returncode != 0 or not current_branch or current_branch == "HEAD":
+        print_error("Cannot accept from a detached or unresolved Git HEAD.")
+        error_console.print(f"Review the exact worker: `kd peasant review {full_ticket_id}`")
         raise typer.Exit(code=1)
 
     if state.hand_mode:
-        # Hand mode: changes are already on the feature branch, skip merge
-        typer.echo(f"Hand mode — changes already on {feature}, skipping merge")
+        # Hand mode: changes are already on the invocation checkout, skip merge.
+        typer.echo(f"Hand mode — changes already on {current_branch}, skipping merge")
     else:
+        workspace_state = read_json(branch_root(base, feature) / "state.json")
+        recorded_branch = workspace_state.get("branch")
+        if isinstance(recorded_branch, str) and recorded_branch.strip():
+            integration_branch = recorded_branch.strip()
+            correct_checkout = current_branch == integration_branch
+        else:
+            integration_branch = feature
+            correct_checkout = normalize_branch_name(current_branch) == normalize_branch_name(feature)
+
+        if not correct_checkout:
+            print_error(
+                f"Cannot accept: workspace '{feature}' integrates into Git branch "
+                f"'{integration_branch}', but HEAD is on '{current_branch}'."
+            )
+            error_console.print(f"Switch to the integration branch: `git switch {shlex.quote(integration_branch)}`")
+            error_console.print(f"Then retry: `kd peasant accept {full_ticket_id}`")
+            raise typer.Exit(code=1)
+
         # Worktree mode: merge ticket branch into feature branch
         # Check if already merged (idempotent re-run after manual conflict resolution)
         already_merged = subprocess.run(
@@ -1559,13 +1667,13 @@ def peasant_accept(
             cwd=str(ctx.git_root),
         )
         if already_merged.returncode == 0:
-            typer.echo(f"{branch_name} already merged into {feature}, skipping merge")
+            typer.echo(f"{branch_name} already merged into {current_branch}, skipping merge")
         else:
             # Check for uncommitted changes before attempting merge
             uncommitted = check_uncommitted_changes(ctx.git_root, ignore_kd=True)
             if uncommitted:
                 print_error(
-                    f"Uncommitted changes on {git_branch_name} — commit or stash before accepting.\n"
+                    f"Uncommitted changes on {current_branch} — commit or stash before accepting.\n"
                     f"  Found {len(uncommitted)} changed file(s)."
                 )
                 raise typer.Exit(code=1)
@@ -1584,12 +1692,12 @@ def peasant_accept(
                 print_error("Integration failed — merge conflicts detected. Ticket remains in_review.")
                 error_console.print(f"\n{merge_err}\n")
                 error_console.print("Recovery steps:")
-                error_console.print(f"  1. Resolve conflict markers in the working tree (you are on {git_branch_name})")
+                error_console.print(f"  1. Resolve conflict markers in the working tree (you are on {current_branch})")
                 error_console.print("  2. git add <resolved files> && git commit")
                 error_console.print(f"  3. kd peasant accept {full_ticket_id}  (re-run — detects merge is done)")
                 raise typer.Exit(code=1)
 
-            typer.echo(f"Integrated {branch_name} into {feature}")
+            typer.echo(f"Integrated {branch_name} into {current_branch}")
 
     ticket.status = "closed"
     write_ticket(ticket, ticket_path)

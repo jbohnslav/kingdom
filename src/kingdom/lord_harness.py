@@ -21,16 +21,17 @@ import types
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kingdom.agent import build_command, clean_agent_env, parse_response, resolve_agent
+from kingdom.agent import build_command, clean_agent_env, extract_token_count, parse_response, resolve_agent
 from kingdom.session import ACTIVE_PEASANT_STATUSES, get_agent_state, update_agent_state
 from kingdom.state import logs_root
 from kingdom.ticket import (
     Ticket,
     append_worklog_entry,
+    collect_ticket_statuses,
     filter_worklog_lines,
     find_ticket,
-    list_tickets,
     read_ticket,
+    resolve_ticket_dependencies,
 )
 
 logger = logging.getLogger("kingdom.lord_harness")
@@ -105,12 +106,7 @@ def get_startable_children(
     if not children:
         return []
 
-    # Build status map for dep checking
-    from kingdom.state import branch_root
-
-    tickets_dir = branch_root(base, branch) / "tickets"
-    all_tickets = list_tickets(tickets_dir)
-    status_by_id = {t.id: t.status for t in all_tickets}
+    status_by_id = collect_ticket_statuses(base)
 
     startable = []
     for ticket_path in children:
@@ -294,22 +290,17 @@ def get_children_summary(
     dep_statuses is a sorted tuple of (dep_id, dep_status) so the snapshot changes
     when an external dependency closes (making a child newly startable).
     """
-    from kingdom.state import branch_root
-
     if children is None:
         children = discover_epic_children(base, branch, epic_id)
 
-    # Build status map for deps (includes all tickets, not just epic children)
-    tickets_dir = branch_root(base, branch) / "tickets"
-    all_tickets = list_tickets(tickets_dir)
-    status_by_id = {t.id: t.status for t in all_tickets}
+    status_by_id = collect_ticket_statuses(base)
 
     summary = []
     for child_path in children:
         ticket = tickets[child_path.stem] if tickets else read_ticket(child_path)
         session_name = f"peasant-{ticket.id}"
         state = get_agent_state(base, branch, session_name)
-        dep_statuses = tuple(sorted((d, status_by_id.get(d, "unknown")) for d in ticket.deps))
+        dep_statuses = tuple(sorted(resolve_ticket_dependencies(base, ticket, status_by_id)))
         summary.append((ticket.id, ticket.status, state.status, dep_statuses))
     return tuple(sorted(summary))
 
@@ -487,7 +478,7 @@ def build_lord_prompt(
     parts.append("`kd peasant status --json` — Check all active peasant statuses")
     parts.append("`kd peasant show <ticket-id> --json` — Show detailed peasant history")
     parts.append(f"`kd tk list --parent {epic_id}` — List all epic children")
-    parts.append("`kd tk show <ticket-id>` — Print raw ticket Markdown")
+    parts.append("`kd tk show <ticket-id>` — Print raw ticket Markdown and resolved dependency gate")
     parts.append("`kd tk show <ticket-id> --rich` — Show framed ticket details")
     parts.append("")
     parts.append("### Reviewing completed work")
@@ -618,6 +609,7 @@ def run_lord_loop(
     if epic.type != "epic":
         logger.error("Ticket %s is not an epic (type: %s)", epic_id, epic.type)
         return "failed"
+    run_started_at = time.monotonic()
 
     # Signal handling
     stop_requested = False
@@ -638,8 +630,12 @@ def run_lord_loop(
     last_seen_states: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] | None = None
     consecutive_idle = 0
     agent_calls = 0
+    loop_iterations = 0
+    reported_tokens = 0
+    has_reported_tokens = False
 
     for iteration in range(1, max_iterations + 1):
+        loop_iterations = iteration
         # Check for stop: either SIGTERM signal or persisted "stopping" session state
         if not stop_requested:
             session_state = get_agent_state(base, branch, session_name)
@@ -703,14 +699,14 @@ def run_lord_loop(
             continue
 
         # Check agent call budget before making another LLM call
-        agent_calls += 1
-        if agent_calls > max_cycles:
+        if agent_calls >= max_cycles:
             logger.warning("Agent call budget (%d) exhausted at iteration %d", max_cycles, iteration)
             append_lord_worklog(
                 epic_path, epic_id=epic_id, entry=f"Agent call budget ({max_cycles}) exhausted without completion"
             )
             final_status = "failed"
             break
+        agent_calls += 1
 
         # Update session: working
         now = datetime.now(UTC).isoformat()
@@ -756,6 +752,15 @@ def run_lord_loop(
             final_status = "failed"
             break
 
+        text, new_session_id, raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
+        token_count = extract_token_count(agent_config.backend, raw)
+        if token_count is not None:
+            reported_tokens += token_count
+            has_reported_tokens = True
+        if new_session_id:
+            resume_id = new_session_id
+            update_agent_state(base, branch, session_name, resume_id=new_session_id)
+
         # Check for stop after agent call
         if stop_requested:
             final_status = "stopped"
@@ -763,12 +768,6 @@ def run_lord_loop(
                 epic_path, epic_id=epic_id, entry="STOP signal received after agent call — shutting down"
             )
             break
-
-        # Parse response
-        text, new_session_id, _raw = parse_response(agent_config, proc.stdout, proc.stderr, proc.returncode)
-        if new_session_id:
-            resume_id = new_session_id
-            update_agent_state(base, branch, session_name, resume_id=new_session_id)
 
         if not text and proc.returncode != 0:
             error_msg = proc.stderr.strip() or f"Exit code {proc.returncode}"
@@ -839,6 +838,17 @@ def run_lord_loop(
             epic_path, epic_id=epic_id, entry=f"Max iterations ({max_iterations}) reached without completion"
         )
         final_status = "failed"
+
+    token_summary = str(reported_tokens) if has_reported_tokens else "unavailable"
+    elapsed = time.monotonic() - run_started_at
+    append_lord_worklog(
+        epic_path,
+        epic_id=epic_id,
+        entry=(
+            f"Lord run metrics: agent cycles: {agent_calls}; loop iterations: {loop_iterations}; "
+            f"reported agent tokens: {token_summary}; elapsed: {elapsed:.1f}s"
+        ),
+    )
 
     # Final session update
     now = datetime.now(UTC).isoformat()

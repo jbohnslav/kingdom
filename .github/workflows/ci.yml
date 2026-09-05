@@ -24,3 +24,6 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+      - name: Validate documented CLI workflow
+        run: bash scripts/smoke.sh

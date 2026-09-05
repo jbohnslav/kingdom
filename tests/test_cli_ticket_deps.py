@@ -105,7 +105,8 @@ class TestTicketDep:
         # Add first dep
         runner.invoke(ticket_app, ["deps", "add", "cf1a", "aaaa"])
         # Change status (rewrites ticket)
-        runner.invoke(ticket_app, ["start", "cf1a"])
+        result = runner.invoke(ticket_app, ["start", "cf1a"], env={"KD_CONTEXT": "ticket-deps-status-change"})
+        assert result.exit_code == 0, result.output
         # Add second dep
         runner.invoke(ticket_app, ["deps", "add", "cf1a", "bbbb"])
 

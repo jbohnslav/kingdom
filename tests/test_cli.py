@@ -1,14 +1,17 @@
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 import kingdom.cli as cli_mod
 from kingdom.cli import app
+from kingdom.cli.config import AgentRuntimeCheck
 from kingdom.cli.helpers import verbose_echo
 from kingdom.cli.peasant import launch_work_tmux
 from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
@@ -18,7 +21,11 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def mock_doctor_model_check():
-    with patch("kingdom.cli.check_agent_model", return_value=("unchecked", None)):
+    runtime = AgentRuntimeCheck(status="available", version="provider-cli 1.0")
+    with (
+        patch("kingdom.cli.check_agent_model", return_value=("unchecked", None)),
+        patch("kingdom.cli.check_agent_runtime", return_value=runtime),
+    ):
         yield
 
 
@@ -34,11 +41,42 @@ class TestCliWiring:
         """All expected sub-apps are reachable from the top-level app."""
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        for cmd in ("council", "design", "peasant", "config", "plugin", "ticket", "update"):
+        for cmd in ("council", "peasant", "config", "lord", "plugin", "ticket", "update"):
             assert cmd in result.output, f"{cmd} not in --help output"
-        # tk is a hidden alias — verify it's mounted by invoking it
-        tk_result = runner.invoke(app, ["tk", "--help"])
-        assert tk_result.exit_code == 0
+
+        assert "│ design " not in result.output
+        assert "│ hook " not in result.output
+        for hidden_command in ("design", "hook", "tk"):
+            hidden_result = runner.invoke(app, [hidden_command, "--help"])
+            assert hidden_result.exit_code == 0
+
+    def test_retained_power_tools_are_reachable(self) -> None:
+        for command in (
+            ["council", "--help"],
+            ["council", "chat", "--help"],
+            ["peasant", "--help"],
+            ["lord", "--help"],
+            ["tk", "pull", "--help"],
+        ):
+            result = runner.invoke(app, command)
+            assert result.exit_code == 0, result.output
+
+    def test_root_help_teaches_ticket_loop_and_concurrent_contexts(self) -> None:
+        result = runner.invoke(app, ["--help"])
+        output = unstyle(result.output)
+        normalized = " ".join(output.split())
+
+        assert result.exit_code == 0
+        assert "create/find" in output
+        assert "pull/start" in output
+        assert "log/close" in output
+        assert "kd status --check" in output
+        assert "read-only readiness gate" in normalized
+        assert "epics" in output
+        assert "Concurrent example:" in output
+        assert "kd tk current" in output
+        assert "Power tools:" in output
+        assert "Design docs are optional" in output
 
     def test_top_level_re_exports(self) -> None:
         """kingdom.cli re-exports key symbols from submodules."""
@@ -48,30 +86,40 @@ class TestCliWiring:
         assert hasattr(cli_mod, "format_ticket_line")
         assert hasattr(cli_mod, "resolve_peasant_context")
 
+    def test_version_option_matches_package_metadata(self) -> None:
+        manifest = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
 
-def test_doctor_all_installed() -> None:
+        result = runner.invoke(app, ["--version"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == f"kd {manifest['project']['version']}"
+
+
+def test_doctor_all_installed(tmp_path: Path) -> None:
     """Test doctor command when all CLIs are installed."""
     with (
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.cli.check_config", return_value=(True, None)),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "✓" in result.output
         assert "claude" in result.output
         assert "codex" in result.output
+        assert "version: provider-cli 1.0" in result.output
 
 
 def test_doctor_missing_cli() -> None:
     """Test doctor command when a CLI is missing."""
 
-    def mock_check(command: list[str]) -> tuple[bool, str | None]:
-        if "codex" in command:
-            return (False, "Command not found")
-        return (True, None)
+    def mock_check(agent):
+        if agent.backend == "codex":
+            return AgentRuntimeCheck(status="missing", error="Command not found", recovery=agent.install_hint)
+        return AgentRuntimeCheck(status="available", version="provider-cli 1.0")
 
     with (
-        patch("kingdom.cli.check_cli", side_effect=mock_check),
+        patch("kingdom.cli.check_agent_runtime", side_effect=mock_check),
         patch("kingdom.cli.check_config", return_value=(True, None)),
     ):
         result = runner.invoke(app, ["doctor"])
@@ -136,7 +184,29 @@ def test_check_agent_model_rejects_unsupported_codex_effort() -> None:
     assert "does not support effort 'ultra'" in error
 
 
-def test_doctor_json_output(tmp_path) -> None:
+def test_doctor_shows_actual_cli_probe_error(tmp_path: Path) -> None:
+    def mock_check(agent):
+        if agent.backend == "codex":
+            return AgentRuntimeCheck(
+                status="version_failed",
+                error="Version probe timed out",
+                recovery="Reinstall Codex CLI, then run `kd doctor`.",
+            )
+        return AgentRuntimeCheck(status="available", version="provider-cli 1.0")
+
+    with (
+        patch("kingdom.cli.check_agent_runtime", side_effect=mock_check),
+        patch("kingdom.cli.check_config", return_value=(True, None)),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
+    ):
+        result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "codex" in result.output
+    assert "Version probe timed out" in result.output
+
+
+def test_doctor_json_output(tmp_path: Path) -> None:
     """Test doctor command with --json flag."""
     kd_dir = tmp_path / ".kd"
     kd_dir.mkdir()
@@ -145,15 +215,19 @@ def test_doctor_json_output(tmp_path) -> None:
         patch("kingdom.cli.check_config", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["agents"]["claude"]["installed"] is True
         assert data["agents"]["codex"]["installed"] is True
+        assert data["agents"]["claude"]["status"] == "available"
+        assert data["agents"]["claude"]["version"] == "provider-cli 1.0"
         assert data["agents"]["claude"]["model"] == "inherited"
         assert data["agents"]["claude"]["model_source"] == "provider"
         assert data["agents"]["claude"]["effort"] == "inherited"
+        assert data["agents"]["claude"]["effort_source"] == "provider"
         assert data["config"]["valid"] is True
 
 
@@ -170,11 +244,15 @@ def test_doctor_json_reports_pinned_model_and_effort(tmp_path) -> None:
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor", "--json"])
 
     assert result.exit_code == 0
     data = json.loads(result.output)
+    assert data["config"]["source"] == str(kd_dir / "config.json")
+    assert data["config"]["council_members"] == [{"name": "claude", "backend": "claude_code"}]
+    assert data["agents"]["claude"]["backend"] == "claude_code"
     assert data["agents"]["claude"]["model"] == "opus"
     assert data["agents"]["claude"]["model_source"] == "configured"
     assert data["agents"]["claude"]["effort"] == "high"
@@ -183,13 +261,13 @@ def test_doctor_json_reports_pinned_model_and_effort(tmp_path) -> None:
 def test_doctor_json_with_missing() -> None:
     """Test doctor JSON output with missing CLI."""
 
-    def mock_check(command: list[str]) -> tuple[bool, str | None]:
-        if "codex" in command:
-            return (False, "Command not found")
-        return (True, None)
+    def mock_check(agent):
+        if agent.backend == "codex":
+            return AgentRuntimeCheck(status="missing", error="Command not found", recovery=agent.install_hint)
+        return AgentRuntimeCheck(status="available", version="provider-cli 1.0")
 
     with (
-        patch("kingdom.cli.check_cli", side_effect=mock_check),
+        patch("kingdom.cli.check_agent_runtime", side_effect=mock_check),
         patch("kingdom.cli.check_config", return_value=(True, None)),
     ):
         result = runner.invoke(app, ["doctor", "--json"])
@@ -209,6 +287,7 @@ def test_doctor_invalid_config(tmp_path) -> None:
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 1
@@ -216,6 +295,36 @@ def test_doctor_invalid_config(tmp_path) -> None:
         assert "timout" in result.output
         # Should skip CLI checks, not crash
         assert "Skipped" in result.output
+
+
+@pytest.mark.parametrize("output_json", [False, True], ids=["human", "json"])
+def test_doctor_reports_config_source_resolution_failure(tmp_path: Path, output_json: bool) -> None:
+    """Doctor should preserve config recovery guidance instead of tracebacking."""
+    ensure_base_layout(tmp_path)
+    error = "Cannot resolve repository-owner config. Restore worktree discovery or set KD_BASE."
+    args = ["doctor", *(["--json"] if output_json else [])]
+
+    with (
+        patch("kingdom.cli.require_project_root", return_value=tmp_path),
+        patch("kingdom.config.config_source_path", side_effect=ValueError(error)),
+    ):
+        result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    if output_json:
+        config = json.loads(result.output)["config"]
+        assert config == {
+            "source": None,
+            "exists": False,
+            "valid": False,
+            "error": error,
+            "council_members": [],
+            "review_members": [],
+        }
+    else:
+        assert error in result.output
+        assert "Agent CLIs:" in result.output
+        assert "Skipped (fix config first)" in result.output
 
 
 def test_doctor_no_config_shows_defaults(tmp_path) -> None:
@@ -227,10 +336,27 @@ def test_doctor_no_config_shows_defaults(tmp_path) -> None:
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "using defaults" in result.output
+
+
+def test_doctor_resolves_config_source_once(tmp_path: Path) -> None:
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config_path = kd_dir / "config.json"
+
+    with (
+        patch("kingdom.cli.require_project_root", return_value=tmp_path),
+        patch("kingdom.config.config_source_path", return_value=config_path) as source_path,
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
+    ):
+        result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    source_path.assert_called_once_with(tmp_path)
 
 
 def test_doctor_valid_config(tmp_path) -> None:
@@ -243,10 +369,13 @@ def test_doctor_valid_config(tmp_path) -> None:
         patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
+        patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "config.json valid" in result.output
+        assert str(kd_dir / "config.json") in result.output
+        assert "Council: claude [claude_code], codex [codex]" in result.output
 
 
 def test_doctor_json_invalid_config(tmp_path) -> None:
@@ -306,6 +435,21 @@ def test_config_show_defaults(tmp_path) -> None:
         assert any("council.timeout" in ln and "600" in ln for ln in lines)
 
 
+def test_config_show_resolves_config_source_once(tmp_path: Path) -> None:
+    kd_dir = tmp_path / ".kd"
+    kd_dir.mkdir()
+    config_path = kd_dir / "config.json"
+
+    with (
+        patch("kingdom.cli.config.require_project_root", return_value=tmp_path),
+        patch("kingdom.config.config_source_path", return_value=config_path) as source_path,
+    ):
+        result = runner.invoke(app, ["config", "show"])
+
+    assert result.exit_code == 0, result.output
+    source_path.assert_called_once_with(tmp_path)
+
+
 def test_config_show_with_overrides(tmp_path) -> None:
     """Test kd config show reflects user overrides."""
     kd_dir = tmp_path / ".kd"
@@ -319,6 +463,7 @@ def test_config_show_with_overrides(tmp_path) -> None:
     ):
         result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0
+        assert f"Config source: {kd_dir / 'config.json'}" in result.output
         assert "council.timeout" in result.output
         assert "300" in result.output
         assert "config" in result.output  # source annotation for overridden value
@@ -722,85 +867,11 @@ class TestUpdate:
         assert "update" in result.output
 
 
-# ---------------------------------------------------------------------------
-# kd switch
-# ---------------------------------------------------------------------------
+def test_switch_command_is_removed() -> None:
+    help_result = runner.invoke(app, ["--help"])
+    switch_result = runner.invoke(app, ["switch"])
 
-
-class TestSwitch:
-    def test_switch_updates_current(self) -> None:
-        """kd switch <branch> updates .kd/current."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, "feature/alpha")
-            ensure_branch_layout(base, "feature/beta")
-            set_current_run(base, "feature-alpha")
-
-            with patch("kingdom.cli.get_current_git_branch", return_value="feature/alpha"):
-                result = runner.invoke(app, ["switch", "feature/beta"])
-            assert result.exit_code == 0, result.output
-            assert "beta" in result.output
-
-            current = (base / ".kd" / "current").read_text().strip()
-            assert current == "feature-beta"
-
-    def test_switch_shows_ticket_counts(self) -> None:
-        """kd switch prints open/closed ticket counts."""
-        from datetime import UTC, datetime
-
-        from kingdom.ticket import Ticket, write_ticket
-
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, "feature/alpha")
-            tickets_dir = base / ".kd" / "branches" / "feature-alpha" / "tickets"
-            write_ticket(Ticket(id="t1", status="open", title="A", created=datetime.now(UTC)), tickets_dir / "t1.md")
-            write_ticket(Ticket(id="t2", status="closed", title="B", created=datetime.now(UTC)), tickets_dir / "t2.md")
-
-            with patch("kingdom.cli.get_current_git_branch", return_value="main"):
-                result = runner.invoke(app, ["switch", "feature/alpha"])
-            assert result.exit_code == 0
-            assert "1 open" in result.output
-            assert "1 closed" in result.output
-
-    def test_switch_shows_git_mismatch(self) -> None:
-        """kd switch warns when git branch doesn't match."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, "feature/alpha")
-
-            with patch("kingdom.cli.get_current_git_branch", return_value="main"):
-                result = runner.invoke(app, ["switch", "feature/alpha"])
-            assert result.exit_code == 0
-            assert "mismatch" in result.output
-
-    def test_switch_no_args_lists_branches(self) -> None:
-        """kd switch (no args) lists tracked branches."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, "feature/alpha")
-            ensure_branch_layout(base, "feature/beta")
-            set_current_run(base, "feature-alpha")
-
-            with patch("kingdom.cli.get_current_git_branch", return_value="feature/alpha"):
-                result = runner.invoke(app, ["switch"])
-            assert result.exit_code == 0
-            # Should list both branches
-            assert "alpha" in result.output
-            assert "beta" in result.output
-
-    def test_switch_nonexistent_branch_errors(self) -> None:
-        """kd switch to a non-existent branch errors."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            ensure_branch_layout(base, "feature/alpha")
-
-            result = runner.invoke(app, ["switch", "feature/nope"])
-            assert result.exit_code == 1
-            assert "not found" in result.output
-
-    def test_switch_appears_in_help(self) -> None:
-        """kd switch is visible in --help output."""
-        result = runner.invoke(app, ["--help"])
-        assert result.exit_code == 0
-        assert "switch" in result.output
+    assert help_result.exit_code == 0
+    assert "│ switch " not in help_result.output
+    assert switch_result.exit_code == 2
+    assert "No such command 'switch'" in switch_result.output

@@ -73,7 +73,7 @@ class TestStopBlockerTicketGating:
         """Active ticket + had_work + !did_log => block with concrete ticket ID."""
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with self.mock_kd_current("a1b2"):
+        with patch.dict(os.environ, {"KD_HOOK_LEGACY_TICKET_FALLBACK": "1"}), self.mock_kd_current("a1b2"):
             output = self.stop(tmp_path)
         result = json.loads(output)
         assert result["decision"] == "block"
@@ -87,7 +87,7 @@ class TestStopBlockerTicketGating:
         """If kd tk current --id fails, Stop fails open."""
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with self.mock_kd_current(""):
+        with patch.dict(os.environ, {"KD_HOOK_LEGACY_TICKET_FALLBACK": "1"}), self.mock_kd_current(""):
             output = self.stop(tmp_path)
         assert output == ""
 
@@ -97,7 +97,7 @@ class TestStopBlockerTicketGating:
         """Ticket created/accepted mid-turn => Stop resolves ticket at Stop time."""
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with self.mock_kd_current("0240"):
+        with patch.dict(os.environ, {"KD_HOOK_LEGACY_TICKET_FALLBACK": "1"}), self.mock_kd_current("0240"):
             output = self.stop(tmp_path)
         result = json.loads(output)
         assert result["decision"] == "block"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ import pytest
 from kingdom.state import ensure_base_layout, ensure_branch_layout, read_json, set_current_run, write_json
 from kingdom.worktree import (
     check_uncommitted_changes,
+    create_worktree,
     design_state_path,
     existing_worktree_path_for,
     is_kd_change,
@@ -168,6 +170,64 @@ class TestRemoveWorktree:
             cwd=tmp_path,
         )
         assert read_json(state_path)["worktrees"] == {}
+
+    @pytest.mark.parametrize(
+        "failure",
+        (
+            json.JSONDecodeError("bad state", "{", 0),
+            PermissionError("state is read-only"),
+            BlockingIOError("state lock failed"),
+        ),
+    )
+    def test_bookkeeping_failures_warn_after_removal(self, tmp_path: Path, failure: Exception) -> None:
+        import subprocess
+
+        ensure_branch_layout(tmp_path, "feature-a")
+        worktree = worktree_path_for(tmp_path, "kin-abcd", feature="feature-a")
+        worktree.mkdir(parents=True)
+        messages: list[str] = []
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        with (
+            patch("kingdom.worktree.subprocess.run", return_value=result),
+            patch("kingdom.worktree.update_worktree_state", side_effect=failure),
+        ):
+            remove_worktree(
+                tmp_path,
+                "kin-abcd",
+                log=messages.append,
+                git_root=tmp_path,
+                feature="feature-a",
+            )
+
+        assert messages == [f"Warning: could not update state.json worktree map: {failure}"]
+
+
+class TestCreateWorktree:
+    @pytest.mark.parametrize(
+        "failure",
+        (
+            json.JSONDecodeError("bad state", "{", 0),
+            PermissionError("state is read-only"),
+            BlockingIOError("state lock failed"),
+        ),
+    )
+    def test_bookkeeping_failures_warn_after_creation(self, tmp_path: Path, failure: Exception) -> None:
+        import subprocess
+
+        ensure_branch_layout(tmp_path, "feature-a")
+        set_current_run(tmp_path, "feature-a")
+        messages: list[str] = []
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        with (
+            patch("kingdom.worktree.subprocess.run", return_value=result),
+            patch("kingdom.worktree.update_worktree_state", side_effect=failure),
+        ):
+            worktree = create_worktree(tmp_path, "kin-abcd", log=messages.append, git_root=tmp_path)
+
+        assert worktree == worktree_path_for(tmp_path, "kin-abcd", feature="feature-a")
+        assert messages[-1] == f"Warning: could not record worktree in state.json: {failure}"
 
 
 class TestDesignStatePath:

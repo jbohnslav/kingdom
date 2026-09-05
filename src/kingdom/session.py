@@ -57,6 +57,7 @@ class AgentState:
     started_at: str | None = None
     last_activity: str | None = None
     start_sha: str | None = None
+    failure_kind: str | None = None
     review_bounce_count: int = 0
     hand_mode: bool = False
 
@@ -92,6 +93,7 @@ def agent_state_from_dict(data: dict[str, Any], name: str) -> AgentState:
         started_at=data.get("started_at"),
         last_activity=data.get("last_activity"),
         start_sha=data.get("start_sha"),
+        failure_kind=data.get("failure_kind"),
         review_bounce_count=data.get("review_bounce_count", 0),
         hand_mode=data.get("hand_mode", False),
     )
