@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -428,7 +429,7 @@ def status(
         typer.echo(f"Branch: {original_branch}")
         if branch_mismatch:
             typer.echo(f"Warning: Git branch '{git_branch}' does not match Kingdom workspace '{original_branch}'.")
-            typer.echo(f"Run `kd start {git_branch}` to initialize or select this branch workspace.")
+            typer.echo(f"Run `kd start -- {shlex.quote(git_branch)}` to initialize or select this branch workspace.")
         typer.echo()
         status_summary = [
             f"{status_counts['open']} open",

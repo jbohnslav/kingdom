@@ -107,12 +107,15 @@ kd tk move <id> --to-branch <branch> # relocate without changing ticket contents
 
 The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `kd tk create --backlog` to add new work, `kd tk pull <id>...` to select it for the current branch, and `kd tk defer <id>... --reason "..."` to return selected work with lifecycle history. Deferral intentionally resets work to open/unassigned and refuses closed tickets.
 
-For branch-to-branch relocation, use `kd tk move <id> --to-branch <branch>`.
+To relocate a ticket from a branch, backlog, or archive onto an existing branch
+board, use `kd tk move <id> --to-branch <branch>`.
 It preserves the entire ticket file, including status, assignment, closure
 evidence, relationships, custom frontmatter, and formatting. The destination
 board must already exist (`kd start <branch>` initializes one). Moving does not
-check out a Git branch or select a different board. Active native or peasant
-workers must finish or release ownership before relocation; stale bindings are
+check out a Git branch or select a different board. Closed tickets remain closed,
+including when moved out of an archive; use `reopen` only to resume work.
+Active native or peasant workers must finish or release ownership before
+relocation; stale bindings are
 cleared after a move. Ambiguous IDs and destination collisions fail without
 moving the ticket.
 

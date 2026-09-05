@@ -1,4 +1,4 @@
-"""Branch relocation preserves ticket evidence and refuses unsafe moves."""
+"""Relocation preserves ticket evidence from every source and refuses unsafe moves."""
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,9 +17,10 @@ runner = CliRunner()
 
 
 @pytest.mark.parametrize("status", ["open", "in_progress", "in_review", "closed"])
-def test_move_preserves_entire_ticket(cli_project: Path, status: str) -> None:
+@pytest.mark.parametrize("location", ["branches/feature-move-source", "backlog", "archive/old", "archive/backlog"])
+def test_move_preserves_entire_ticket(cli_project: Path, status: str, location: str) -> None:
     ensure_branch_layout(cli_project, TARGET)
-    source = branch_root(cli_project, BRANCH) / "tickets" / "dbab.md"
+    source = cli_project / ".kd" / location / "tickets" / "dbab.md"
     write_ticket(
         Ticket(
             id="dbab",
@@ -51,7 +52,8 @@ def test_move_preserves_entire_ticket(cli_project: Path, status: str) -> None:
     assert not ticket_lock_path(source).exists()
     assert ticket_lock_path(destination).exists()
     assert resolve_current_run(cli_project) == current
-    assert "feature-move-source" in result.output
+    source_label = location.replace("branches/", "branch:").replace("archive/", "archive:")
+    assert f"from {source_label}" in result.output
     assert "feature-move-target" in result.output
     assert "Preserve evidence" in result.output
 
@@ -77,9 +79,10 @@ def test_move_same_board_is_noop(cli_project: Path) -> None:
 
 
 @pytest.mark.parametrize("owner", ["native", "peasant"])
-def test_move_refuses_active_workers(cli_project: Path, owner: str) -> None:
+@pytest.mark.parametrize("location", ["branches/feature-move-source", "backlog", "archive/old"])
+def test_move_refuses_active_workers(cli_project: Path, owner: str, location: str) -> None:
     ensure_branch_layout(cli_project, TARGET)
-    source = branch_root(cli_project, BRANCH) / "tickets" / "dbab.md"
+    source = cli_project / ".kd" / location / "tickets" / "dbab.md"
     assignee = "codex:active-session" if owner == "native" else "peasant-dbab"
     write_ticket(Ticket(id="dbab", status="in_progress", title="Active work", assignee=assignee), source)
     if owner == "peasant":

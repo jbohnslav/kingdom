@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -121,11 +122,39 @@ def test_status_surfaces_git_and_kingdom_branch_mismatch() -> None:
 
         assert human_result.exit_code == 0, human_result.output
         assert "Git branch 'new-work' does not match Kingdom workspace 'previous-work'." in human_result.output
-        assert "Run `kd start new-work`" in human_result.output
+        assert "Run `kd start -- new-work`" in human_result.output
 
         data = json.loads(json_result.output)
         assert data["git_branch"] == "new-work"
         assert data["branch_mismatch"] is True
+
+
+@pytest.mark.parametrize(
+    "git_branch",
+    ["feature;true", "feature$(echo)", "feature`echo`", "feature'quote", "-leading"],
+)
+def test_status_suggests_literal_branch_argument(git_branch: str) -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        ensure_branch_layout(base, "previous-work")
+        set_current_run(base, "previous-work")
+        with (
+            patch("kingdom.state.get_current_git_branch", return_value=git_branch),
+            patch("kingdom.cli.get_current_git_branch", return_value=git_branch),
+        ):
+            result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0, result.output
+        line = next(line for line in result.output.splitlines() if line.startswith("Run `"))
+        command = line.removeprefix("Run `").removesuffix("` to initialize or select this branch workspace.")
+        # Capture argv through a harmless shell function to exercise actual
+        # quoting, including command substitution and shell separators.
+        captured = subprocess.run(
+            ["sh", "-c", "kd() { printf '%s\\0' \"$@\"; }\n" + command],
+            capture_output=True,
+            check=True,
+            timeout=5,
+        )
+        assert captured.stdout == b"start\0--\0" + git_branch.encode() + b"\0"
 
 
 @pytest.mark.parametrize("git_branch", ["feature/example", None])

@@ -175,8 +175,9 @@ Before declaring work complete:
 
 - Existing selected work is no longer for now → `kd tk defer <id> --reason "..."`.
 - Backlog work is selected now → `kd tk pull <id>...`.
-- Branch-to-branch work → `kd tk move <id> --to-branch <branch>` preserves status
-  and all ticket contents. The destination board must already exist.
+- Relocate a branch, backlog, or archived ticket →
+  `kd tk move <id> --to-branch <branch>` preserves status and all ticket contents,
+  including closed evidence. The destination board must already exist.
 - Stale execution-context bindings → `kd status --prune-stale`.
 - Retained or stale peasant resources → `kd peasant clean <id>` or
   `kd peasant prune`; accepted workers are cleaned by `kd peasant accept`.

@@ -109,7 +109,7 @@ def existing_branch_tickets_dir(base: Path, branch: str) -> Path:
         print_error(str(exc))
         raise typer.Exit(code=1) from None
     if not destination.is_dir():
-        print_error(f"Branch board '{branch}' does not exist. Initialize it with `kd start {shlex.quote(branch)}`.")
+        print_error(f"Branch board '{branch}' does not exist. Initialize it with `kd start -- {shlex.quote(branch)}`.")
         raise typer.Exit(code=1)
     return destination
 
@@ -1919,7 +1919,9 @@ def defer_tickets_locked(base: Path, ticket_ids: list[str], reason: str, context
         typer.echo(f"Ticket {ticket.id} is already in backlog")
 
 
-@ticket_app.command("move", help="Relocate a ticket to another branch without changing its contents or status.")
+@ticket_app.command(
+    "move", help="Relocate a branch, backlog, or archived ticket to a branch without changing its state."
+)
 def ticket_move(
     ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
     to_branch: Annotated[str, typer.Option("--to-branch", help="Existing destination branch board.")],
@@ -1931,7 +1933,8 @@ def ticket_move(
     destination = existing_branch_tickets_dir(base, to_branch)
     target = normalize_branch_name(to_branch)
     with flock(ticket_assignment_lock_path(base)):
-        ticket, source = resolve_ticket_or_exit(base, ticket_id)
+        match = resolve_ticket_or_exit(base, ticket_id)
+        ticket, source = match
         if source.parent == destination:
             typer.echo(f"Ticket {ticket.id} is already on branch '{target}'.")
             return
@@ -1947,7 +1950,7 @@ def ticket_move(
             )
             raise typer.Exit(code=1)
 
-        location = terminal_context_location_for_start(base, source)
+        location = match.location
         try:
             move_ticket(source, destination)
         except (FileExistsError, FileNotFoundError) as exc:

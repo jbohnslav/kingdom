@@ -1839,7 +1839,7 @@ class TestRemovedCompatibilityCommands:
         result = runner.invoke(ticket_app, ["move", "--help"])
 
         assert result.exit_code == 0
-        assert "--to-branch" in result.output
+        assert "--to-branch" in unstyle(result.output)
 
     def test_add_note_is_unregistered(self) -> None:
         result = runner.invoke(ticket_app, ["add-note", "--help"])

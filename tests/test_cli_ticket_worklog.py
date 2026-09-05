@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from click import unstyle
 from typer.testing import CliRunner
 
 from kingdom.cli import app
@@ -204,9 +205,10 @@ class TestTicketLog:
         result = runner.invoke(ticket_app, ["--help"])
 
         assert result.exit_code == 0, result.output
-        assert "add-note" not in result.output
-        assert "│ move " in result.output
-        assert "Append a worklog entry to a ticket." in result.output
+        help_text = unstyle(result.output)
+        assert "add-note" not in help_text
+        assert "│ move " in help_text
+        assert "Append a worklog entry to a ticket." in help_text
 
     def test_log_help_routes_command_rich_messages_to_stdin(self) -> None:
         result = runner.invoke(ticket_app, ["log", "--help"])

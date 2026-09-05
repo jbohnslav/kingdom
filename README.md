@@ -271,10 +271,12 @@ transition and no `--force` bypass; readiness is derived from ticket state.
 `kd switch <branch>` was removed in v1.0.0. Use `kd start <branch>` to initialize,
 resume, or select a workspace through one idempotent entry point.
 
-Use `kd tk move <id> --to-branch <branch>` for branch-to-branch relocation. The
-destination board must already exist. This preserves the complete ticket file,
+Use `kd tk move <id> --to-branch <branch>` to relocate a ticket from a branch,
+backlog, or archive onto an existing branch board. This preserves the complete
+ticket file,
 including status and closure evidence, without checking out or selecting another
-branch. Active native or peasant workers must finish or release ownership first.
+branch. A moved closed ticket stays closed; relocation does not reopen it.
+Active native or peasant workers must finish or release ownership first.
 
 Use `kd tk pull` to select backlog work and `kd tk defer --reason` to return work
 to the backlog. Deferral intentionally resets status and assignment and refuses
