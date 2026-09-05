@@ -49,10 +49,10 @@ Return: Full 3-stage response + metadata
 Each assistant message contains:
 ```python
 {
-  "role": "assistant",
-  "stage1": [{"model": "...", "response": "..."}],  # Raw responses
-  "stage2": [{"model": "...", "ranking": "...", "parsed_ranking": [...]}],  # Peer evals
-  "stage3": {"model": "...", "response": "..."}  # Chairman synthesis
+    "role": "assistant",
+    "stage1": [{"model": "...", "response": "..."}],  # Raw responses
+    "stage2": [{"model": "...", "ranking": "...", "parsed_ranking": [...]}],  # Peer evals
+    "stage3": {"model": "...", "response": "..."},  # Chairman synthesis
 }
 ```
 
@@ -88,13 +88,14 @@ Each assistant message contains:
 if response is not None:
     stage1_results.append(...)
 
+
 # Parse fallback
 def parse_ranking_from_text(text):
     if "FINAL RANKING:" in text:
         # Try strict format first
         ...
     # Fallback: extract any "Response X" patterns
-    return re.findall(r'Response [A-Z]', text)
+    return re.findall(r"Response [A-Z]", text)
 ```
 
 **For Kingdom**: Already doing this in `CouncilMember.query()` with timeout handling. Extend to synthesis—if one agent times out, synthesize with available responses.
@@ -164,13 +165,9 @@ def synthesize(responses: dict[str, str], anonymize: bool = True) -> str:
         # Shuffle and label as "Response 1", "Response 2", etc.
         shuffled = list(responses.values())
         random.shuffle(shuffled)
-        prompt = "Synthesize these responses:\n" + "\n".join(
-            f"Response {i+1}: {r}" for i, r in enumerate(shuffled)
-        )
+        prompt = "Synthesize these responses:\n" + "\n".join(f"Response {i + 1}: {r}" for i, r in enumerate(shuffled))
     else:
-        prompt = "Synthesize these responses:\n" + "\n".join(
-            f"[{name}]: {r}" for name, r in responses.items()
-        )
+        prompt = "Synthesize these responses:\n" + "\n".join(f"[{name}]: {r}" for name, r in responses.items())
     return hand.synthesize_model.query(prompt)
 ```
 
@@ -181,15 +178,15 @@ Adopt LLM Council's multi-stage log structure for Hand:
 ```python
 # .kd/runs/<feature>/logs/hand.jsonl
 {
-  "timestamp": "...",
-  "prompt": "...",
-  "responses": {
-    "claude": {"text": "...", "elapsed": 2.1},
-    "codex": {"text": "...", "elapsed": 1.8},
-    "agent": {"text": "...", "elapsed": 2.4}
-  },
-  "synthesis": "...",  # Optional: if Hand auto-synthesizes
-  "decision": "..."    # What the human decided to do
+    "timestamp": "...",
+    "prompt": "...",
+    "responses": {
+        "claude": {"text": "...", "elapsed": 2.1},
+        "codex": {"text": "...", "elapsed": 1.8},
+        "agent": {"text": "...", "elapsed": 2.4},
+    },
+    "synthesis": "...",  # Optional: if Hand auto-synthesizes
+    "decision": "...",  # What the human decided to do
 }
 ```
 
