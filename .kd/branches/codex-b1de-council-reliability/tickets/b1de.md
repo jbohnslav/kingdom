@@ -6,7 +6,7 @@ links: []
 created: 2026-08-19T21:46:02Z
 type: epic
 priority: 2
-closed_at: 2026-09-05T17:16:57Z
+closed_at: 2026-09-05T17:31:15Z
 resolution: completed
 close_reason: "completed"
 closed_context: codex:73b41ca6e06f778e
@@ -68,6 +68,7 @@ and recovery.
 - [2026-08-24 20:53] [codex:f1fe48bc] — Follow-up PR 56 P1 resolved in reopened child 6b9d: per-member delivery completion survives restart and resumes only unfinished occurrences, including later round-robin rounds. Full and integration verification passed.
 - [2026-09-05] [codex] — Final Claude review follow-up resolved in reopened child 6b9d. Resumed broadcast, natural, and round-robin deliveries now preserve the original eligible target snapshot, preventing members muted at submission from receiving unintended provider calls after restart. Red-first coverage failed in all three modes before the fix and passed afterward; 159 TUI unit tests, all 44 Textual integrations, the 2,276-test standard suite, Ruff/format, pre-commit, smoke, diff hygiene, and the post-closure `uv run kd status --check` readiness gate all passed.
 - [13:16] [codex:73b41ca6e06f778e] — Closed: completed
+- [13:31] [codex:73b41ca6e06f778e] — Closed: completed
 
 ## Lifecycle
 
@@ -82,3 +83,5 @@ and recovery.
 - 2026-09-05T16:54:34Z [codex:73b41ca6e06f778e] — closed (completed)
 - 2026-09-05T17:11:12Z [codex:73b41ca6e06f778e] — reopened (previous: completed)
 - 2026-09-05T17:16:57Z [codex:73b41ca6e06f778e] — closed (completed): completed
+- 2026-09-05T17:29:41Z [codex:73b41ca6e06f778e] — reopened (previous: completed): completed
+- 2026-09-05T17:31:15Z [codex:73b41ca6e06f778e] — closed (completed): completed

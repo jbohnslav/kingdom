@@ -43,3 +43,11 @@ def test_release_metadata_has_final_version_and_direct_click_dependency() -> Non
     package_block = lock.split('name = "kingdom-cli"', 1)[1].split("\n[[package]]", 1)[0]
     assert 'version = "1.0.1"' in package_block
     assert '{ name = "click" }' in package_block
+
+
+def test_claude_review_runs_only_when_pull_request_opens() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "claude-code-review.yml").read_text()
+
+    assert "types: [opened]" in workflow
+    for repeated_review_event in ("synchronize", "ready_for_review", "reopened"):
+        assert repeated_review_event not in workflow
