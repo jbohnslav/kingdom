@@ -15,7 +15,7 @@ from typing import Literal
 import typer
 
 from kingdom.state import find_project_root
-from kingdom.ticket import AmbiguousTicketMatch, Ticket, find_ticket
+from kingdom.ticket import AmbiguousTicketMatch, TicketMatch, find_ticket
 
 from .display import print_error
 
@@ -50,7 +50,7 @@ def resolve_ticket_or_exit(
     *,
     not_found_label: str = "Ticket not found",
     branch: str | None = None,
-) -> tuple[Ticket, Path]:
+) -> TicketMatch:
     """Find a ticket by ID or exit with a clear error.
 
     Handles ``AmbiguousTicketMatch`` and not-found cases with consistent

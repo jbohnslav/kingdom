@@ -5,8 +5,11 @@ Tickets track units of work within a branch. They live in `.kd/branches/<branch>
 ## Resolve Context Before Creating
 
 The goal is one accurate ticket per unit of work, not one new ticket per user
-message. Before creation, identify the active execution context and scan current,
-recent, backlog, archived, parent, and related work:
+message. Discover context once for a new request, after changing branches, or
+when ownership may have changed. Reuse known context during ongoing work; skip
+rediscovery for routine follow-ups on an already-resolved ticket. When discovery
+is needed, identify the active context and scan current, recent, backlog,
+archived, parent, and related work:
 
 ```bash
 kd status
@@ -40,7 +43,12 @@ kd tk create "Fix login validation"                         # default: P2, task 
 kd tk create --priority 1 --type bug "Critical auth failure" # P1 bug
 kd tk create --type feature -d "Description here" "Title"   # with description
 kd tk create --backlog "Future improvement"                  # backlog, not current branch
+kd tk create --branch feature/example "Work for that board" # existing board; does not switch context
 ```
+
+Creation prints the actual destination board. Without `--branch` or `--backlog`,
+it uses the current workspace, falling back to backlog when no workspace exists.
+`--branch` and `--backlog` are mutually exclusive.
 
 Types: `task`, `bug`, `feature`, `epic`. Priorities: 0 (highest) to 3.
 
@@ -92,11 +100,24 @@ kd tk show <id>              # print raw Markdown plus resolved dependency readi
 kd tk show <id> --rich       # show framed human-friendly ticket details
 kd tk defer <id>... --reason "..."  # return selected work to backlog
 kd tk pull <id>...                  # select backlog work for current branch
+kd tk move <id> --to-branch <branch> # relocate without changing ticket contents
 ```
 
 ## Backlog
 
-The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `kd tk create --backlog` to add new work, `kd tk pull <id>...` to select it for the current branch, and `kd tk defer <id>... --reason "..."` to return selected work with lifecycle history. `kd tk move` was removed in v1.0.0; migrate branch-to-branch use to defer, check out the target Git branch, run `kd start <branch>`, then pull.
+The backlog at `.kd/backlog/tickets/` holds work that is not planned now. Use `kd tk create --backlog` to add new work, `kd tk pull <id>...` to select it for the current branch, and `kd tk defer <id>... --reason "..."` to return selected work with lifecycle history. Deferral intentionally resets work to open/unassigned and refuses closed tickets.
+
+To relocate a ticket from a branch, backlog, or archive onto an existing branch
+board, use `kd tk move <id> --to-branch <branch>`.
+It preserves the entire ticket file, including status, assignment, closure
+evidence, relationships, custom frontmatter, and formatting. The destination
+board must already exist (`kd start <branch>` initializes one). Moving does not
+check out a Git branch or select a different board. Closed tickets remain closed,
+including when moved out of an archive; use `reopen` only to resume work.
+Active native or peasant workers must finish or release ownership before
+relocation; stale bindings are
+cleared after a move. Ambiguous IDs and destination collisions fail without
+moving the ticket.
 
 ## Best Practices
 
@@ -137,7 +158,7 @@ do not replace ownership of the ticket's final state.
   context, and work or report only the dependencies that are not closed.
 - Selected work is no longer timely: use `kd tk defer <id> --reason "..."`, not a
   worklog note pretending the lifecycle did not change.
-- Work belongs on another branch: defer it, check out the target Git branch,
-  run `kd start <branch>`, then pull it there.
+- Work belongs on another branch: use `kd tk move <id> --to-branch <branch>` to
+  preserve its status and evidence on an existing destination board.
 - State or content is stale: inspect the raw Markdown with `kd tk show <id>`,
   correct it explicitly, and record why.

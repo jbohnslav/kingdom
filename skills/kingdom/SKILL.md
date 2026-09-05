@@ -15,20 +15,21 @@ the ticket is the durable record of what the team is doing and why.
 
 ## Developing Kingdom Itself
 
-Inside a Kingdom source checkout, invoke every command shown below as
-`uv run kd ...`. This is the canonical dogfood invocation and guarantees the
-command exercises working-tree code. Bare `kd ...` remains correct for normal
-installed-user projects, but may resolve to a stale installed release while
-developing Kingdom.
+Use `uv run kd` only when the current repository is Kingdom's own source
+checkout, so every command exercises working-tree code. In every other
+repository—including Python/uv projects—use the installed `kd` command directly.
 
-## The Core Loop — Follow It Every Turn
+## The Core Loop — Run When Resolving or Changing Context
 
 The reflex is not "always create." It is: **make sure the request is represented
 exactly once, then keep that ticket current.**
 
 ### 1. Resolve context and search first
 
-Before creating work, take a fast read-only pass:
+Run the context-discovery commands once when beginning a new request, after
+changing branches, or when ticket ownership may have changed. Do not repeat
+them for routine follow-ups on an already-resolved ticket. Reuse known context
+during ongoing work and keep its ticket current.
 
 ```bash
 kd status
@@ -174,8 +175,9 @@ Before declaring work complete:
 
 - Existing selected work is no longer for now → `kd tk defer <id> --reason "..."`.
 - Backlog work is selected now → `kd tk pull <id>...`.
-- Branch-to-branch work → defer it, check out the target Git branch, run
-  `kd start <branch>`, then pull it.
+- Relocate a branch, backlog, or archived ticket →
+  `kd tk move <id> --to-branch <branch>` preserves status and all ticket contents,
+  including closed evidence. The destination board must already exist.
 - Stale execution-context bindings → `kd status --prune-stale`.
 - Retained or stale peasant resources → `kd peasant clean <id>` or
   `kd peasant prune`; accepted workers are cleaned by `kd peasant accept`.
@@ -235,7 +237,7 @@ kd start / status / status --check / status --prune-stale
 kd tk current / list / show / find
 kd tk list --recently-closed --limit 10
 kd tk create / start / log / close / reopen
-kd tk pull / defer / deps / link / unlink
+kd tk pull / defer / move / deps / link / unlink
 kd peasant start / status / watch / review / accept / reject / clean / prune
 kd lord start / status / watch / stop
 kd council ask / show / list / watch / retry

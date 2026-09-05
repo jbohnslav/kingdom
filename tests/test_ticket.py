@@ -14,7 +14,6 @@ from kingdom.state import flock
 from kingdom.ticket import (
     AmbiguousTicketMatch,
     Ticket,
-    TicketMatch,
     append_worklog_entry,
     coerce_to_str_list,
     collect_all_tickets,
@@ -1067,7 +1066,7 @@ class TestMoveTicket:
             future.result(timeout=2)
 
         assert destination.exists()
-        assert (source_path.parent / f".{source_path.name}.lock").exists()
+        assert not (source_path.parent / f".{source_path.name}.lock").exists()
         assert (destination.parent / f".{destination.name}.lock").exists()
 
     def test_stale_snapshot_cannot_resurrect_moved_ticket(self, tmp_path: Path) -> None:
@@ -1819,11 +1818,11 @@ class TestPriorityZero:
             clamp_priority("foo")  # garbage
 
 
-class TestFindTicketDedup:
-    """find_ticket should deduplicate by ID and prefer branch copies."""
+class TestFindTicketLocations:
+    """Every matching file matters, even when its ID is duplicated."""
 
-    def test_same_id_in_branch_and_backlog_returns_branch(self, tmp_path: Path) -> None:
-        """Same ticket in branch and backlog returns the branch copy, not raise."""
+    def test_same_id_in_branch_and_backlog_is_ambiguous(self, tmp_path: Path) -> None:
+        """Even identical copies must be disambiguated before mutation."""
         from kingdom.state import ensure_base_layout, ensure_branch_layout
 
         ensure_base_layout(tmp_path)
@@ -1836,11 +1835,9 @@ class TestFindTicketDedup:
         write_ticket(ticket, tmp_path / ".kd" / "branches" / "my-branch" / "tickets" / "dup1.md")
         write_ticket(ticket, tmp_path / ".kd" / "backlog" / "tickets" / "dup1.md")
 
-        result = find_ticket(tmp_path, "dup1")
-        assert result is not None
-        assert isinstance(result, TicketMatch)
-        assert result.ticket.id == "dup1"
-        assert result.location.startswith("branch:")
+        with pytest.raises(AmbiguousTicketMatch) as exc_info:
+            find_ticket(tmp_path, "dup1")
+        assert {match.location for match in exc_info.value.matches} == {"branch:my-branch", "backlog"}
 
     def test_ticket_match_location_field(self, tmp_path: Path) -> None:
         """TicketMatch exposes the location field."""
@@ -1871,8 +1868,8 @@ class TestFindTicketDedup:
         assert result is not None
         assert result.location == "backlog"
 
-    def test_current_branch_preferred_over_other_branches(self, tmp_path: Path) -> None:
-        """When same ticket exists in current branch and another branch, current branch wins."""
+    def test_current_branch_does_not_hide_other_matches(self, tmp_path: Path) -> None:
+        """Checking out a branch must not silently choose between duplicate IDs."""
         from kingdom.state import ensure_base_layout, ensure_branch_layout, set_current_run
 
         ensure_base_layout(tmp_path)
@@ -1887,9 +1884,9 @@ class TestFindTicketDedup:
         write_ticket(ticket, tmp_path / ".kd" / "branches" / "aaa-other" / "tickets" / "same1.md")
         write_ticket(ticket, tmp_path / ".kd" / "branches" / "zzz-current" / "tickets" / "same1.md")
 
-        result = find_ticket(tmp_path, "same1")
-        assert result is not None
-        assert result.location == "branch:zzz-current"
+        with pytest.raises(AmbiguousTicketMatch) as exc_info:
+            find_ticket(tmp_path, "same1")
+        assert {match.location for match in exc_info.value.matches} == {"branch:aaa-other", "branch:zzz-current"}
 
     def test_ticket_match_unpacking_still_works(self, tmp_path: Path) -> None:
         """Existing callers using ``ticket, path = result`` still work."""

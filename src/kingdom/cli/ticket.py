@@ -101,6 +101,19 @@ def get_tickets_dir(base: Path, backlog: bool = False) -> Path:
         return backlog_root(base) / "tickets"
 
 
+def existing_branch_tickets_dir(base: Path, branch: str) -> Path:
+    """Resolve an explicit destination without creating or selecting a board."""
+    try:
+        destination = branch_root(base, branch) / "tickets"
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
+    if not destination.is_dir():
+        print_error(f"Branch board '{branch}' does not exist. Initialize it with `kd start -- {shlex.quote(branch)}`.")
+        raise typer.Exit(code=1)
+    return destination
+
+
 def format_ticket_summary(tickets: list) -> str:
     """Build a one-line summary of ticket counts by status.
 
@@ -400,15 +413,22 @@ def ticket_create(
     priority: Annotated[str, typer.Option("-p", "--priority", help="Priority (0-3 or p0-p3, 0 is highest).")] = "2",
     ticket_type: Annotated[str, typer.Option("--type", help="Ticket type (task, bug, feature, epic).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
+    branch: Annotated[
+        str | None, typer.Option("--branch", help="File on an existing branch board without selecting it.")
+    ] = None,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
     parent: Annotated[str | None, typer.Option("--parent", help="Parent ticket ID.")] = None,
     tags: Annotated[str | None, typer.Option("--tags", help="Comma-separated tags.")] = None,
     ac: Annotated[list[str] | None, typer.Option("--ac", help="Acceptance criteria (repeatable).")] = None,
 ) -> None:
-    """Create a new ticket in the current branch or backlog."""
+    """Create a ticket on the current or explicit branch board, or in backlog."""
     from kingdom.state import ensure_base_layout
 
     base = require_project_root()
+
+    if backlog and branch is not None:
+        print_error("--branch and --backlog are mutually exclusive.")
+        raise typer.Exit(code=1)
 
     if title and title_option:
         print_error("Provide the ticket title either positionally or with --title, not both.")
@@ -453,7 +473,9 @@ def ticket_create(
     # Ensure base layout exists
     ensure_base_layout(base)
 
-    tickets_dir = get_tickets_dir(base, backlog=backlog)
+    tickets_dir = (
+        existing_branch_tickets_dir(base, branch) if branch is not None else get_tickets_dir(base, backlog=backlog)
+    )
     tickets_dir.mkdir(parents=True, exist_ok=True)
 
     # Resolve dependency IDs
@@ -503,8 +525,10 @@ def ticket_create(
     write_ticket(ticket, ticket_path)
 
     dep_suffix = f" (depends on: {', '.join(resolved_deps)})" if resolved_deps else ""
-    location_label = " (backlog)" if backlog else ""
-    typer.echo(f"Created {ticket_id}{location_label}: {title}{dep_suffix}")
+    in_backlog = tickets_dir == backlog_root(base) / "tickets"
+    location_label = " (backlog)" if in_backlog else ""
+    board_suffix = "" if in_backlog else f" (branch:{tickets_dir.parent.name})"
+    typer.echo(f"Created {ticket_id}{location_label}: {title}{dep_suffix}{board_suffix}")
     typer.echo(str(ticket_path))
 
 
@@ -1893,6 +1917,48 @@ def defer_tickets_locked(base: Path, ticket_ids: list[str], reason: str, context
 
     for ticket in already_backlogged:
         typer.echo(f"Ticket {ticket.id} is already in backlog")
+
+
+@ticket_app.command(
+    "move", help="Relocate a branch, backlog, or archived ticket to a branch without changing its state."
+)
+def ticket_move(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    to_branch: Annotated[str, typer.Option("--to-branch", help="Existing destination branch board.")],
+) -> None:
+    """Move a ticket verbatim, preserving closure evidence and custom frontmatter."""
+    from kingdom.session import find_active_peasant_branch
+
+    base = require_project_root()
+    destination = existing_branch_tickets_dir(base, to_branch)
+    target = normalize_branch_name(to_branch)
+    with flock(ticket_assignment_lock_path(base)):
+        match = resolve_ticket_or_exit(base, ticket_id)
+        ticket, source = match
+        if source.parent == destination:
+            typer.echo(f"Ticket {ticket.id} is already on branch '{target}'.")
+            return
+
+        if find_active_peasant_branch(base, peasant_session_name(ticket.id)):
+            print_error(f"Ticket {ticket.id} has an active peasant. Stop it first: `kd peasant stop {ticket.id}`.")
+            raise typer.Exit(code=1)
+        assignee = ticket.assignee or ""
+        if ticket.status in {"in_progress", "in_review"} and ":" in assignee:
+            print_error(
+                f"Ticket {ticket.id} has an active execution-context owner ({compact_context_id(assignee)}). "
+                "Finish or release that ownership before moving it."
+            )
+            raise typer.Exit(code=1)
+
+        location = match.location
+        try:
+            move_ticket(source, destination)
+        except (FileExistsError, FileNotFoundError) as exc:
+            print_error(str(exc))
+            raise typer.Exit(code=1) from None
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
+        typer.echo(f"Moved {ticket.id} from {location} to branch:{target} — {ticket.title}")
 
 
 @ticket_app.command("defer", help="Return branch work to the backlog for later.")

@@ -590,8 +590,10 @@ class AmbiguousTicketMatch(Exception):
     def __init__(self, partial_id: str, matches: list[TicketMatch]) -> None:
         self.partial_id = partial_id
         self.matches = matches
-        match_ids = [m.ticket.id for m in matches]
-        super().__init__(f"Partial ID '{partial_id}' matches multiple tickets: {', '.join(match_ids)}")
+        candidates = "\n".join(
+            f"  {match.ticket.id} — {match.location} — {match.ticket.title}\n    {match.path}" for match in matches
+        )
+        super().__init__(f"ID '{partial_id}' matches multiple tickets:\n{candidates}")
 
 
 def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> TicketMatch | None:
@@ -610,22 +612,10 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> Ticke
         if scoped.exists():
             search_dirs.append((scoped, f"branch:{branch}"))
     else:
-        # Put current branch first so dedup prefers it
-        from kingdom.state import resolve_current_run
-
-        current: str | None = None
-        with contextlib.suppress(Exception):
-            current = resolve_current_run(base)
-
         branches_dir = branches_root(base)
         if branches_dir.exists():
-            if current:
-                current_tickets = branch_root(base, current) / "tickets"
-                if current_tickets.exists():
-                    search_dirs.append((current_tickets, f"branch:{current}"))
-
-            for branch_dir in branches_dir.iterdir():
-                if branch_dir.is_dir() and branch_dir.name != current:
+            for branch_dir in sorted(branches_dir.iterdir()):
+                if branch_dir.is_dir():
                     tickets_dir = branch_dir / "tickets"
                     if tickets_dir.exists():
                         search_dirs.append((tickets_dir, f"branch:{branch_dir.name}"))
@@ -636,14 +626,14 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> Ticke
 
     archive_dir = archive_root(base)
     if archive_dir.exists():
-        for archive_item in archive_dir.iterdir():
+        for archive_item in sorted(archive_dir.iterdir()):
             if archive_item.is_dir():
                 tickets_dir = archive_item / "tickets"
                 if tickets_dir.exists():
                     search_dirs.append((tickets_dir, f"archive:{archive_item.name}"))
 
     for search_dir, location in search_dirs:
-        for ticket_file in search_dir.glob("*.md"):
+        for ticket_file in sorted(search_dir.glob("*.md")):
             file_id = ticket_file.stem.lower()
             if file_id.startswith("kin-"):
                 file_id_suffix = file_id[4:]
@@ -660,18 +650,10 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> Ticke
     if not matches:
         return None
 
-    # Deduplicate by ticket ID — keep first occurrence (branch → backlog → archive)
-    seen: set[str] = set()
-    deduped: list[TicketMatch] = []
-    for m in matches:
-        if m.ticket.id not in seen:
-            seen.add(m.ticket.id)
-            deduped.append(m)
+    if len(matches) > 1:
+        raise AmbiguousTicketMatch(partial_id, matches)
 
-    if len(deduped) > 1:
-        raise AmbiguousTicketMatch(partial_id, deduped)
-
-    return deduped[0]
+    return matches[0]
 
 
 def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
@@ -688,6 +670,8 @@ def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
             # Cross-filesystem rename; fall back to copy-then-delete
             shutil.copy2(str(ticket_path), str(new_path))
             ticket_path.unlink()
+        # Remove while held; flock reopens the current inode for old waiters.
+        ticket_lock_path(ticket_path).unlink(missing_ok=True)
     return new_path
 
 

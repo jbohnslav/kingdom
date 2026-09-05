@@ -269,14 +269,18 @@ gate after closing tickets and epics. There is no replacement finalization
 transition and no `--force` bypass; readiness is derived from ticket state.
 
 `kd switch <branch>` was removed in v1.0.0. Use `kd start <branch>` to initialize,
-resume, or select a workspace through one idempotent entry point. For
-branch-to-branch ticket movement, defer the ticket, check out the target Git
-branch, run `kd start <branch>`, then pull the ticket there.
+resume, or select a workspace through one idempotent entry point.
 
-`kd tk move` was removed in v1.0.0. Use `kd tk pull` for backlog→work movement,
-`kd tk defer --reason` for work→backlog movement, and the branch-to-branch flow
-above. The internal file-move primitive remains an implementation detail used by
-pull, defer, archive/restore, and peasant workflows.
+Use `kd tk move <id> --to-branch <branch>` to relocate a ticket from a branch,
+backlog, or archive onto an existing branch board. This preserves the complete
+ticket file,
+including status and closure evidence, without checking out or selecting another
+branch. A moved closed ticket stays closed; relocation does not reopen it.
+Active native or peasant workers must finish or release ownership first.
+
+Use `kd tk pull` to select backlog work and `kd tk defer --reason` to return work
+to the backlog. Deferral intentionally resets status and assignment and refuses
+closed tickets; use `move` when relocating work whose state must be preserved.
 
 `kd tk add-note` was removed in v1.0.0. Use `kd tk log`; it preserves multiline
 input while adding the canonical Worklog timestamp and author attribution. The
