@@ -40,7 +40,12 @@ kd tk create "Fix login validation"                         # default: P2, task 
 kd tk create --priority 1 --type bug "Critical auth failure" # P1 bug
 kd tk create --type feature -d "Description here" "Title"   # with description
 kd tk create --backlog "Future improvement"                  # backlog, not current branch
+kd tk create --branch feature/example "Work for that board" # existing board; does not switch context
 ```
+
+Creation prints the actual destination board. Without `--branch` or `--backlog`,
+it uses the current workspace, falling back to backlog when no workspace exists.
+`--branch` and `--backlog` are mutually exclusive.
 
 Types: `task`, `bug`, `feature`, `epic`. Priorities: 0 (highest) to 3.
 

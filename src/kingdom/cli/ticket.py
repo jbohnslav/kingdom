@@ -413,15 +413,22 @@ def ticket_create(
     priority: Annotated[str, typer.Option("-p", "--priority", help="Priority (0-3 or p0-p3, 0 is highest).")] = "2",
     ticket_type: Annotated[str, typer.Option("--type", help="Ticket type (task, bug, feature, epic).")] = "task",
     backlog: Annotated[bool, typer.Option("--backlog", help="Create in backlog instead of current branch.")] = False,
+    branch: Annotated[
+        str | None, typer.Option("--branch", help="File on an existing branch board without selecting it.")
+    ] = None,
     dep: Annotated[list[str] | None, typer.Option("--dep", help="Ticket ID(s) this depends on.")] = None,
     parent: Annotated[str | None, typer.Option("--parent", help="Parent ticket ID.")] = None,
     tags: Annotated[str | None, typer.Option("--tags", help="Comma-separated tags.")] = None,
     ac: Annotated[list[str] | None, typer.Option("--ac", help="Acceptance criteria (repeatable).")] = None,
 ) -> None:
-    """Create a new ticket in the current branch or backlog."""
+    """Create a ticket on the current or explicit branch board, or in backlog."""
     from kingdom.state import ensure_base_layout
 
     base = require_project_root()
+
+    if backlog and branch is not None:
+        print_error("--branch and --backlog are mutually exclusive.")
+        raise typer.Exit(code=1)
 
     if title and title_option:
         print_error("Provide the ticket title either positionally or with --title, not both.")
@@ -466,7 +473,9 @@ def ticket_create(
     # Ensure base layout exists
     ensure_base_layout(base)
 
-    tickets_dir = get_tickets_dir(base, backlog=backlog)
+    tickets_dir = (
+        existing_branch_tickets_dir(base, branch) if branch is not None else get_tickets_dir(base, backlog=backlog)
+    )
     tickets_dir.mkdir(parents=True, exist_ok=True)
 
     # Resolve dependency IDs
@@ -516,8 +525,10 @@ def ticket_create(
     write_ticket(ticket, ticket_path)
 
     dep_suffix = f" (depends on: {', '.join(resolved_deps)})" if resolved_deps else ""
-    location_label = " (backlog)" if backlog else ""
-    typer.echo(f"Created {ticket_id}{location_label}: {title}{dep_suffix}")
+    in_backlog = tickets_dir == backlog_root(base) / "tickets"
+    location_label = " (backlog)" if in_backlog else ""
+    board_suffix = "" if in_backlog else f" (branch:{tickets_dir.parent.name})"
+    typer.echo(f"Created {ticket_id}{location_label}: {title}{dep_suffix}{board_suffix}")
     typer.echo(str(ticket_path))
 
 
