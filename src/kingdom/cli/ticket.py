@@ -137,25 +137,6 @@ def format_ticket_summary(tickets: list) -> str:
     return " · ".join(parts)
 
 
-def format_ticket_line(ticket: Ticket, location: str | None = None) -> str:
-    """Format a single ticket as a one-line string for list output.
-
-    Includes dependency arrows when the ticket has deps, e.g.:
-        a1b2 [P2][open] - My ticket  <- c3d4, e5f6
-
-    Args:
-        ticket: The ticket to format.
-        location: Optional location label (e.g. "backlog", "branch:main").
-
-    Returns:
-        Formatted ticket line string.
-    """
-    assignee_str = f" @{compact_context_id(ticket.assignee)}" if ticket.assignee else ""
-    location_str = f" ({location})" if location else ""
-    dep_str = f"  <- {', '.join(ticket.deps)}" if ticket.deps else ""
-    return f"{ticket.id} [P{ticket.priority}][{ticket.status}]{assignee_str} - {ticket.title}{location_str}{dep_str}"
-
-
 def format_dep(dep_id: str, status_by_id: dict[str, str]) -> str:
     """Format a single dependency ID with a status indicator.
 

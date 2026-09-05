@@ -56,7 +56,6 @@ from kingdom.worktree import create_worktree, remove_worktree, worktree_path_for
 from .config import (
     check_agent_model,
     check_agent_runtime,
-    check_cli,  # noqa: F401 (re-export)
     check_config,
     config_app,
     get_doctor_checks,
@@ -75,7 +74,7 @@ from .peasant import (  # noqa: F401
     resolve_peasant_context,
 )
 from .plugin import activate_codex_plugin, plugin_app
-from .ticket import format_ticket_line, format_ticket_summary, get_tickets_dir, ticket_app  # noqa: F401
+from .ticket import format_ticket_summary, get_tickets_dir, ticket_app  # noqa: F401
 
 NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
 

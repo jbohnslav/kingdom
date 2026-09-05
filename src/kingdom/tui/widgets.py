@@ -10,13 +10,10 @@ CommandHintBar — shows matching slash commands as you type.
 
 from __future__ import annotations
 
-import re
 import subprocess
 import time
 
 from rich.markdown import Markdown as RichMarkdown
-from rich.segment import Segment
-from rich.style import Style
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import LoadingIndicator, Static
@@ -111,66 +108,6 @@ def color_for_member(name: str) -> str:
     return FALLBACK_COLORS[idx]
 
 
-class ColoredMentionMarkdown:
-    """Rich renderable that renders Markdown with @mentions in member colors.
-
-    Wraps RichMarkdown and intercepts rendered Segments, splitting any that
-    contain @member tokens and applying the member's brand color + bold style.
-    """
-
-    def __init__(self, body: str, member_names: list[str]) -> None:
-        self.body = body
-        # Build a color lookup for known names plus special tokens
-        self.member_colors: dict[str, str] = {}
-        for name in member_names:
-            self.member_colors[name] = color_for_member(name)
-        self.member_colors["all"] = "white"
-        self.member_colors["king"] = "white"
-        # Cache Style objects per color to avoid creating new ones on every render
-        self.mention_styles: dict[str, Style] = {
-            name: Style(color=color, bold=True) for name, color in self.member_colors.items()
-        }
-        # Pre-compile pattern
-        if self.member_colors:
-            names = "|".join(re.escape(n) for n in self.member_colors)
-            self.pattern: re.Pattern[str] | None = re.compile(rf"(?<!\w)@({names})(?!\w)")
-        else:
-            self.pattern = None
-
-    def __rich_console__(self, console, options):
-        md = RichMarkdown(self.body)
-        for segment in md.__rich_console__(console, options):
-            if not isinstance(segment, Segment) or not self.pattern:
-                yield segment
-                continue
-
-            text = segment.text
-            style = segment.style or Style()
-
-            if "@" not in text:
-                yield segment
-                continue
-
-            parts = self.pattern.split(text)
-            if len(parts) == 1:
-                yield segment
-                continue
-
-            # parts alternates: [before, captured_name, after, ...]
-            for i, part in enumerate(parts):
-                if not part:
-                    continue
-                if i % 2 == 1:
-                    cached = self.mention_styles.get(part, self.mention_styles.get("all"))
-                    try:
-                        mention_style = style + cached if cached else style
-                    except (AttributeError, TypeError):
-                        mention_style = cached or style
-                    yield Segment(f"@{part}", mention_style)
-                else:
-                    yield Segment(part, style)
-
-
 class MessagePanel(Widget):
     """A finalized message rendered with Textual's native Markdown widget.
 
@@ -204,10 +141,6 @@ class MessagePanel(Widget):
 
     def compose(self):
         yield TextualMarkdown(self.body)
-
-    def compose_text(self) -> str:
-        """Format the display text (sender shown in border title, not body)."""
-        return self.body
 
     def on_mount(self) -> None:
         if self.sender == "king":
@@ -525,10 +458,3 @@ class CommandHintBar(Static):
         """Hide the hint bar."""
         self.remove_class("visible")
         self.update("")
-
-    def first_match(self, prefix: str) -> str | None:
-        """Return the command word of the first matching command, or None."""
-        matches = match_commands(prefix)
-        if not matches:
-            return None
-        return matches[0][0].split()[0]

@@ -27,7 +27,6 @@ from kingdom.ticket import (
     find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
-    get_ticket_location,
     insert_markdown_section_entry,
     insert_worklog_entry,
     list_tickets,
@@ -1182,49 +1181,6 @@ class TestDeleteTicket:
 
         with pytest.raises(FileExistsError):
             move_ticket(source_path, dest_dir)
-
-
-class TestGetTicketLocation:
-    """Tests for get_ticket_location function."""
-
-    def create_test_structure(self, base: Path) -> None:
-        """Create a test directory structure with tickets."""
-        from kingdom.state import ensure_base_layout, ensure_branch_layout
-
-        ensure_base_layout(base)
-        ensure_branch_layout(base, "feature-test")
-
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
-        ticket = Ticket(id="kin-abcd", status="open", created=created, title="Test Ticket")
-        write_ticket(ticket, base / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abcd.md")
-
-    def test_get_location_found(self, tmp_path: Path) -> None:
-        """get_ticket_location returns path when found."""
-        self.create_test_structure(tmp_path)
-
-        result = get_ticket_location(tmp_path, "abcd")
-        assert result is not None
-        assert result.name == "kin-abcd.md"
-        assert result.exists()
-
-    def test_get_location_not_found(self, tmp_path: Path) -> None:
-        """get_ticket_location returns None when not found."""
-        self.create_test_structure(tmp_path)
-
-        result = get_ticket_location(tmp_path, "zzzz")
-        assert result is None
-
-    def test_get_location_ambiguous(self, tmp_path: Path) -> None:
-        """get_ticket_location raises AmbiguousTicketMatch for multiple matches."""
-        self.create_test_structure(tmp_path)
-
-        # Create another ticket with similar prefix
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
-        ticket = Ticket(id="kin-abef", status="open", created=created, title="Another AB Ticket")
-        write_ticket(ticket, tmp_path / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abef.md")
-
-        with pytest.raises(AmbiguousTicketMatch):
-            get_ticket_location(tmp_path, "ab")
 
 
 class TestFindNewlyUnblocked:

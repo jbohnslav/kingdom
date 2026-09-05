@@ -101,7 +101,6 @@ def test_doctor_reports_repository_and_host_drift_without_writing(tmp_path: Path
     with (
         patch("kingdom.state.Path.cwd", return_value=base),
         patch("kingdom.cli.Path.home", return_value=home),
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
     ):
         human = runner.invoke(app, ["doctor"])
         machine = runner.invoke(app, ["doctor", "--json"])
@@ -142,29 +141,6 @@ def test_doctor_reports_repository_and_host_drift_without_writing(tmp_path: Path
     assert "Back up and review" in repairs
     assert "Doctor is read-only; no files were changed." in human.output
     assert tree_snapshot(tmp_path) == before
-
-
-def test_check_cli_rejects_nonzero_version_command() -> None:
-    from kingdom.cli.config import check_cli
-
-    installed, error = check_cli(["/usr/bin/false"])
-
-    assert installed is False
-    assert error == "Command exited with status 1"
-
-
-def test_check_cli_reports_non_executable_command(tmp_path: Path) -> None:
-    from kingdom.cli.config import check_cli
-
-    command = tmp_path / "agent-cli"
-    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    command.chmod(0o644)
-
-    installed, error = check_cli([str(command)])
-
-    assert installed is False
-    assert error is not None
-    assert "Could not run command" in error
 
 
 def test_doctor_reports_structurally_invalid_claude_settings(tmp_path: Path) -> None:

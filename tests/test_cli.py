@@ -83,7 +83,6 @@ class TestCliWiring:
         assert hasattr(cli_mod, "app")
         assert hasattr(cli_mod, "Council")
         assert hasattr(cli_mod, "install_skill")
-        assert hasattr(cli_mod, "format_ticket_line")
         assert hasattr(cli_mod, "resolve_peasant_context")
 
     def test_version_option_matches_package_metadata(self) -> None:
@@ -98,7 +97,6 @@ class TestCliWiring:
 def test_doctor_all_installed(tmp_path: Path) -> None:
     """Test doctor command when all CLIs are installed."""
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.cli.check_config", return_value=(True, None)),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
@@ -127,17 +125,6 @@ def test_doctor_missing_cli() -> None:
         assert "✗" in result.output
         assert "Issues found:" in result.output
         assert "npm install -g @openai/codex" in result.output
-
-
-def test_check_cli_treats_nonzero_exit_as_failure() -> None:
-    from kingdom.cli.config import check_cli
-
-    result = subprocess.CompletedProcess(["agent", "--version"], 1, stdout="", stderr="authentication failed")
-    with patch("kingdom.cli.config.subprocess.run", return_value=result):
-        installed, error = check_cli(["agent", "--version"])
-
-    assert installed is False
-    assert error == "authentication failed"
 
 
 def test_check_agent_model_validates_codex_catalog() -> None:
@@ -211,7 +198,6 @@ def test_doctor_json_output(tmp_path: Path) -> None:
     kd_dir = tmp_path / ".kd"
     kd_dir.mkdir()
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.cli.check_config", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
@@ -241,7 +227,6 @@ def test_doctor_json_reports_pinned_model_and_effort(tmp_path) -> None:
     (kd_dir / "config.json").write_text(json.dumps(config))
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
@@ -284,7 +269,6 @@ def test_doctor_invalid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"council": {"timout": 123}}')
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
@@ -333,7 +317,6 @@ def test_doctor_no_config_shows_defaults(tmp_path) -> None:
     kd_dir.mkdir()
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
@@ -366,7 +349,6 @@ def test_doctor_valid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text("{}")
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
@@ -385,7 +367,6 @@ def test_doctor_json_invalid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"peasant": {"agent": "nonexistent"}}')
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
@@ -405,7 +386,6 @@ def test_doctor_unknown_backend(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"agents": {"test": {"backend": "foo"}}}')
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):

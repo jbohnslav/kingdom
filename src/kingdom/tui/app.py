@@ -1236,12 +1236,6 @@ class ChatApp(App):
                 if body and queue:
                     queue = mention_bump(body, queue, self.member_names)
 
-    def remove_member_panels(self, log: MessageLog, name: str) -> None:
-        """Remove any existing wait/stream/thinking/interrupted panels for a member."""
-        for prefix in ("wait", "stream", "thinking", "interrupted"):
-            for panel in list(log.query(f"#{prefix}-{name}")):
-                panel.remove()
-
     async def await_remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove member panels and wait for DOM to update (for async callers)."""
         removals = []

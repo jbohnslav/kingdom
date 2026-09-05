@@ -2841,7 +2841,7 @@ class TestSendMessageQueue:
 
     def test_queued_send_keeps_existing_wait_panels(self, project: Path) -> None:
         """A follow-up must not disturb the exchange that is still running."""
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
 
         from kingdom.tui.app import ChatApp, MessageLog
 
@@ -2851,15 +2851,7 @@ class TestSendMessageQueue:
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         list(app_instance.compose())
 
-        # Track calls to remove_member_panels
-        removed = []
-        original_remove = app_instance.remove_member_panels
-
-        def tracking_remove(log, name):
-            removed.append(name)
-            original_remove(log, name)
-
-        app_instance.remove_member_panels = tracking_remove
+        app_instance.await_remove_member_panels = AsyncMock()
 
         # Mock the log and worker to prevent actual Textual operations
         mock_log = MagicMock(spec=MessageLog)
@@ -2883,7 +2875,7 @@ class TestSendMessageQueue:
 
         app_instance.send_message()
 
-        assert removed == []
+        app_instance.await_remove_member_panels.assert_not_called()
         assert len(app_instance.delivery_queue) == 1
         app_instance.run_worker.assert_not_called()
 
@@ -2900,9 +2892,7 @@ class TestSendMessageQueue:
         list(app_instance.compose())
 
         mock_log = MagicMock(spec=MessageLog)
-        # remove_member_panels calls query for each prefix; the guard calls
-        # query for "#wait-<name>".  Make all removal queries return empty
-        # (nothing to remove) but the guard query find an existing panel.
+        # Simulate the waiting panel owned by the active exchange.
         existing_panel = MagicMock()
         mock_log.query.side_effect = lambda sel: [existing_panel] if sel == "#wait-claude" else []
         mock_log.scroll_if_following = MagicMock()
@@ -2930,31 +2920,6 @@ class TestSendMessageQueue:
             widget = call[0][0]
             assert not isinstance(widget, WaitingPanel)
         app_instance.run_worker.assert_not_called()
-
-
-class TestRemoveMemberPanels:
-    def test_removes_thinking_panels(self, project: Path) -> None:
-        """remove_member_panels should remove thinking panels, not just wait/stream/interrupted."""
-        from unittest.mock import MagicMock
-
-        from kingdom.tui.app import ChatApp, MessageLog
-
-        tid = "remove-panels-test"
-        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
-        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
-        list(app_instance.compose())
-
-        mock_log = MagicMock(spec=MessageLog)
-        thinking_panel = MagicMock(name="thinking-claude")
-        mock_log.query.side_effect = lambda sel: [thinking_panel] if sel == "#thinking-claude" else []
-
-        app_instance.remove_member_panels(mock_log, "claude")
-
-        # Should have queried for thinking panels
-        queried_selectors = [call.args[0] for call in mock_log.query.call_args_list]
-        assert "#thinking-claude" in queried_selectors
-        # The thinking panel should have been removed
-        thinking_panel.remove.assert_called_once()
 
 
 class TestFakeMemberProtocol:

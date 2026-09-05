@@ -222,23 +222,6 @@ def topic_for_thread(base: Path, feature: str, thread_id: str) -> str:
     return ""
 
 
-def topic_for_location(base: Path, loc: ThreadLocation) -> str:
-    """Return the topic for a ThreadLocation."""
-    from kingdom.thread import list_messages_from_dir, thread_dir_for_location
-
-    tdir = thread_dir_for_location(base, loc)
-    if not tdir.exists():
-        return ""
-    messages = list_messages_from_dir(tdir)
-    for msg in messages:
-        if msg.from_ == "king":
-            first_line = msg.body.strip().split("\n", 1)[0]
-            if len(first_line) > 60:
-                return first_line[:60] + "..."
-            return first_line
-    return ""
-
-
 @council_app.command("ask", help="Query council members.")
 def council_ask(
     prompt: Annotated[str, typer.Argument(help="Prompt to send to council members.")],
@@ -1411,14 +1394,6 @@ def query_with_progress(council, prompt, json_output, console):
         progress.update(task, description="Done")
 
     return responses
-
-
-def display_rich_panels(responses, thread_id, console):
-    """Display responses as Rich panels with Markdown."""
-    for name in sorted(responses.keys()):
-        render_response(responses[name], console)
-
-    console.print(f"[dim]Thread: {thread_id}[/dim]")
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,6 @@ from kingdom.state import (
     clear_terminal_ticket_contexts,
     ensure_base_layout,
     ensure_branch_layout,
-    execution_context_is_stale,
     execution_context_path,
     find_project_root,
     flock,
@@ -428,23 +427,6 @@ class TestExecutionContext:
         assert removed == []
         assert read_execution_ticket_context(tmp_path, fresh_context)["last_seen"] == fresh_time.isoformat()
         assert read_terminal_ticket_context(tmp_path, session_id="live-terminal")["ticket_id"] == "shared"
-
-    def test_stale_context_uses_last_seen(self) -> None:
-        last_seen = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
-        with patch.dict(os.environ, {"KD_CONTEXT": "session"}, clear=True):
-            context = resolve_execution_context(now=last_seen)
-
-        assert context is not None
-        assert not execution_context_is_stale(
-            context,
-            stale_after=timedelta(hours=2),
-            now=last_seen + timedelta(minutes=90),
-        )
-        assert execution_context_is_stale(
-            context,
-            stale_after=timedelta(hours=2),
-            now=last_seen + timedelta(hours=3),
-        )
 
 
 class TestEnsureBaseLayout:

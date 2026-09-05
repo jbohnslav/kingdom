@@ -604,15 +604,6 @@ def prune_stale_execution_contexts(
     return sorted(removed)
 
 
-def execution_context_is_stale(
-    context: ExecutionContext,
-    *,
-    stale_after: timedelta,
-    now: datetime | None = None,
-) -> bool:
-    return (now or datetime.now(UTC)) - context.last_seen > stale_after
-
-
 def terminal_context_identity(session_id: str | None = None) -> str | None:
     terminal_identity = terminal_fallback_identity()
     if terminal_identity:
@@ -823,13 +814,6 @@ def locked_json_update(
     return data
 
 
-def append_jsonl(path: Path, record: dict[str, Any]) -> None:
-    serialized = json.dumps(record, sort_keys=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(f"{serialized}\n")
-
-
 def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, Path]:
     """Create base .kd/ structure. Idempotent."""
     ensure_dir(state_root(base))
@@ -925,13 +909,6 @@ def set_current_run(base: Path, feature: str) -> None:
     ensure_dir(state_root(base))
     current_path = state_root(base) / "current"
     current_path.write_text(f"{feature}\n", encoding="utf-8")
-
-
-def clear_current_run(base: Path) -> None:
-    """Remove the current run pointer."""
-    current_path = state_root(base) / "current"
-    if current_path.exists():
-        current_path.unlink()
 
 
 def get_current_git_branch(cwd: Path | None = None) -> str | None:

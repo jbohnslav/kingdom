@@ -86,11 +86,6 @@ def is_process_alive(pid: int) -> bool:
     return True
 
 
-def not_implemented(command: str) -> None:
-    print_error(f"{command}: not implemented yet.")
-    raise typer.Exit(code=1)
-
-
 def require_project_root() -> Path:
     """Find the project root or exit with a clear error."""
     try:
@@ -109,34 +104,6 @@ def is_git_repo(base: Path) -> bool:
         cwd=base,
     )
     return result.returncode == 0
-
-
-def ensure_feature_branch(feature: str) -> None:
-    result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "Failed to read git branch")
-
-    current = result.stdout.strip()
-    if current == feature:
-        return
-
-    if current in {"main", "master"}:
-        checkout = subprocess.run(["git", "checkout", "-b", feature], text=True)
-        if checkout.returncode != 0:
-            raise RuntimeError(f"Failed to create branch '{feature}'")
-        typer.echo(f"Created branch {feature}")
-        return
-
-    typer.echo(f"Warning: current branch '{current}' does not match feature '{feature}'.")
-
-
-def skill_install_targets(home: Path) -> list[Path]:
-    """Return Claude's skill target, plus Cursor/Codex when their config dirs exist."""
-    return [target.path for target in skill_targets(home) if target.enabled]
 
 
 def skill_targets(home: Path) -> list[SkillTarget]:

@@ -13,7 +13,6 @@ from kingdom.cli.helpers import (
     install_skill,
     install_skill_target,
     read_skill_manifest,
-    skill_install_targets,
     write_skill_bundle,
 )
 from kingdom.state import (
@@ -434,30 +433,6 @@ def test_install_skill_uses_explicit_target_home(monkeypatch, tmp_path: Path) ->
 
     assert result == "refreshed"
     assert_skill_files_copied(skill_home / ".claude" / "skills" / "kingdom")
-
-
-def test_skill_install_targets_include_cursor_and_codex_when_roots_exist(tmp_path: Path) -> None:
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    (fake_home / ".cursor").mkdir()
-    (fake_home / ".codex").mkdir()
-
-    targets = skill_install_targets(fake_home)
-
-    assert fake_home / ".claude" / "skills" / "kingdom" in targets
-    assert fake_home / ".cursor" / "skills" / "kingdom" in targets
-    assert fake_home / ".codex" / "skills" / "kingdom" in targets
-
-
-def test_skill_install_targets_skip_missing_cursor_and_codex_roots(tmp_path: Path) -> None:
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-
-    targets = skill_install_targets(fake_home)
-
-    assert targets == [fake_home / ".claude" / "skills" / "kingdom"]
-    assert not (fake_home / ".cursor").exists()
-    assert not (fake_home / ".codex").exists()
 
 
 def test_install_skill_copies_files_to_cursor_when_root_exists(tmp_path: Path) -> None:

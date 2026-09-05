@@ -371,11 +371,6 @@ def write_ticket(ticket: Ticket, path: Path) -> None:
         update_ticket_snapshot(ticket, written, path, content)
 
 
-def write_ticket_content(path: Path, content: str) -> None:
-    with flock(ticket_lock_path(path)):
-        atomic_write_ticket_content(path, content)
-
-
 def atomic_write_ticket_content(path: Path, content: str) -> None:
     """Replace a ticket atomically while the caller holds its mutation lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -818,13 +813,6 @@ def append_worklog_entry(
         new_content = insert_worklog_entry(content, entry)
         atomic_write_ticket_content(path, new_content)
     return entry
-
-
-def get_ticket_location(base: Path, ticket_id: str) -> Path | None:
-    result = find_ticket(base, ticket_id)
-    if result is None:
-        return None
-    return result[1]
 
 
 # ---------------------------------------------------------------------------
