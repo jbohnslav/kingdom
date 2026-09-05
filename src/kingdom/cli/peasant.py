@@ -128,7 +128,9 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
     # Resolve the full ticket ID before building the session name — the user
     # may pass a prefix (e.g. "0e") but session files use the full ID.
     if not auto_pull:
-        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        match = resolve_ticket_or_exit(base, ticket_id)
+        ticket = match.ticket
+        ticket_path = match.path
         session_name = f"peasant-{ticket.id}"
         owning_branch = find_peasant_branch(base, session_name)
         if owning_branch:
@@ -148,7 +150,9 @@ def resolve_peasant_context(ticket_id: str, base: Path | None = None, auto_pull:
         print_error(str(exc))
         raise typer.Exit(code=1) from None
 
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id, branch=feature)
+    match = resolve_ticket_or_exit(base, ticket_id, branch=feature)
+    ticket = match.ticket
+    ticket_path = match.path
     full_ticket_id = ticket.id
 
     # Auto-pull backlog tickets into the current branch (mutating commands only)
@@ -349,7 +353,6 @@ def launch_peasant(
     no_preflight: bool,
 ) -> None:
     """Create one peasant's worktree, session, thread, and worker process."""
-    import kingdom.cli as _cli
     from kingdom.config import load_config
     from kingdom.session import update_agent_state
     from kingdom.thread import create_thread
@@ -483,9 +486,7 @@ def launch_peasant(
         if tmux:
             pid = launch_work_tmux(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
         else:
-            pid = _cli.launch_work_background(
-                base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name
-            )
+            pid = launch_work_background(base, feature, full_ticket_id, agent, worktree_path, thread_id, session_name)
     except Exception as exc:
         # Launch failed — don't leave a phantom "working" session behind
         update_agent_state(base, feature, session_name, status="failed", last_activity=datetime.now(UTC).isoformat())
@@ -1032,10 +1033,9 @@ def peasant_watch(
     """
     import time as time_mod
 
-    import kingdom.cli as _cli
     from kingdom.session import get_agent_state
 
-    ctx = _cli.resolve_peasant_context(ticket_id)
+    ctx = resolve_peasant_context(ticket_id)
     session_name = peasant_session_name(ctx.full_ticket_id)
 
     console = Console()
@@ -1604,7 +1604,9 @@ def accept_peasant(ctx: PeasantContext) -> None:
         raise typer.Exit(code=1)
 
     feature = owning_features[0]
-    ticket, ticket_path = resolve_ticket_or_exit(base, full_ticket_id, branch=feature)
+    match = resolve_ticket_or_exit(base, full_ticket_id, branch=feature)
+    ticket = match.ticket
+    ticket_path = match.path
     state = get_agent_state(base, feature, session_name)
     if state.ticket and state.ticket != full_ticket_id:
         print_error(f"Cannot accept: {session_name} records ticket '{state.ticket}', not '{full_ticket_id}'.")
@@ -1745,7 +1747,6 @@ def peasant_reject(
     no_resume: Annotated[bool, typer.Option("--no-resume", help="Don't auto-resume peasant on reject.")] = False,
 ) -> None:
     """Reject a peasant's work: send feedback and optionally relaunch the peasant."""
-    import kingdom.cli as _cli
     from kingdom.session import get_agent_state, update_agent_state
     from kingdom.thread import add_message
 
@@ -1827,9 +1828,7 @@ def peasant_reject(
             print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
             raise typer.Exit(code=1)
 
-    pid = _cli.launch_work_background(
-        base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name
-    )
+    pid = launch_work_background(base, feature, full_ticket_id, agent_backend, worktree_path, thread_id, session_name)
 
     now = datetime.now(UTC).isoformat()
     update_agent_state(

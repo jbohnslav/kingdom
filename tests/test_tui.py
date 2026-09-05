@@ -29,7 +29,7 @@ class TestChatCommand:
     def test_nonexistent_thread(self, project: Path) -> None:
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
         ):
             result = runner.invoke(council_app, ["chat", "nonexistent"])
         assert result.exit_code == 1
@@ -39,7 +39,7 @@ class TestChatCommand:
         """Bare `chat` always creates a new thread and launches the TUI."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -58,7 +58,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -75,7 +75,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat", "council-abc1"])
@@ -90,7 +90,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat", "council-test"])
@@ -102,7 +102,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp") as mock_chat_app,
         ):
             result = runner.invoke(council_app, ["chat", "council-debug", "--debug"])
@@ -124,7 +124,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -141,7 +141,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
         ):
             result = runner.invoke(council_app, ["chat", "council-xyz1"])
@@ -154,7 +154,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat", "council-ab"])
@@ -168,7 +168,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
         ):
             result = runner.invoke(council_app, ["chat", "council-aa"])
         assert result.exit_code == 1
@@ -181,7 +181,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
         ):
             result = runner.invoke(council_app, ["chat", "council-nope"])
         assert result.exit_code == 1
@@ -881,7 +881,7 @@ class TestPhase1SmokeTest:
         """kd council chat --new creates thread and would launch TUI."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -895,7 +895,7 @@ class TestPhase1SmokeTest:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -911,7 +911,7 @@ class TestPhase1SmokeTest:
         """--color auto enables ansi_color when tmux -CC is detected."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=True),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
@@ -925,7 +925,7 @@ class TestPhase1SmokeTest:
         """--color auto (default) uses normal colors when not in tmux -CC."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
@@ -938,7 +938,7 @@ class TestPhase1SmokeTest:
         """--color ansi forces ansi_color regardless of environment."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
@@ -956,7 +956,7 @@ class TestPhase1SmokeTest:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run", side_effect=check_no_color),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
@@ -984,7 +984,7 @@ class TestPhase1SmokeTest:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run", side_effect=run_side_effect),
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
         ):
@@ -1001,7 +1001,7 @@ class TestPhase1SmokeTest:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run", side_effect=crash),
         ):
             result = runner.invoke(council_app, ["chat", "--color", "truecolor"])

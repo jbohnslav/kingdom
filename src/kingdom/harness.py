@@ -883,7 +883,7 @@ def run_agent_loop(
     if result is None:
         logger.error("Ticket not found: %s", ticket_id)
         return "failed"
-    _, ticket_path = result
+    ticket_path = result.path
     ticket_title = read_ticket(ticket_path).title
     run_started_at = time.monotonic()
     agent_cycles = 0

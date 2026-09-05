@@ -915,7 +915,8 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "kin-a1b2")
         assert result is not None
-        ticket, path = result
+        ticket = result.ticket
+        path = result.path
         assert ticket.id == "kin-a1b2"
         assert path.name == "kin-a1b2.md"
 
@@ -925,7 +926,7 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "a1b2")
         assert result is not None
-        ticket, _path = result
+        ticket = result.ticket
         assert ticket.id == "kin-a1b2"
 
     def test_find_by_prefix(self, tmp_path: Path) -> None:
@@ -934,7 +935,7 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "a1")
         assert result is not None
-        ticket, _ = result
+        ticket = result.ticket
         assert ticket.id == "kin-a1b2"
 
     def test_find_in_backlog(self, tmp_path: Path) -> None:
@@ -943,7 +944,8 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "e5f6")
         assert result is not None
-        ticket, path = result
+        ticket = result.ticket
+        path = result.path
         assert ticket.id == "kin-e5f6"
         assert "backlog" in str(path)
 
@@ -953,7 +955,8 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "g7h8")
         assert result is not None
-        ticket, path = result
+        ticket = result.ticket
+        path = result.path
         assert ticket.id == "kin-g7h8"
         assert "archive" in str(path)
 
@@ -985,7 +988,7 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "A1B2")
         assert result is not None
-        ticket, _ = result
+        ticket = result.ticket
         assert ticket.id == "kin-a1b2"
 
     def test_find_empty_base(self, tmp_path: Path) -> None:
@@ -1843,22 +1846,6 @@ class TestFindTicketLocations:
         with pytest.raises(AmbiguousTicketMatch) as exc_info:
             find_ticket(tmp_path, "same1")
         assert {match.location for match in exc_info.value.matches} == {"branch:aaa-other", "branch:zzz-current"}
-
-    def test_ticket_match_unpacking_still_works(self, tmp_path: Path) -> None:
-        """Existing callers using ``ticket, path = result`` still work."""
-        from kingdom.state import ensure_base_layout
-
-        ensure_base_layout(tmp_path)
-
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
-        ticket = Ticket(id="unp1", status="open", created=created, title="Unpack test")
-        write_ticket(ticket, tmp_path / ".kd" / "backlog" / "tickets" / "unp1.md")
-
-        result = find_ticket(tmp_path, "unp1")
-        assert result is not None
-        ticket, path = result
-        assert ticket.id == "unp1"
-        assert path.name == "unp1.md"
 
 
 class TestCollectAllTicketsDedup:

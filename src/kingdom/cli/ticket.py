@@ -361,7 +361,7 @@ def render_ticket_panel(
             except AmbiguousTicketMatch:
                 link_result = None
             if link_result:
-                lt, _ = link_result
+                lt = link_result.ticket
                 lines.append(f"- {lt.id} ({lt.status}) {lt.title}")
             else:
                 lines.append(f"- {link_id} (not found)")
@@ -463,13 +463,13 @@ def ticket_create(
     resolved_deps: list[str] = []
     if dep:
         for dep_id in dep:
-            dep_ticket, _ = resolve_ticket_or_exit(base, dep_id, not_found_label="Dependency ticket not found")
+            dep_ticket = resolve_ticket_or_exit(base, dep_id, not_found_label="Dependency ticket not found").ticket
             resolved_deps.append(dep_ticket.id)
 
     # Resolve parent
     resolved_parent = None
     if parent:
-        parent_ticket, _ = resolve_ticket_or_exit(base, parent, not_found_label="Parent ticket not found")
+        parent_ticket = resolve_ticket_or_exit(base, parent, not_found_label="Parent ticket not found").ticket
         resolved_parent = parent_ticket.id
 
     # Parse tags
@@ -644,7 +644,7 @@ def ticket_list(
     # Resolve --parent to a full ticket ID; --parent implies --all
     resolved_parent_id: str | None = None
     if parent_id:
-        parent_ticket, _ = resolve_ticket_or_exit(base, parent_id, not_found_label="Parent ticket not found")
+        parent_ticket = resolve_ticket_or_exit(base, parent_id, not_found_label="Parent ticket not found").ticket
         resolved_parent_id = parent_ticket.id
         all_tickets = True
 
@@ -774,7 +774,8 @@ def ticket_show(
             raise typer.Exit(code=0)
     elif ticket_ids:
         for tid in ticket_ids:
-            pairs.append(resolve_ticket_or_exit(base, tid))
+            match = resolve_ticket_or_exit(base, tid)
+            pairs.append((match.ticket, match.path))
     else:
         # No args: find ticket assigned to "hand"
         try:
@@ -788,7 +789,7 @@ def ticket_show(
                 if t.assignee == "hand":
                     result = find_ticket(base, t.id)
                     if result:
-                        pairs.append(result)
+                        pairs.append((result.ticket, result.path))
                     break
         if not pairs:
             print_error("No ticket assigned to 'hand'. Use `kd tk assign <id> hand`.")
@@ -829,7 +830,7 @@ def ticket_find(
 ) -> None:
     """Print the full path to a ticket file."""
     base = require_project_root()
-    _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    ticket_path = resolve_ticket_or_exit(base, ticket_id).path
     typer.echo(ticket_path.resolve())
 
 
@@ -843,7 +844,9 @@ def update_ticket_status(
     """Helper to update a ticket's status."""
     base = require_project_root()
 
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    match = resolve_ticket_or_exit(base, ticket_id)
+    ticket = match.ticket
+    ticket_path = match.path
     old_status = ticket.status
     ticket.status = new_status
     if assignee is not None or clear_assignee:
@@ -1074,9 +1077,9 @@ def ticket_start(
         print_error("No execution context detected. Set KD_CONTEXT before starting a ticket.")
         raise typer.Exit(code=1)
 
-    ticket, _ = resolve_ticket_or_exit(base, ticket_id)
+    ticket = resolve_ticket_or_exit(base, ticket_id).ticket
     with flock(ticket_assignment_lock_path(base)):
-        _, ticket_path = resolve_ticket_or_exit(base, ticket.id)
+        ticket_path = resolve_ticket_or_exit(base, ticket.id).path
         location = terminal_context_location_for_start(base, ticket_path)
         previous_binding = read_execution_ticket_context(base, context)
         if previous_binding:
@@ -1252,7 +1255,9 @@ def ticket_close(
     """Close a ticket with an explicit terminal outcome."""
     base = require_project_root()
 
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    match = resolve_ticket_or_exit(base, ticket_id)
+    ticket = match.ticket
+    ticket_path = match.path
     reason = reason.strip() if reason else None
 
     if duplicate_of and superseded_by:
@@ -1273,7 +1278,7 @@ def ticket_close(
 
     duplicate_target_id = None
     if duplicate_of:
-        dup_ticket, _ = resolve_ticket_or_exit(base, duplicate_of, not_found_label="Duplicate target not found")
+        dup_ticket = resolve_ticket_or_exit(base, duplicate_of, not_found_label="Duplicate target not found").ticket
         if dup_ticket.id == ticket.id:
             print_error("A ticket cannot be a duplicate of itself")
             raise typer.Exit(code=1)
@@ -1281,11 +1286,11 @@ def ticket_close(
 
     superseding_ticket_id = None
     if superseded_by:
-        superseding_ticket, _ = resolve_ticket_or_exit(
+        superseding_ticket = resolve_ticket_or_exit(
             base,
             superseded_by,
             not_found_label="Superseding ticket not found",
-        )
+        ).ticket
         if superseding_ticket.id == ticket.id:
             print_error("A ticket cannot be superseded by itself")
             raise typer.Exit(code=1)
@@ -1363,7 +1368,9 @@ def ticket_close(
         pass  # no active branch — skip the check
 
     with flock(ticket_assignment_lock_path(base)):
-        ticket, ticket_path = resolve_ticket_or_exit(base, ticket.id)
+        match = resolve_ticket_or_exit(base, ticket.id)
+        ticket = match.ticket
+        ticket_path = match.path
         old_status = ticket.status
         closed_at = datetime.now(UTC).replace(microsecond=0)
         try:
@@ -1426,7 +1433,9 @@ def ticket_reopen(
     """Set ticket status back to open."""
     base = require_project_root()
     with flock(ticket_assignment_lock_path(base)):
-        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        match = resolve_ticket_or_exit(base, ticket_id)
+        ticket = match.ticket
+        ticket_path = match.path
         old_status = ticket.status
         reopened_at = datetime.now(UTC).replace(microsecond=0)
 
@@ -1489,7 +1498,9 @@ def ticket_delete(
 ) -> None:
     """Remove a ticket file from disk."""
     base = require_project_root()
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    match = resolve_ticket_or_exit(base, ticket_id)
+    ticket = match.ticket
+    ticket_path = match.path
 
     # Guard: refuse to delete if a peasant is actively working on this ticket
     branch_dir = ticket_path.parent.parent  # .kd/branches/<branch> or .kd/backlog
@@ -1513,7 +1524,9 @@ def ticket_delete(
             raise typer.Exit(code=0)
 
     with flock(ticket_assignment_lock_path(base)):
-        ticket, ticket_path = resolve_ticket_or_exit(base, ticket.id)
+        match = resolve_ticket_or_exit(base, ticket.id)
+        ticket = match.ticket
+        ticket_path = match.path
         delete_ticket(ticket_path)
         clear_ticket_execution_contexts(base, ticket.id)
         clear_terminal_ticket_contexts(base, ticket.id)
@@ -1529,8 +1542,10 @@ def deps_add(
     base = require_project_root()
 
     # Find both tickets
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
-    dep_ticket, _ = resolve_ticket_or_exit(base, depends_on, not_found_label="Dependency ticket not found")
+    match = resolve_ticket_or_exit(base, ticket_id)
+    ticket = match.ticket
+    ticket_path = match.path
+    dep_ticket = resolve_ticket_or_exit(base, depends_on, not_found_label="Dependency ticket not found").ticket
 
     # Add dependency if not already present
     if dep_ticket.id not in ticket.deps:
@@ -1549,7 +1564,9 @@ def deps_remove(
     """Remove a dependency from a ticket."""
     base = require_project_root()
 
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    match = resolve_ticket_or_exit(base, ticket_id)
+    ticket = match.ticket
+    ticket_path = match.path
 
     # Resolve the dependency ID via find_ticket (handles partial IDs properly)
     try:
@@ -1559,7 +1576,7 @@ def deps_remove(
         raise typer.Exit(code=1) from None
 
     if dep_result is not None:
-        dep_id = dep_result[0].id
+        dep_id = dep_result.ticket.id
     elif depends_on in ticket.deps:
         # Dep ticket no longer exists but is in deps list — allow exact removal
         dep_id = depends_on
@@ -1585,7 +1602,7 @@ def deps_tree(
     """Display the dependency tree rooted at a ticket."""
     base = require_project_root()
 
-    root_ticket, _ = resolve_ticket_or_exit(base, ticket_id)
+    root_ticket = resolve_ticket_or_exit(base, ticket_id).ticket
 
     all_tickets = collect_all_tickets(base)
     ticket_map = {t.id: t for t in all_tickets}
@@ -1704,7 +1721,7 @@ def ticket_link(
     seen_ids: dict[str, tuple[Ticket, Path]] = {}
     for tid in ticket_ids:
         result = resolve_ticket_or_exit(base, tid)
-        seen_ids[result[0].id] = result
+        seen_ids[result.ticket.id] = (result.ticket, result.path)
 
     resolved = list(seen_ids.values())
 
@@ -1734,8 +1751,12 @@ def ticket_unlink(
     """Remove a symmetric link between two tickets."""
     base = require_project_root()
 
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
-    target, target_path = resolve_ticket_or_exit(base, target_id)
+    match = resolve_ticket_or_exit(base, ticket_id)
+    ticket = match.ticket
+    ticket_path = match.path
+    match = resolve_ticket_or_exit(base, target_id)
+    target = match.ticket
+    target_path = match.path
 
     removed = False
     if target.id in ticket.links:
@@ -1762,7 +1783,9 @@ def ticket_assign(
     base = require_project_root()
 
     with flock(ticket_assignment_lock_path(base)):
-        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        match = resolve_ticket_or_exit(base, ticket_id)
+        ticket = match.ticket
+        ticket_path = match.path
         changed_owner = ticket.assignee != agent
         ticket.assignee = agent
         write_ticket(ticket, ticket_path)
@@ -1780,7 +1803,9 @@ def ticket_unassign(
     base = require_project_root()
 
     with flock(ticket_assignment_lock_path(base)):
-        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        match = resolve_ticket_or_exit(base, ticket_id)
+        ticket = match.ticket
+        ticket_path = match.path
         ticket.assignee = None
         write_ticket(ticket, ticket_path)
         clear_ticket_execution_contexts(base, ticket.id)
@@ -1807,7 +1832,9 @@ def ticket_parent(
         raise typer.Exit(1)
 
     base = require_project_root()
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    match = resolve_ticket_or_exit(base, ticket_id)
+    ticket = match.ticket
+    ticket_path = match.path
 
     if clear:
         old_parent = ticket.parent
@@ -1818,7 +1845,7 @@ def ticket_parent(
         )
     else:
         assert parent_id is not None
-        parent_ticket, _ = resolve_ticket_or_exit(base, parent_id, not_found_label="Parent ticket not found")
+        parent_ticket = resolve_ticket_or_exit(base, parent_id, not_found_label="Parent ticket not found").ticket
         if parent_ticket.id == ticket.id:
             typer.echo("A ticket cannot be its own parent.", err=True)
             raise typer.Exit(1)
@@ -1839,7 +1866,9 @@ def defer_tickets_locked(base: Path, ticket_ids: list[str], reason: str, context
     already_backlogged: list[Ticket] = []
     seen_ids: set[str] = set()
     for ticket_id in ticket_ids:
-        ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+        match = resolve_ticket_or_exit(base, ticket_id)
+        ticket = match.ticket
+        ticket_path = match.path
         if ticket.id in seen_ids:
             continue
         seen_ids.add(ticket.id)
@@ -1915,7 +1944,8 @@ def ticket_move(
     target = normalize_branch_name(to_branch)
     with flock(ticket_assignment_lock_path(base)):
         match = resolve_ticket_or_exit(base, ticket_id)
-        ticket, source = match
+        ticket = match.ticket
+        source = match.path
         if source.parent == destination:
             typer.echo(f"Ticket {ticket.id} is already on branch '{target}'.")
             return
@@ -2113,7 +2143,9 @@ def ticket_log(
 
     base = require_project_root()
 
-    ticket, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    match = resolve_ticket_or_exit(base, ticket_id)
+    ticket = match.ticket
+    ticket_path = match.path
 
     context = None
     with contextlib.suppress(ValueError):
@@ -2139,7 +2171,7 @@ def ticket_edit(
     """Open a ticket file in the default editor."""
     base = require_project_root()
 
-    _, ticket_path = resolve_ticket_or_exit(base, ticket_id)
+    ticket_path = resolve_ticket_or_exit(base, ticket_id).path
     editor = os.environ.get("EDITOR", "vim")
     subprocess.run([*shlex.split(editor), str(ticket_path)])
 

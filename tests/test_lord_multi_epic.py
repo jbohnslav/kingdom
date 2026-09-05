@@ -133,7 +133,7 @@ def test_peasant_start_rejects_cross_epic_block_and_duplicate_launch(multi_epic_
 
     with (
         patch("kingdom.cli.peasant.create_worktree", return_value=multi_epic_project / "b2-worktree"),
-        patch("kingdom.cli.launch_work_background", side_effect=launch_once) as launch,
+        patch("kingdom.cli.peasant.launch_work_background", side_effect=launch_once) as launch,
         patch("kingdom.cli.peasant.is_process_alive", return_value=True),
         ThreadPoolExecutor(max_workers=2) as executor,
     ):

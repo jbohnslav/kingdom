@@ -46,7 +46,8 @@ def start(
         print_error(f"Ticket not found: {epic_id}")
         raise typer.Exit(code=1)
 
-    ticket, ticket_path = result
+    ticket = result.ticket
+    ticket_path = result.path
     full_epic_id = ticket.id
 
     # Must be an epic
@@ -338,7 +339,8 @@ def lord_watch(
         print_error(f"Ticket not found: {epic_id}")
         raise typer.Exit(code=1)
 
-    ticket, ticket_path = result
+    ticket = result.ticket
+    ticket_path = result.path
     full_epic_id = ticket.id
     session_name = lord_session_name(full_epic_id)
 

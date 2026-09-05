@@ -29,16 +29,6 @@ class AgentDef:
     prompts: dict[str, str] = field(default_factory=dict)
     extra_flags: list[str] = field(default_factory=list)
     effort: str = ""
-    reasoning_effort: str = ""
-
-    def __post_init__(self) -> None:
-        """Preserve the old constructor while configs migrate to ``effort``."""
-        if self.effort and self.reasoning_effort:
-            raise ValueError("AgentDef cannot set both effort and reasoning_effort")
-        if self.reasoning_effort:
-            if self.backend != "codex":
-                raise ValueError("reasoning_effort is only supported for the codex backend")
-            self.effort = self.reasoning_effort
 
 
 @dataclass
@@ -142,7 +132,7 @@ def default_config() -> KingdomConfig:
 # ---------------------------------------------------------------------------
 
 VALID_BACKENDS = {"claude_code", "codex", "cursor"}
-VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags", "effort", "reasoning_effort"}
+VALID_AGENT_KEYS = {"backend", "model", "prompt", "prompts", "extra_flags", "effort"}
 VALID_EFFORTS = {
     "claude_code": {"low", "medium", "high", "xhigh", "max"},
     "codex": {"low", "medium", "high", "xhigh", "max", "ultra"},
@@ -213,23 +203,15 @@ def validate_agent(name: str, data: dict) -> AgentDef:
         if not isinstance(flag, str):
             raise ValueError(f"agents.{name}.extra_flags[{i}] must be a string, got {type(flag).__name__}")
 
-    if "effort" in data and "reasoning_effort" in data:
-        raise ValueError(f"agents.{name} cannot set both effort and reasoning_effort")
-
-    effort_key = "effort" if "effort" in data else "reasoning_effort"
-    effort = data.get(effort_key, "")
-    if effort_key in data and not isinstance(effort, str):
-        raise ValueError(f"agents.{name}.{effort_key} must be a string, got {type(effort).__name__}")
-    if effort and effort_key == "reasoning_effort" and backend != "codex":
-        raise ValueError(f"agents.{name}.reasoning_effort is only supported for the codex backend")
+    effort = data.get("effort", "")
+    if not isinstance(effort, str):
+        raise ValueError(f"agents.{name}.effort must be a string, got {type(effort).__name__}")
     if effort:
         valid_efforts = VALID_EFFORTS.get(backend)
         if valid_efforts is None:
             raise ValueError(f"agents.{name}: backend '{backend}' does not support effort")
         if effort not in valid_efforts:
-            raise ValueError(
-                f"agents.{name}.{effort_key} must be one of {', '.join(sorted(valid_efforts))}, got '{effort}'"
-            )
+            raise ValueError(f"agents.{name}.effort must be one of {', '.join(sorted(valid_efforts))}, got '{effort}'")
 
     return AgentDef(
         backend=backend,

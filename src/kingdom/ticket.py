@@ -547,36 +547,13 @@ def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
     return newly_unblocked
 
 
+@dataclass(frozen=True)
 class TicketMatch:
-    """Result from find_ticket — backward-compatible with ``ticket, path = result`` unpacking.
+    """A ticket and its file location returned by find_ticket."""
 
-    Supports 2-tuple unpacking (ticket, path) for existing callers,
-    plus a ``.location`` attribute for the search origin.
-    """
-
-    __slots__ = ("location", "path", "ticket")
-
-    def __init__(self, ticket: Ticket, path: Path, location: str) -> None:
-        self.ticket = ticket
-        self.path = path
-        self.location = location
-
-    def __iter__(self):
-        yield self.ticket
-        yield self.path
-
-    def __len__(self) -> int:
-        return 2
-
-    def __getitem__(self, index: int) -> Ticket | Path:
-        if index == 0:
-            return self.ticket
-        if index == 1:
-            return self.path
-        raise IndexError(index)
-
-    def __repr__(self) -> str:
-        return f"TicketMatch(ticket={self.ticket!r}, path={self.path!r}, location={self.location!r})"
+    ticket: Ticket
+    path: Path
+    location: str
 
 
 class AmbiguousTicketMatch(Exception):

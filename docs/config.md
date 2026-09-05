@@ -172,8 +172,8 @@ settings or add new agents by name.
 Claude supports `low`, `medium`, `high`, `xhigh`, and `max`. Codex additionally
 accepts `ultra`; the selected model must support the requested level. Cursor's
 CLI does not expose a separate effort flag, so setting `effort` on a Cursor
-backend is a validation error. The old Codex-only `reasoning_effort` key remains
-accepted as a deprecated alias for `effort`; do not set both.
+backend is a validation error. `effort` is the only Kingdom configuration key
+for this setting.
 
 ### `agents.<name>.prompts`
 

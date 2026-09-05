@@ -50,7 +50,7 @@ class TestTicketDep:
         # Both deps must be present
         found = find_ticket(cli_project, "cf1a")
         assert found is not None
-        ticket, _ = found
+        ticket = found.ticket
         assert "3642" in ticket.deps, f"First dep lost! deps={ticket.deps}"
         assert "d869" in ticket.deps, f"Second dep missing! deps={ticket.deps}"
         assert len(ticket.deps) == 2
@@ -78,7 +78,7 @@ class TestTicketDep:
         # Verify first dep survives write/read roundtrip
         found_before = find_ticket(cli_project, "cf1a")
         assert found_before is not None
-        ticket_before, _ = found_before
+        ticket_before = found_before.ticket
         assert "3642" in ticket_before.deps, f"Dep lost after roundtrip! deps={ticket_before.deps}"
 
         # Add second dep via CLI
@@ -89,7 +89,7 @@ class TestTicketDep:
         # Both deps must be present
         found = find_ticket(cli_project, "cf1a")
         assert found is not None
-        ticket, _ = found
+        ticket = found.ticket
         assert "3642" in ticket.deps, f"First dep lost! deps={ticket.deps}"
         assert "d869" in ticket.deps, f"Second dep missing! deps={ticket.deps}"
         assert len(ticket.deps) == 2
@@ -112,7 +112,7 @@ class TestTicketDep:
 
         found = find_ticket(cli_project, "cf1a")
         assert found is not None
-        ticket, _ = found
+        ticket = found.ticket
         assert ticket.status == "in_progress"
         assert "aaaa" in ticket.deps, f"First dep lost after status change! deps={ticket.deps}"
         assert "bbbb" in ticket.deps, f"Second dep missing! deps={ticket.deps}"
@@ -141,7 +141,7 @@ class TestTicketDep:
 
         found = find_ticket(cli_project, "cf1a")
         assert found is not None
-        ticket, _ = found
+        ticket = found.ticket
         assert ticket.deps == ["aaaa"]
 
     def test_dep_not_found(self, cli_project: Path) -> None:
@@ -171,7 +171,7 @@ class TestTicketUndep:
         assert "removed dependency" in result.output
         found = find_ticket(cli_project, "cf1a")
         assert found is not None
-        ticket, _ = found
+        ticket = found.ticket
         assert "aaaa" not in ticket.deps
 
     def test_undep_not_a_dep(self, cli_project: Path) -> None:
@@ -201,7 +201,7 @@ class TestTicketUndep:
         assert "removed dependency" in result.output
         found = find_ticket(cli_project, "cf1a")
         assert found is not None
-        ticket, _ = found
+        ticket = found.ticket
         assert ticket.deps == []
 
     def test_undep_resolves_via_find_ticket(self, cli_project: Path) -> None:
@@ -227,7 +227,7 @@ class TestTicketUndep:
         # Both deps should still be present
         found = find_ticket(cli_project, "cc03")
         assert found is not None
-        ticket, _ = found
+        ticket = found.ticket
         assert len(ticket.deps) == 2, f"Expected 2 deps but got {ticket.deps}"
 
     def test_undep_preserves_other_deps(self, cli_project: Path) -> None:
@@ -243,7 +243,7 @@ class TestTicketUndep:
 
         found = find_ticket(cli_project, "aaaa")
         assert found is not None
-        ticket, _ = found
+        ticket = found.ticket
         assert ticket.deps == ["cccc"]
 
 

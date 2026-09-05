@@ -14,9 +14,8 @@ NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
 
 def styled_echo(message: str, *, fg: str | None = None, err: bool = False) -> None:
     """typer.secho wrapper that respects NO_COLOR and TERM=dumb."""
-    import kingdom.cli as _cli
 
-    typer.secho(message, fg=None if _cli.NO_COLOR else fg, err=err)
+    typer.secho(message, fg=None if NO_COLOR else fg, err=err)
 
 
 def print_error(message: str) -> None:

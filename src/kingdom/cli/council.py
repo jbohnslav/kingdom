@@ -1427,12 +1427,11 @@ def council_chat(
 
     Creates a new thread by default, or opens an existing one by ID.
     """
-    import kingdom.cli as _cli
     from kingdom.config import load_config
     from kingdom.thread import create_thread
 
     base = require_project_root()
-    feature = _cli.resolve_current_run(base)
+    feature = resolve_current_run(base)
     cfg = load_config(base)
 
     if thread_id:

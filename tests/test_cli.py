@@ -9,7 +9,7 @@ import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
-import kingdom.cli as cli_mod
+import kingdom.cli.display as display_mod
 from kingdom.cli import app
 from kingdom.cli.config import AgentRuntimeCheck
 from kingdom.cli.helpers import verbose_echo
@@ -77,13 +77,6 @@ class TestCliWiring:
         assert "kd tk current" in output
         assert "Power tools:" in output
         assert "Design docs are optional" in output
-
-    def test_top_level_re_exports(self) -> None:
-        """kingdom.cli re-exports key symbols from submodules."""
-        assert hasattr(cli_mod, "app")
-        assert hasattr(cli_mod, "Council")
-        assert hasattr(cli_mod, "install_skill")
-        assert hasattr(cli_mod, "resolve_peasant_context")
 
     def test_version_option_matches_package_metadata(self) -> None:
         manifest = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
@@ -477,10 +470,10 @@ def test_config_show_indicates_sources(tmp_path) -> None:
             raise AssertionError("council.ask.mode not found in output")
 
 
-def test_config_show_marks_deprecated_reasoning_effort_as_config(tmp_path) -> None:
+def test_config_show_marks_effort_as_config(tmp_path) -> None:
     kd_dir = tmp_path / ".kd"
     kd_dir.mkdir()
-    config = {"agents": {"codex": {"backend": "codex", "reasoning_effort": "high"}}}
+    config = {"agents": {"codex": {"backend": "codex", "effort": "high"}}}
     (kd_dir / "config.json").write_text(json.dumps(config))
 
     with patch("kingdom.config.state_root", return_value=kd_dir):
@@ -524,20 +517,19 @@ def test_config_show_invalid_config(tmp_path) -> None:
 
 
 class TestNoColor:
-    def test_styled_echo_strips_color_when_no_color(self) -> None:
-        """styled_echo should not pass fg when NO_COLOR is set."""
-        with patch.object(cli_mod, "NO_COLOR", True):
-            result = runner.invoke(app, ["doctor"])
-            # Output should not contain ANSI escape codes
-            assert "\x1b[" not in result.output
+    @pytest.mark.parametrize("no_color,expected_fg", [(True, None), (False, "green")])
+    def test_styled_echo_respects_color_policy(self, no_color, expected_fg) -> None:
+        with patch.object(display_mod, "NO_COLOR", no_color), patch.object(display_mod.typer, "secho") as secho:
+            display_mod.styled_echo("Ready", fg="green", err=True)
+        secho.assert_called_once_with("Ready", fg=expected_fg, err=True)
 
     def test_no_color_flag_detects_env(self) -> None:
         """NO_COLOR module flag should reflect environment."""
         import importlib
 
         with patch.dict("os.environ", {"NO_COLOR": "1"}):
-            importlib.reload(cli_mod)
-            assert cli_mod.NO_COLOR is True
+            importlib.reload(display_mod)
+            assert display_mod.NO_COLOR is True
 
         with patch.dict("os.environ", {"TERM": "dumb"}, clear=False):
             # Remove NO_COLOR if present
@@ -547,11 +539,11 @@ class TestNoColor:
             env.pop("NO_COLOR", None)
             env["TERM"] = "dumb"
             with patch.dict("os.environ", env, clear=True):
-                importlib.reload(cli_mod)
-                assert cli_mod.NO_COLOR is True
+                importlib.reload(display_mod)
+                assert display_mod.NO_COLOR is True
 
         # Restore normal state
-        importlib.reload(cli_mod)
+        importlib.reload(display_mod)
 
 
 class TestVerboseFlag:
@@ -600,7 +592,7 @@ class TestPeasantWatch:
         mock_state = AgentState(name="peasant-t1", status="done")
 
         with (
-            patch("kingdom.cli.resolve_peasant_context", return_value=mock_ctx),
+            patch("kingdom.cli.peasant.resolve_peasant_context", return_value=mock_ctx),
             patch("kingdom.session.get_agent_state", return_value=mock_state),
             patch("kingdom.harness.extract_worklog", return_value="- [12:00] — Started"),
         ):

@@ -103,12 +103,7 @@ def config_show() -> None:
                         return True
             return False
 
-        if walk(dotted_key, raw):
-            return True
-        if dotted_key.endswith(".effort"):
-            legacy_key = f"{dotted_key.rsplit('.', 1)[0]}.reasoning_effort"
-            return walk(legacy_key, raw)
-        return False
+        return walk(dotted_key, raw)
 
     effective = dataclasses.asdict(cfg)
     entries = flatten(effective)

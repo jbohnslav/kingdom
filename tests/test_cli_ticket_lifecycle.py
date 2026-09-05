@@ -89,7 +89,7 @@ class TestTicketCreate:
         ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)
         assert found is not None
-        created_ticket, _ = found
+        created_ticket = found.ticket
         assert created_ticket.body == "Body from flag\n\n## Acceptance Criteria\n\n- [ ]"
         assert created_ticket.type == "bug"
 
@@ -103,7 +103,7 @@ class TestTicketCreate:
         ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)
         assert found is not None
-        created_ticket, _ = found
+        created_ticket = found.ticket
         assert created_ticket.title == "Flag title"
         assert created_ticket.body == "Body from body flag\n\n## Acceptance Criteria\n\n- [ ]"
 
@@ -117,7 +117,7 @@ class TestTicketCreate:
         ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)
         assert found is not None
-        created_ticket, _ = found
+        created_ticket = found.ticket
         assert created_ticket.title == "Short flag title"
         assert created_ticket.body == "Body from short flag\n\n## Acceptance Criteria\n\n- [ ]"
 
@@ -128,7 +128,7 @@ class TestTicketCreate:
         ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)
         assert found is not None
-        created_ticket, _ = found
+        created_ticket = found.ticket
         assert created_ticket.type == "feature"
 
     def test_create_rejects_duplicate_title_sources(self, cli_project: Path) -> None:
@@ -156,7 +156,7 @@ class TestTicketCreate:
         ticket_id = output.split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)
         assert found is not None
-        created_ticket, _ = found
+        created_ticket = found.ticket
         assert created_ticket.priority == 1
 
     def test_create_no_trailing_whitespace(self, cli_project: Path) -> None:
@@ -166,7 +166,7 @@ class TestTicketCreate:
         ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)
         assert found is not None
-        _, ticket_path = found
+        ticket_path = found.path
         content = ticket_path.read_text()
         for i, line in enumerate(content.splitlines(), 1):
             assert line == line.rstrip(), f"Line {i} has trailing whitespace: {line!r}"

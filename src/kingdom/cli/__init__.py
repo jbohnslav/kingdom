@@ -20,7 +20,6 @@ from rich.console import Console
 from rich.panel import Panel
 
 from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_plugin, package_version
-from kingdom.council import Council, create_council  # noqa: F401 (Council used by tests)
 from kingdom.doctor import binding_issues, context_issues, host_install_issues, resolution_issues, ticket_issues
 from kingdom.state import (
     ProjectRootNotFoundError,
@@ -51,7 +50,6 @@ from kingdom.ticket import (
     list_tickets,
     validate_terminal_evidence,
 )
-from kingdom.worktree import create_worktree, remove_worktree, worktree_path_for  # noqa: F401
 
 from .config import (
     check_agent_model,
@@ -61,22 +59,14 @@ from .config import (
     get_doctor_checks,
 )
 from .council import council_app
-from .design import design_app, get_branch_paths, get_doc_status  # noqa: F401 (re-export)
+from .design import design_app, get_doc_status
 from .display import error_console, print_error, styled_echo
-from .helpers import install_skill, is_git_repo, require_project_root, verbose_echo  # noqa: F401
+from .helpers import install_skill, is_git_repo, require_project_root
 from .hook import hook_app
 from .lord import lord_app
-from .peasant import (  # noqa: F401
-    PeasantContext,
-    launch_work_background,
-    launch_work_tmux,
-    peasant_app,
-    resolve_peasant_context,
-)
+from .peasant import peasant_app
 from .plugin import activate_codex_plugin, plugin_app
-from .ticket import format_ticket_summary, get_tickets_dir, ticket_app  # noqa: F401
-
-NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
+from .ticket import get_tickets_dir, ticket_app
 
 # ---------------------------------------------------------------------------
 # Main app

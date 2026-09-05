@@ -159,7 +159,7 @@ class TestPeasantEpicGuard:
             )
             write_ticket(task, tdir / "kin-tsk1.md")
 
-            with patch("kingdom.cli.launch_work_background", return_value=12345):
+            with patch("kingdom.cli.peasant.launch_work_background", return_value=12345):
                 result = runner.invoke(peasant_app, ["start", "kin-tsk1", "--hand"])
             assert result.exit_code == 0, result.output
 

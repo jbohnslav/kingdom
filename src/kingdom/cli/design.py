@@ -27,26 +27,6 @@ def get_doc_status(path: Path) -> str:
     return "present"
 
 
-def get_branch_paths(base: Path, feature: str) -> tuple[Path, Path, Path, Path]:
-    """Get branch_dir, design.md, breakdown.md, state.json paths.
-
-    Returns: (branch_dir, design_path, breakdown_path, state_path)
-    """
-    branch_dir = branch_root(base, feature)
-    return (
-        branch_dir,
-        branch_dir / "design.md",
-        branch_dir / "breakdown.md",
-        branch_dir / "state.json",
-    )
-
-
-def get_design_paths(base: Path, feature: str) -> tuple[Path, Path]:
-    """Get design.md and state.json paths, preferring branch structure."""
-    _, design_path, _, state_path = get_branch_paths(base, feature)
-    return design_path, state_path
-
-
 @design_app.callback(invoke_without_command=True)
 def design_default(ctx: typer.Context) -> None:
     """Print the path to the design document."""
@@ -54,7 +34,7 @@ def design_default(ctx: typer.Context) -> None:
         return
     base = require_project_root()
     feature = resolve_current_run(base)
-    design_path, _ = get_design_paths(base, feature)
+    design_path = branch_root(base, feature) / "design.md"
 
     ensure_design_initialized(design_path, feature)
     typer.echo(str(design_path.relative_to(base)))
@@ -65,7 +45,7 @@ def design_show() -> None:
     """Print the design.md contents."""
     base = require_project_root()
     feature = resolve_current_run(base)
-    design_path, _ = get_design_paths(base, feature)
+    design_path = branch_root(base, feature) / "design.md"
 
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
         print_error("No design document found. Run `kd design` to create one.")
@@ -81,7 +61,9 @@ def design_approve() -> None:
     """Set design_approved=true in state.json."""
     base = require_project_root()
     feature = resolve_current_run(base)
-    design_path, state_path = get_design_paths(base, feature)
+    branch_dir = branch_root(base, feature)
+    design_path = branch_dir / "design.md"
+    state_path = branch_dir / "state.json"
 
     if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
         print_error("No design document found. Run `kd design` to create one.")

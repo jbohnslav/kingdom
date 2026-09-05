@@ -83,7 +83,7 @@ class TestPeasantStart:
 
             with (
                 patch("kingdom.cli.peasant.create_worktree", side_effect=delayed_create_worktree),
-                patch("kingdom.cli.launch_work_background", return_value=12345),
+                patch("kingdom.cli.peasant.launch_work_background", return_value=12345),
                 patch("kingdom.cli.ticket.resolve_execution_context", return_value=native),
                 ThreadPoolExecutor(max_workers=1) as pool,
             ):
@@ -124,7 +124,7 @@ class TestPeasantStart:
                 dependency_dir / "done.md",
             )
 
-            with patch("kingdom.cli.launch_work_background", return_value=12345):
+            with patch("kingdom.cli.peasant.launch_work_background", return_value=12345):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
@@ -283,7 +283,7 @@ class TestPeasantStart:
             setup_project(base)
             ticket_path = create_test_ticket(base)  # creates with status="open"
 
-            with patch("kingdom.cli.launch_work_background", return_value=12345):
+            with patch("kingdom.cli.peasant.launch_work_background", return_value=12345):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
@@ -297,7 +297,7 @@ class TestPeasantStart:
             setup_project(base)
             ticket_path = create_test_ticket(base, status="waiting")
 
-            with patch("kingdom.cli.launch_work_background", return_value=12345):
+            with patch("kingdom.cli.peasant.launch_work_background", return_value=12345):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
@@ -386,7 +386,7 @@ class TestPeasantStart:
                 observed_state_during_launch.append(state)
                 return 42  # fake pid
 
-            with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
+            with patch("kingdom.cli.peasant.launch_work_background", side_effect=spy_launch):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
@@ -409,7 +409,7 @@ class TestPeasantStart:
                 update_agent_state(base, BRANCH, "peasant-kin-test", status="failed")
                 return 99
 
-            with patch("kingdom.cli.launch_work_background", side_effect=failing_launch):
+            with patch("kingdom.cli.peasant.launch_work_background", side_effect=failing_launch):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
 
             assert result.exit_code == 0, result.output
@@ -426,7 +426,7 @@ class TestPeasantStart:
             create_test_ticket(base)
 
             with patch(
-                "kingdom.cli.launch_work_background",
+                "kingdom.cli.peasant.launch_work_background",
                 side_effect=RuntimeError("tmux not found"),
             ):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--hand"])
@@ -461,7 +461,7 @@ class TestPeasantStart:
                 observed_state_during_launch.append(state)
                 return 42
 
-            with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
+            with patch("kingdom.cli.peasant.launch_work_background", side_effect=spy_launch):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--hand", "--agent", "codex"])
 
             assert result.exit_code == 0, result.output
@@ -495,7 +495,7 @@ class TestPeasantStart:
                 observed_state_during_launch.append(state)
                 return 42
 
-            with patch("kingdom.cli.launch_work_background", side_effect=spy_launch):
+            with patch("kingdom.cli.peasant.launch_work_background", side_effect=spy_launch):
                 result = runner.invoke(peasant_app, ["start", "kin-test", "--hand", "--agent", "codex"])
 
             assert result.exit_code == 0, result.output
@@ -1706,7 +1706,7 @@ class TestPeasantReview:
                     result.stderr = ""
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
@@ -1716,7 +1716,7 @@ class TestPeasantReview:
             # Ticket should be closed
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "closed"
 
             # Session should be done
@@ -1758,7 +1758,7 @@ class TestPeasantReview:
                     result.stderr = ""
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
@@ -1766,7 +1766,7 @@ class TestPeasantReview:
 
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "closed"
 
     def test_review_accept_rejects_unrelated_checkout_branch(self) -> None:
@@ -1800,7 +1800,7 @@ class TestPeasantReview:
                     raise AssertionError(f"Unexpected subprocess call: {cmd}")
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
@@ -1810,7 +1810,7 @@ class TestPeasantReview:
 
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "in_review"
 
     def test_review_accept_rejects_session_for_unrelated_ticket(self) -> None:
@@ -1827,7 +1827,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review", ticket="kin-other"),
             )
 
-            with patch("kingdom.cli.subprocess.run") as mock_run:
+            with patch("kingdom.cli.peasant.subprocess.run") as mock_run:
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
@@ -1851,7 +1851,7 @@ class TestPeasantReview:
                     AgentState(name=session_name, status="needs_king_review", ticket="kin-test"),
                 )
 
-            with patch("kingdom.cli.subprocess.run") as mock_run:
+            with patch("kingdom.cli.peasant.subprocess.run") as mock_run:
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
@@ -1913,7 +1913,7 @@ class TestPeasantReview:
                     result.stderr = ""
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "slash-test"])
 
             assert result.exit_code == 0, result.output
@@ -1945,7 +1945,7 @@ class TestPeasantReview:
                     raise AssertionError("Unexpected subprocess call in hand mode accept")
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
@@ -1955,7 +1955,7 @@ class TestPeasantReview:
             # Ticket should be closed
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "closed"
 
             # Session should be done
@@ -1997,7 +1997,7 @@ class TestPeasantReview:
                     return result
                 raise AssertionError(f"Unexpected subprocess call: {cmd}")
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
@@ -2005,7 +2005,7 @@ class TestPeasantReview:
 
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "closed"
 
     def test_review_reject_hand_mode_relaunches_in_place(self) -> None:
@@ -2024,7 +2024,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review", agent_backend="claude", hand_mode=True),
             )
 
-            with patch("kingdom.cli.launch_work_background", return_value=77777) as mock_launch:
+            with patch("kingdom.cli.peasant.launch_work_background", return_value=77777) as mock_launch:
                 result = runner.invoke(peasant_app, ["reject", "kin-test", "try again"])
 
             assert result.exit_code == 0, result.output
@@ -2060,7 +2060,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review", agent_backend="claude"),
             )
 
-            with patch("kingdom.cli.launch_work_background", return_value=54321) as mock_launch:
+            with patch("kingdom.cli.peasant.launch_work_background", return_value=54321) as mock_launch:
                 result = runner.invoke(peasant_app, ["reject", "kin-test", "fix the edge case"])
 
             assert result.exit_code == 0, result.output
@@ -2071,7 +2071,7 @@ class TestPeasantReview:
             # Ticket should be back to in_progress
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "in_progress"
 
             # Feedback should be in the thread
@@ -2125,7 +2125,7 @@ class TestPeasantReview:
                 AgentState(name=session_name, status="needs_king_review"),
             )
 
-            with patch("kingdom.cli.launch_work_background") as mock_launch:
+            with patch("kingdom.cli.peasant.launch_work_background") as mock_launch:
                 result = runner.invoke(
                     peasant_app,
                     ["reject", "kin-test", "try again", "--no-resume"],
@@ -2142,7 +2142,7 @@ class TestPeasantReview:
             # Ticket should be back to in_progress
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "in_progress"
 
             # Session should be stopped, not working
@@ -2327,7 +2327,7 @@ class TestPeasantReview:
                     result.stderr = "Automatic merge failed; fix conflicts and then commit the result."
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
@@ -2342,7 +2342,7 @@ class TestPeasantReview:
             # Ticket should still be in_review
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "in_review"
 
     def test_review_accept_already_merged_skips_merge(self) -> None:
@@ -2379,7 +2379,7 @@ class TestPeasantReview:
                     raise AssertionError(f"Unexpected subprocess call: {cmd}")
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
@@ -2389,7 +2389,7 @@ class TestPeasantReview:
             # Ticket should be closed
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "closed"
 
             # Session should be done
@@ -2434,7 +2434,7 @@ class TestPeasantReview:
                 return result
 
             with (
-                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+                patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run),
                 patch("kingdom.cli.peasant.remove_worktree") as mock_remove,
             ):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
@@ -2484,7 +2484,7 @@ class TestPeasantReview:
                 return result
 
             with (
-                patch("kingdom.cli.subprocess.run", side_effect=mock_run),
+                patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run),
                 patch("kingdom.cli.peasant.remove_worktree", side_effect=RuntimeError("boom")),
             ):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
@@ -2529,7 +2529,7 @@ class TestPeasantReview:
                     raise AssertionError(f"Unexpected subprocess call: {cmd}")
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 1
@@ -2539,7 +2539,7 @@ class TestPeasantReview:
             # Ticket should still be in_review
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "in_review"
 
     def test_review_accept_ignores_kd_only_uncommitted_changes(self) -> None:
@@ -2576,14 +2576,14 @@ class TestPeasantReview:
                     result.stderr = ""
                 return result
 
-            with patch("kingdom.cli.subprocess.run", side_effect=mock_run):
+            with patch("kingdom.cli.peasant.subprocess.run", side_effect=mock_run):
                 result = runner.invoke(peasant_app, ["accept", "kin-test"])
 
             assert result.exit_code == 0, result.output
             assert "accepted" in result.output
             ticket_result = find_ticket(base, "kin-test")
             assert ticket_result is not None
-            ticket, _ = ticket_result
+            ticket = ticket_result.ticket
             assert ticket.status == "closed"
 
     def test_review_shows_council_feedback(self) -> None:
@@ -2707,7 +2707,7 @@ class TestBacklogAutoPull:
             # Should still be findable
             found = find_ticket(base, "kin-back")
             assert found is not None
-            assert found[0].id == "kin-back"
+            assert found.ticket.id == "kin-back"
 
     def test_auto_pulled_ticket_visible_in_tk_list(self) -> None:
         """After auto-pull, the ticket should appear in `kd tk list`."""

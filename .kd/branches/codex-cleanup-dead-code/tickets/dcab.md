@@ -27,3 +27,4 @@ Keep the real provider-format distinctions at ingress and preserve interruption,
 ## Worklog
 
 - 2026-09-05 — Scoped from the King’s request for the full six-area cleanup; historical closed-ticket compatibility is not a preservation requirement.
+- [2026-09-05 19:54] [codex:a65a16d5] — Preparation confirms streaming implementations diverge: peasant reopens the live log for each line; lord holds a buffered log open without explicit per-line flush. Both suppress write errors. Consolidation must retain concurrent stdout/stderr draining, make live output observable before child exit, and report logging errors without losing subprocess cleanup. Use a real controlled child-process regression for incremental visibility.

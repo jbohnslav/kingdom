@@ -602,7 +602,7 @@ def run_lord_loop(
     if result is None:
         logger.error("Epic ticket not found: %s", epic_id)
         return "failed"
-    _, epic_path = result
+    epic_path = result.path
 
     # Verify it's actually an epic
     epic = read_ticket(epic_path)

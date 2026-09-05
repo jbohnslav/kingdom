@@ -427,18 +427,6 @@ class TestValidateConfigErrors:
             cfg = validate_config({"agents": {"codex": {"backend": "codex", "effort": effort}}})
             assert cfg.agents["codex"].effort == effort
 
-    def test_deprecated_reasoning_effort_maps_to_effort(self) -> None:
-        cfg = validate_config({"agents": {"codex": {"backend": "codex", "reasoning_effort": "high"}}})
-        assert cfg.agents["codex"].effort == "high"
-
-    def test_deprecated_reasoning_effort_remains_codex_only(self) -> None:
-        with pytest.raises(ValueError, match="reasoning_effort is only supported for the codex backend"):
-            validate_config({"agents": {"claude": {"backend": "claude_code", "reasoning_effort": "high"}}})
-
-    def test_effort_and_reasoning_effort_are_mutually_exclusive(self) -> None:
-        with pytest.raises(ValueError, match="cannot set both effort and reasoning_effort"):
-            validate_config({"agents": {"codex": {"backend": "codex", "effort": "high", "reasoning_effort": "high"}}})
-
     def test_effort_absent_defaults_empty(self) -> None:
         cfg = validate_config({})
         assert cfg.agents["codex"].effort == ""
