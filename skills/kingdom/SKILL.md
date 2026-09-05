@@ -15,20 +15,21 @@ the ticket is the durable record of what the team is doing and why.
 
 ## Developing Kingdom Itself
 
-Inside a Kingdom source checkout, invoke every command shown below as
-`uv run kd ...`. This is the canonical dogfood invocation and guarantees the
-command exercises working-tree code. Bare `kd ...` remains correct for normal
-installed-user projects, but may resolve to a stale installed release while
-developing Kingdom.
+Use `uv run kd` only when the current repository is Kingdom's own source
+checkout, so every command exercises working-tree code. In every other
+repository—including Python/uv projects—use the installed `kd` command directly.
 
-## The Core Loop — Follow It Every Turn
+## The Core Loop — Run When Resolving or Changing Context
 
 The reflex is not "always create." It is: **make sure the request is represented
 exactly once, then keep that ticket current.**
 
 ### 1. Resolve context and search first
 
-Before creating work, take a fast read-only pass:
+Run the context-discovery commands once when beginning a new request, after
+changing branches, or when ticket ownership may have changed. Do not repeat
+them for routine follow-ups on an already-resolved ticket. Reuse known context
+during ongoing work and keep its ticket current.
 
 ```bash
 kd status

@@ -5,8 +5,11 @@ Tickets track units of work within a branch. They live in `.kd/branches/<branch>
 ## Resolve Context Before Creating
 
 The goal is one accurate ticket per unit of work, not one new ticket per user
-message. Before creation, identify the active execution context and scan current,
-recent, backlog, archived, parent, and related work:
+message. Discover context once for a new request, after changing branches, or
+when ownership may have changed. Reuse known context during ongoing work; skip
+rediscovery for routine follow-ups on an already-resolved ticket. When discovery
+is needed, identify the active context and scan current, recent, backlog,
+archived, parent, and related work:
 
 ```bash
 kd status
