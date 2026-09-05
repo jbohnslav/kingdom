@@ -764,31 +764,41 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
 
 @contextmanager
 def flock(lock_path: Path, *, timeout_seconds: float | None = None) -> Iterator[None]:
-    """Hold an exclusive advisory lock, optionally failing after a timeout."""
+    """Hold an exclusive advisory lock, retrying if its file was removed while waiting."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fp = open(lock_path, "a+b")  # noqa: SIM115
-    acquired = False
-    try:
-        if timeout_seconds is None:
-            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
-            acquired = True
-        else:
-            deadline = time.monotonic() + timeout_seconds
-            while True:
-                try:
-                    fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    while True:
+        with open(lock_path, "a+b") as fp:
+            acquired = False
+            try:
+                if deadline is None:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
                     acquired = True
-                    break
-                except BlockingIOError:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError(f"Timed out waiting for lock: {lock_path}") from None
-                    time.sleep(min(0.05, remaining))
-        yield
-    finally:
-        if acquired:
-            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
-        fp.close()
+                else:
+                    while True:
+                        try:
+                            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            acquired = True
+                            break
+                        except BlockingIOError:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise TimeoutError(f"Timed out waiting for lock: {lock_path}") from None
+                            time.sleep(min(0.05, remaining))
+                # A move may unlink a source lock while holding it. A waiter
+                # must then join the replacement lock, not use the old inode.
+                try:
+                    same_file = os.path.samestat(os.fstat(fp.fileno()), lock_path.stat())
+                except FileNotFoundError:
+                    same_file = False
+                if same_file:
+                    yield
+                    return
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for lock: {lock_path}")
+            finally:
+                if acquired:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
 
 
 def locked_json_update(

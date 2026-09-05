@@ -670,6 +670,8 @@ def move_ticket(ticket_path: Path, dest_dir: Path) -> Path:
             # Cross-filesystem rename; fall back to copy-then-delete
             shutil.copy2(str(ticket_path), str(new_path))
             ticket_path.unlink()
+        # Remove while held; flock reopens the current inode for old waiters.
+        ticket_lock_path(ticket_path).unlink(missing_ok=True)
     return new_path
 
 

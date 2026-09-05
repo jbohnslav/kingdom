@@ -1066,7 +1066,7 @@ class TestMoveTicket:
             future.result(timeout=2)
 
         assert destination.exists()
-        assert (source_path.parent / f".{source_path.name}.lock").exists()
+        assert not (source_path.parent / f".{source_path.name}.lock").exists()
         assert (destination.parent / f".{destination.name}.lock").exists()
 
     def test_stale_snapshot_cannot_resurrect_moved_ticket(self, tmp_path: Path) -> None:

@@ -1835,11 +1835,11 @@ class TestTicketDelete:
 
 
 class TestRemovedCompatibilityCommands:
-    def test_move_is_unregistered(self) -> None:
+    def test_move_has_explicit_branch_destination(self) -> None:
         result = runner.invoke(ticket_app, ["move", "--help"])
 
-        assert result.exit_code == 2
-        assert "No such command 'move'." in result.output
+        assert result.exit_code == 0
+        assert "--to-branch" in result.output
 
     def test_add_note_is_unregistered(self) -> None:
         result = runner.invoke(ticket_app, ["add-note", "--help"])

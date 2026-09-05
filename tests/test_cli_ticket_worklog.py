@@ -205,7 +205,7 @@ class TestTicketLog:
 
         assert result.exit_code == 0, result.output
         assert "add-note" not in result.output
-        assert "│ move " not in result.output
+        assert "│ move " in result.output
         assert "Append a worklog entry to a ticket." in result.output
 
     def test_log_help_routes_command_rich_messages_to_stdin(self) -> None:

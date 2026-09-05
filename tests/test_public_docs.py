@@ -84,7 +84,7 @@ def test_readme_documents_consolidated_command_replacements() -> None:
     assert "`kd status --check`" in replacements
     assert "`kd switch <branch>` was removed in v1.0.0" in replacements
     assert "`kd start <branch>`" in replacements
-    assert "`kd tk move` was removed in v1.0.0" in replacements
+    assert "`kd tk move <id> --to-branch <branch>`" in replacements
     assert "`kd tk pull`" in replacements
     assert "`kd tk defer --reason`" in replacements
     assert "`kd tk add-note` was removed in v1.0.0" in replacements
@@ -92,7 +92,7 @@ def test_readme_documents_consolidated_command_replacements() -> None:
     assert "will be removed" not in replacements
 
     ticket_guidance = TICKET_GUIDE.read_text()
-    assert "`kd tk move` was removed in v1.0.0" in ticket_guidance
+    assert "`kd tk move <id> --to-branch <branch>`" in ticket_guidance
     assert "will be removed in v1.0.0" not in ticket_guidance
 
 

@@ -101,6 +101,19 @@ def get_tickets_dir(base: Path, backlog: bool = False) -> Path:
         return backlog_root(base) / "tickets"
 
 
+def existing_branch_tickets_dir(base: Path, branch: str) -> Path:
+    """Resolve an explicit destination without creating or selecting a board."""
+    try:
+        destination = branch_root(base, branch) / "tickets"
+    except ValueError as exc:
+        print_error(str(exc))
+        raise typer.Exit(code=1) from None
+    if not destination.is_dir():
+        print_error(f"Branch board '{branch}' does not exist. Initialize it with `kd start {shlex.quote(branch)}`.")
+        raise typer.Exit(code=1)
+    return destination
+
+
 def format_ticket_summary(tickets: list) -> str:
     """Build a one-line summary of ticket counts by status.
 
@@ -1893,6 +1906,45 @@ def defer_tickets_locked(base: Path, ticket_ids: list[str], reason: str, context
 
     for ticket in already_backlogged:
         typer.echo(f"Ticket {ticket.id} is already in backlog")
+
+
+@ticket_app.command("move", help="Relocate a ticket to another branch without changing its contents or status.")
+def ticket_move(
+    ticket_id: Annotated[str, typer.Argument(help="Ticket ID (full or partial).")],
+    to_branch: Annotated[str, typer.Option("--to-branch", help="Existing destination branch board.")],
+) -> None:
+    """Move a ticket verbatim, preserving closure evidence and custom frontmatter."""
+    from kingdom.session import find_active_peasant_branch
+
+    base = require_project_root()
+    destination = existing_branch_tickets_dir(base, to_branch)
+    target = normalize_branch_name(to_branch)
+    with flock(ticket_assignment_lock_path(base)):
+        ticket, source = resolve_ticket_or_exit(base, ticket_id)
+        if source.parent == destination:
+            typer.echo(f"Ticket {ticket.id} is already on branch '{target}'.")
+            return
+
+        if find_active_peasant_branch(base, peasant_session_name(ticket.id)):
+            print_error(f"Ticket {ticket.id} has an active peasant. Stop it first: `kd peasant stop {ticket.id}`.")
+            raise typer.Exit(code=1)
+        assignee = ticket.assignee or ""
+        if ticket.status in {"in_progress", "in_review"} and ":" in assignee:
+            print_error(
+                f"Ticket {ticket.id} has an active execution-context owner ({compact_context_id(assignee)}). "
+                "Finish or release that ownership before moving it."
+            )
+            raise typer.Exit(code=1)
+
+        location = terminal_context_location_for_start(base, source)
+        try:
+            move_ticket(source, destination)
+        except (FileExistsError, FileNotFoundError) as exc:
+            print_error(str(exc))
+            raise typer.Exit(code=1) from None
+        clear_ticket_execution_contexts(base, ticket.id)
+        clear_terminal_ticket_contexts(base, ticket.id)
+        typer.echo(f"Moved {ticket.id} from {location} to branch:{target} — {ticket.title}")
 
 
 @ticket_app.command("defer", help="Return branch work to the backlog for later.")

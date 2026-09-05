@@ -174,8 +174,8 @@ Before declaring work complete:
 
 - Existing selected work is no longer for now → `kd tk defer <id> --reason "..."`.
 - Backlog work is selected now → `kd tk pull <id>...`.
-- Branch-to-branch work → defer it, check out the target Git branch, run
-  `kd start <branch>`, then pull it.
+- Branch-to-branch work → `kd tk move <id> --to-branch <branch>` preserves status
+  and all ticket contents. The destination board must already exist.
 - Stale execution-context bindings → `kd status --prune-stale`.
 - Retained or stale peasant resources → `kd peasant clean <id>` or
   `kd peasant prune`; accepted workers are cleaned by `kd peasant accept`.
@@ -235,7 +235,7 @@ kd start / status / status --check / status --prune-stale
 kd tk current / list / show / find
 kd tk list --recently-closed --limit 10
 kd tk create / start / log / close / reopen
-kd tk pull / defer / deps / link / unlink
+kd tk pull / defer / move / deps / link / unlink
 kd peasant start / status / watch / review / accept / reject / clean / prune
 kd lord start / status / watch / stop
 kd council ask / show / list / watch / retry
