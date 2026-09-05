@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -343,6 +344,13 @@ def status(
     # Original branch name (stored in state.json) vs normalized directory name
     original_branch = state.get("branch", feature)
 
+    git_branch = get_current_git_branch()
+    normalized_git_branch = None
+    if git_branch is not None:
+        with suppress(ValueError):
+            normalized_git_branch = normalize_branch_name(git_branch)
+    branch_mismatch = normalized_git_branch is not None and normalized_git_branch != normalized
+
     # Get design and breakdown status
     design_status = get_doc_status(design_path)
     breakdown_status = get_doc_status(breakdown_path)
@@ -383,6 +391,8 @@ def status(
     output = {
         "branch": original_branch,
         "normalized_branch": normalized,
+        "git_branch": git_branch,
+        "branch_mismatch": branch_mismatch,
         "design_path": design_path_str,
         "design_status": design_status,
         "design_approved": design_approved,
@@ -416,6 +426,9 @@ def status(
     else:
         # Human-readable output
         typer.echo(f"Branch: {original_branch}")
+        if branch_mismatch:
+            typer.echo(f"Warning: Git branch '{git_branch}' does not match Kingdom workspace '{original_branch}'.")
+            typer.echo(f"Run `kd start {git_branch}` to initialize or select this branch workspace.")
         typer.echo()
         status_summary = [
             f"{status_counts['open']} open",

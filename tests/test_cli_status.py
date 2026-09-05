@@ -106,6 +106,50 @@ def test_status_human_readable_no_tickets() -> None:
         assert "\nReady:" not in result.output
 
 
+def test_status_surfaces_git_and_kingdom_branch_mismatch() -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        ensure_branch_layout(base, "previous-work")
+        set_current_run(base, "previous-work")
+
+        with (
+            patch("kingdom.state.get_current_git_branch", return_value="new-work"),
+            patch("kingdom.cli.get_current_git_branch", return_value="new-work"),
+        ):
+            human_result = runner.invoke(app, ["status"])
+            json_result = runner.invoke(app, ["status", "--json"])
+
+        assert human_result.exit_code == 0, human_result.output
+        assert "Git branch 'new-work' does not match Kingdom workspace 'previous-work'." in human_result.output
+        assert "Run `kd start new-work`" in human_result.output
+
+        data = json.loads(json_result.output)
+        assert data["git_branch"] == "new-work"
+        assert data["branch_mismatch"] is True
+
+
+@pytest.mark.parametrize("git_branch", ["feature/example", None])
+def test_status_does_not_report_false_branch_mismatch(git_branch: str | None) -> None:
+    with runner.isolated_filesystem():
+        base = Path.cwd()
+        ensure_branch_layout(base, "feature/example")
+        set_current_run(base, "feature/example")
+
+        with (
+            patch("kingdom.state.get_current_git_branch", return_value=git_branch),
+            patch("kingdom.cli.get_current_git_branch", return_value=git_branch),
+        ):
+            human_result = runner.invoke(app, ["status"])
+            json_result = runner.invoke(app, ["status", "--json"])
+
+        assert human_result.exit_code == 0, human_result.output
+        assert "Warning:" not in human_result.output
+
+        data = json.loads(json_result.output)
+        assert data["git_branch"] == git_branch
+        assert data["branch_mismatch"] is False
+
+
 def test_status_help_describes_ticket_progress_and_concurrent_contexts() -> None:
     result = runner.invoke(app, ["status", "--help"])
 
