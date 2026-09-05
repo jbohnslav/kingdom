@@ -1074,7 +1074,7 @@ class ChatApp(App):
             return
 
         # Follow-up: shuffled sequential only — each member responds once
-        await self.sequential_auto_turns(generation, tdir, shuffle=True)
+        await self.sequential_auto_turns(targets, generation, tdir, shuffle=True)
 
     async def run_mode_round_robin(self, targets: list[str], generation: int, tdir: Path) -> None:
         """Round-robin mode: no initial broadcast, fixed-order sequential turns."""
@@ -1096,7 +1096,7 @@ class ChatApp(App):
             await self.run_query(member, stream_path, generation=generation)
 
         # Auto-turns: fixed-order sequential
-        await self.sequential_auto_turns(generation, tdir, shuffle=False)
+        await self.sequential_auto_turns(targets, generation, tdir, shuffle=False)
 
     async def run_mode_manual(self, targets: list[str], generation: int, tdir: Path) -> None:
         """Manual mode: only query @mentioned targets, no auto-turns."""
@@ -1136,16 +1136,15 @@ class ChatApp(App):
         for _round in range(self.auto_rounds):
             if self.interrupted or self.generation != generation:
                 return
-            active = [n for n in self.member_names if n not in self.muted]
             log = self.query_one("#message-log", MessageLog)
             log.scroll_if_following()
-            for name in active:
+            for name in targets:
                 if not self.delivery_target_pending(name):
                     continue
                 await self.await_remove_member_panels(log, name)
                 if not log.query(f"#wait-{name}"):
                     log.mount(WaitingPanel(sender=name, id=f"wait-{name}"))
-            await self.parallel_query(active, generation, tdir)
+            await self.parallel_query(targets, generation, tdir)
             if self.generation != generation:
                 return
 
@@ -1162,7 +1161,13 @@ class ChatApp(App):
         if coros:
             await asyncio.gather(*coros)
 
-    async def sequential_auto_turns(self, generation: int, tdir: Path, shuffle: bool) -> None:
+    async def sequential_auto_turns(
+        self,
+        targets: list[str],
+        generation: int,
+        tdir: Path,
+        shuffle: bool,
+    ) -> None:
         """Run sequential auto-turn rounds through eligible members.
 
         After each response, parses @mentions and bumps mentioned members
@@ -1171,11 +1176,10 @@ class ChatApp(App):
         if self.auto_rounds <= 0:
             return
         for _round in range(self.auto_rounds):
-            active = [n for n in self.member_names if n not in self.muted]
+            active = targets.copy()
             if shuffle:
                 import random
 
-                active = active.copy()
                 random.shuffle(active)
             queue = list(active)
             while queue:

@@ -597,6 +597,52 @@ class TestSendLifecycle:
         assert len(resumed_council.get_member("claude").prompts) == 0
         assert len(resumed_council.get_member("codex").prompts) == 1
 
+    @pytest.mark.parametrize("mode", ["broadcast", "natural", "round_robin"])
+    async def test_restart_preserves_muted_delivery_targets(self, project, thread_id, mode) -> None:
+        """A resumed delivery must not query members muted at submission."""
+        config_path = project / ".kd" / "config.json"
+        config_path.write_text(
+            json.dumps({"council": {"chat": {"mode": mode, "auto_rounds": 1}}}),
+            encoding="utf-8",
+        )
+        delivery_id = f"muted-restart-{mode}"
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+        pending_path.write_text(
+            json.dumps(
+                {
+                    "deliveries": [
+                        {
+                            "id": delivery_id,
+                            "body": "Resume without the muted member",
+                            "targets": ["claude"],
+                            "to": "all",
+                            "completed_targets": [],
+                            "first_exchange": False,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="all",
+            body="Resume without the muted member",
+            delivery_id=delivery_id,
+        )
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(pilot, lambda: not pending_path.exists(), timeout=5.0)
+
+        assert resumed_council.get_member("claude").prompts
+        assert resumed_council.get_member("codex").prompts == []
+
 
 # ---------------------------------------------------------------------------
 # Scenario 4: Stream lifecycle — waiting → streaming → finalized
