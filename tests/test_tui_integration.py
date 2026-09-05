@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,7 +21,7 @@ import pytest
 from kingdom.agent import AgentConfig
 from kingdom.council import Council
 from kingdom.council.base import AgentResponse
-from kingdom.thread import add_message, create_thread, thread_dir
+from kingdom.thread import add_message, create_thread, list_messages, thread_dir
 from kingdom.tui.app import ChatApp, InputArea, MessageLog
 from kingdom.tui.poll import StreamDelta, StreamFinished, StreamStarted, ThinkingDelta
 from kingdom.tui.widgets import ErrorPanel, MessagePanel, StreamingPanel, ThinkingPanel, WaitingPanel
@@ -76,6 +76,7 @@ class FakeMember:
     writable: bool = False
     agent_prompt: str = ""
     phase_prompt: str = ""
+    prompts: list[str] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -86,6 +87,7 @@ class FakeMember:
     ) -> AgentResponse:
         import time
 
+        self.prompts.append(prompt)
         if self.delay:
             time.sleep(self.delay)
 
@@ -321,6 +323,391 @@ class TestSendLifecycle:
                 # Only claude should be queried, not codex
                 assert "claude" in waiting_names
                 assert "codex" not in waiting_names
+
+    async def test_follow_ups_queue_behind_active_exchange(self, project, thread_id) -> None:
+        council = make_fake_council(["claude", "codex"], delay=0.5)
+        app = make_app(project, thread_id)
+
+        with patch.object(Council, "create", return_value=council):
+            async with app.run_test(size=(120, 40)) as pilot:
+                input_area = app.query_one("#input-area", InputArea)
+                input_area.insert("First question")
+                await pilot.press("enter")
+
+                await wait_until(pilot, lambda: all(member.prompts for member in council.members))
+
+                input_area.insert("Queued follow-up")
+                await pilot.press("enter")
+
+                input_area.insert("Final follow-up")
+                await pilot.press("enter")
+
+                log = app.query_one("#message-log", MessageLog)
+                visible_king_prompts = [panel.body for panel in log.query(MessagePanel) if panel.sender == "king"]
+                assert visible_king_prompts == ["First question"]
+
+                await wait_until(
+                    pilot,
+                    lambda: len(list_messages(project, BRANCH, thread_id)) == 9,
+                    timeout=5.0,
+                )
+                await pilot.pause(delay=0.2)
+
+                king_panels = [panel for panel in log.query(MessagePanel) if panel.sender == "king"]
+                assert [panel.body for panel in king_panels] == [
+                    "First question",
+                    "Queued follow-up",
+                    "Final follow-up",
+                ]
+
+        messages = list_messages(project, BRANCH, thread_id)
+        assert messages[0].body == "First question"
+        assert messages[3].body == "Queued follow-up"
+        assert messages[6].body == "Final follow-up"
+
+        for offset in (0, 3, 6):
+            assert messages[offset].from_ == "king"
+            assert {message.from_ for message in messages[offset + 1 : offset + 3]} == {"claude", "codex"}
+
+        for member in council.members:
+            assert len(member.prompts) == 3
+            assert "First question" in member.prompts[0]
+            assert "Queued follow-up" not in member.prompts[0]
+            assert "Final follow-up" not in member.prompts[0]
+            assert "Queued follow-up" in member.prompts[1]
+            assert "Final follow-up" not in member.prompts[1]
+            assert "Final follow-up" in member.prompts[2]
+
+    async def test_pending_follow_ups_resume_after_restart(self, project, thread_id) -> None:
+        first_app = make_app(project, thread_id)
+        first_council = make_fake_council(["claude", "codex"])
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+
+        with patch.object(Council, "create", return_value=first_council):
+            async with first_app.run_test(size=(120, 40)) as pilot:
+                first_app.delivery_active = True
+                input_area = first_app.query_one("#input-area", InputArea)
+                input_area.insert("Queued before restart")
+                await pilot.press("enter")
+                input_area.insert("Second after restart")
+                await pilot.press("enter")
+                await pilot.pause()
+
+                pending = json.loads(pending_path.read_text(encoding="utf-8"))
+                assert [item["body"] for item in pending["deliveries"]] == [
+                    "Queued before restart",
+                    "Second after restart",
+                ]
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(
+                    pilot,
+                    lambda: len(list_messages(project, BRANCH, thread_id)) == 6,
+                    timeout=5.0,
+                )
+                await pilot.pause(delay=0.2)
+
+                log = resumed_app.query_one("#message-log", MessageLog)
+                king_panels = [panel for panel in log.query(MessagePanel) if panel.sender == "king"]
+                assert [panel.body for panel in king_panels] == [
+                    "Queued before restart",
+                    "Second after restart",
+                ]
+
+        messages = list_messages(project, BRANCH, thread_id)
+        assert [messages[0].body, messages[3].body] == ["Queued before restart", "Second after restart"]
+        assert not pending_path.exists()
+        for member in resumed_council.members:
+            assert len(member.prompts) == 2
+            assert "Second after restart" not in member.prompts[0]
+            assert "Second after restart" in member.prompts[1]
+
+    async def test_restart_reconciles_already_persisted_pending_message(self, project, thread_id) -> None:
+        first_app = make_app(project, thread_id)
+        first_council = make_fake_council(["claude", "codex"])
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+
+        with patch.object(Council, "create", return_value=first_council):
+            async with first_app.run_test(size=(120, 40)) as pilot:
+                first_app.delivery_active = True
+                input_area = first_app.query_one("#input-area", InputArea)
+                input_area.insert("Persisted before crash")
+                await pilot.press("enter")
+                await pilot.pause()
+
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        delivery_id = pending["deliveries"][0]["id"]
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="all",
+            body="Persisted before crash",
+            delivery_id=delivery_id,
+        )
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(
+                    pilot,
+                    lambda: len(list_messages(project, BRANCH, thread_id)) == 3,
+                    timeout=5.0,
+                )
+
+                messages = list_messages(project, BRANCH, thread_id)
+                assert len(messages) == 3
+                assert messages[0].delivery_id == delivery_id
+                assert all(len(member.prompts) == 1 for member in resumed_council.members)
+                assert not pending_path.exists()
+
+    async def test_restart_resumes_only_unfinished_delivery_targets(self, project, thread_id) -> None:
+        first_app = make_app(project, thread_id)
+        first_council = make_fake_council(["claude", "codex"])
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+
+        with patch.object(Council, "create", return_value=first_council):
+            async with first_app.run_test(size=(120, 40)) as pilot:
+                first_app.delivery_active = True
+                input_area = first_app.query_one("#input-area", InputArea)
+                input_area.insert("Partially dispatched before crash")
+                await pilot.press("enter")
+                await pilot.pause()
+
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        delivery = pending["deliveries"][0]
+        delivery["completed_targets"] = ["claude"]
+        delivery["first_exchange"] = True
+        pending_path.write_text(json.dumps(pending), encoding="utf-8")
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="all",
+            body=delivery["body"],
+            delivery_id=delivery["id"],
+        )
+        add_message(project, BRANCH, thread_id, from_="claude", to="king", body="Completed before crash")
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(pilot, lambda: not pending_path.exists(), timeout=5.0)
+
+        messages = list_messages(project, BRANCH, thread_id)
+        assert [message.from_ for message in messages] == ["king", "claude", "codex"]
+        assert len(resumed_council.get_member("claude").prompts) == 0
+        assert len(resumed_council.get_member("codex").prompts) == 1
+
+    async def test_restart_reconciles_response_persisted_before_completion(self, project, thread_id) -> None:
+        delivery_id = "response-before-completion"
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+        pending_path.write_text(
+            json.dumps(
+                {
+                    "deliveries": [
+                        {
+                            "id": delivery_id,
+                            "body": "Do not query Claude twice",
+                            "targets": ["claude"],
+                            "to": "claude",
+                            "completed_targets": [],
+                            "first_exchange": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="claude",
+            body="Do not query Claude twice",
+            delivery_id=delivery_id,
+        )
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="claude",
+            to="king",
+            body="Already completed",
+            delivery_id=delivery_id,
+        )
+
+        resumed_council = make_fake_council(["claude"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(pilot, lambda: not pending_path.exists(), timeout=5.0)
+
+        assert len(list_messages(project, BRANCH, thread_id)) == 2
+        assert len(resumed_council.get_member("claude").prompts) == 0
+
+    async def test_round_robin_restart_resumes_the_unfinished_occurrence(self, project, thread_id) -> None:
+        config_path = project / ".kd" / "config.json"
+        config_path.write_text(
+            json.dumps({"council": {"chat": {"mode": "round_robin", "auto_rounds": 1}}}),
+            encoding="utf-8",
+        )
+        first_app = make_app(project, thread_id)
+        first_council = make_fake_council(["claude", "codex"])
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+
+        with patch.object(Council, "create", return_value=first_council):
+            async with first_app.run_test(size=(120, 40)) as pilot:
+                first_app.delivery_active = True
+                input_area = first_app.query_one("#input-area", InputArea)
+                input_area.insert("Resume the interrupted auto-round")
+                await pilot.press("enter")
+                await pilot.pause()
+
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        delivery = pending["deliveries"][0]
+        delivery["completed_targets"] = ["claude", "codex", "claude"]
+        delivery["first_exchange"] = False
+        pending_path.write_text(json.dumps(pending), encoding="utf-8")
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="all",
+            body=delivery["body"],
+            delivery_id=delivery["id"],
+        )
+        add_message(project, BRANCH, thread_id, from_="claude", to="king", body="Initial Claude response")
+        add_message(project, BRANCH, thread_id, from_="codex", to="king", body="Initial Codex response")
+        add_message(project, BRANCH, thread_id, from_="claude", to="king", body="Claude auto-round response")
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(pilot, lambda: not pending_path.exists(), timeout=5.0)
+
+        assert len(list_messages(project, BRANCH, thread_id)) == 5
+        assert len(resumed_council.get_member("claude").prompts) == 0
+        assert len(resumed_council.get_member("codex").prompts) == 1
+
+    @pytest.mark.parametrize("mode", ["broadcast", "natural", "round_robin"])
+    async def test_restart_preserves_muted_delivery_targets(self, project, thread_id, mode) -> None:
+        """A resumed delivery must not query members muted at submission."""
+        config_path = project / ".kd" / "config.json"
+        config_path.write_text(
+            json.dumps({"council": {"chat": {"mode": mode, "auto_rounds": 1}}}),
+            encoding="utf-8",
+        )
+        delivery_id = f"muted-restart-{mode}"
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+        pending_path.write_text(
+            json.dumps(
+                {
+                    "deliveries": [
+                        {
+                            "id": delivery_id,
+                            "body": "Resume without the muted member",
+                            "targets": ["claude"],
+                            "to": "all",
+                            "completed_targets": [],
+                            "first_exchange": False,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="all",
+            body="Resume without the muted member",
+            delivery_id=delivery_id,
+        )
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(pilot, lambda: not pending_path.exists(), timeout=5.0)
+
+        assert resumed_council.get_member("claude").prompts
+        assert resumed_council.get_member("codex").prompts == []
+
+    @pytest.mark.parametrize(
+        ("saved_mode", "saved_rounds", "live_mode", "live_rounds", "expected_calls"),
+        [
+            ("round_robin", 0, "broadcast", 2, 1),
+            ("broadcast", 1, "round_robin", 0, 2),
+        ],
+    )
+    async def test_restart_preserves_delivery_mode_and_auto_rounds(
+        self,
+        project,
+        thread_id,
+        saved_mode,
+        saved_rounds,
+        live_mode,
+        live_rounds,
+        expected_calls,
+    ) -> None:
+        """A queued delivery resumes with the schedule selected at submission."""
+        config_path = project / ".kd" / "config.json"
+        config_path.write_text(
+            json.dumps({"council": {"chat": {"mode": live_mode, "auto_rounds": live_rounds}}}),
+            encoding="utf-8",
+        )
+        delivery_id = f"schedule-{saved_mode}-{saved_rounds}"
+        pending_path = thread_dir(project, BRANCH, thread_id) / ".pending-messages.json"
+        pending_path.write_text(
+            json.dumps(
+                {
+                    "deliveries": [
+                        {
+                            "id": delivery_id,
+                            "body": "Resume the original schedule",
+                            "targets": ["claude", "codex"],
+                            "to": "all",
+                            "completed_targets": [],
+                            "first_exchange": False,
+                            "chat_mode": saved_mode,
+                            "auto_rounds": saved_rounds,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        add_message(
+            project,
+            BRANCH,
+            thread_id,
+            from_="king",
+            to="all",
+            body="Resume the original schedule",
+            delivery_id=delivery_id,
+        )
+
+        resumed_council = make_fake_council(["claude", "codex"])
+        resumed_app = make_app(project, thread_id)
+        with patch.object(Council, "create", return_value=resumed_council):
+            async with resumed_app.run_test(size=(120, 40)) as pilot:
+                await wait_until(pilot, lambda: not pending_path.exists(), timeout=5.0)
+
+        assert len(resumed_council.get_member("claude").prompts) == expected_calls
+        assert len(resumed_council.get_member("codex").prompts) == expected_calls
 
 
 # ---------------------------------------------------------------------------
@@ -603,11 +990,11 @@ class TestAutoTurn:
     async def test_follow_up_sequential_round_robin(self, project, thread_id) -> None:
         """After first exchange, follow-up queries proceed sequentially with correct budget and order."""
         council = make_fake_council(["claude", "codex"])
-        council.auto_messages = 2  # exactly 2 follow-up messages
 
         app = make_app(project, thread_id)
         with patch.object(Council, "create", return_value=council):
             async with app.run_test(size=(120, 40)) as pilot:
+                app.chat_mode = "round_robin"
                 tdir = thread_dir(project, BRANCH, thread_id)
 
                 # First exchange — seed king + member messages

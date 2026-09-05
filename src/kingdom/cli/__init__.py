@@ -51,7 +51,14 @@ from kingdom.ticket import (
 )
 from kingdom.worktree import create_worktree, remove_worktree, worktree_path_for  # noqa: F401
 
-from .config import check_agent_model, check_cli, check_config, config_app, get_doctor_checks
+from .config import (
+    check_agent_model,
+    check_agent_runtime,
+    check_cli,  # noqa: F401 (re-export)
+    check_config,
+    config_app,
+    get_doctor_checks,
+)
 from .council import council_app
 from .design import design_app, get_branch_paths, get_doc_status  # noqa: F401 (re-export)
 from .display import error_console, print_error, styled_echo
@@ -570,52 +577,89 @@ def doctor(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Validate config, runtime state, ticket closures, and host installs."""
-    from kingdom.state import state_root as _state_root
+    from kingdom.config import config_source_path, load_config
 
     base = require_project_root()
     has_issues = False
 
     # 1. Config validation
-    config_path = _state_root(base) / "config.json"
-    config_ok, config_error = check_config(base)
+    config_path: Path | None = None
+    config_ok = False
+    config_error: str | None = None
+    council_members: list[dict[str, str]] = []
+    review_members: list[dict[str, str]] = []
+    try:
+        config_path = config_source_path(base)
+        config_ok, config_error = check_config(base, config_path=config_path)
+        if config_ok:
+            cfg = load_config(base, config_path=config_path)
+            council_members = [{"name": name, "backend": cfg.agents[name].backend} for name in cfg.council.members]
+            review_members = [
+                {"name": name, "backend": cfg.agents[name].backend} for name in cfg.council.review_members
+            ]
+    except ValueError as exc:
+        config_error = str(exc)
 
     if not config_ok:
         has_issues = True
 
     if output_json:
-        config_result = {"exists": config_path.exists(), "valid": config_ok, "error": config_error}
+        config_result = {
+            "source": str(config_path) if config_path else None,
+            "exists": config_path.exists() if config_path else False,
+            "valid": config_ok,
+            "error": config_error,
+            "council_members": council_members,
+            "review_members": review_members,
+        }
     else:
         typer.echo("\nConfig:")
-        if not config_path.exists():
-            styled_echo("  ○ No config.json (using defaults)", fg=typer.colors.YELLOW)
+        if config_path is None:
+            styled_echo(f"  ✗ config source unavailable: {config_error}", fg=typer.colors.RED)
+        elif not config_path.exists():
+            styled_echo(f"  ○ {config_path} not found (using defaults)", fg=typer.colors.YELLOW)
         elif config_ok:
-            styled_echo("  ✓ config.json valid", fg=typer.colors.GREEN)
+            styled_echo(f"  ✓ config.json valid: {config_path}", fg=typer.colors.GREEN)
         else:
-            styled_echo(f"  ✗ config.json: {config_error}", fg=typer.colors.RED)
+            styled_echo(f"  ✗ config.json invalid: {config_path}: {config_error}", fg=typer.colors.RED)
+        if config_ok:
+            council_summary = ", ".join(f"{member['name']} [{member['backend']}]" for member in council_members)
+            review_summary = ", ".join(f"{member['name']} [{member['backend']}]" for member in review_members)
+            typer.echo(f"  Council: {council_summary}")
+            typer.echo(f"  Review council: {review_summary}")
 
     # 2. Agent CLI checks (skip if config is invalid — can't resolve agents)
     cli_results: dict[str, dict[str, bool | str | None]] = {}
     cli_issues: list[dict[str, str]] = []
 
     if config_ok:
-        doctor_checks = get_doctor_checks(base)
+        doctor_checks = get_doctor_checks(base, config_path=config_path)
         for check in doctor_checks:
-            installed, error = check_cli(check["command"])
-            model_status, model_error = check_agent_model(check["agent"]) if installed else ("unchecked", None)
+            runtime = check_agent_runtime(check["agent"])
+            installed = runtime.status != "missing"
+            model_status, model_error = (
+                check_agent_model(check["agent"]) if runtime.status == "available" else ("unchecked", None)
+            )
             cli_results[check["name"]] = {
+                "backend": check["agent"].backend,
                 "installed": installed,
-                "error": error,
+                "status": runtime.status,
+                "version": runtime.version,
+                "error": runtime.error,
+                "recovery": runtime.recovery,
                 "model": check["model"],
                 "model_source": check["model_source"],
                 "effort": check["effort"],
+                "effort_source": check["effort_source"],
                 "model_check": model_status,
                 "model_error": model_error,
             }
-            if not installed:
-                hint = f"{error}. {check['install_hint']}" if error else check["install_hint"]
+            if runtime.status != "available":
+                hint = f"{runtime.error}. {runtime.recovery}" if runtime.error else runtime.recovery
                 cli_issues.append({"name": check["name"], "hint": hint})
             elif model_status == "unavailable":
-                cli_issues.append({"name": check["name"], "hint": model_error or "Model unavailable"})
+                recovery = "Choose a model and effort shown by the provider CLI, then run `kd doctor`."
+                cli_issues.append({"name": check["name"], "hint": f"{model_error or 'Model unavailable'}. {recovery}"})
 
     bindings = binding_issues(base)
     contexts = context_issues(base)
@@ -651,22 +695,39 @@ def doctor(
             for check in doctor_checks:
                 name = check["name"]
                 result = cli_results[name]
-                if result["installed"] and result["model_check"] == "unavailable":
+                version = result["version"] or "unknown"
+                model = result["model"]
+                model_source = result["model_source"]
+                effort = result["effort"]
+                effort_source = result["effort_source"]
+                model_check = result["model_check"]
+                if result["status"] != "available":
                     styled_echo(
-                        f"  ✗ {name:12} (installed; {result['model_error']})",
+                        f"  ✗ {name:12} ({result['backend']}; {result['status']}; "
+                        f"version: {version}; {result['error'] or 'unavailable'})",
                         fg=typer.colors.RED,
                     )
-                elif result["installed"]:
-                    model = result["model"]
-                    source = result["model_source"]
-                    effort = result["effort"]
-                    model_check = result["model_check"]
+                elif model_check == "unavailable":
                     styled_echo(
-                        f"  ✓ {name:12} (installed; model: {model} [{source}, {model_check}]; effort: {effort})",
-                        fg=typer.colors.GREEN,
+                        f"  ✗ {name:12} ({result['backend']}; version: {version}; "
+                        f"model: {model} [{model_source}, {model_check}]; "
+                        f"effort: {effort} [{effort_source}]; {result['model_error']})",
+                        fg=typer.colors.RED,
+                    )
+                elif model_check == "unchecked" and result["model_error"]:
+                    styled_echo(
+                        f"  ○ {name:12} ({result['backend']}; version: {version}; "
+                        f"model: {model} [{model_source}, unchecked]; "
+                        f"effort: {effort} [{effort_source}]; {result['model_error']})",
+                        fg=typer.colors.YELLOW,
                     )
                 else:
-                    styled_echo(f"  ✗ {name:12} ({result['error'] or 'unavailable'})", fg=typer.colors.RED)
+                    styled_echo(
+                        f"  ✓ {name:12} ({result['backend']}; version: {version}; "
+                        f"model: {model} [{model_source}, {model_check}]; "
+                        f"effort: {effort} [{effort_source}])",
+                        fg=typer.colors.GREEN,
+                    )
 
             if cli_issues:
                 typer.echo("\nIssues found:")

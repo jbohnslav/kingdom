@@ -1,6 +1,6 @@
 [project]
 name = "kingdom-cli"
-version = "1.0.0"
+version = "1.0.1"
 description = "A markdown file-based CLI for software development with multi-agent council design, markdown tickets, and background worker loops."
 readme = "README.md"
 requires-python = ">=3.11"

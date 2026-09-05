@@ -83,6 +83,18 @@ def make_responses(*names: str) -> dict[str, AgentResponse]:
 
 
 class TestCouncilAsk:
+    def test_ask_without_active_session_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+
+            result = runner.invoke(council_app, ["ask", "Question"])
+
+            assert result.exit_code == 1
+            assert "No active session" in result.output
+            assert "kd start <feature>" in result.output
+            assert "Traceback" not in result.output
+
     def test_ask_creates_thread_on_first_use(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -527,6 +539,18 @@ class TestCouncilShowPagination:
 
 
 class TestCouncilList:
+    def test_list_without_active_session_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+
+            result = runner.invoke(council_app, ["list"])
+
+            assert result.exit_code == 1
+            assert "No active session" in result.output
+            assert "kd start <feature>" in result.output
+            assert "Traceback" not in result.output
+
     def test_list_no_threads(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -1234,9 +1258,101 @@ def init_git_repo():
     subprocess.run(["git", "init", "-q"], check=True)
     subprocess.run(["git", "config", "user.name", "test"], check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], check=True)
+    Path(".git/info/exclude").write_text(".kd/\n")
 
 
 class TestCouncilReview:
+    def test_review_without_active_session_shows_guidance(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            ensure_branch_layout(base, BRANCH)
+
+            result = runner.invoke(council_app, ["review", "--base", "master"])
+
+            assert result.exit_code == 1
+            assert "No active session" in result.output
+            assert "kd start <feature>" in result.output
+            assert "Traceback" not in result.output
+
+    def test_review_untracked_only_exits_with_recovery(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            subprocess.run(["git", "commit", "--allow-empty", "-m", "initial", "--no-gpg-sign"], check=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            setup_project(base)
+
+            for index in range(12):
+                (base / f"file-{index:02}.txt").write_text(f"secret contents {index}\n")
+
+            with patch("kingdom.cli.council.council_ask") as mock_ask:
+                result = runner.invoke(council_app, ["review", "--base", "master"])
+
+            assert result.exit_code == 1
+            mock_ask.assert_not_called()
+            assert "Untracked files cannot be included in the review" in result.output
+            assert "file-00.txt" in result.output
+            assert "file-09.txt" in result.output
+            assert "file-10.txt" not in result.output
+            assert "and 2 more" in result.output
+            assert "secret contents" not in result.output
+            assert "git add <paths>" in result.output
+            assert "or commit them" in result.output
+            assert "kd council review --base master" in result.output
+
+    def test_review_warns_when_untracked_files_accompany_tracked_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "tracked.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            setup_project(base)
+
+            (base / "tracked.py").write_text("tracked change\n")
+            (base / "untracked.py").write_text("untracked secret contents\n")
+
+            with patch("kingdom.cli.council.council_ask") as mock_ask:
+                result = runner.invoke(council_app, ["review", "--base", "master"])
+
+            assert result.exit_code == 0, result.output
+            prompt = mock_ask.call_args.kwargs["prompt"]
+            assert "Warning: untracked files are excluded from the review" in result.output
+            assert "untracked.py" in result.output
+            assert "untracked secret contents" not in result.output
+            assert "git add <paths>" in result.output
+            assert "kd council review --base master" in result.output
+            assert "tracked.py" in prompt
+            assert "untracked.py" not in prompt
+
+    def test_review_includes_staged_and_unstaged_changes(self) -> None:
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            init_git_repo()
+            subprocess.run(["git", "checkout", "-b", "master"], check=True, capture_output=True)
+            (base / "staged.py").write_text("original\n")
+            (base / "unstaged.py").write_text("original\n")
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", "initial", "--no-gpg-sign"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-b", "feature/review-test"], check=True, capture_output=True)
+            setup_project(base)
+
+            (base / "staged.py").write_text("staged change\n")
+            subprocess.run(["git", "add", "staged.py"], check=True)
+            (base / "unstaged.py").write_text("unstaged change\n")
+
+            with patch("kingdom.cli.council.council_ask") as mock_ask:
+                result = runner.invoke(council_app, ["review", "--base", "master"])
+
+            assert result.exit_code == 0, result.output
+            prompt = mock_ask.call_args.kwargs["prompt"]
+            assert "staged.py" in prompt
+            assert "unstaged.py" in prompt
+            assert "git diff HEAD" in prompt
+
     def test_review_generates_diff_and_asks(self) -> None:
         """council review should generate a diff and dispatch to council ask."""
         with runner.isolated_filesystem():
