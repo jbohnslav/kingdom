@@ -526,25 +526,6 @@ class TestTicketListResolution:
         assert "done" not in result.output
         assert "open" not in result.output
 
-    def test_resolution_filter_understands_legacy_duplicates(self, cli_project: Path) -> None:
-        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        write_ticket(
-            Ticket(
-                id="legacy",
-                status="closed",
-                title="Legacy duplicate",
-                duplicate_of="original",
-                created=datetime.now(UTC),
-            ),
-            tickets_dir / "legacy.md",
-        )
-
-        result = runner.invoke(ticket_app, ["list", "--resolution", "duplicate"])
-
-        assert result.exit_code == 0, result.output
-        assert "legacy" in result.output
-        assert "duplicate" in result.output
-
     def test_list_json_includes_closure_fields(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         write_ticket(
@@ -873,8 +854,8 @@ class TestTicketListTable:
         assert "cccc \u2713" not in result.output
         assert "cccc" in result.output
 
-    def test_table_shows_dep_status_include_done(self, cli_project: Path) -> None:
-        """Deps in done branches should still show checkmark with --all --include-done."""
+    def test_table_shows_dep_status_across_branches(self, cli_project: Path) -> None:
+        """Deps in done branches should still show checkmark with --all."""
         from kingdom.state import write_json
 
         # Create a done branch with a closed dep ticket
@@ -896,7 +877,7 @@ class TestTicketListTable:
         )
         write_ticket(ticket, tickets_dir / "eeee.md")
 
-        result = runner.invoke(ticket_app, ["list", "--all", "--include-done", "--closed"])
+        result = runner.invoke(ticket_app, ["list", "--all", "--closed"])
 
         assert result.exit_code == 0
         assert "dddd \u2713" in result.output

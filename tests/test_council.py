@@ -12,7 +12,7 @@ from kingdom.agent import AgentConfig, resolve_agent
 from kingdom.config import DEFAULT_AGENTS
 from kingdom.council.base import AgentResponse, CouncilMember
 from kingdom.council.council import Council
-from kingdom.session import AgentState, get_agent_state, session_path, set_agent_state
+from kingdom.session import get_agent_state, update_agent_state
 from kingdom.state import ensure_branch_layout
 
 PREAMBLE = CouncilMember.COUNCIL_PREAMBLE
@@ -700,8 +700,8 @@ class TestCouncilSessions:
     """Tests for council load/save sessions using agent state."""
 
     def test_load_sessions_reads_agent_state(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude", resume_id="sess-abc"))
-        set_agent_state(project, BRANCH, "codex", AgentState(name="codex", resume_id="thread-123"))
+        update_agent_state(project, BRANCH, "claude", resume_id="sess-abc")
+        update_agent_state(project, BRANCH, "codex", resume_id="thread-123")
 
         council = Council.create(base=project)
         council.load_sessions(project, BRANCH)
@@ -731,7 +731,7 @@ class TestCouncilSessions:
         assert codex_state.resume_id == "thread-new"
 
     def test_save_sessions_clears_resume_id(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude", resume_id="old-sess"))
+        update_agent_state(project, BRANCH, "claude", resume_id="old-sess")
 
         council = Council.create(base=project)
         council.load_sessions(project, BRANCH)
@@ -742,17 +742,7 @@ class TestCouncilSessions:
         assert state.resume_id is None
 
     def test_save_preserves_other_agent_state_fields(self, project: Path) -> None:
-        set_agent_state(
-            project,
-            BRANCH,
-            "claude",
-            AgentState(
-                name="claude",
-                status="working",
-                resume_id="old",
-                ticket="kin-042",
-            ),
-        )
+        update_agent_state(project, BRANCH, "claude", status="working", resume_id="old", ticket="042")
 
         council = Council.create(base=project)
         council.load_sessions(project, BRANCH)
@@ -762,7 +752,7 @@ class TestCouncilSessions:
         state = get_agent_state(project, BRANCH, "claude")
         assert state.resume_id == "new-sess"
         assert state.status == "working"
-        assert state.ticket == "kin-042"
+        assert state.ticket == "042"
 
     def test_roundtrip_load_save_load(self, project: Path) -> None:
         council = Council.create(base=project)
@@ -772,20 +762,6 @@ class TestCouncilSessions:
         council2 = Council.create(base=project)
         council2.load_sessions(project, BRANCH)
         assert council2.get_member("claude").session_id == "sess-rt"
-
-    def test_legacy_session_files_migrated_on_load(self, project: Path) -> None:
-        """Legacy .session files should be migrated via get_agent_state."""
-        from kingdom.session import legacy_session_path
-
-        old_path = legacy_session_path(project, BRANCH, "claude")
-        old_path.write_text("legacy-sess-id\n", encoding="utf-8")
-
-        council = Council.create(base=project)
-        council.load_sessions(project, BRANCH)
-
-        assert council.get_member("claude").session_id == "legacy-sess-id"
-        assert not old_path.exists()
-        assert session_path(project, BRANCH, "claude").exists()
 
 
 class TestQueryToThread:
@@ -1315,3 +1291,8 @@ class TestQueryRetry:
 
         assert response.error is not None
         assert "Empty response" in response.error
+
+
+def test_response_text_does_not_determine_interruption_status() -> None:
+    response = AgentResponse(name="claude", text="*[Interrupted is an example marker]*")
+    assert response.thread_status() == "complete"

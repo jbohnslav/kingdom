@@ -52,8 +52,6 @@ class AgentResponse:
             if "timeout" in self.error.lower() or "timed out" in self.error.lower():
                 return "timeout"
             return "error"
-        if self.text and ("*[Interrupted" in self.text or "*Interrupted" in self.text):
-            return "interrupted"
         return "complete"
 
     def thread_metadata(self) -> dict[str, str | None]:

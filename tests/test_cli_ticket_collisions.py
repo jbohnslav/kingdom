@@ -13,7 +13,7 @@ BRANCH = "feature/collisions"
 
 
 @pytest.mark.parametrize("location", ["branches/other", "backlog", "archive/old"])
-@pytest.mark.parametrize("ticket_id", ["2a", "2a92", "kin-2a92", "2A92"])
+@pytest.mark.parametrize("ticket_id", ["2a", "2a92", "2a92", "2A92"])
 @pytest.mark.parametrize("command", [["find"], ["close"], ["defer", "--reason", "Move work"]])
 def test_collision_lists_candidates_without_mutating(
     cli_project: Path, location: str, ticket_id: str, command: list[str]

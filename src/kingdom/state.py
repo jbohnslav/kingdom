@@ -200,19 +200,7 @@ def find_project_root(cwd: Path | None = None) -> Path:
     if root is None:
         raise ProjectRootNotFoundError("No .kd/ directory found. Run `kd init` to initialize.")
 
-    check_no_legacy_runs(root)
     return root
-
-
-def check_no_legacy_runs(base: Path) -> None:
-    """Raise if a non-empty legacy .kd/runs/ directory exists.
-
-    The runs/ → branches/ migration is complete. If .kd/runs/ still has content,
-    the user must rename it manually before proceeding.
-    """
-    runs_dir = state_root(base) / "runs"
-    if runs_dir.is_dir() and any(runs_dir.iterdir()):
-        raise ValueError("Legacy .kd/runs/ directory found. Rename it to .kd/branches/ manually and retry.")
 
 
 def worktrees_root(base: Path) -> Path:
@@ -221,10 +209,6 @@ def worktrees_root(base: Path) -> Path:
 
 def runtime_root(base: Path) -> Path:
     return state_root(base) / "runtime"
-
-
-def terminal_context_root(base: Path) -> Path:
-    return runtime_root(base) / "terminal-context"
 
 
 def execution_context_root(base: Path) -> Path:
@@ -559,8 +543,6 @@ def prune_stale_execution_contexts(
         return []
 
     removed = []
-    stale_legacy_bindings: dict[tuple[object, object], datetime] = {}
-    exact_legacy_bindings: dict[Path, tuple[object, object]] = {}
     for path in execution_context_root(base).glob("*.json"):
         lock_path = path.parent / f".{path.name}.lock"
         with flock(lock_path):
@@ -574,132 +556,7 @@ def prune_stale_execution_contexts(
                 continue
             path.unlink(missing_ok=True)
             removed.append(context_id)
-            binding = (data.get("ticket_id"), data.get("feature"))
-            if all(binding):
-                existing = stale_legacy_bindings.get(binding)
-                if existing is None or last_seen > existing:
-                    stale_legacy_bindings[binding] = last_seen
-                legacy_path = legacy_terminal_context_path(base, data)
-                if legacy_path is not None:
-                    exact_legacy_bindings[legacy_path] = binding
-
-    for path in terminal_context_root(base).glob("*.json"):
-        lock_path = path.parent / f".{path.name}.lock"
-        with flock(lock_path):
-            try:
-                data = read_json(path)
-            except (FileNotFoundError, json.JSONDecodeError, OSError):
-                continue
-            binding = (data.get("ticket_id"), data.get("feature"))
-            if exact_legacy_bindings.get(path) == binding:
-                path.unlink(missing_ok=True)
-                continue
-            stale_last_seen = stale_legacy_bindings.get(binding)
-            if stale_last_seen is None:
-                continue
-            updated_at = parse_context_last_seen(data.get("updated_at"))
-            if updated_at is not None and updated_at > stale_last_seen:
-                continue
-            path.unlink(missing_ok=True)
     return sorted(removed)
-
-
-def terminal_context_identity(session_id: str | None = None) -> str | None:
-    terminal_identity = terminal_fallback_identity()
-    if terminal_identity:
-        source, value = terminal_identity
-        prefix = "tty" if source == "TTY" else source
-        return f"{prefix}:{value}"
-
-    if session_id:
-        return f"session:{session_id}"
-    return None
-
-
-def terminal_context_path(base: Path, session_id: str | None = None) -> Path | None:
-    identity = terminal_context_identity(session_id)
-    if identity is None:
-        return None
-    return terminal_context_path_for_identity(base, identity)
-
-
-def terminal_context_path_for_identity(base: Path, identity: str) -> Path:
-    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
-    return terminal_context_root(base) / f"{key}.json"
-
-
-def legacy_terminal_context_path(base: Path, context: dict[str, Any]) -> Path | None:
-    source = context.get("source")
-    session_id = context.get("session_id")
-    if not isinstance(source, str) or not isinstance(session_id, str):
-        return None
-    if source == "hook":
-        return terminal_context_path_for_identity(base, f"session:{session_id}")
-    if source not in TERMINAL_CONTEXT_ENV_VARS:
-        return None
-    identity = session_id
-    if source == "TTY" and session_id.startswith("TTY:"):
-        identity = f"tty:{session_id.removeprefix('TTY:')}"
-    return terminal_context_path_for_identity(base, identity)
-
-
-def record_terminal_ticket_context(
-    base: Path,
-    ticket_id: str,
-    *,
-    feature: str,
-    location: str | None = None,
-    session_id: str | None = None,
-) -> None:
-    path = terminal_context_path(base, session_id)
-    if path is None:
-        return
-    record = {
-        "ticket_id": ticket_id,
-        "feature": normalize_branch_name(feature),
-        "location": location or f"branch:{normalize_branch_name(feature)}",
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
-    locked_json_update(path, lambda _current: record)
-
-
-def read_terminal_ticket_context(base: Path, session_id: str | None = None) -> dict[str, Any] | None:
-    path = terminal_context_path(base, session_id)
-    if path is None:
-        return None
-    try:
-        data = read_json(path)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
-    ticket_id = data.get("ticket_id")
-    if not isinstance(ticket_id, str) or not ticket_id:
-        return None
-    return data
-
-
-def clear_terminal_ticket_contexts(
-    base: Path,
-    ticket_id: str,
-    *,
-    now: datetime | None = None,
-) -> int:
-    contexts_root = terminal_context_root(base)
-    if not contexts_root.exists():
-        return 0
-
-    cleared = 0
-    for path in sorted(contexts_root.glob("*.json")):
-        lock_path = path.parent / f".{path.name}.lock"
-        with flock(lock_path):
-            try:
-                data = read_json(path)
-            except (FileNotFoundError, json.JSONDecodeError, OSError):
-                continue
-            if data.get("ticket_id") != ticket_id:
-                continue
-            path.unlink(missing_ok=True)
-            cleared += 1
-    return cleared
 
 
 def logs_root(base: Path, feature: str) -> Path:
@@ -717,11 +574,6 @@ def tickets_root(base: Path, feature: str) -> Path:
 def threads_root(base: Path, feature: str) -> Path:
     """Path to threads directory under branch structure."""
     return branch_root(base, feature) / "threads"
-
-
-def council_logs_root(base: Path, feature: str) -> Path:
-    """Path to council run bundles, preferring branch structure."""
-    return logs_root(base, feature) / "council"
 
 
 def ensure_dir(path: Path) -> None:
@@ -832,7 +684,6 @@ def ensure_base_layout(base: Path, create_gitignore: bool = True) -> dict[str, P
 .*.lock
 *.jsonl
 *.log
-*.session
 **/logs/
 **/sessions/
 worktrees/

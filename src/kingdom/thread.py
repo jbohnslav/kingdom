@@ -590,24 +590,6 @@ MEMBER_TIMED_OUT = "timed_out"
 MEMBER_PENDING = "pending"
 
 
-def is_error_response(body: str) -> bool:
-    """Check if a thread message body represents an error response.
-
-    Matches the markers produced by AgentResponse.thread_body().
-    """
-    return body.startswith("*Error:") or body.startswith("*Empty response")
-
-
-def is_timeout_response(body: str) -> bool:
-    """Check if a thread message body represents a timeout error."""
-    return body.startswith("*Error: Timeout")
-
-
-def is_interrupted_response(body: str) -> bool:
-    """Check if a thread message body was interrupted before completion."""
-    return "*[Interrupted" in body
-
-
 @dataclass
 class MemberState:
     """Rich status for a single member in a thread round."""
@@ -663,20 +645,13 @@ def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadSta
             response_msgs[msg.from_] = msg
 
     # Classify each expected member.
-    # Prefer msg.status metadata; fall back to body-prefix sniffing for legacy messages.
+    # Explicit persisted status is authoritative.
     for name in expected:
         if name in responded:
             msg = response_msgs[name]
-            if msg.status:
-                if msg.status == "timeout":
-                    member_states[name] = MemberState(state=MEMBER_TIMED_OUT, error=msg.body)
-                elif msg.status in ("error", "interrupted"):
-                    member_states[name] = MemberState(state=MEMBER_ERRORED, error=msg.body)
-                else:
-                    member_states[name] = MemberState(state=MEMBER_RESPONDED)
-            elif is_timeout_response(msg.body):
+            if msg.status == "timeout":
                 member_states[name] = MemberState(state=MEMBER_TIMED_OUT, error=msg.body)
-            elif is_error_response(msg.body):
+            elif msg.status in ("error", "interrupted"):
                 member_states[name] = MemberState(state=MEMBER_ERRORED, error=msg.body)
             else:
                 member_states[name] = MemberState(state=MEMBER_RESPONDED)

@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from kingdom.cli.ticket import ticket_app
-from kingdom.session import AgentState, set_agent_state
+from kingdom.session import update_agent_state
 from kingdom.state import branch_root, ensure_branch_layout, resolve_current_run
 from kingdom.ticket import Ticket, ticket_lock_path, write_ticket
 
@@ -86,7 +86,7 @@ def test_move_refuses_active_workers(cli_project: Path, owner: str, location: st
     assignee = "codex:active-session" if owner == "native" else "peasant-dbab"
     write_ticket(Ticket(id="dbab", status="in_progress", title="Active work", assignee=assignee), source)
     if owner == "peasant":
-        set_agent_state(cli_project, BRANCH, assignee, AgentState(name=assignee, status="working", pid=99999))
+        update_agent_state(cli_project, BRANCH, assignee, status="working", pid=99999)
     before = source.read_bytes()
     result = runner.invoke(ticket_app, ["move", "dbab", "--to-branch", TARGET])
     assert result.exit_code == 1, result.output

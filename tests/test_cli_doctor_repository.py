@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,14 +8,13 @@ from typer.testing import CliRunner
 
 from kingdom.cli import app
 from kingdom.cli.helpers import bundled_skill_files, write_skill_bundle
-from kingdom.cli.plugin import HOOK_CONFIG, HOOK_EVENTS
+from kingdom.cli.plugin import HOOK_CONFIG
 from kingdom.codex_plugin import install_codex_plugin
 from kingdom.doctor import claude_install_issues, codex_install_issues, skill_install_issues
 from kingdom.state import branch_root, ensure_branch_layout, write_json
 from kingdom.ticket import Ticket, write_ticket
 
 runner = CliRunner()
-FIXTURE = Path(__file__).parent / "fixtures" / "repository_upgrade" / "v0_6_mixed"
 
 
 def tree_snapshot(base: Path) -> dict[str, bytes]:
@@ -59,10 +57,14 @@ def write_context(
 def test_doctor_reports_repository_and_host_drift_without_writing(tmp_path: Path) -> None:
     base = tmp_path / "repository"
     home = tmp_path / "home"
-    shutil.copytree(FIXTURE, base)
+    ensure_branch_layout(base, "feature-upgrade")
+    write_ticket(
+        Ticket(id="active1", status="in_progress", title="First assignment", assignee="codex:shared"),
+        branch_root(base, "feature-upgrade") / "tickets" / "active1.md",
+    )
     tickets_dir = branch_root(base, "feature-upgrade") / "tickets"
     write_ticket(
-        Ticket(id="active2", status="in_progress", title="Second legacy ticket", assignee="hand"),
+        Ticket(id="active2", status="in_progress", title="Conflicting assignment", assignee="codex:shared"),
         tickets_dir / "active2.md",
     )
     bad_resolution = base / ".kd" / "backlog" / "tickets" / "bad1.md"
@@ -74,23 +76,13 @@ def test_doctor_reports_repository_and_host_drift_without_writing(tmp_path: Path
     )
     (tickets_dir / "broken.md").write_text("---\nid: broken\n", encoding="utf-8")
     write_context(base, "orphan", "missing1")
-    legacy_orphan = base / ".kd" / "runtime" / "terminal-context" / "orphan.json"
-    legacy_orphan.write_text(
-        json.dumps(
-            {
-                "ticket_id": "missing2",
-                "feature": "feature-upgrade",
-                "location": "branch:feature-upgrade",
-                "updated_at": "2026-08-03T12:00:00+00:00",
-            }
-        ),
-        encoding="utf-8",
-    )
+    invalid_context = base / ".kd" / "runtime" / "contexts" / "invalid.json"
+    invalid_context.write_text("{broken", encoding="utf-8")
 
     settings_path = base / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(
-        json.dumps({"hooks": {event: [HOOK_CONFIG] for event in HOOK_EVENTS}}),
+        json.dumps({"hooks": {event: [HOOK_CONFIG] for event in ("SessionStart", "Stop")}}),
         encoding="utf-8",
     )
     install_codex_plugin(home)
@@ -117,7 +109,7 @@ def test_doctor_reports_repository_and_host_drift_without_writing(tmp_path: Path
         "resolutions",
         "host_installs",
     }
-    assert {issue["code"] for issue in report["bindings"]} >= {"binding.ambiguous"}
+    assert {issue["code"] for issue in report["bindings"]} >= {"binding.exact_ambiguous"}
     assert {issue["code"] for issue in report["contexts"]} >= {
         "context.invalid",
         "context.orphan",
@@ -125,7 +117,7 @@ def test_doctor_reports_repository_and_host_drift_without_writing(tmp_path: Path
     assert {issue["code"] for issue in report["tickets"]} >= {"ticket.invalid"}
     assert {issue["code"] for issue in report["resolutions"]} >= {"ticket.resolution.invalid"}
     assert {issue["code"] for issue in report["host_installs"]} >= {
-        "host.claude.hooks_legacy",
+        "host.claude.hooks_incomplete",
         "host.codex.plugin_modified",
     }
     repairs = "\n".join(
@@ -154,40 +146,16 @@ def test_doctor_reports_structurally_invalid_claude_settings(tmp_path: Path) -> 
     assert "kd plugin enable" in issues[0].repair
 
 
-def test_doctor_detects_known_legacy_claude_hook_command(tmp_path: Path) -> None:
-    legacy_hook = {
-        "matcher": "",
-        "hooks": [
-            {
-                "type": "command",
-                "command": '"$CLAUDE_PROJECT_DIR"/.claude/hooks/kd-workflow.sh',
-                "timeout": 10,
-            }
-        ],
-    }
-    settings = tmp_path / ".claude" / "settings.json"
-    settings.parent.mkdir()
-    settings.write_text(
-        json.dumps({"hooks": {event: [legacy_hook] for event in HOOK_EVENTS}}),
-        encoding="utf-8",
-    )
-
-    issues = claude_install_issues(tmp_path)
-
-    assert [issue.code for issue in issues] == ["host.claude.hooks_legacy"]
-    assert issues[0].repair == "Run `kd plugin enable` to replace legacy hooks and add current lifecycle coverage."
-
-
 def test_doctor_ignores_inactive_context_with_historical_ticket_id(tmp_path: Path) -> None:
-    from kingdom.doctor import context_issues
+    from kingdom.doctor import execution_context_issues
 
     write_context(tmp_path, "finished", "missing1", active=False)
 
-    assert context_issues(tmp_path) == []
+    assert execution_context_issues(tmp_path) == []
 
 
 def test_doctor_allows_parent_subagent_sharing_but_flags_unrelated_owner(tmp_path: Path) -> None:
-    from kingdom.doctor import context_issues
+    from kingdom.doctor import execution_context_issues
 
     tickets = ensure_branch_layout(tmp_path, "feature-upgrade") / "tickets"
     write_ticket(
@@ -203,7 +171,7 @@ def test_doctor_allows_parent_subagent_sharing_but_flags_unrelated_owner(tmp_pat
     )
     write_context(tmp_path, "other", "work1")
 
-    issues = context_issues(tmp_path)
+    issues = execution_context_issues(tmp_path)
 
     assert [issue.code for issue in issues] == ["binding.mismatch"]
     assert issues[0].path == ".kd/runtime/contexts/other.json"
@@ -247,7 +215,7 @@ def test_doctor_detects_exact_context_conflicts_across_branches(tmp_path: Path) 
 
 
 def test_doctor_distinguishes_context_location_drift_from_missing_ticket(tmp_path: Path) -> None:
-    from kingdom.doctor import context_issues
+    from kingdom.doctor import execution_context_issues
 
     tickets = ensure_branch_layout(tmp_path, "feature-upgrade") / "tickets"
     write_ticket(
@@ -260,14 +228,14 @@ def test_doctor_distinguishes_context_location_drift_from_missing_ticket(tmp_pat
     context["location"] = "backlog"
     write_json(context_path, context)
 
-    issues = context_issues(tmp_path)
+    issues = execution_context_issues(tmp_path)
 
     assert [issue.code for issue in issues] == ["binding.location_mismatch"]
     assert "kd tk start work1" in issues[0].repair
 
 
 def test_doctor_reports_context_ticket_file_with_wrong_frontmatter_id(tmp_path: Path) -> None:
-    from kingdom.doctor import context_issues
+    from kingdom.doctor import execution_context_issues
 
     tickets = ensure_branch_layout(tmp_path, "feature-upgrade") / "tickets"
     write_ticket(
@@ -276,7 +244,7 @@ def test_doctor_reports_context_ticket_file_with_wrong_frontmatter_id(tmp_path: 
     )
     write_context(tmp_path, "mismatch", "expected1")
 
-    issues = context_issues(tmp_path)
+    issues = execution_context_issues(tmp_path)
 
     assert [issue.code for issue in issues] == ["context.orphan"]
     assert "expected1" in issues[0].message

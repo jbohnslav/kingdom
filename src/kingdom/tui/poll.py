@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kingdom.agent import extract_stream_text, extract_stream_thinking, extract_stream_tool_use
+from kingdom.thread import parse_message
 
 # ---------------------------------------------------------------------------
 # Poll events
@@ -23,6 +24,7 @@ class NewMessage:
     sequence: int
     sender: str
     body: str
+    status: str | None = None
 
 
 @dataclass
@@ -119,9 +121,9 @@ class ThreadPoller:
             sender = parts[1] if len(parts) > 1 else "unknown"
 
             # Read body (skip frontmatter)
-            body = read_message_body(path)
+            message = parse_message(path)
 
-            events.append(NewMessage(sequence=seq, sender=sender, body=body))
+            events.append(NewMessage(sequence=seq, sender=sender, body=message.body, status=message.status))
             self.last_sequence = seq
 
             # If this member was streaming, mark as finished
@@ -200,17 +202,6 @@ class ThreadPoller:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def read_message_body(path: Path) -> str:
-    """Read a message file and return the body (after YAML frontmatter)."""
-    text = path.read_text(encoding="utf-8")
-    if text.startswith("---\n"):
-        # Find closing ---
-        end = text.find("\n---\n", 4)
-        if end != -1:
-            return text[end + 5 :].strip()
-    return text.strip()
 
 
 def tail_stream_file(path: Path, offset: int, backend: str) -> tuple[str, str, list[str]]:

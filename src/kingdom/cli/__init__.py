@@ -20,7 +20,13 @@ from rich.console import Console
 from rich.panel import Panel
 
 from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_plugin, package_version
-from kingdom.doctor import binding_issues, context_issues, host_install_issues, resolution_issues, ticket_issues
+from kingdom.doctor import (
+    binding_issues,
+    execution_context_issues,
+    host_install_issues,
+    resolution_issues,
+    ticket_issues,
+)
 from kingdom.state import (
     ProjectRootNotFoundError,
     branch_root,
@@ -219,13 +225,11 @@ def start(
     state_path = branch_dir / "state.json"
     state = read_json(state_path)
     state["branch"] = branch
-    state.pop("status", None)
-    state.pop("done_at", None)
     write_json(state_path, state)
 
     branch_tickets = list_tickets(branch_dir / "tickets")
     backlog_tickets = list_tickets(state_root(base) / "backlog" / "tickets")
-    all_known_tickets = collect_all_tickets(base, include_done=True)
+    all_known_tickets = collect_all_tickets(base)
     ticket_status = {ticket.id: ticket.status for ticket in all_known_tickets}
     visible_branch_tickets = [ticket for ticket in branch_tickets if ticket.status != "closed"]
     has_ready = bool(filter_tickets_by_deps(visible_branch_tickets, ticket_status, ready=True))
@@ -320,7 +324,6 @@ def status(
     bdir = branch_root(base, feature)
     state_path = bdir / "state.json"
     design_path = bdir / "design.md"
-    breakdown_path = bdir / "breakdown.md"
 
     # Read state to get original branch name
     if state_path.exists():
@@ -338,9 +341,8 @@ def status(
             normalized_git_branch = normalize_branch_name(git_branch)
     branch_mismatch = normalized_git_branch is not None and normalized_git_branch != normalized
 
-    # Get design and breakdown status
+    # Get design status
     design_status = get_doc_status(design_path)
-    breakdown_status = get_doc_status(breakdown_path)
 
     # Get design doc path relative to base for display
     design_path_str = str(design_path.relative_to(base)) if design_path.exists() else None
@@ -379,7 +381,6 @@ def status(
         "branch_mismatch": branch_mismatch,
         "design_path": design_path_str,
         "design_status": design_status,
-        "breakdown_status": breakdown_status,
         "tickets": status_counts,
         "ready_count": ready_count,
         "readiness": readiness,
@@ -657,7 +658,7 @@ def doctor(
                 cli_issues.append({"name": check["name"], "hint": f"{model_error or 'Model unavailable'}. {recovery}"})
 
     bindings = binding_issues(base)
-    contexts = context_issues(base)
+    contexts = execution_context_issues(base)
     tickets = ticket_issues(base)
     resolutions = resolution_issues(base)
     host_installs = host_install_issues(base, Path.home())

@@ -12,7 +12,6 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -23,10 +22,6 @@ import typer
 from kingdom.lifecycle import EventKind, Host, HostEvent, InvalidHostEvent, normalize_host_event
 from kingdom.state import (
     ExecutionContext,
-    archive_root,
-    backlog_root,
-    branch_root,
-    clear_terminal_ticket_contexts,
     clear_ticket_execution_contexts,
     compact_context_id,
     find_project_root,
@@ -34,7 +29,6 @@ from kingdom.state import (
     flock,
     normalize_branch_name,
     read_execution_ticket_context,
-    read_terminal_ticket_context,
     record_execution_ticket_context,
     resolve_current_run,
     resolve_execution_context,
@@ -45,7 +39,6 @@ from kingdom.ticket import (
     AmbiguousTicketMatch,
     append_worklog_entry,
     find_ticket,
-    read_ticket,
     write_ticket,
 )
 
@@ -77,7 +70,6 @@ USER_PROMPT_REMINDER = (
 WORK_TOOLS = {"WebSearch", "WebFetch", "Edit", "Write", "apply_patch"}
 
 STALE_TTL_SECONDS = 86400  # 24 hours
-LEGACY_STOP_TICKET_FALLBACK_ENV = "KD_HOOK_LEGACY_TICKET_FALLBACK"
 
 CHECKPOINT_FIELDS = "decisions, completed work, verification, blockers, and next steps"
 CLAUDE_ENV_FILE_ENV = "CLAUDE_ENV_FILE"
@@ -129,7 +121,7 @@ def read_checkpoint(base: Path, event: HostEvent) -> dict | None:
 
 
 def checkpoint_context(event: HostEvent) -> tuple[Path, ExecutionContext, dict] | None:
-    base = terminal_context_base(str(event.cwd))
+    base = hook_project_root(str(event.cwd))
     context = resolve_execution_context(
         session_id=event.session_id,
         host=event.host.value,
@@ -260,35 +252,7 @@ def is_ticket_markdown_event(event: HostEvent) -> bool:
     return any(is_ticket_markdown_path(file_path, project_dir) for file_path in event.file_paths)
 
 
-def ticket_paths_for_terminal_context(base: Path, ticket_id: str, feature: str, location: str | None) -> list[Path]:
-    if location == "backlog":
-        tickets_dir = backlog_root(base) / "tickets"
-    elif location and location.startswith("archive:"):
-        tickets_dir = archive_root(base) / location.removeprefix("archive:") / "tickets"
-    elif location and location.startswith("branch:"):
-        tickets_dir = branch_root(base, location.removeprefix("branch:")) / "tickets"
-    else:
-        tickets_dir = branch_root(base, feature) / "tickets"
-
-    return [tickets_dir / f"{ticket_id}.md", tickets_dir / f"kin-{ticket_id}.md"]
-
-
-def terminal_context_ticket_is_current(base: Path, ticket_id: str, feature: str, location: str | None = None) -> bool:
-    candidate_paths = ticket_paths_for_terminal_context(base, ticket_id, feature, location)
-    for ticket_path in candidate_paths:
-        try:
-            ticket = read_ticket(ticket_path)
-        except (FileNotFoundError, ValueError, OSError):
-            continue
-        return (
-            ticket.id == ticket_id
-            and ticket.status == "in_progress"
-            and not (ticket.assignee or "").startswith("peasant-")
-        )
-    return False
-
-
-def terminal_context_base(project_dir: str | None) -> Path:
+def hook_project_root(project_dir: str | None) -> Path:
     fallback = Path(project_dir) if project_dir else Path(".")
     try:
         return find_project_root(fallback)
@@ -297,7 +261,7 @@ def terminal_context_base(project_dir: str | None) -> Path:
 
 
 def find_stop_ticket_id(project_dir: str | None, session_id: str, host: str = "claude") -> str | None:
-    base = terminal_context_base(project_dir)
+    base = hook_project_root(project_dir)
     context = resolve_execution_context(session_id=session_id, host=host, cwd=Path(project_dir or "."))
     if context is not None:
         binding = read_execution_ticket_context(base, context)
@@ -313,41 +277,7 @@ def find_stop_ticket_id(project_dir: str | None, session_id: str, host: str = "c
                 if result and result.ticket.status == "in_progress" and result.ticket.assignee == context.context_id:
                     return ticket_id
 
-    terminal_context = read_terminal_ticket_context(base, session_id=session_id)
-    if terminal_context:
-        try:
-            current_feature = normalize_branch_name(resolve_current_run(base))
-        except (RuntimeError, ValueError):
-            current_feature = None
-        ticket_id = terminal_context["ticket_id"]
-        if (
-            current_feature
-            and terminal_context.get("feature") == current_feature
-            and terminal_context_ticket_is_current(
-                base,
-                ticket_id,
-                current_feature,
-                terminal_context.get("location"),
-            )
-        ):
-            return ticket_id
-
-    if os.environ.get(LEGACY_STOP_TICKET_FALLBACK_ENV) != "1":
-        return None
-
-    try:
-        proc = subprocess.run(
-            ["kd", "tk", "current", "--id", "--exclude-peasant"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        ticket_id = proc.stdout.strip()
-        if proc.returncode != 0 or not ticket_id:
-            return None
-        return ticket_id
-    except Exception:
-        return None
+    return None
 
 
 def subagent_contexts(event: HostEvent) -> tuple[ExecutionContext | None, ExecutionContext | None]:
@@ -426,7 +356,7 @@ def assign_explicit_subagent_ticket(
         ticket.assignee = child.context_id
         write_ticket(ticket, result.path)
         clear_ticket_execution_contexts(base, ticket.id)
-        clear_terminal_ticket_contexts(base, ticket.id)
+
         record_execution_ticket_context(
             base,
             child,
@@ -513,7 +443,7 @@ def handle_session_start(data: HostEvent | dict) -> str:
     environment_warning = persist_claude_session_environment(event)
     if environment_warning:
         additional_context += "\n\n" + environment_warning
-    base = terminal_context_base(str(event.cwd))
+    base = hook_project_root(str(event.cwd))
     reactivate_resumed_context(base, event)
     checkpoint = read_checkpoint(base, event)
     if checkpoint and event.source == "compact":
@@ -555,7 +485,7 @@ def handle_post_compact(data: HostEvent | dict) -> str:
     event = handler_event(data, EventKind.POST_COMPACT)
     if event is None:
         return ""
-    base = terminal_context_base(str(event.cwd))
+    base = hook_project_root(str(event.cwd))
     checkpoint = read_checkpoint(base, event)
     if checkpoint is None:
         return ""
@@ -567,7 +497,7 @@ def handle_session_end(data: HostEvent | dict) -> str:
     if event is None:
         return ""
     requested = request_checkpoint(event, "session handoff")
-    base = terminal_context_base(str(event.cwd))
+    base = hook_project_root(str(event.cwd))
     context = resolve_execution_context(
         session_id=event.session_id,
         host=event.host.value,
@@ -596,7 +526,7 @@ def handle_subagent_start(data: HostEvent | dict) -> str:
             event, "Kingdom could not identify this subagent context; run kd tk start <id> explicitly."
         )
 
-    base = terminal_context_base(str(event.cwd))
+    base = hook_project_root(str(event.cwd))
     try:
         feature = resolve_current_run(base)
     except (RuntimeError, ValueError):
@@ -640,7 +570,7 @@ def handle_subagent_stop(data: HostEvent | dict) -> str:
     if parent is None or child is None:
         return ""
 
-    base = terminal_context_base(str(event.cwd))
+    base = hook_project_root(str(event.cwd))
     binding = read_execution_ticket_context(base, child)
     if binding:
         feature = binding.get("feature")
@@ -702,7 +632,7 @@ def handle_post_tool_use(data: HostEvent | dict) -> str:
     project_dir = str(event.cwd)
     session_id = event.session_id
 
-    base = terminal_context_base(project_dir)
+    base = hook_project_root(project_dir)
     checkpoint_path = checkpoint_state_file(base, event.host.value, event.session_id)
     checkpoint = read_turn_state(checkpoint_path)
     if checkpoint and checkpoint_completed_by_event(base, event, checkpoint):

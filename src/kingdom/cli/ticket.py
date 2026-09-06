@@ -28,16 +28,12 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     branches_root,
-    clear_terminal_ticket_contexts,
     clear_ticket_execution_contexts,
     compact_context_id,
-    execution_context_path,
     flock,
     normalize_branch_name,
     read_execution_ticket_context,
-    read_terminal_ticket_context,
     record_execution_ticket_context,
-    record_terminal_ticket_context,
     refresh_execution_context_activity,
     resolve_current_run,
     resolve_execution_context,
@@ -50,7 +46,6 @@ from kingdom.ticket import (
     AmbiguousTicketMatch,
     Ticket,
     append_worklog_entry,
-    atomic_write_ticket_content,
     blocking_dependencies,
     collect_all_tickets,
     collect_ticket_statuses,
@@ -67,10 +62,8 @@ from kingdom.ticket import (
     list_tickets,
     move_ticket,
     read_ticket,
-    replace_ticket_assignee,
     resolve_ticket_dependencies,
     write_ticket,
-    write_ticket_assignee,
 )
 
 from .display import STATUS_COLORS, STATUS_STYLES, console_width, error_console, print_error
@@ -501,9 +494,6 @@ def ticket_create(
 @ticket_app.command("list", help="List tickets.")
 def ticket_list(
     all_tickets: Annotated[bool, typer.Option("--all", "-a", help="List all tickets across all locations.")] = False,
-    include_done: Annotated[
-        bool, typer.Option("--include-done", help="Include tickets from done branches (with --all).")
-    ] = False,
     include_closed: Annotated[bool, typer.Option("--closed", help="Include closed tickets in output.")] = False,
     recently_closed: Annotated[
         bool,
@@ -669,7 +659,7 @@ def ticket_list(
         return
 
     if all_tickets:
-        pairs = collect_tickets_by_location(base, include_archive=recently_closed, include_done=include_done)
+        pairs = collect_tickets_by_location(base, include_archive=recently_closed)
         all_filtered: list[Ticket] = []
         location_map: dict[str, str] = {}
         for location_name, ticket in pairs:
@@ -861,7 +851,7 @@ def update_ticket_status(
     return ticket
 
 
-def terminal_context_location_for_start(base: Path, ticket_path: Path) -> str:
+def execution_context_location(base: Path, ticket_path: Path) -> str:
     backlog_tickets = (backlog_root(base) / "tickets").resolve()
     archive_backlog_tickets = (archive_root(base) / "backlog" / "tickets").resolve()
     ticket_parent = ticket_path.parent.resolve()
@@ -892,7 +882,6 @@ def terminal_context_location_for_start(base: Path, ticket_path: Path) -> str:
 def ticket_from_execution_binding(base: Path, binding: dict[str, Any]) -> tuple[Ticket, Path] | None:
     ticket_id = binding.get("ticket_id")
     location = binding.get("location")
-    feature = binding.get("feature")
     if not isinstance(ticket_id, str) or not ticket_id:
         return None
 
@@ -902,19 +891,16 @@ def ticket_from_execution_binding(base: Path, binding: dict[str, Any]) -> tuple[
         tickets_dir = archive_root(base) / location.removeprefix("archive:") / "tickets"
     elif isinstance(location, str) and location.startswith("branch:"):
         tickets_dir = branch_root(base, location.removeprefix("branch:")) / "tickets"
-    elif isinstance(feature, str) and feature:
-        tickets_dir = branch_root(base, feature) / "tickets"
     else:
         return None
 
-    for filename in (f"{ticket_id}.md", f"kin-{ticket_id}.md"):
-        ticket_path = tickets_dir / filename
-        try:
-            ticket = read_ticket(ticket_path)
-        except (FileNotFoundError, ValueError, OSError):
-            continue
-        if ticket.id == ticket_id:
-            return ticket, ticket_path
+    ticket_path = tickets_dir / f"{ticket_id}.md"
+    try:
+        ticket = read_ticket(ticket_path)
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    if ticket.id == ticket_id:
+        return ticket, ticket_path
     return None
 
 
@@ -929,115 +915,6 @@ def unassign_previous_context_ticket(base: Path, context_id: str, previous_ticke
         return
     result.ticket.assignee = None
     write_ticket(result.ticket, result.path)
-
-
-class AmbiguousLegacyTickets(RuntimeError):
-    def __init__(self, ticket_ids: list[str]) -> None:
-        self.ticket_ids = ticket_ids
-        super().__init__(f"Multiple legacy in-progress tickets: {', '.join(ticket_ids)}")
-
-
-def migrate_ticket_to_execution_context(
-    base: Path,
-    context: ExecutionContext,
-    ticket: Ticket,
-    ticket_path: Path,
-    *,
-    feature: str,
-    location: str,
-) -> dict[str, Any] | None:
-    lock_path = ticket_path.parent / f".{ticket_path.name}.lock"
-    with flock(lock_path):
-        current = read_ticket(ticket_path)
-        if current.id != ticket.id or current.status != "in_progress":
-            return None
-        if current.assignee not in (None, "hand", context.context_id):
-            return None
-
-        record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
-        content = ticket_path.read_text(encoding="utf-8")
-        updated = replace_ticket_assignee(content, context.context_id)
-        if updated != content:
-            atomic_write_ticket_content(ticket_path, updated)
-
-    binding = read_execution_ticket_context(base, context)
-    if binding is None:
-        raise RuntimeError(f"Failed to record execution context for ticket {ticket.id}")
-    ticket.assignee = context.context_id
-    return binding
-
-
-def migrate_legacy_execution_binding(
-    base: Path,
-    context: ExecutionContext,
-    feature: str,
-) -> dict[str, Any] | None:
-    normalized_feature = normalize_branch_name(feature)
-    legacy_binding = read_terminal_ticket_context(base)
-    if legacy_binding and legacy_binding.get("feature") == normalized_feature:
-        bound_ticket = ticket_from_execution_binding(base, legacy_binding)
-        if bound_ticket:
-            ticket, ticket_path = bound_ticket
-            if ticket.status == "in_progress" and not (ticket.assignee or "").startswith("peasant-"):
-                return migrate_ticket_to_execution_context(
-                    base,
-                    context,
-                    ticket,
-                    ticket_path,
-                    feature=feature,
-                    location=legacy_binding.get("location") or f"branch:{normalized_feature}",
-                )
-
-    tickets_dir = branch_root(base, feature) / "tickets"
-    branch_tickets = []
-    for ticket_path in sorted(tickets_dir.glob("*.md")):
-        try:
-            ticket = read_ticket(ticket_path)
-        except (FileNotFoundError, OSError, ValueError):
-            continue
-        branch_tickets.append((ticket, ticket_path))
-    partial_context_exists = execution_context_path(base, context).exists()
-    exact_candidates = (
-        [
-            (ticket, ticket_path)
-            for ticket, ticket_path in branch_tickets
-            if ticket.status == "in_progress" and ticket.assignee == context.context_id
-        ]
-        if partial_context_exists
-        else []
-    )
-    if len(exact_candidates) > 1:
-        raise AmbiguousLegacyTickets(sorted(ticket.id for ticket, _ in exact_candidates))
-    if exact_candidates:
-        ticket, ticket_path = exact_candidates[0]
-        return migrate_ticket_to_execution_context(
-            base,
-            context,
-            ticket,
-            ticket_path,
-            feature=feature,
-            location=f"branch:{normalized_feature}",
-        )
-
-    candidates = [
-        (ticket, ticket_path)
-        for ticket, ticket_path in branch_tickets
-        if ticket.status == "in_progress" and ticket.assignee in (None, "hand")
-    ]
-    if len(candidates) > 1:
-        raise AmbiguousLegacyTickets(sorted(ticket.id for ticket, _ in candidates))
-    if not candidates:
-        return None
-
-    ticket, ticket_path = candidates[0]
-    return migrate_ticket_to_execution_context(
-        base,
-        context,
-        ticket,
-        ticket_path,
-        feature=feature,
-        location=f"branch:{normalized_feature}",
-    )
 
 
 @ticket_app.command("start", help="Mark a ticket as in_progress.")
@@ -1064,7 +941,7 @@ def ticket_start(
     ticket = resolve_ticket_or_exit(base, ticket_id).ticket
     with flock(ticket_assignment_lock_path(base)):
         ticket_path = resolve_ticket_or_exit(base, ticket.id).path
-        location = terminal_context_location_for_start(base, ticket_path)
+        location = execution_context_location(base, ticket_path)
         previous_binding = read_execution_ticket_context(base, context)
         if previous_binding:
             previous_ticket_id = previous_binding["ticket_id"]
@@ -1072,9 +949,8 @@ def ticket_start(
 
         ticket = update_ticket_status(ticket.id, "in_progress", assignee=context.context_id)
         clear_ticket_execution_contexts(base, ticket.id)
-        clear_terminal_ticket_contexts(base, ticket.id)
+
         record_execution_ticket_context(base, context, ticket.id, feature=feature, location=location)
-        record_terminal_ticket_context(base, ticket.id, feature=feature, location=location)
 
 
 @ticket_app.command("current", help="Show the ticket bound to this execution context.")
@@ -1129,18 +1005,6 @@ def ticket_current(
 
         with flock(ticket_assignment_lock_path(base)):
             binding = read_execution_ticket_context(base, context)
-            if binding is None:
-                try:
-                    binding = migrate_legacy_execution_binding(base, context, feature)
-                except AmbiguousLegacyTickets as exc:
-                    if id_only:
-                        raise typer.Exit(code=1) from None
-                    ticket_list = ", ".join(exc.ticket_ids)
-                    print_error(
-                        f"Multiple legacy in-progress tickets ({ticket_list}); refusing to guess. "
-                        "Run `kd tk start <id>` to bind this context explicitly."
-                    )
-                    raise typer.Exit(code=1) from None
             if binding is None or binding.get("feature") != normalize_branch_name(feature):
                 if id_only:
                     raise typer.Exit(code=1)
@@ -1156,9 +1020,6 @@ def ticket_current(
                 print_error(f"Bound ticket {binding['ticket_id']} cannot be found. Run `kd tk start <id>` to recover.")
                 raise typer.Exit(code=1)
             ticket, ticket_path = bound_ticket
-            if ticket.status == "in_progress" and ticket.assignee in (None, "hand"):
-                write_ticket_assignee(ticket_path, context.context_id)
-                ticket.assignee = context.context_id
             wrong_assignee = ticket.assignee != context.context_id
             excluded = exclude_peasant and (ticket.assignee or "").startswith("peasant-")
             if ticket.status != "in_progress" or wrong_assignee or excluded:
@@ -1280,7 +1141,13 @@ def ticket_close(
             raise typer.Exit(code=1)
         superseding_ticket_id = superseding_ticket.id
 
-    existing_resolution = effective_resolution(ticket) or "completed"
+    existing_resolution = effective_resolution(ticket)
+    if ticket.status == "closed" and existing_resolution is None:
+        print_error(
+            f"Ticket {ticket.id} is closed but missing a resolution. "
+            f"Run `kd tk reopen {ticket.id}`, then close it with explicit closure details."
+        )
+        raise typer.Exit(code=1)
     close_resolution = resolution
     if close_resolution is None:
         if duplicate_target_id:
@@ -1381,7 +1248,6 @@ def ticket_close(
         ticket.body = insert_markdown_section_entry(ticket.body, "Lifecycle", lifecycle_entry).strip()
         write_ticket(ticket, ticket_path)
         clear_ticket_execution_contexts(base, ticket.id, now=closed_at)
-        clear_terminal_ticket_contexts(base, ticket.id, now=closed_at)
 
         if reason:
             from kingdom.harness import format_worklog_timestamp
@@ -1424,7 +1290,7 @@ def ticket_reopen(
         reopened_at = datetime.now(UTC).replace(microsecond=0)
 
         if ticket.status == "closed":
-            previous_resolution = effective_resolution(ticket) or "completed"
+            previous_resolution = effective_resolution(ticket) or "unspecified"
             reference_id = ticket.duplicate_of or ticket.superseded_by
             try:
                 context = resolve_execution_context()
@@ -1456,7 +1322,7 @@ def ticket_reopen(
             ticket_path = move_ticket(ticket_path, backlog_root(base) / "tickets")
 
         clear_ticket_execution_contexts(base, ticket.id, now=reopened_at)
-        clear_terminal_ticket_contexts(base, ticket.id, now=reopened_at)
+
     typer.echo(f"{ticket.id}: {old_status} → open — {ticket.title}")
 
 
@@ -1472,7 +1338,6 @@ def ticket_status(
         if status == "in_progress":
             return
         clear_ticket_execution_contexts(base, ticket.id)
-        clear_terminal_ticket_contexts(base, ticket.id)
 
 
 @ticket_app.command("delete", help="Permanently delete a ticket file.")
@@ -1513,7 +1378,7 @@ def ticket_delete(
         ticket_path = match.path
         delete_ticket(ticket_path)
         clear_ticket_execution_contexts(base, ticket.id)
-        clear_terminal_ticket_contexts(base, ticket.id)
+
     typer.echo(f"Deleted {ticket.id} — {ticket.title}")
 
 
@@ -1775,7 +1640,7 @@ def ticket_assign(
         write_ticket(ticket, ticket_path)
         if changed_owner:
             clear_ticket_execution_contexts(base, ticket.id)
-            clear_terminal_ticket_contexts(base, ticket.id)
+
     typer.echo(f"{ticket.id}: assigned to {agent}")
 
 
@@ -1793,7 +1658,7 @@ def ticket_unassign(
         ticket.assignee = None
         write_ticket(ticket, ticket_path)
         clear_ticket_execution_contexts(base, ticket.id)
-        clear_terminal_ticket_contexts(base, ticket.id)
+
     typer.echo(f"{ticket.id}: unassigned")
 
 
@@ -1857,7 +1722,7 @@ def defer_tickets_locked(base: Path, ticket_ids: list[str], reason: str, context
             continue
         seen_ids.add(ticket.id)
 
-        location = terminal_context_location_for_start(base, ticket_path)
+        location = execution_context_location(base, ticket_path)
         if location == "backlog":
             already_backlogged.append(ticket)
             continue
@@ -1905,7 +1770,7 @@ def defer_tickets_locked(base: Path, ticket_ids: list[str], reason: str, context
         ticket.assignee = None
         write_ticket(ticket, ticket_path)
         clear_ticket_execution_contexts(base, ticket.id, now=deferred_at)
-        clear_terminal_ticket_contexts(base, ticket.id, now=deferred_at)
+
         move_ticket(ticket_path, backlog_tickets)
         typer.echo(f"Deferred {ticket.id} to backlog — {ticket.title}")
 
@@ -1952,7 +1817,7 @@ def ticket_move(
             print_error(str(exc))
             raise typer.Exit(code=1) from None
         clear_ticket_execution_contexts(base, ticket.id)
-        clear_terminal_ticket_contexts(base, ticket.id)
+
         typer.echo(f"Moved {ticket.id} from {location} to branch:{target} — {ticket.title}")
 
 
@@ -2010,10 +1875,9 @@ def start_pulled_ticket(
         current.assignee = context.context_id
         write_ticket(current, ticket_path)
         clear_ticket_execution_contexts(base, current.id)
-        clear_terminal_ticket_contexts(base, current.id)
+
         location = f"branch:{normalize_branch_name(feature)}"
         record_execution_ticket_context(base, context, current.id, feature=feature, location=location)
-        record_terminal_ticket_context(base, current.id, feature=feature, location=location)
 
 
 @ticket_app.command("pull", help="Select backlog tickets for work on the current branch.")
@@ -2054,29 +1918,24 @@ def ticket_pull(
 
     dest_dir = branch_root(base, feature) / "tickets"
     backlog_tickets = backlog_root(base) / "tickets"
-    selected_tickets = {ticket.id.removeprefix("kin-"): ticket for ticket in list_tickets(dest_dir)}
+    selected_tickets = {ticket.id: ticket for ticket in list_tickets(dest_dir)}
 
     # Pass 1: validate all tickets before moving any (backlog-scoped lookup)
     validated: list[tuple[Ticket, Path]] = []
     seen_ids: set[str] = set()
     for tid in ticket_ids:
-        # Support both legacy kin-XXXX and new XXXX formats
-        clean_id = tid[4:] if tid.startswith("kin-") else tid
-        selected = selected_tickets.get(clean_id)
+        selected = selected_tickets.get(tid)
         if selected:
             print_error(f"Ticket {selected.id} is already selected on branch '{normalize_branch_name(feature)}'.")
             raise typer.Exit(code=1)
 
-        ticket_path = backlog_tickets / f"{clean_id}.md"
-        if not ticket_path.exists():
-            # Fall back to legacy kin- format
-            ticket_path = backlog_tickets / f"kin-{clean_id}.md"
+        ticket_path = backlog_tickets / f"{tid}.md"
         if not ticket_path.exists():
             print_error(f"Ticket not found in backlog: {tid}")
             raise typer.Exit(code=1)
 
         ticket = read_ticket(ticket_path)
-        selected = selected_tickets.get(ticket.id.removeprefix("kin-"))
+        selected = selected_tickets.get(ticket.id)
         if selected or (dest_dir / ticket_path.name).exists():
             print_error(f"Ticket {ticket.id} is already selected on branch '{normalize_branch_name(feature)}'.")
             raise typer.Exit(code=1)

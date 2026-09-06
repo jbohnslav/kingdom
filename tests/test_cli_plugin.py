@@ -9,18 +9,16 @@ from typer.testing import CliRunner
 
 from kingdom.cli import app
 from kingdom.cli.plugin import (
-    EXTENDED_HOOK_EVENTS,
     HOOK_COMMAND,
     HOOK_CONFIG,
-    HOOK_EVENTS,
+    SUPPORTED_HOOK_EVENTS,
+    has_full_hook_installation,
     has_hook_for_event,
-    is_hook_installed,
     read_settings,
     write_settings,
 )
 
 runner = CliRunner()
-SUPPORTED_HOOK_EVENTS = HOOK_EVENTS + EXTENDED_HOOK_EVENTS
 
 
 # ---------------------------------------------------------------------------
@@ -58,40 +56,40 @@ class TestReadWriteSettings:
 
 class TestIsHookInstalled:
     def test_empty_settings(self) -> None:
-        assert not is_hook_installed({})
+        assert not has_full_hook_installation({})
 
     def test_no_hooks(self) -> None:
-        assert not is_hook_installed({"hooks": {}})
+        assert not has_full_hook_installation({"hooks": {}})
 
     def test_only_user_prompt_submit_hook(self) -> None:
         settings = {"hooks": {"UserPromptSubmit": [HOOK_CONFIG]}}
-        assert not is_hook_installed(settings)
+        assert not has_full_hook_installation(settings)
 
     def test_only_session_start_hook(self) -> None:
         settings = {"hooks": {"SessionStart": [HOOK_CONFIG]}}
-        assert not is_hook_installed(settings)
+        assert not has_full_hook_installation(settings)
 
     def test_missing_one_event(self) -> None:
         settings = {
             "hooks": {"SessionStart": [HOOK_CONFIG], "UserPromptSubmit": [HOOK_CONFIG], "PostToolUse": [HOOK_CONFIG]}
         }
-        assert not is_hook_installed(settings)
+        assert not has_full_hook_installation(settings)
 
     def test_all_hooks_present(self) -> None:
         settings = {"hooks": {event: [HOOK_CONFIG] for event in SUPPORTED_HOOK_EVENTS}}
-        assert is_hook_installed(settings)
+        assert has_full_hook_installation(settings)
 
     def test_other_hooks_only(self) -> None:
         settings = {
             "hooks": {"UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "other.sh"}]}]}
         }
-        assert not is_hook_installed(settings)
+        assert not has_full_hook_installation(settings)
 
     def test_kingdom_hook_among_others(self) -> None:
         other = {"matcher": "", "hooks": [{"type": "command", "command": "other.sh"}]}
         settings = {"hooks": {event: [HOOK_CONFIG] for event in SUPPORTED_HOOK_EVENTS}}
         settings["hooks"]["UserPromptSubmit"] = [other, HOOK_CONFIG]
-        assert is_hook_installed(settings)
+        assert has_full_hook_installation(settings)
 
 
 class TestHasHookForEvent:
@@ -120,7 +118,7 @@ class TestPluginEnable:
         assert "enabled" in result.output
 
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert is_hook_installed(settings)
+        assert has_full_hook_installation(settings)
 
     def test_enable_uses_kd_hook_run_command(self, tmp_path: Path) -> None:
         """Hook command should be 'kd hook run', not a bash script path."""
@@ -151,7 +149,7 @@ class TestPluginEnable:
 
         settings = json.loads(settings_path.read_text())
         assert settings["permissions"] == {"allow": ["Bash(git:*)"]}
-        assert is_hook_installed(settings)
+        assert has_full_hook_installation(settings)
 
     def test_enable_idempotent(self, tmp_path: Path) -> None:
         with mock_git_root(tmp_path):
@@ -176,47 +174,8 @@ class TestPluginEnable:
         assert "enabled" in result.output
 
         settings = json.loads(settings_path.read_text())
-        assert is_hook_installed(settings)
+        assert has_full_hook_installation(settings)
         assert len(settings["hooks"]["UserPromptSubmit"]) == 1
-        for event in SUPPORTED_HOOK_EVENTS:
-            assert has_hook_for_event(settings, event)
-
-    def test_enable_updates_legacy_four_hook_install(self, tmp_path: Path) -> None:
-        settings_path = tmp_path / ".claude" / "settings.json"
-        settings_path.parent.mkdir(parents=True)
-        settings_path.write_text(json.dumps({"hooks": {event: [HOOK_CONFIG] for event in HOOK_EVENTS}}))
-
-        with mock_git_root(tmp_path):
-            result = runner.invoke(app, ["plugin", "enable"])
-        assert result.exit_code == 0
-        assert "enabled" in result.output
-
-        settings = json.loads(settings_path.read_text())
-        for event in SUPPORTED_HOOK_EVENTS:
-            assert has_hook_for_event(settings, event)
-
-    def test_enable_replaces_legacy_script_hooks(self, tmp_path: Path) -> None:
-        legacy_command = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/kd-workflow.sh'
-        legacy_hook = {
-            "matcher": "",
-            "hooks": [{"type": "command", "command": legacy_command, "timeout": 10}],
-        }
-        settings_path = tmp_path / ".claude" / "settings.json"
-        settings_path.parent.mkdir(parents=True)
-        settings_path.write_text(json.dumps({"hooks": {event: [legacy_hook] for event in HOOK_EVENTS}}))
-
-        with mock_git_root(tmp_path):
-            result = runner.invoke(app, ["plugin", "enable"])
-
-        assert result.exit_code == 0
-        settings = json.loads(settings_path.read_text())
-        commands = [
-            hook["command"]
-            for matchers in settings["hooks"].values()
-            for matcher in matchers
-            for hook in matcher["hooks"]
-        ]
-        assert legacy_command not in commands
         for event in SUPPORTED_HOOK_EVENTS:
             assert has_hook_for_event(settings, event)
 
@@ -230,7 +189,7 @@ class TestPluginDisable:
         assert "disabled" in result.output
 
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert not is_hook_installed(settings)
+        assert not has_full_hook_installation(settings)
         assert "hooks" not in settings
 
     def test_disable_preserves_other_hooks(self, tmp_path: Path) -> None:

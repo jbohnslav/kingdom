@@ -13,7 +13,6 @@ from kingdom.worktree import (
     check_uncommitted_changes,
     create_worktree,
     design_state_path,
-    existing_worktree_path_for,
     is_kd_change,
     remove_worktree,
     sync_workflow_files,
@@ -24,17 +23,8 @@ from kingdom.worktree import (
 class TestWorktreePathFor:
     def test_returns_namespaced_path_when_feature_given(self, tmp_path: Path) -> None:
         ensure_base_layout(tmp_path)
-        result = worktree_path_for(tmp_path, "kin-abcd", feature="feature-test")
-        assert result == tmp_path / ".kd" / "worktrees" / "feature-test" / "kin-abcd"
-
-    def test_existing_worktree_accepts_legacy_path(self, tmp_path: Path) -> None:
-        ensure_base_layout(tmp_path)
-        legacy = tmp_path / ".kd" / "worktrees" / "kin-abcd"
-        legacy.mkdir(parents=True)
-
-        result = existing_worktree_path_for(tmp_path, "kin-abcd", feature="feature-test")
-
-        assert result == legacy
+        result = worktree_path_for(tmp_path, "abcd", feature="feature-test")
+        assert result == tmp_path / ".kd" / "worktrees" / "feature-test" / "abcd"
 
 
 class TestSyncWorkflowFiles:
@@ -143,7 +133,7 @@ class TestCheckUncommittedChanges:
 class TestRemoveWorktree:
     def test_requires_explicit_feature(self, tmp_path: Path) -> None:
         with pytest.raises(TypeError):
-            remove_worktree(tmp_path, "kin-abcd", git_root=tmp_path)
+            remove_worktree(tmp_path, "abcd", git_root=tmp_path)
 
     def test_uses_supplied_feature_instead_of_current_session(self, tmp_path: Path) -> None:
         import subprocess
@@ -152,16 +142,16 @@ class TestRemoveWorktree:
         ensure_branch_layout(tmp_path, "feature-b")
         set_current_run(tmp_path, "feature-b")
 
-        worktree = worktree_path_for(tmp_path, "kin-abcd", feature="feature-a")
+        worktree = worktree_path_for(tmp_path, "abcd", feature="feature-a")
         worktree.mkdir(parents=True)
         state_path = design_state_path(tmp_path, "feature-a")
         state = read_json(state_path)
-        state["worktrees"] = {"kin-abcd": str(worktree)}
+        state["worktrees"] = {"abcd": str(worktree)}
         write_json(state_path, state)
 
         result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch("kingdom.worktree.subprocess.run", return_value=result) as mock_run:
-            remove_worktree(tmp_path, "kin-abcd", git_root=tmp_path, feature="feature-a")
+            remove_worktree(tmp_path, "abcd", git_root=tmp_path, feature="feature-a")
 
         mock_run.assert_called_once_with(
             ["git", "worktree", "remove", "--force", str(worktree)],
@@ -183,7 +173,7 @@ class TestRemoveWorktree:
         import subprocess
 
         ensure_branch_layout(tmp_path, "feature-a")
-        worktree = worktree_path_for(tmp_path, "kin-abcd", feature="feature-a")
+        worktree = worktree_path_for(tmp_path, "abcd", feature="feature-a")
         worktree.mkdir(parents=True)
         messages: list[str] = []
         result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
@@ -194,7 +184,7 @@ class TestRemoveWorktree:
         ):
             remove_worktree(
                 tmp_path,
-                "kin-abcd",
+                "abcd",
                 log=messages.append,
                 git_root=tmp_path,
                 feature="feature-a",
@@ -224,9 +214,9 @@ class TestCreateWorktree:
             patch("kingdom.worktree.subprocess.run", return_value=result),
             patch("kingdom.worktree.update_worktree_state", side_effect=failure),
         ):
-            worktree = create_worktree(tmp_path, "kin-abcd", log=messages.append, git_root=tmp_path)
+            worktree = create_worktree(tmp_path, "abcd", log=messages.append, git_root=tmp_path)
 
-        assert worktree == worktree_path_for(tmp_path, "kin-abcd", feature="feature-a")
+        assert worktree == worktree_path_for(tmp_path, "abcd", feature="feature-a")
         assert messages[-1] == f"Warning: could not record worktree in state.json: {failure}"
 
 
@@ -238,3 +228,9 @@ class TestDesignStatePath:
         assert result.name == "state.json"
         assert "branches" in str(result)
         assert result.exists()
+
+
+def test_worktree_path_normalizes_feature_namespace(tmp_path: Path) -> None:
+    assert worktree_path_for(tmp_path, "abcd", feature="feature/test") == (
+        tmp_path / ".kd" / "worktrees" / "feature-test" / "abcd"
+    )

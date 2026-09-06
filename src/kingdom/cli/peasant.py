@@ -25,7 +25,6 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     branches_root,
-    clear_terminal_ticket_contexts,
     clear_ticket_execution_contexts,
     find_git_root,
     flock,
@@ -47,9 +46,9 @@ from kingdom.ticket import (
 from kingdom.worktree import (
     check_uncommitted_changes,
     create_worktree,
-    existing_worktree_path_for,
     remove_worktree,
     run_init_script,
+    worktree_path_for,
 )
 
 from .display import error_console, print_error, styled_echo
@@ -446,7 +445,6 @@ def launch_peasant(
         ticket.assignee = session_name
         write_ticket(ticket, ctx.ticket_path)
         clear_ticket_execution_contexts(base, ticket.id)
-        clear_terminal_ticket_contexts(base, ticket.id)
 
     # 2. Create work thread (ignore if already exists)
     with contextlib.suppress(FileExistsError):
@@ -973,8 +971,6 @@ def poll_council_status(base: Path, branch: str, thread_id: str) -> str | None:
     """
     from kingdom.thread import (
         get_thread,
-        is_error_response,
-        is_timeout_response,
         list_messages,
         thread_dir,
     )
@@ -1008,9 +1004,9 @@ def poll_council_status(base: Path, branch: str, thread_id: str) -> str | None:
     for name in sorted(expected):
         msg = response_msgs.get(name)
         if msg:
-            if msg.status == "timeout" or is_timeout_response(msg.body):
+            if msg.status == "timeout":
                 parts.append(f"{name} timed_out")
-            elif msg.status in ("error", "interrupted") or is_error_response(msg.body):
+            elif msg.status in ("error", "interrupted"):
                 parts.append(f"{name} errored")
             else:
                 parts.append(f"{name} responded")
@@ -1043,11 +1039,7 @@ def peasant_watch(
 
     # Resolve worktree path for activity polling
     state = get_agent_state(ctx.base, ctx.feature, session_name)
-    worktree = (
-        ctx.git_root
-        if state.hand_mode
-        else existing_worktree_path_for(ctx.base, ctx.full_ticket_id, feature=ctx.feature)
-    )
+    worktree = ctx.git_root if state.hand_mode else worktree_path_for(ctx.base, ctx.full_ticket_id, feature=ctx.feature)
 
     # Resolve agent backend for NDJSON stream decoding
     agent_backend = ""
@@ -1365,7 +1357,7 @@ def peasant_sync(
         raise typer.Exit(code=1)
 
     # Find worktree
-    worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
+    worktree_path = worktree_path_for(base, full_ticket_id, feature=feature)
     if not worktree_path.exists():
         print_error(f"No worktree found for {full_ticket_id}. Has the peasant been started?")
         raise typer.Exit(code=1)
@@ -1823,7 +1815,7 @@ def peasant_reject(
         worktree_path = ctx.git_root
     else:
         # Worktree mode: use the ticket worktree
-        worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
+        worktree_path = worktree_path_for(base, full_ticket_id, feature=feature)
         if not worktree_path.exists():
             print_error(f"worktree missing for {full_ticket_id}. Run `kd peasant start` to recreate.")
             raise typer.Exit(code=1)

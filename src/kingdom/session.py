@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from kingdom.state import branch_root, locked_json_update, read_json, sessions_root, write_json
+from kingdom.state import branch_root, locked_json_update, read_json, sessions_root
 
 AGENT_STATUSES = frozenset(
     {
@@ -71,10 +71,6 @@ def session_path(base: Path, branch: str, agent_name: str) -> Path:
     return sessions_root(base, branch) / f"{agent_name}.json"
 
 
-def legacy_session_path(base: Path, branch: str, agent_name: str) -> Path:
-    return sessions_root(base, branch) / f"{agent_name}.session"
-
-
 # ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
@@ -105,32 +101,15 @@ def agent_state_to_dict(state: AgentState) -> dict[str, Any]:
 
 
 def get_agent_state(base: Path, branch: str, agent_name: str) -> AgentState:
-    """Read agent state, migrating legacy .session files if needed.
+    """Read the current JSON agent state.
 
     Returns default idle state if no session file exists.
     """
     json_path = session_path(base, branch, agent_name)
-    old_path = legacy_session_path(base, branch, agent_name)
-
-    # Migrate legacy .session file if needed
-    if not json_path.exists() and old_path.exists():
-        resume_id = old_path.read_text(encoding="utf-8").strip()
-        state = AgentState(name=agent_name, resume_id=resume_id or None)
-        set_agent_state(base, branch, agent_name, state)
-        old_path.unlink()
-        return state
-
     if not json_path.exists():
         return AgentState(name=agent_name)
 
     return agent_state_from_dict(read_json(json_path), agent_name)
-
-
-def set_agent_state(base: Path, branch: str, agent_name: str, state: AgentState) -> None:
-    json_path = session_path(base, branch, agent_name)
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    state.name = agent_name
-    write_json(json_path, agent_state_to_dict(state))
 
 
 def update_agent_state(base: Path, branch: str, agent_name: str, **fields: Any) -> AgentState:

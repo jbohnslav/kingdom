@@ -24,7 +24,7 @@ runner = CliRunner()
 BRANCH = "feature/ticket-test"
 
 
-def create_ticket_in(directory: Path, ticket_id: str = "kin-t001") -> Path:
+def create_ticket_in(directory: Path, ticket_id: str = "t001") -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     ticket = Ticket(
         id=ticket_id,
@@ -41,29 +41,29 @@ def create_ticket_in(directory: Path, ticket_id: str = "kin-t001") -> Path:
 class TestTicketLog:
     def test_log_appends_worklog_entry(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-lg01")
+        create_ticket_in(tickets_dir, "lg01")
 
-        result = runner.invoke(ticket_app, ["log", "kin-lg01", "Started working on this"])
+        result = runner.invoke(ticket_app, ["log", "lg01", "Started working on this"])
 
         assert result.exit_code == 0, result.output
-        assert "kin-lg01" in result.output
+        assert "lg01" in result.output
         assert "Started working on this" in result.output
 
         # Verify the file was updated
-        content = (tickets_dir / "kin-lg01.md").read_text()
+        content = (tickets_dir / "lg01.md").read_text()
         assert "## Worklog" in content
         assert "Started working on this" in content
 
     def test_log_multiple_entries(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-lg02")
+        create_ticket_in(tickets_dir, "lg02")
 
-        runner.invoke(ticket_app, ["log", "kin-lg02", "First entry"])
-        result = runner.invoke(ticket_app, ["log", "kin-lg02", "Second entry"])
+        runner.invoke(ticket_app, ["log", "lg02", "First entry"])
+        result = runner.invoke(ticket_app, ["log", "lg02", "Second entry"])
 
         assert result.exit_code == 0, result.output
 
-        content = (tickets_dir / "kin-lg02.md").read_text()
+        content = (tickets_dir / "lg02.md").read_text()
         assert "First entry" in content
         assert "Second entry" in content
 
@@ -73,7 +73,7 @@ class TestTicketLog:
         assert first_pos < second_pos
 
     def test_log_not_found(self, cli_project: Path) -> None:
-        result = runner.invoke(ticket_app, ["log", "kin-nope", "message"])
+        result = runner.invoke(ticket_app, ["log", "nope", "message"])
 
         assert result.exit_code == 1
         assert "not found" in result.output
@@ -82,19 +82,19 @@ class TestTicketLog:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
 
         ticket = Ticket(
-            id="kin-lg03",
+            id="lg03",
             status="open",
             title="Preserve content",
             body="## Acceptance Criteria\n\n- [ ] Item 1\n- [ ] Item 2",
             created=datetime.now(UTC),
         )
-        write_ticket(ticket, tickets_dir / "kin-lg03.md")
+        write_ticket(ticket, tickets_dir / "lg03.md")
 
-        result = runner.invoke(ticket_app, ["log", "kin-lg03", "Did some work"])
+        result = runner.invoke(ticket_app, ["log", "lg03", "Did some work"])
 
         assert result.exit_code == 0, result.output
 
-        content = (tickets_dir / "kin-lg03.md").read_text()
+        content = (tickets_dir / "lg03.md").read_text()
         assert "# Preserve content" in content
         assert "## Acceptance Criteria" in content
         assert "- [ ] Item 1" in content
@@ -103,51 +103,51 @@ class TestTicketLog:
 
     def test_log_missing_message_errors(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-lg04")
+        create_ticket_in(tickets_dir, "lg04")
 
-        result = runner.invoke(ticket_app, ["log", "kin-lg04"])
+        result = runner.invoke(ticket_app, ["log", "lg04"])
 
         assert result.exit_code == 1
         assert "No worklog message provided." in result.output
 
     def test_log_reads_multiline_special_characters_from_stdin(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-lg05")
+        create_ticket_in(tickets_dir, "lg05")
         message = 'First line\n"quotes" & <angles> $HOME `ticks` * [literal]\n'
 
-        result = runner.invoke(ticket_app, ["log", "kin-lg05"], input=message)
+        result = runner.invoke(ticket_app, ["log", "lg05"], input=message)
 
         assert result.exit_code == 0, result.output
-        content = (tickets_dir / "kin-lg05.md").read_text()
+        content = (tickets_dir / "lg05.md").read_text()
         assert "— First line" in content
         assert '  "quotes" & <angles> $HOME `ticks` * [literal]' in content
 
     def test_log_records_agent_attribution(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        create_ticket_in(tickets_dir, "kin-lg06")
+        create_ticket_in(tickets_dir, "lg06")
 
         result = runner.invoke(
             ticket_app,
-            ["log", "kin-lg06", "Attributed entry"],
+            ["log", "lg06", "Attributed entry"],
             env={"KD_AGENT_NAME": "peasant-3af0"},
         )
 
         assert result.exit_code == 0, result.output
-        content = (tickets_dir / "kin-lg06.md").read_text()
+        content = (tickets_dir / "lg06.md").read_text()
         assert "[peasant-3af0] — Attributed entry" in content
 
     def test_log_refreshes_only_the_exact_owner_context(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        ticket_path = create_ticket_in(tickets_dir, "kin-lg07")
+        ticket_path = create_ticket_in(tickets_dir, "lg07")
         stale_time = datetime.now(UTC) - timedelta(days=2)
 
         owner = resolve_execution_context(session_id="owner", host="codex", now=stale_time, cwd=cli_project)
         foreign = resolve_execution_context(session_id="foreign", host="codex", now=stale_time, cwd=cli_project)
         assert owner is not None
         assert foreign is not None
-        record_execution_ticket_context(cli_project, owner, "kin-lg07", feature=BRANCH)
+        record_execution_ticket_context(cli_project, owner, "lg07", feature=BRANCH)
         ticket = Ticket(
-            id="kin-lg07",
+            id="lg07",
             status="in_progress",
             title="Test ticket",
             assignee=owner.context_id,
@@ -157,7 +157,7 @@ class TestTicketLog:
 
         foreign_result = runner.invoke(
             ticket_app,
-            ["log", "kin-lg07", "Foreign review"],
+            ["log", "lg07", "Foreign review"],
             env={"KD_CONTEXT": "foreign", "KD_HOST": "codex"},
         )
         assert foreign_result.exit_code == 0, foreign_result.output
@@ -167,7 +167,7 @@ class TestTicketLog:
 
         owner_result = runner.invoke(
             ticket_app,
-            ["log", "kin-lg07", "Owner progress"],
+            ["log", "lg07", "Owner progress"],
             env={"KD_CONTEXT": "owner", "KD_HOST": "codex"},
         )
         assert owner_result.exit_code == 0, owner_result.output
@@ -175,13 +175,13 @@ class TestTicketLog:
 
     def test_owner_log_keeps_context_live_in_status(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        ticket_path = create_ticket_in(tickets_dir, "kin-lg08")
+        ticket_path = create_ticket_in(tickets_dir, "lg08")
         stale_time = datetime.now(UTC) - timedelta(days=2)
         owner = resolve_execution_context(session_id="owner", host="codex", now=stale_time, cwd=cli_project)
         assert owner is not None
-        record_execution_ticket_context(cli_project, owner, "kin-lg08", feature=BRANCH)
+        record_execution_ticket_context(cli_project, owner, "lg08", feature=BRANCH)
         ticket = Ticket(
-            id="kin-lg08",
+            id="lg08",
             status="in_progress",
             title="Test ticket",
             assignee=owner.context_id,
@@ -191,7 +191,7 @@ class TestTicketLog:
 
         log_result = runner.invoke(
             ticket_app,
-            ["log", "kin-lg08", "Still working"],
+            ["log", "lg08", "Still working"],
             env={"KD_CONTEXT": "owner", "KD_HOST": "codex"},
         )
         assert log_result.exit_code == 0, log_result.output

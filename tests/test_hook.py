@@ -31,7 +31,6 @@ from kingdom.state import (
     list_execution_contexts,
     read_execution_ticket_context,
     record_execution_ticket_context,
-    record_terminal_ticket_context,
     resolve_execution_context,
     set_current_run,
 )
@@ -702,8 +701,13 @@ class TestStopHandler:
         *,
         status: str = "in_progress",
         assignee: str | None = None,
+        session_id: str = "sess-1",
     ) -> None:
         branch_dir = ensure_branch_layout(tmp_path, feature)
+        if assignee is None:
+            context = resolve_execution_context(host="claude", session_id=session_id, cwd=tmp_path)
+            assert context is not None
+            assignee = context.context_id
         write_ticket(
             Ticket(id=ticket_id, status=status, title=f"Ticket {ticket_id}", body="", assignee=assignee),
             branch_dir / "tickets" / f"{ticket_id}.md",
@@ -741,32 +745,32 @@ class TestStopHandler:
                 }
             )
 
-    def mock_kd_current(self, ticket_id: str):
-        """Mock subprocess.run for kd tk current --id."""
-        from unittest.mock import MagicMock
+    def bind_ticket(
+        self,
+        base: Path,
+        ticket_id: str,
+        *,
+        feature: str = "branch-a",
+        session_id: str = "sess-1",
+        location: str | None = None,
+        cwd: Path | None = None,
+    ) -> None:
+        context = resolve_execution_context(host="claude", session_id=session_id, cwd=cwd or base)
+        assert context is not None
+        record_execution_ticket_context(base, context, ticket_id, feature=feature, location=location)
 
-        def fake_run(cmd, **kwargs):
-            result = MagicMock()
-            if ticket_id:
-                result.returncode = 0
-                result.stdout = ticket_id + "\n"
-            else:
-                result.returncode = 1
-                result.stdout = ""
-            return result
-
-        return patch("kingdom.cli.hook.subprocess.run", side_effect=fake_run)
+    def create_bound_ticket(self, tmp_path: Path, ticket_id: str, session_id: str = "sess-1") -> None:
+        context = resolve_execution_context(host="claude", session_id=session_id, cwd=tmp_path)
+        assert context is not None
+        self.create_ticket(tmp_path, "branch-a", ticket_id, assignee=context.context_id)
+        set_current_run(tmp_path, "branch-a")
+        self.bind_ticket(tmp_path, ticket_id, session_id=session_id)
 
     def test_blocks_when_had_work_no_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with (
-            patch.dict(
-                os.environ,
-                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
-            ),
-            self.mock_kd_current("0042"),
-        ):
+        self.create_bound_ticket(tmp_path, "0042")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         result = json.loads(output)
         assert result["decision"] == "block"
@@ -774,43 +778,45 @@ class TestStopHandler:
 
     def test_ticket_markdown_only_edit_does_not_block(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
+        self.create_bound_ticket(tmp_path, "7e15")
         ticket_path = tmp_path / ".kd" / "branches" / "branch-a" / "tickets" / "7e15.md"
         self.edit_path(tmp_path, ticket_path)
 
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("7e15"):
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
 
         assert output == ""
 
     def test_ticket_markdown_edit_counts_as_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
+        self.create_bound_ticket(tmp_path, "7e15")
         ticket_path = tmp_path / ".kd" / "branches" / "branch-a" / "tickets" / "7e15.md"
         code_path = tmp_path / "src" / "kingdom" / "cli" / "hook.py"
         self.edit_path(tmp_path, code_path)
         self.edit_path(tmp_path, ticket_path)
 
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current("7e15"):
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
 
         assert output == ""
 
-    def test_prefers_terminal_last_started_ticket(self, tmp_path: Path) -> None:
+    def test_uses_exact_session_ticket(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
+        self.create_bound_ticket(tmp_path, "9999", session_id="other-session")
         self.create_ticket(tmp_path, "branch-a", "7e15")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
         with patch.dict(os.environ, env):
-            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a")
+            self.bind_ticket(tmp_path, "7e15", feature="branch-a")
 
-        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+        with patch.dict(os.environ, env):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
 
         result = json.loads(output)
         assert "kd tk log 7e15" in result["reason"]
-        assert "9999" not in result["reason"]
 
-    def test_reads_terminal_ticket_context_from_kd_base(self, tmp_path: Path) -> None:
+    def test_reads_execution_ticket_context_from_kd_base(self, tmp_path: Path) -> None:
         kingdom_base = tmp_path / "main"
         worktree = tmp_path / "worktree"
         kingdom_base.mkdir()
@@ -823,119 +829,119 @@ class TestStopHandler:
         env = {
             "CLAUDE_PROJECT_DIR": str(worktree),
             "KD_BASE": str(kingdom_base),
-            "TERM_SESSION_ID": "terminal-a",
         }
         with patch.dict(os.environ, env):
-            record_terminal_ticket_context(kingdom_base, "7e15", feature="branch-a")
+            self.bind_ticket(kingdom_base, "7e15", feature="branch-a", cwd=worktree)
 
-        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+        with patch.dict(os.environ, env):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
 
         result = json.loads(output)
         assert "kd tk log 7e15" in result["reason"]
-        assert "9999" not in result["reason"]
 
-    def test_prefers_started_backlog_ticket_context(self, tmp_path: Path) -> None:
+    def test_resolves_started_backlog_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         backlog_tickets = backlog_root(tmp_path) / "tickets"
         backlog_tickets.mkdir(parents=True)
+        context = resolve_execution_context(host="claude", session_id="sess-1", cwd=tmp_path)
+        assert context is not None
         write_ticket(
-            Ticket(id="7e15", status="in_progress", title="Backlog ticket", body=""),
+            Ticket(id="7e15", status="in_progress", title="Backlog ticket", assignee=context.context_id),
             backlog_tickets / "7e15.md",
         )
         ensure_branch_layout(tmp_path, "branch-a")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
         with patch.dict(os.environ, env):
-            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a", location="backlog")
+            self.bind_ticket(tmp_path, "7e15", feature="branch-a", location="backlog")
 
-        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+        with patch.dict(os.environ, env):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
 
         result = json.loads(output)
         assert "kd tk log 7e15" in result["reason"]
-        assert "9999" not in result["reason"]
 
-    def test_prefers_started_archived_branch_ticket_context(self, tmp_path: Path) -> None:
+    def test_resolves_started_archived_branch_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         archived_tickets = tmp_path / ".kd" / "archive" / "old-feature" / "tickets"
         archived_tickets.mkdir(parents=True)
+        context = resolve_execution_context(host="claude", session_id="sess-1", cwd=tmp_path)
+        assert context is not None
         write_ticket(
-            Ticket(id="7e15", status="in_progress", title="Archived branch ticket", body=""),
+            Ticket(id="7e15", status="in_progress", title="Archived branch ticket", assignee=context.context_id),
             archived_tickets / "7e15.md",
         )
         ensure_branch_layout(tmp_path, "branch-a")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
         with patch.dict(os.environ, env):
-            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a", location="archive:old-feature")
+            self.bind_ticket(tmp_path, "7e15", feature="branch-a", location="archive:old-feature")
 
-        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+        with patch.dict(os.environ, env):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
 
         result = json.loads(output)
         assert "kd tk log 7e15" in result["reason"]
-        assert "9999" not in result["reason"]
 
-    def test_ignores_closed_terminal_ticket_context(self, tmp_path: Path) -> None:
+    def test_ignores_closed_execution_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_ticket(tmp_path, "branch-a", "7e15", status="closed")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
         with patch.dict(os.environ, env):
-            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a")
+            self.bind_ticket(tmp_path, "7e15", feature="branch-a")
 
-        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+        with patch.dict(os.environ, env):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         assert output == ""
 
-    def test_ignores_peasant_terminal_ticket_context(self, tmp_path: Path) -> None:
+    def test_ignores_peasant_execution_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_ticket(tmp_path, "branch-a", "7e15", assignee="peasant-7e15")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
         with patch.dict(os.environ, env):
-            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a")
+            self.bind_ticket(tmp_path, "7e15", feature="branch-a")
 
-        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+        with patch.dict(os.environ, env):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         assert output == ""
 
-    def test_ignores_terminal_ticket_context_from_other_feature(self, tmp_path: Path) -> None:
+    def test_ignores_execution_ticket_context_from_other_feature(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_ticket(tmp_path, "branch-a", "7e15")
         ensure_branch_layout(tmp_path, "branch-b")
         set_current_run(tmp_path, "branch-b")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}
+        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
         with patch.dict(os.environ, env):
-            record_terminal_ticket_context(tmp_path, "7e15", feature="branch-a")
+            self.bind_ticket(tmp_path, "7e15", feature="branch-a")
 
-        with patch.dict(os.environ, env), self.mock_kd_current("9999"):
+        with patch.dict(os.environ, env):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         assert output == ""
 
-    def test_terminal_ticket_context_is_isolated(self, tmp_path: Path) -> None:
+    def test_execution_ticket_context_is_isolated(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path, session_id="sess-a")
         self.setup_session(tmp_path, session_id="sess-b")
         self.do_work(tmp_path, session_id="sess-a")
         self.do_work(tmp_path, session_id="sess-b")
-        self.create_ticket(tmp_path, "branch-a", "aaaa")
-        self.create_ticket(tmp_path, "branch-b", "bbbb")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}):
-            record_terminal_ticket_context(tmp_path, "aaaa", feature="branch-a")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-b"}):
-            record_terminal_ticket_context(tmp_path, "bbbb", feature="branch-b")
+        self.create_ticket(tmp_path, "branch-a", "aaaa", session_id="sess-a")
+        self.create_ticket(tmp_path, "branch-b", "bbbb", session_id="sess-b")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
+            self.bind_ticket(tmp_path, "aaaa", feature="branch-a", session_id="sess-a")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
+            self.bind_ticket(tmp_path, "bbbb", feature="branch-b", session_id="sess-b")
 
         set_current_run(tmp_path, "branch-a")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-a"}):
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output_a = handle_stop({"hook_event_name": "Stop", "session_id": "sess-a", "stop_hook_active": False})
         set_current_run(tmp_path, "branch-b")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path), "TERM_SESSION_ID": "terminal-b"}):
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output_b = handle_stop({"hook_event_name": "Stop", "session_id": "sess-b", "stop_hook_active": False})
 
         assert "kd tk log aaaa" in json.loads(output_a)["reason"]
@@ -943,6 +949,7 @@ class TestStopHandler:
 
     def test_allows_when_did_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
+        self.create_bound_ticket(tmp_path, "7e15")
         self.do_work(tmp_path)
         self.do_log(tmp_path)
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
@@ -951,12 +958,14 @@ class TestStopHandler:
 
     def test_allows_when_no_work(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
+        self.create_bound_ticket(tmp_path, "7e15")
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         assert output == ""
 
     def test_allows_when_stop_hook_active(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
+        self.create_bound_ticket(tmp_path, "7e15")
         self.do_work(tmp_path)
         with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": True})
@@ -970,94 +979,37 @@ class TestStopHandler:
     def test_no_active_ticket_passes_through(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}), self.mock_kd_current(""):
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         assert output == ""
 
     def test_active_ticket_blocks_with_real_id(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with (
-            patch.dict(
-                os.environ,
-                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
-            ),
-            self.mock_kd_current("a1b2"),
-        ):
+        self.create_bound_ticket(tmp_path, "a1b2")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         result = json.loads(output)
         assert result["decision"] == "block"
         assert "kd tk log a1b2" in result["reason"]
         assert "<" not in result["reason"]
 
-    def test_kd_current_failure_fails_open(self, tmp_path: Path) -> None:
-        self.setup_session(tmp_path)
-        self.do_work(tmp_path)
-        with (
-            patch.dict(
-                os.environ,
-                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
-            ),
-            self.mock_kd_current(""),
-        ):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
-        assert output == ""
-
-    def test_kd_current_exception_fails_open(self, tmp_path: Path) -> None:
-        self.setup_session(tmp_path)
-        self.do_work(tmp_path)
-        with (
-            patch.dict(
-                os.environ,
-                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
-            ),
-            patch("kingdom.cli.hook.subprocess.run", side_effect=Exception("timeout")),
-        ):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
-        assert output == ""
-
     def test_mid_turn_ticket_accept_enforces_at_stop(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with (
-            patch.dict(
-                os.environ,
-                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
-            ),
-            self.mock_kd_current("0240"),
-        ):
+        self.create_bound_ticket(tmp_path, "0240")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
         result = json.loads(output)
         assert result["decision"] == "block"
         assert "kd tk log 0240" in result["reason"]
 
-    def test_explicit_legacy_fallback_uses_kd_current(self, tmp_path: Path) -> None:
-        self.setup_session(tmp_path)
-        self.do_work(tmp_path)
-
-        with (
-            patch.dict(
-                os.environ,
-                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
-            ),
-            self.mock_kd_current("9999"),
-        ):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
-
-        result = json.loads(output)
-        assert "kd tk log 9999" in result["reason"]
-
     def test_second_stop_same_turn_does_not_loop(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
 
-        with (
-            patch.dict(
-                os.environ,
-                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
-            ),
-            self.mock_kd_current("0042"),
-        ):
+        self.create_bound_ticket(tmp_path, "0042")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             first_output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
             second_output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
 
@@ -1075,13 +1027,8 @@ class TestStopHandler:
             output_b = handle_stop({"hook_event_name": "Stop", "session_id": "sess-b", "stop_hook_active": False})
         assert output_b == ""
         # Session A's Stop should block.
-        with (
-            patch.dict(
-                os.environ,
-                {"CLAUDE_PROJECT_DIR": str(tmp_path), "KD_HOOK_LEGACY_TICKET_FALLBACK": "1"},
-            ),
-            self.mock_kd_current("0099"),
-        ):
+        self.create_bound_ticket(tmp_path, "0099", session_id="sess-a")
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
             output_a = handle_stop({"hook_event_name": "Stop", "session_id": "sess-a", "stop_hook_active": False})
         result = json.loads(output_a)
         assert result["decision"] == "block"

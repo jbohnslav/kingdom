@@ -289,16 +289,15 @@ class ErrorPanel(Static):
     retry actions so the user knows how to recover.
     """
 
-    def __init__(self, sender: str, error: str, timed_out: bool = False, **kwargs) -> None:
+    def __init__(self, sender: str, error: str, timed_out: bool = False, interrupted: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
         self.sender = sender
         self.error = error
         self.timed_out = timed_out
+        self.interrupted = interrupted
 
     def on_mount(self) -> None:
-        interrupted = "*Interrupted" in self.error or "*[Interrupted" in self.error
-
-        if interrupted:
+        if self.interrupted:
             label = "interrupted"
             self.styles.border = ("round", "yellow")
         elif self.timed_out:
@@ -309,7 +308,7 @@ class ErrorPanel(Static):
             self.styles.border = ("round", "red")
 
         self.border_title = f"{self.sender} — {label}"
-        body = format_error_body(self.error, self.sender, self.timed_out, interrupted)
+        body = format_error_body(self.error, self.sender, self.timed_out, self.interrupted)
         self.update(RichMarkdown(body))
 
 

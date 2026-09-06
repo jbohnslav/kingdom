@@ -20,7 +20,10 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def mock_doctor_model_check():
+def mock_doctor_model_check(tmp_path, monkeypatch):
+    isolated_project = tmp_path / "project"
+    ensure_base_layout(isolated_project)
+    monkeypatch.chdir(isolated_project)
     runtime = AgentRuntimeCheck(status="available", version="provider-cli 1.0")
     with (
         patch("kingdom.cli.check_agent_model", return_value=("unchecked", None)),

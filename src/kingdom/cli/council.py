@@ -22,7 +22,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from kingdom.council import create_council
 from kingdom.session import get_current_thread, set_current_thread
-from kingdom.state import council_logs_root, logs_root, read_json, resolve_current_run
+from kingdom.state import logs_root, resolve_current_run
 
 from .display import error_console, print_error
 from .helpers import require_project_root, verbose_echo
@@ -678,41 +678,6 @@ def print_turn(console: Console, turn_msgs: list, turn_number: int, total_turns:
         console.print()
 
 
-def show_legacy_run(base: Path, feature: str, thread_id: str, console: Console) -> None:
-    """Display a legacy run-bundle from logs/council/."""
-    council_logs_dir = council_logs_root(base, feature)
-    run_dir = council_logs_dir / thread_id
-    if not run_dir.exists():
-        # Try 'last' alias
-        if thread_id == "last":
-            if not council_logs_dir.exists():
-                print_error('No council history found. Start a conversation with `kd council ask "prompt"`.')
-                raise typer.Exit(code=1)
-            runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
-            if not runs:
-                print_error('No council history found. Start a conversation with `kd council ask "prompt"`.')
-                raise typer.Exit(code=1)
-            run_dir = max(runs, key=lambda d: d.stat().st_mtime)
-        else:
-            print_error(f"Legacy run not found: {thread_id}")
-            raise typer.Exit(code=1)
-
-    metadata_path = run_dir / "metadata.json"
-    if metadata_path.exists():
-        metadata = read_json(metadata_path)
-        typer.echo(f"Session: {run_dir.name}")
-        typer.echo(f"Timestamp: {metadata.get('timestamp', 'unknown')}")
-        prompt_text = metadata.get("prompt", "unknown")
-        typer.echo(f"Prompt: {prompt_text[:100]}...")
-        typer.echo()
-
-    for md_file in sorted(run_dir.glob("*.md")):
-        content = md_file.read_text(encoding="utf-8")
-        console.print(Markdown(f"## {md_file.stem}\n\n{content}"))
-
-    console.print(f"\n[dim]Archived session: {run_dir}[/dim]")
-
-
 @council_app.command("show", help="Display a council thread.")
 def council_show(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
@@ -725,11 +690,6 @@ def council_show(
     base = require_project_root()
     feature = resolve_current_run(base)
     console = Console()
-
-    # Legacy run-bundle support: "last" alias and "run-*" IDs bypass thread resolution
-    if thread_id is not None and (thread_id == "last" or thread_id.startswith("run-")):
-        show_legacy_run(base, feature, thread_id, console)
-        return
 
     # Resolve via archive-aware location lookup
     loc = resolve_council_thread_location(base, feature, thread_id, command="show")
@@ -1285,7 +1245,7 @@ def council_retry(
 
     Uses the original prompt from the most recent king message in the thread.
     """
-    from kingdom.thread import get_thread, is_error_response, list_messages
+    from kingdom.thread import get_thread, list_messages
 
     base = require_project_root()
     feature = resolve_current_run(base)
@@ -1317,15 +1277,11 @@ def council_retry(
         expected = {t.strip() for t in last_king_msg.to.split(",") if t.strip() != "king"} & all_members
 
     # Find members that responded successfully after the last ask.
-    # Check msg.status first (new metadata), fall back to body prefix for legacy messages.
+    # Explicit persisted status is authoritative.
     ok_members: set[str] = set()
     for msg in messages:
-        if msg.sequence > last_king_msg.sequence and msg.from_ in expected:
-            if msg.status:
-                if msg.status == "complete":
-                    ok_members.add(msg.from_)
-            elif not is_error_response(msg.body):
-                ok_members.add(msg.from_)
+        if msg.sequence > last_king_msg.sequence and msg.from_ in expected and msg.status in (None, "complete"):
+            ok_members.add(msg.from_)
 
     failed = expected - ok_members
     if not failed:

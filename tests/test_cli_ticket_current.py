@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -15,13 +13,9 @@ from kingdom.cli.ticket import ticket_app
 from kingdom.state import (
     branch_root,
     ensure_branch_layout,
-    execution_context_path,
     read_execution_ticket_context,
-    read_terminal_ticket_context,
-    record_terminal_ticket_context,
     resolve_execution_context,
     set_current_run,
-    write_json,
 )
 from kingdom.ticket import Ticket, read_ticket, write_ticket
 
@@ -64,158 +58,6 @@ class TestTicketCurrent:
             assert "done closed" in result.output
             assert "dependency gate:" in result.output
             assert "clear — not blocked; all dependencies are closed." in result.output
-
-    def test_current_migration_completes_without_nested_ticket_lock_deadlock(self, tmp_path: Path) -> None:
-        setup_project(tmp_path)
-        ticket_path = branch_root(tmp_path, BRANCH) / "tickets" / "only.md"
-        write_ticket(
-            Ticket(
-                id="only",
-                status="in_progress",
-                title="Only legacy ticket",
-                assignee="hand",
-                created=datetime.now(UTC),
-            ),
-            ticket_path,
-        )
-        source_root = Path(__file__).resolve().parent.parent / "src"
-        env = os.environ.copy()
-        env.update({"KD_BASE": str(tmp_path), "KD_CONTEXT": "migration-timeout", "PYTHONPATH": str(source_root)})
-
-        result = subprocess.run(
-            [sys.executable, "-c", "from kingdom.cli import main; main()", "ticket", "current", "--id"],
-            cwd=tmp_path,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "only"
-
-    def test_current_migrates_exact_legacy_terminal_binding(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            ticket_path = tickets_dir / "old1.md"
-            write_ticket(
-                Ticket(
-                    id="old1",
-                    status="in_progress",
-                    title="Legacy terminal ticket",
-                    body="",
-                    assignee="hand",
-                    created=datetime.now(UTC),
-                ),
-                ticket_path,
-            )
-
-            with patch.dict(os.environ, {"TERM_SESSION_ID": "legacy-terminal"}, clear=True):
-                record_terminal_ticket_context(base, "old1", feature=BRANCH)
-                legacy_before = read_terminal_ticket_context(base)
-                first = runner.invoke(ticket_app, ["current", "--id"])
-                second = runner.invoke(ticket_app, ["current", "--id"])
-                context = resolve_execution_context()
-                binding = read_execution_ticket_context(base, context)
-                legacy_after = read_terminal_ticket_context(base)
-
-            assert first.output.strip() == "old1"
-            assert second.output.strip() == "old1"
-            assert context is not None
-            assert binding is not None
-            assert binding["ticket_id"] == "old1"
-            assert read_ticket(ticket_path).assignee == context.context_id
-            assert legacy_after == legacy_before
-
-    def test_current_migrates_single_branch_global_ticket(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            ticket_path = tickets_dir / "only.md"
-            write_ticket(
-                Ticket(
-                    id="only",
-                    status="in_progress",
-                    title="Only legacy ticket",
-                    body="",
-                    assignee="hand",
-                    created=datetime.now(UTC),
-                ),
-                ticket_path,
-            )
-
-            with patch.dict(os.environ, {"KD_CONTEXT": "upgrade-session"}, clear=True):
-                result = runner.invoke(ticket_app, ["current", "--id"])
-                context = resolve_execution_context()
-                binding = read_execution_ticket_context(base, context)
-
-            assert result.output.strip() == "only"
-            assert context is not None
-            assert binding is not None
-            assert read_ticket(ticket_path).assignee == context.context_id
-
-    def test_current_refuses_ambiguous_branch_global_migration(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            for ticket_id in ("first", "second"):
-                write_ticket(
-                    Ticket(
-                        id=ticket_id,
-                        status="in_progress",
-                        title=ticket_id,
-                        body="",
-                        assignee="hand",
-                        created=datetime.now(UTC),
-                    ),
-                    tickets_dir / f"{ticket_id}.md",
-                )
-
-            with patch.dict(os.environ, {"KD_CONTEXT": "ambiguous-session"}, clear=True):
-                result = runner.invoke(ticket_app, ["current"])
-                context = resolve_execution_context()
-
-            assert result.exit_code == 1
-            assert "Multiple legacy in-progress tickets" in result.output
-            assert "first" in result.output
-            assert "second" in result.output
-            assert context is not None
-            assert read_execution_ticket_context(base, context) is None
-
-    def test_current_recovers_partially_written_context_binding(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-            tickets_dir = branch_root(base, BRANCH) / "tickets"
-            write_ticket(
-                Ticket(
-                    id="part",
-                    status="in_progress",
-                    title="Partial migration",
-                    body="",
-                    assignee="hand",
-                    created=datetime.now(UTC),
-                ),
-                tickets_dir / "part.md",
-            )
-
-            with patch.dict(os.environ, {"KD_CONTEXT": "partial-session"}, clear=True):
-                context = resolve_execution_context()
-                assert context is not None
-                context_path = execution_context_path(base, context)
-                context_path.parent.mkdir(parents=True)
-                write_json(context_path, {"context_id": context.context_id, "ticket_id": None})
-
-                result = runner.invoke(ticket_app, ["current", "--id"])
-                binding = read_execution_ticket_context(base, context)
-
-            assert result.output.strip() == "part"
-            assert binding is not None
-            assert binding["ticket_id"] == "part"
 
     def test_current_is_isolated_between_execution_contexts(self) -> None:
         with runner.isolated_filesystem():

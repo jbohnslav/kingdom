@@ -139,11 +139,11 @@ class TestPeasantEpicGuard:
             tdir = base / ".kd" / "branches" / "feature-ticket-test" / "tickets"
             tdir.mkdir(parents=True, exist_ok=True)
             epic = Ticket(
-                id="kin-epc1", status="open", title="Epic ticket", type="epic", body="", created=datetime.now(UTC)
+                id="epc1", status="open", title="Epic ticket", type="epic", body="", created=datetime.now(UTC)
             )
-            write_ticket(epic, tdir / "kin-epc1.md")
+            write_ticket(epic, tdir / "epc1.md")
 
-            result = runner.invoke(peasant_app, ["start", "kin-epc1"])
+            result = runner.invoke(peasant_app, ["start", "epc1"])
             assert result.exit_code == 1
             assert "epic" in result.output.lower()
             assert "atomic" in result.output.lower() or "not atomic" in result.output.lower()
@@ -155,12 +155,12 @@ class TestPeasantEpicGuard:
             tdir = base / ".kd" / "branches" / "feature-ticket-test" / "tickets"
             tdir.mkdir(parents=True, exist_ok=True)
             task = Ticket(
-                id="kin-tsk1", status="open", title="Task ticket", type="task", body="", created=datetime.now(UTC)
+                id="tsk1", status="open", title="Task ticket", type="task", body="", created=datetime.now(UTC)
             )
-            write_ticket(task, tdir / "kin-tsk1.md")
+            write_ticket(task, tdir / "tsk1.md")
 
             with patch("kingdom.cli.peasant.launch_work_background", return_value=12345):
-                result = runner.invoke(peasant_app, ["start", "kin-tsk1", "--hand"])
+                result = runner.invoke(peasant_app, ["start", "tsk1", "--hand"])
             assert result.exit_code == 0, result.output
 
 

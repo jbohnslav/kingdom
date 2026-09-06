@@ -829,7 +829,7 @@ class TestPhase1SmokeTest:
         # Simulate king message + member responses
         add_msg(project, BRANCH, tid, from_="king", to="all", body="What do you think?")
         add_msg(project, BRANCH, tid, from_="claude", to="king", body="I think we should...")
-        add_msg(project, BRANCH, tid, from_="codex", to="king", body="*Error: Timeout after 600s*")
+        add_msg(project, BRANCH, tid, from_="codex", to="king", body="*Error: Timeout after 600s*", status="timeout")
 
         poller = ThreadPoller(thread_dir=tdir, member_backends={"claude": "claude_code", "codex": "codex"})
         events = poller.poll()
@@ -840,12 +840,8 @@ class TestPhase1SmokeTest:
         assert msgs[1].sender == "claude"
         assert msgs[2].sender == "codex"
 
-        # Error detection
-        from kingdom.thread import is_error_response, is_timeout_response
-
-        assert not is_error_response(msgs[1].body)
-        assert is_error_response(msgs[2].body)
-        assert is_timeout_response(msgs[2].body)
+        assert msgs[1].status is None
+        assert msgs[2].status == "timeout"
 
     def test_chat_app_composes_with_thread(self, project: Path) -> None:
         """Verify ChatApp composes correctly with a real thread."""
@@ -1007,23 +1003,6 @@ class TestPhase1SmokeTest:
             result = runner.invoke(council_app, ["chat", "--color", "truecolor"])
         # Should re-raise, not silently retry
         assert result.exit_code != 0
-
-
-class TestErrorDetection:
-    """Test that error messages from thread files are detected."""
-
-    def test_error_body_detected(self) -> None:
-        from kingdom.thread import is_error_response
-
-        assert is_error_response("*Error: Timeout after 600s*")
-        assert is_error_response("*Empty response — no text or error returned.*")
-        assert not is_error_response("Normal response text")
-
-    def test_timeout_body_detected(self) -> None:
-        from kingdom.thread import is_timeout_response
-
-        assert is_timeout_response("*Error: Timeout after 600s*")
-        assert not is_timeout_response("*Error: API key not set*")
 
 
 class TestRunQuery:
@@ -1229,6 +1208,7 @@ class TestRunQuery:
         # Body should contain the partial text AND an interrupted marker
         assert "Partial answer before interrupt" in messages[0].body
         assert "[Interrupted" in messages[0].body
+        assert messages[0].status == "interrupted"
 
     def test_run_query_uses_formatted_thread_history(self, project: Path) -> None:
         """run_query should send full formatted history, not only the latest text."""

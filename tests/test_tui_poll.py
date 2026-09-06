@@ -15,7 +15,6 @@ from kingdom.tui.poll import (
     ThinkingDelta,
     ThreadPoller,
     ToolUseEvent,
-    read_message_body,
     tail_stream_file,
 )
 
@@ -80,19 +79,6 @@ def tdir(tmp_path: Path) -> Path:
     d = tmp_path / "thread"
     d.mkdir()
     return d
-
-
-class TestReadMessageBody:
-    def test_with_frontmatter(self, tdir: Path) -> None:
-        path = write_message(tdir, 1, "king", "Hello world")
-        body = read_message_body(path)
-        assert body == "Hello world"
-
-    def test_without_frontmatter(self, tdir: Path) -> None:
-        path = tdir / "0001-king.md"
-        path.write_text("Just plain text\n", encoding="utf-8")
-        body = read_message_body(path)
-        assert body == "Just plain text"
 
 
 class TestTailStreamFile:
@@ -1240,3 +1226,11 @@ class TestRealCursorLongResponseWithToolCalls:
         thinking = [e for e in events if isinstance(e, ThinkingDelta)]
         assert len(thinking) == 1
         assert "**Planning**" in thinking[0].full_text
+
+
+def test_poll_preserves_explicit_message_status(tdir: Path) -> None:
+    path = write_message(tdir, 1, "claude", "*Error: quoted documentation*")
+    path.write_text(path.read_text().replace("from: claude", "from: claude\nstatus: complete"))
+    events = ThreadPoller(thread_dir=tdir).poll()
+    message = next(event for event in events if isinstance(event, NewMessage))
+    assert message.status == "complete"

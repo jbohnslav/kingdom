@@ -17,8 +17,6 @@ from kingdom.state import (
     backlog_root,
     branch_root,
     branches_root,
-    check_no_legacy_runs,
-    clear_terminal_ticket_contexts,
     ensure_base_layout,
     ensure_branch_layout,
     execution_context_path,
@@ -29,16 +27,11 @@ from kingdom.state import (
     parse_worktree_list,
     prune_stale_execution_contexts,
     read_execution_ticket_context,
-    read_terminal_ticket_context,
     record_execution_ticket_context,
-    record_terminal_ticket_context,
     resolve_current_run,
     resolve_execution_context,
     set_current_run,
     state_root,
-    terminal_context_identity,
-    terminal_context_path,
-    write_json,
 )
 
 
@@ -170,60 +163,6 @@ class TestArchiveRoot:
         """archive_root is a child of state_root."""
         result = archive_root(tmp_path)
         assert result.parent == state_root(tmp_path)
-
-
-class TestTerminalContextIdentity:
-    def test_tmux_pane_takes_precedence_over_shared_terminal_session(self) -> None:
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "shared-terminal", "TMUX_PANE": "%1"}, clear=True):
-            pane_one = terminal_context_identity()
-        with patch.dict(os.environ, {"TERM_SESSION_ID": "shared-terminal", "TMUX_PANE": "%2"}, clear=True):
-            pane_two = terminal_context_identity()
-
-        assert pane_one == "TMUX_PANE:%1"
-        assert pane_two == "TMUX_PANE:%2"
-
-
-class TestClearTerminalTicketContexts:
-    def test_clears_every_matching_legacy_binding(self, tmp_path: Path) -> None:
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch("os.ttyname", side_effect=OSError),
-        ):
-            record_terminal_ticket_context(tmp_path, "target", feature="main", session_id="one")
-            record_terminal_ticket_context(tmp_path, "target", feature="main", session_id="two")
-            record_terminal_ticket_context(tmp_path, "other", feature="main", session_id="three")
-
-            assert clear_terminal_ticket_contexts(tmp_path, "target") == 2
-            assert read_terminal_ticket_context(tmp_path, session_id="one") is None
-            assert read_terminal_ticket_context(tmp_path, session_id="two") is None
-            assert read_terminal_ticket_context(tmp_path, session_id="three")["ticket_id"] == "other"
-
-    def test_record_waits_for_the_terminal_context_mutation_lock(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
-            path = terminal_context_path(tmp_path, session_id="shared-terminal")
-            assert path is not None
-            lock_path = path.parent / f".{path.name}.lock"
-            started = Event()
-            finished = Event()
-
-            def record() -> None:
-                started.set()
-                record_terminal_ticket_context(
-                    tmp_path,
-                    "new-ticket",
-                    feature="feature/context",
-                    session_id="shared-terminal",
-                )
-                finished.set()
-
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                with flock(lock_path):
-                    future = pool.submit(record)
-                    assert started.wait(timeout=2)
-                    assert not finished.wait(timeout=0.2)
-                future.result(timeout=2)
-
-            assert read_terminal_ticket_context(tmp_path, session_id="shared-terminal")["ticket_id"] == "new-ticket"
 
 
 class TestExecutionContext:
@@ -359,29 +298,6 @@ class TestExecutionContext:
 
         assert read_execution_ticket_context(tmp_path, context)["ticket_id"] == "new-ticket"
 
-    def test_prune_preserves_a_fresh_terminal_binding_for_the_same_ticket(self, tmp_path: Path) -> None:
-        stale_time = datetime(2026, 1, 1, tzinfo=UTC)
-        with patch.dict(os.environ, {"KD_CONTEXT": "stale-context"}, clear=True):
-            context = resolve_execution_context(host="codex", cwd=tmp_path, now=stale_time)
-        assert context is not None
-        record_execution_ticket_context(tmp_path, context, "shared", feature="feature/context")
-        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
-            record_terminal_ticket_context(tmp_path, "shared", feature="feature/context", session_id="live-terminal")
-
-        removed = prune_stale_execution_contexts(
-            tmp_path,
-            feature="feature/context",
-            stale_after=timedelta(hours=1),
-            now=datetime.now(UTC),
-        )
-
-        assert removed == [context.context_id]
-        assert read_terminal_ticket_context(tmp_path, session_id="live-terminal")["ticket_id"] == "shared"
-        context_lock = execution_context_path(tmp_path, context).with_name(
-            f".{execution_context_path(tmp_path, context).name}.lock"
-        )
-        assert context_lock.exists()
-
     def test_prune_rechecks_a_stale_context_after_acquiring_its_lock(self, tmp_path: Path) -> None:
         stale_time = datetime(2026, 1, 1, tzinfo=UTC)
         fresh_time = datetime(2026, 1, 3, tzinfo=UTC)
@@ -391,20 +307,6 @@ class TestExecutionContext:
         assert stale_context is not None
         assert fresh_context is not None
         record_execution_ticket_context(tmp_path, stale_context, "shared", feature="feature/context")
-        with patch.dict(os.environ, {}, clear=True), patch("os.ttyname", side_effect=OSError):
-            record_terminal_ticket_context(tmp_path, "shared", feature="feature/context", session_id="live-terminal")
-            terminal_path = terminal_context_path(tmp_path, session_id="live-terminal")
-        assert terminal_path is not None
-        write_json(
-            terminal_path,
-            {
-                "ticket_id": "shared",
-                "feature": "feature-context",
-                "location": "branch:feature-context",
-                "updated_at": stale_time.isoformat(),
-            },
-        )
-
         stale_snapshot = list_execution_contexts(
             tmp_path,
             feature="feature/context",
@@ -426,7 +328,6 @@ class TestExecutionContext:
 
         assert removed == []
         assert read_execution_ticket_context(tmp_path, fresh_context)["last_seen"] == fresh_time.isoformat()
-        assert read_terminal_ticket_context(tmp_path, session_id="live-terminal")["ticket_id"] == "shared"
 
 
 class TestEnsureBaseLayout:
@@ -819,42 +720,5 @@ branch refs/heads/feature
             patch("kingdom.state.Path.cwd", return_value=manual),
             patch("kingdom.state.subprocess.run", side_effect=fake_run),
             pytest.raises(ValueError, match=r"Multiple git worktrees contain \.kd"),
-        ):
-            find_project_root()
-
-
-class TestCheckNoLegacyRuns:
-    """Tests for check_no_legacy_runs guard."""
-
-    def test_no_runs_dir_passes(self, tmp_path: Path) -> None:
-        """No .kd/runs/ directory is fine."""
-        ensure_base_layout(tmp_path)
-        check_no_legacy_runs(tmp_path)  # should not raise
-
-    def test_empty_runs_dir_passes(self, tmp_path: Path) -> None:
-        """Empty .kd/runs/ directory is fine (leftover from old init)."""
-        ensure_base_layout(tmp_path)
-        (tmp_path / ".kd" / "runs").mkdir()
-        check_no_legacy_runs(tmp_path)  # should not raise
-
-    def test_non_empty_runs_dir_raises(self, tmp_path: Path) -> None:
-        """Non-empty .kd/runs/ directory raises RuntimeError."""
-        ensure_base_layout(tmp_path)
-        runs_dir = tmp_path / ".kd" / "runs"
-        runs_dir.mkdir()
-        (runs_dir / "old-feature").mkdir()
-        with pytest.raises(ValueError, match=r"Legacy \.kd/runs/ directory found"):
-            check_no_legacy_runs(tmp_path)
-
-    def test_find_project_root_rejects_legacy_runs(self, tmp_path: Path) -> None:
-        """find_project_root raises when .kd/runs/ has content."""
-        ensure_base_layout(tmp_path)
-        runs_dir = tmp_path / ".kd" / "runs"
-        runs_dir.mkdir()
-        (runs_dir / "some-branch").mkdir()
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch("kingdom.state.Path.cwd", return_value=tmp_path),
-            pytest.raises(ValueError, match=r"Legacy \.kd/runs/ directory found"),
         ):
             find_project_root()
