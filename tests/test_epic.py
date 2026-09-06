@@ -33,11 +33,11 @@ class TestTicketTypeValidation:
 
     def test_create_with_valid_type(self, cli_project: Path) -> None:
         for t in ("task", "bug", "feature", "epic"):
-            result = runner.invoke(ticket_app, ["create", f"{t} ticket", "-t", t])
+            result = runner.invoke(ticket_app, ["create", f"{t} ticket", "--type", t])
             assert result.exit_code == 0, f"Failed for type {t}: {result.output}"
 
     def test_create_rejects_invalid_type(self, cli_project: Path) -> None:
-        result = runner.invoke(ticket_app, ["create", "Bad type", "-t", "story"])
+        result = runner.invoke(ticket_app, ["create", "Bad type", "--type", "story"])
         assert result.exit_code == 1
         assert "Invalid type" in result.output
         assert "story" in result.output
@@ -68,7 +68,7 @@ class TestTicketTypeValidation:
         assert result.exit_code == 0
 
     def test_create_epic_type_persisted(self, cli_project: Path) -> None:
-        result = runner.invoke(ticket_app, ["create", "My epic", "-t", "epic"])
+        result = runner.invoke(ticket_app, ["create", "My epic", "--type", "epic"])
         assert result.exit_code == 0
         ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)

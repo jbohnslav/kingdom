@@ -248,7 +248,6 @@ artifact; existing repositories and commands remain supported:
 kd design                       # initialize and print the design path
 # edit the design document when the extra planning artifact is useful
 kd design show
-kd design approve
 ```
 
 ## Consolidated command replacements

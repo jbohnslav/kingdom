@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from kingdom.design import ensure_design_initialized
-from kingdom.state import branch_root, read_json, resolve_current_run, write_json
+from kingdom.state import branch_root, resolve_current_run
 
 from .display import print_error
 from .helpers import require_project_root
@@ -53,23 +53,3 @@ def design_show() -> None:
 
     console = Console()
     console.print(Markdown(design_path.read_text(encoding="utf-8")))
-
-
-@design_app.command("approve", help="Mark the design as approved.")
-@design_app.command("accept", hidden=True)
-def design_approve() -> None:
-    """Set design_approved=true in state.json."""
-    base = require_project_root()
-    feature = resolve_current_run(base)
-    branch_dir = branch_root(base, feature)
-    design_path = branch_dir / "design.md"
-    state_path = branch_dir / "state.json"
-
-    if not design_path.exists() or not design_path.read_text(encoding="utf-8").strip():
-        print_error("No design document found. Run `kd design` to create one.")
-        raise typer.Exit(code=1)
-
-    state = read_json(state_path) if state_path.exists() else {}
-    state["design_approved"] = True
-    write_json(state_path, state)
-    typer.echo("Design approved")

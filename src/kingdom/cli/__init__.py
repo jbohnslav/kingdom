@@ -161,9 +161,6 @@ app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
 )
 def start(
     branch: Annotated[str | None, typer.Argument(help="Branch name (defaults to current git branch).")] = None,
-    force: Annotated[
-        bool, typer.Option("--force", "-f", help="Accepted for compatibility; start is already idempotent.")
-    ] = False,
 ) -> None:
     # If KD_BASE is explicitly set, require it to be valid — no auto-init fallback.
     # Otherwise, fall back to cwd so auto-init can create .kd/ in a fresh repo.
@@ -374,9 +371,6 @@ def status(
     ready_count = len(filter_tickets_by_deps(tickets, status_by_id, ready=True))
     readiness = workspace_readiness_report(tickets)
 
-    # Design approved status
-    design_approved = state.get("design_approved", False)
-
     # Build output structure
     output = {
         "branch": original_branch,
@@ -385,7 +379,6 @@ def status(
         "branch_mismatch": branch_mismatch,
         "design_path": design_path_str,
         "design_status": design_status,
-        "design_approved": design_approved,
         "breakdown_status": breakdown_status,
         "tickets": status_counts,
         "ready_count": ready_count,
@@ -496,9 +489,8 @@ def status(
                 typer.echo(f"  {ticket.id} [{ticket.status}] {ticket.title}")
 
         if design_path_str:
-            approved_str = " (approved)" if design_approved else ""
             typer.echo()
-            typer.echo(f"Optional design: {design_path_str}{approved_str}")
+            typer.echo(f"Optional design: {design_path_str}")
 
     if check and not readiness["ready"]:
         raise typer.Exit(code=1)

@@ -60,25 +60,3 @@ def test_cli_design_show_renders_markdown() -> None:
         result = runner.invoke(design_app, ["show"])
         assert result.exit_code == 0
         assert "Design: example-feature" in result.output
-
-
-def test_cli_design_approve_sets_flag() -> None:
-    """kd design approve should set design_approved in state.json."""
-    import json
-
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        feature = "example-feature"
-        ensure_branch_layout(base, feature)
-        set_current_run(base, feature)
-
-        design_path = branch_root(base, feature) / "design.md"
-        design_path.write_text("# Design: example-feature\n", encoding="utf-8")
-
-        result = runner.invoke(design_app, ["approve"])
-        assert result.exit_code == 0
-
-        state_path = branch_root(base, feature) / "state.json"
-        state = json.loads(state_path.read_text())
-        assert state.get("design_approved") is True

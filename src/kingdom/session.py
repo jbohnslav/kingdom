@@ -258,7 +258,7 @@ def set_current_thread(base: Path, branch: str, thread_id: str | None) -> None:
     """Set current_thread in branch state.json, preserving other fields.
 
     Uses file locking to avoid losing concurrent updates to other fields
-    in the same state.json (e.g. ``design_approved``, ``branch``).
+    in the same state.json (e.g. ``branch`` or worktree records).
     """
     state_path = branch_root(base, branch) / "state.json"
 

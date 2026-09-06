@@ -788,6 +788,7 @@ def council_show(
 
 
 @council_app.command("list", help="List all council threads.")
+@council_app.command("ls", hidden=True)
 def council_list(
     show_all: Annotated[bool, typer.Option("--all", help="Show threads from all branches including archived.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
@@ -961,15 +962,6 @@ def council_list(
         # Print legend explaining the status symbols
         legend_parts = [f"{sym} {label}" for sym, label in state_symbols.values()]
         console.print(f"[dim]{' '.join(legend_parts)}[/dim]")
-
-
-@council_app.command("ls", hidden=True)
-def council_ls(
-    show_all: Annotated[bool, typer.Option("--all", help="Show threads from all branches including archived.")] = False,
-    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
-) -> None:
-    """Alias for 'council list'."""
-    council_list(show_all=show_all, output_json=output_json)
 
 
 @council_app.command("status", help="Show response status for council threads.")

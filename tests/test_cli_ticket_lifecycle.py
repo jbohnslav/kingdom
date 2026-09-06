@@ -81,7 +81,7 @@ class TestTicketCreate:
     def test_create_accepts_description_and_type_flags(self, cli_project: Path) -> None:
         result = runner.invoke(
             ticket_app,
-            ["create", "Typed ticket", "-d", "Body from flag", "-t", "bug"],
+            ["create", "Typed ticket", "-d", "Body from flag", "--type", "bug"],
         )
 
         assert result.exit_code == 0, result.output
@@ -131,8 +131,9 @@ class TestTicketCreate:
         created_ticket = found.ticket
         assert created_ticket.type == "feature"
 
-    def test_create_rejects_duplicate_title_sources(self, cli_project: Path) -> None:
-        result = runner.invoke(ticket_app, ["create", "Positional title", "--title", "Flag title"])
+    @pytest.mark.parametrize("title_flag", ["-t", "--title"])
+    def test_create_rejects_duplicate_title_sources(self, cli_project: Path, title_flag: str) -> None:
+        result = runner.invoke(ticket_app, ["create", "Positional title", title_flag, "Flag title"])
 
         assert result.exit_code == 1
         assert "either positionally or with --title" in result.output
