@@ -1,5 +1,7 @@
 # Council-as-Supervisor: Action Ledger Design
 
+> **Historical** — retained for design history. See the [README](../../README.md) and [architecture](../architecture.md) for current behavior.
+
 ## Context
 
 During a council discussion comparing Kingdom to OpenClaw, the King observed that

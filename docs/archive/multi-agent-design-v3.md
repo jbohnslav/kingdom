@@ -1,5 +1,7 @@
 # Multi-Agent Design v3: Simplified Court Runtime
 
+> **Historical** — retained for design history. See the [README](../../README.md) and [architecture](../architecture.md) for current behavior.
+
 Date: 2026-02-07
 Status: Proposal
 

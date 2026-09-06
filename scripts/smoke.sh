@@ -9,7 +9,7 @@ trap 'rm -rf "$smoke_root"' EXIT
 uv sync --project "$repo_root" >/dev/null
 
 cd "$smoke_root"
-git init -q
+git init -q -b smoke
 git config user.email "smoke@kingdom.invalid"
 git config user.name "Kingdom Smoke"
 printf '# Smoke repository\n' > README.md

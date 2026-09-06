@@ -3,7 +3,7 @@
 Date: 2026-02-07
 Audience: Kingdom maintainers
 
-> **Historical** — this document describes an earlier design. See README for current commands.
+> **Historical** — retained for design history. See the [README](../../README.md) and [architecture](../architecture.md) for current behavior.
 
 ## Summary
 

@@ -1,17 +1,32 @@
 # Kingdom cruft audit — September 5, 2026
 
-**Implementation progress:** Cleanup ticket `4088` on
-`codex/cleanup-dead-code` implements findings 1–6: abandoned source and its
-dedicated tests are removed, and current architecture documentation is corrected.
-The legacy council bundle reader remains for a later compatibility pass.
-Locations below describe the audited revision, before those deletions.
+**Implementation ledger:** Completed on `codex/cleanup-dead-code` through
+initial cleanup `4088` and full follow-up epic `1465`. Locations and proposals
+below describe the audited revision before implementation.
 
-**Full follow-up scope:** Epic `1465` covers the remaining six cleanup areas
-through children `79a4`, `80d2`, `aeec`, `dcab`, `8456`, and `67f9`. The King
-explicitly waived preserving compatibility for the 508 old closed tickets.
-Historical-data preservation and cross-repository inventory cautions below are
-audit context, not gates on this authorized cleanup. The follow-up includes
-retiring that compatibility; it does not require deleting historical files.
+| Findings | Ticket | Result |
+| --- | --- | --- |
+| 1–6 | 4088 | Abandoned features, writers, renderers and test-only helpers removed. |
+| 7–9 | 79a4 | Direct module imports, named TicketMatch fields and one effort config key. |
+| 10–11 | aeec | Inert force option, overloaded title/type flag and design approval removed; useful aliases retained. |
+| 3 reader, 12, 15 historical state | 80d2 | One current runtime format; old migrations, dual stores, closure/ID inference and body-status sniffing removed. |
+| 13–15 | dcab | One live streaming function, normalized hook handlers, explicit status and consistent latest-response retry. |
+| 16–19 | 8456 | Behavioral assertions repaired, snapshots/skips pruned and Textual integration enabled in CI/release. |
+| 20 and final guidance | 67f9 | Stale scaffolding removed, historical designs archived, current docs and smoke/workflow setup aligned. |
+
+The King waived preserving compatibility for the 508 historical closed tickets.
+Their files remain intact; they no longer require runtime inference or a
+migration subsystem. Concurrent mutation safeguards, ordinary terminal identity,
+current provider adapters and useful aliases remain supported.
+
+The two Claude workflows remain because they serve distinct triggers: automatic
+review when a PR opens, and explicit `@claude` requests. Release validation
+remains separate from CI because it gates publication. The known Cursor
+result-event truncation regression remains a strict expected failure; historical
+fixture skips and missing-module skip paths are gone. A separately discovered
+design-template rendering issue is tracked as backlog `cdc4`.
+
+The following sections preserve the original audit evidence and baseline counts.
 
 There is concrete deletion work here. The strongest candidates are abandoned
 features kept alive by their tests, internal compatibility interfaces, and tests
@@ -20,8 +35,7 @@ of the confirmed dead modules and definitions below is **453 source lines**, bef
 removing their imports, surrounding comments, and associated tests. This is a
 deletion floor, not an estimate for the broader compatibility cleanup.
 
-This is an audit, not an implementation patch. Product code and existing tests
-were left unchanged. Findings cover the source tree, test tree, CLI wiring,
+The original audit left product code and tests unchanged. Its findings cover the source tree, test tree, CLI wiring,
 configuration, state migration, worker loops, TUI, scripts, packaging, skills,
 public documentation, and checked-in GitHub workflows. Static reference checks
 were followed through aliases and actual callers; they are not proof of external
@@ -322,9 +336,9 @@ deletion. Do not remove release validation merely because CI also validates.
 
 ## What to preserve
 
-- This checkout has **508 closed tickets without explicit resolutions** out of
-  602 ticket Markdown files. `effective_resolution` and historical Markdown
-  preservation serve real data. Keep them or migrate that history explicitly.
+- The baseline had **508 closed tickets without explicit resolutions** out of
+  602 ticket Markdown files. The King subsequently waived this preservation
+  gate: old files remain, but closure inference and migrations are removed.
 - File locks, atomic writes, relocation handling, and worker start serialization
   address real concurrent processes. Small wrappers that enforce those
   boundaries are useful.

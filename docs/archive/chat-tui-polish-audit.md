@@ -1,5 +1,7 @@
 # kd chat TUI Polish Audit
 
+> **Historical** — retained for design history. See the [README](../../README.md) and [architecture](../architecture.md) for current behavior.
+
 Research note for ticket 8dea. Reviewed the current `kd chat` implementation against best-in-class Textual applications and identified concrete improvements.
 
 ## Reference Apps Reviewed

@@ -16,6 +16,7 @@ src/kingdom/
 ├── design.py           # Optional design document template and initialization
 ├── harness.py          # Autonomous agent loop for peasant execution (prompt → call → parse → repeat)
 ├── lord_harness.py     # Supervises epic children and peasant execution
+├── process.py          # Shared live subprocess streaming and cleanup
 ├── lifecycle.py        # Normalizes host hook events
 ├── doctor.py           # Diagnoses repository and host integration state
 ├── parsing.py          # Shared YAML frontmatter parser used by tickets, threads, and agents
@@ -54,8 +55,13 @@ Everything is Markdown with YAML frontmatter or plain JSON:
 - **Tickets**: `.kd/branches/<branch>/tickets/<id>.md` — frontmatter (status, deps, priority) + body
 - **Threads**: `.kd/branches/<branch>/threads/<thread-id>/0001-king.md` — sequential numbered messages
 - **Sessions**: `.kd/branches/<branch>/sessions/<agent>.json` — runtime state (gitignored)
+- **Execution contexts**: `.kd/runtime/contexts/<context-id>.json` — host identity and current ticket binding (gitignored)
 - **Config**: `.kd/config.json` — agent definitions, council members, prompts
 - **State**: `.kd/branches/<branch>/state.json` — operational state (gitignored)
+
+Current handlers consume normalized `HostEvent` values; provider payloads are
+parsed once at hook ingress. Thread messages carry explicit response status,
+which drives council retry, watch output, and TUI rendering.
 
 ### Agent Abstraction
 
@@ -65,11 +71,12 @@ Everything is Markdown with YAML frontmatter or plain JSON:
 
 - **Council queries**: `ThreadPoolExecutor` runs members in parallel, each in its own subprocess.
 - **Session state**: `fcntl.flock` advisory locking on JSON files prevents concurrent read-modify-write conflicts between the harness process and CLI commands.
+- **Streaming**: peasant and lord subprocesses share concurrent stdout/stderr draining with incremental log flushing.
 - **Peasant workers**: Can run in git worktrees (parallel) or serial in the current working directory.
 
 ## Extension Points
 
 - **New agent backends**: Add command builders and response parsers in `agent.py`, then extend config validation and runtime checks for the backend.
 - **Custom council composition**: Edit `.kd/config.json` to add/remove council members and their models.
-- **Phase prompts**: Override council, design, and review prompts in config.
+- **Prompts**: Override supported council and peasant prompt settings in config.
 - **TUI**: The Textual-based chat TUI (`tui/`) provides the interactive `kd council chat` interface.
