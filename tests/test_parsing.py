@@ -4,18 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-try:
-    from kingdom.parsing import (
-        parse_frontmatter,
-        parse_iso_datetime,
-        parse_yaml_value,
-        serialize_frontmatter,
-        serialize_yaml_value,
-    )
-except ImportError:
-    # When run from the parent worktree's venv, kingdom.parsing may not
-    # exist yet.  Skip the entire module in that case.
-    pytest.skip("kingdom.parsing not available in this environment", allow_module_level=True)
+from kingdom.parsing import (
+    parse_frontmatter,
+    parse_iso_datetime,
+    parse_yaml_value,
+    serialize_frontmatter,
+    serialize_yaml_value,
+)
 
 
 class TestParseIsoDatetime:

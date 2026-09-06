@@ -732,24 +732,24 @@ def test_install_skill_preserves_modified_managed_skill(tmp_path: Path, capsys) 
     assert "claude: manual action needed" in capsys.readouterr().out
 
 
-def test_install_skill_permission_error_warns(tmp_path: Path) -> None:
-    """install_skill should warn and continue when target dir is unwritable."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    # Make .claude read-only so mkdir inside it fails
-    claude_dir = fake_home / ".claude"
-    claude_dir.mkdir()
-    claude_dir.chmod(0o444)
+def test_install_skill_permission_error_warns(tmp_path: Path, capsys) -> None:
+    """An unwritable target reports the failure and identifies the affected host."""
+    with (
+        patch("kingdom.cli.helpers.Path.home", return_value=tmp_path),
+        patch("kingdom.cli.helpers.Path.mkdir", side_effect=PermissionError("permission denied")),
+    ):
+        result = install_skill()
 
-    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
-        # Should not raise — just warn
-        install_skill()
-
-    # Restore permissions for cleanup
-    claude_dir.chmod(0o755)
+    assert result == "failed"
+    output = capsys.readouterr().out
+    assert "claude: manual action needed" in output
+    assert "permission denied" in output
 
 
-def test_install_skill_runtime_error_warns() -> None:
-    """install_skill should warn and continue when Path.home() raises RuntimeError."""
+def test_install_skill_runtime_error_warns(capsys) -> None:
+    """A missing home directory reports the installation failure."""
     with patch("kingdom.cli.helpers.Path.home", side_effect=RuntimeError("no home")):
-        install_skill()  # should not raise
+        result = install_skill()
+
+    assert result == "failed"
+    assert "Warning: could not install skill (no home)" in capsys.readouterr().out

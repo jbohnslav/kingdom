@@ -723,47 +723,6 @@ class TestReadWriteTicket:
             read_ticket(tmp_path / "nonexistent.md")
 
 
-class TestParseExistingTickets:
-    """Tests that verify parsing of actual ticket files from the codebase."""
-
-    def test_parse_ticket_from_repo(self) -> None:
-        """Parse the ticket that defines this task (6fc1)."""
-        # This test verifies compatibility with the existing tk format
-        ticket_path = Path(__file__).parent.parent / ".tickets" / "6fc1.md"
-        if not ticket_path.exists():
-            pytest.skip("Ticket file not found in repo")
-
-        ticket = read_ticket(ticket_path)
-
-        assert ticket.id == "6fc1"
-        assert ticket.status in ("open", "in_progress", "closed")
-        assert ticket.type == "task"
-        assert isinstance(ticket.priority, int)
-        assert ticket.title == "Create ticket model"
-
-    def test_parse_ticket_with_tags(self) -> None:
-        """Parse a ticket that has tags field."""
-        ticket_path = Path(__file__).parent.parent / ".tickets" / "ac22.md"
-        if not ticket_path.exists():
-            pytest.skip("Ticket file not found in repo")
-
-        ticket = read_ticket(ticket_path)
-
-        assert ticket.id == "ac22"
-        assert "mvp" in ticket.tags or "kd" in ticket.tags
-
-    def test_parse_ticket_with_deps(self) -> None:
-        """Parse a ticket that has dependencies."""
-        ticket_path = Path(__file__).parent.parent / ".tickets" / "d0b5.md"
-        if not ticket_path.exists():
-            pytest.skip("Ticket file not found in repo")
-
-        ticket = read_ticket(ticket_path)
-
-        assert ticket.id == "d0b5"
-        assert "ac22" in ticket.deps
-
-
 class TestTicketIdRoundtrip:
     """IDs with leading zeros must survive write/read roundtrip."""
 

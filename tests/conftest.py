@@ -1,8 +1,7 @@
-"""Ensure tests import kingdom from this worktree, not from an external editable install."""
+"""Shared fixtures and opt-in Textual integration configuration."""
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Generator
 from pathlib import Path
 
@@ -10,12 +9,6 @@ import pytest
 from typer.testing import CliRunner
 
 from kingdom.state import ensure_branch_layout, set_current_run
-
-# Prepend this worktree's src/ so tests always use local code,
-# even when pytest is invoked by a Python from a different venv.
-_src = str(Path(__file__).resolve().parent.parent / "src")
-if _src not in sys.path:
-    sys.path.insert(0, _src)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

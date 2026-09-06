@@ -23,7 +23,7 @@ jobs:
         uses: pre-commit/action@v3.0.1
 
       - name: Run tests
-        run: uv run pytest
+        run: uv run pytest --run-textual-integration
 
       - name: Validate documented CLI workflow
         run: bash scripts/smoke.sh

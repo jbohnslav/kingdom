@@ -760,7 +760,7 @@ class TestParseCursorResponseNDJSON:
 
     @pytest.mark.xfail(
         reason="Known Cursor issue: result event may be shorter than streamed assistant content, making finalized message look overwritten.",
-        strict=False,
+        strict=True,
     )
     def test_ndjson_short_result_should_not_overwrite_richer_assistant_stream(self) -> None:
         """Capture current failure: short final result clobbers richer assistant stream."""

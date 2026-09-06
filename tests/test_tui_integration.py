@@ -891,12 +891,15 @@ class TestSlashCommands:
 
     async def test_quit_exits(self, project, thread_id, fake_council) -> None:
         app = make_app(project, thread_id)
-        with patch.object(Council, "create", return_value=fake_council):
+        with (
+            patch.object(Council, "create", return_value=fake_council),
+            patch.object(app, "exit", wraps=app.exit) as exit_app,
+        ):
             async with app.run_test(size=(120, 40)) as pilot:
                 input_area = app.query_one("#input-area", InputArea)
                 input_area.insert("/quit")
                 await pilot.press("enter")
-                # App should exit — the context manager handles this
+                exit_app.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------
@@ -907,11 +910,14 @@ class TestSlashCommands:
 class TestEscapeInterrupt:
     async def test_escape_with_no_active_queries_exits(self, project, thread_id, fake_council) -> None:
         app = make_app(project, thread_id)
-        with patch.object(Council, "create", return_value=fake_council):
+        with (
+            patch.object(Council, "create", return_value=fake_council),
+            patch.object(app, "exit", wraps=app.exit) as exit_app,
+        ):
             async with app.run_test(size=(120, 40)) as pilot:
                 # No active queries — Escape should exit
                 await pilot.press("escape")
-                # App exits — no assertion needed, just shouldn't hang
+                exit_app.assert_called_once_with()
 
     async def test_escape_interrupts_active_query(self, project, thread_id) -> None:
         """First Escape terminates active processes and replaces WaitingPanels with ErrorPanels."""
@@ -962,7 +968,10 @@ class TestEscapeInterrupt:
             member.process = MagicMock(spec=subprocess.Popen)
 
         app = make_app(project, thread_id)
-        with patch.object(Council, "create", return_value=council):
+        with (
+            patch.object(Council, "create", return_value=council),
+            patch.object(app, "exit", wraps=app.exit) as exit_app,
+        ):
             async with app.run_test(size=(120, 40)) as pilot:
                 log = app.query_one("#message-log", MessageLog)
                 log.mount(WaitingPanel(sender="claude", id="wait-claude"))
@@ -972,13 +981,14 @@ class TestEscapeInterrupt:
                 await pilot.press("escape")
                 await pilot.pause(delay=0.1)
 
-                # Clear processes (simulating terminated)
+                assert app.interrupted is True
+                exit_app.assert_not_called()
                 for member in council.members:
-                    member.process = None
+                    member.process.terminate.assert_called_once()
 
                 # Second Escape — exit
                 await pilot.press("escape")
-                # App exits
+                exit_app.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------

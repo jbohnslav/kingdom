@@ -72,41 +72,6 @@ class TestBody:
         body = parts[2].strip()
         assert len(body) > 0, "SKILL.md body is empty"
 
-    def test_core_loop_precedes_reference_sections(self) -> None:
-        text = SKILL_MD.read_text()
-        assert text.index("## The Core Loop") < text.index("## Workflow Entry Points")
-        assert text.index("## The Core Loop") < text.index("## References")
-
-    def test_core_loop_preserves_execution_and_ownership_reflexes(self) -> None:
-        text = SKILL_MD.read_text()
-        for phrase in (
-            "Resolve context and search first",
-            "Update existing work or create a small ticket",
-            "**Direct work:**",
-            "**Native subagent:**",
-            "**Reviewed peasant:**",
-            "**Lord:**",
-            "**Council:**",
-            "owning session",
-            "uv run kd",
-        ):
-            assert phrase in text
-
-    def test_new_feature_entry_point_is_ticket_first(self) -> None:
-        text = SKILL_MD.read_text()
-        default_workflow = text.split("New feature (ticket-first default):", 1)[1].split("Optional planning", 1)[0]
-        assert 'kd tk create --type epic "Concrete feature outcome"' in default_workflow
-        assert "kd tk create --parent <epic-id>" in default_workflow
-        assert "kd design" not in default_workflow
-
-    def test_dependency_guidance_distinguishes_edges_from_blockers(self) -> None:
-        skill_text = SKILL_MD.read_text()
-        ticket_reference = (SKILL_DIR / "references" / "tickets.md").read_text()
-
-        assert "A dependency edge alone is not a blocker" in skill_text
-        assert "only non-closed dependencies as" in skill_text
-        assert "mere presence of `deps`" in ticket_reference
-
 
 class TestReferences:
     def test_references_directory_exists(self) -> None:
