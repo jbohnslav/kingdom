@@ -618,7 +618,7 @@ class TestLordHarnessStopDetection:
 
         with (
             patch("kingdom.lord_harness.signal.signal", side_effect=capture_signal),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", side_effect=stop_during_backend),
+            patch("kingdom.lord_harness.run_streaming_subprocess", side_effect=stop_during_backend),
         ):
             status = run_lord_loop(
                 project_with_run,
@@ -665,7 +665,7 @@ class TestLordReviewedChildLifecycle:
             return result
 
         with (
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", side_effect=accept_reviewed_child),
+            patch("kingdom.lord_harness.run_streaming_subprocess", side_effect=accept_reviewed_child),
             patch("kingdom.lord_harness.time.sleep"),
         ):
             status = run_lord_loop(
@@ -895,7 +895,7 @@ class TestIdleDetectionInLoop:
 
         with (
             patch("kingdom.lord_harness.time.sleep", mock_sleep),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
+            patch("kingdom.lord_harness.run_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
         ):
             run_lord_loop(
@@ -935,7 +935,7 @@ class TestIdleDetectionInLoop:
 
         with (
             patch("kingdom.lord_harness.time.sleep", mock_sleep),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
+            patch("kingdom.lord_harness.run_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
         ):
             run_lord_loop(
@@ -974,7 +974,7 @@ class TestIdleDetectionInLoop:
 
         with (
             patch("kingdom.lord_harness.time.sleep", mock_sleep),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.run_streaming_subprocess", return_value=mock_proc),
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
         ):
             run_lord_loop(
@@ -1032,7 +1032,7 @@ class TestIdleDetectionInLoop:
 
         with (
             patch("kingdom.lord_harness.time.sleep", mock_sleep),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
+            patch("kingdom.lord_harness.run_streaming_subprocess", return_value=mock_proc) as mock_subprocess,
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
             patch("kingdom.lord_harness.get_children_summary", side_effect=summary_with_transition),
             patch("kingdom.lord_harness.has_actionable_work", return_value=False),
@@ -1082,7 +1082,7 @@ class TestIdleDetectionInLoop:
 
         with (
             patch("kingdom.lord_harness.time.sleep", mock_sleep),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.run_streaming_subprocess", return_value=mock_proc),
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
             patch("kingdom.lord_harness.get_children_summary", side_effect=changing_summary),
             patch("kingdom.lord_harness.has_actionable_work", return_value=True),
@@ -1148,7 +1148,7 @@ class TestWaitingStatusInLoop:
 
         with (
             patch("kingdom.lord_harness.time.sleep", mock_sleep),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.run_streaming_subprocess", return_value=mock_proc),
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
             patch("kingdom.lord_harness.get_children_summary", side_effect=unique_summary),
             patch("kingdom.lord_harness.parse_response", side_effect=mock_parse_response),
@@ -1326,7 +1326,7 @@ class TestEscalationNotLost:
 
         with (
             patch("kingdom.lord_harness.time.sleep", mock_sleep),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.run_streaming_subprocess", return_value=mock_proc),
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
             patch("kingdom.lord_harness.get_children_summary", side_effect=unique_summary),
             patch("kingdom.lord_harness.parse_response", side_effect=mock_parse_response),
@@ -1379,7 +1379,7 @@ class TestEscalationNotLost:
 
         with (
             patch("kingdom.lord_harness.time.sleep", mock_sleep),
-            patch("kingdom.lord_harness.run_lord_streaming_subprocess", return_value=mock_proc),
+            patch("kingdom.lord_harness.run_streaming_subprocess", return_value=mock_proc),
             patch("kingdom.lord_harness.build_command", return_value=["echo"]),
             patch("kingdom.lord_harness.get_children_summary", side_effect=unique_summary),
             patch("kingdom.lord_harness.parse_response", side_effect=mock_parse_response),

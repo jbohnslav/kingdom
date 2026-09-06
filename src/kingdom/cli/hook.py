@@ -375,19 +375,6 @@ def assign_explicit_subagent_ticket(
 # ---------------------------------------------------------------------------
 
 
-def handler_event(data: HostEvent | dict, expected: EventKind) -> HostEvent | None:
-    """Normalize direct legacy handler calls; the CLI normalizes before dispatch."""
-    if isinstance(data, HostEvent):
-        return data if data.kind is expected else None
-    if not data.get("hook_event_name"):
-        return None
-    try:
-        event = normalize_host_event(detect_hook_host(data), data)
-    except InvalidHostEvent:
-        return None
-    return event if event and event.kind is expected else None
-
-
 def persist_claude_session_environment(event: HostEvent) -> str | None:
     env_path = os.environ.get(CLAUDE_ENV_FILE_ENV)
     if event.host is not Host.CLAUDE or not env_path:
@@ -435,10 +422,7 @@ def reactivate_resumed_context(base: Path, event: HostEvent) -> None:
         )
 
 
-def handle_session_start(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.SESSION_START)
-    if event is None:
-        return ""
+def handle_session_start(event: HostEvent) -> str:
     additional_context = SESSION_START_BRIEF
     environment_warning = persist_claude_session_environment(event)
     if environment_warning:
@@ -465,10 +449,7 @@ def handle_session_start(data: HostEvent | dict) -> str:
     )
 
 
-def handle_pre_compact(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.PRE_COMPACT)
-    if event is None:
-        return ""
+def handle_pre_compact(event: HostEvent) -> str:
     requested = request_checkpoint(event, "before compaction")
     if requested is None:
         return ""
@@ -481,10 +462,7 @@ def handle_pre_compact(data: HostEvent | dict) -> str:
     return json.dumps({"systemMessage": message})
 
 
-def handle_post_compact(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.POST_COMPACT)
-    if event is None:
-        return ""
+def handle_post_compact(event: HostEvent) -> str:
     base = hook_project_root(str(event.cwd))
     checkpoint = read_checkpoint(base, event)
     if checkpoint is None:
@@ -492,10 +470,7 @@ def handle_post_compact(data: HostEvent | dict) -> str:
     return json.dumps({"systemMessage": checkpoint_message(checkpoint["ticket_id"], "after compaction")})
 
 
-def handle_session_end(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.SESSION_END)
-    if event is None:
-        return ""
+def handle_session_end(event: HostEvent) -> str:
     requested = request_checkpoint(event, "session handoff")
     base = hook_project_root(str(event.cwd))
     context = resolve_execution_context(
@@ -516,10 +491,7 @@ def handle_session_end(data: HostEvent | dict) -> str:
     return json.dumps({"systemMessage": checkpoint_message(checkpoint["ticket_id"], "session handoff")})
 
 
-def handle_subagent_start(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.SUBAGENT_START)
-    if event is None:
-        return ""
+def handle_subagent_start(event: HostEvent) -> str:
     parent, child = subagent_contexts(event)
     if parent is None or child is None:
         return subagent_context_output(
@@ -562,10 +534,7 @@ def handle_subagent_start(data: HostEvent | dict) -> str:
     )
 
 
-def handle_subagent_stop(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.SUBAGENT_STOP)
-    if event is None:
-        return ""
+def handle_subagent_stop(event: HostEvent) -> str:
     parent, child = subagent_contexts(event)
     if parent is None or child is None:
         return ""
@@ -591,10 +560,7 @@ def handle_subagent_stop(data: HostEvent | dict) -> str:
     return ""
 
 
-def handle_user_prompt_submit(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.PROMPT_SUBMIT)
-    if event is None:
-        return ""
+def handle_user_prompt_submit(event: HostEvent) -> str:
     project_dir = str(event.cwd)
     session_id = event.session_id
 
@@ -625,10 +591,7 @@ def handle_user_prompt_submit(data: HostEvent | dict) -> str:
     )
 
 
-def handle_post_tool_use(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.POST_TOOL_USE)
-    if event is None:
-        return ""
+def handle_post_tool_use(event: HostEvent) -> str:
     project_dir = str(event.cwd)
     session_id = event.session_id
 
@@ -659,10 +622,7 @@ def handle_post_tool_use(data: HostEvent | dict) -> str:
     return ""
 
 
-def handle_stop(data: HostEvent | dict) -> str:
-    event = handler_event(data, EventKind.STOP)
-    if event is None:
-        return ""
+def handle_stop(event: HostEvent) -> str:
     # If stop_hook_active is set, another stop handler is running — bail.
     if event.stop_hook_active:
         return ""

@@ -23,7 +23,7 @@ from kingdom.cli.hook import (
     state_file_for,
     write_turn_state,
 )
-from kingdom.lifecycle import Host, normalize_host_event
+from kingdom.lifecycle import EventKind, Host, HostEvent
 from kingdom.state import (
     backlog_root,
     compact_context_id,
@@ -57,23 +57,22 @@ class TestSubagentLifecycle:
         record_execution_ticket_context(tmp_path, parent, ticket.id, feature=feature)
         return parent, path
 
-    def event(self, tmp_path: Path, name: str, **extra: str):
-        payload = {
-            "hook_event_name": name,
-            "session_id": "parent-session",
-            "cwd": str(tmp_path),
-            "agent_id": "child-1",
-            "agent_type": "explorer",
-            **extra,
-        }
-        event = normalize_host_event(Host.CODEX, payload)
-        assert event is not None
-        return event
-
     def test_subagent_inherits_parent_ticket_without_taking_ownership(self, tmp_path: Path) -> None:
         parent, ticket_path = self.setup_parent(tmp_path)
 
-        output = json.loads(handle_subagent_start(self.event(tmp_path, "SubagentStart")))
+        output = json.loads(
+            handle_subagent_start(
+                HostEvent(
+                    host=Host.CODEX,
+                    kind=EventKind.SUBAGENT_START,
+                    session_id="parent-session",
+                    cwd=tmp_path,
+                    agent_id="child-1",
+                    parent_agent_id="parent-session",
+                    agent_type="explorer",
+                )
+            )
+        )
 
         child = resolve_execution_context(
             host="codex",
@@ -98,7 +97,18 @@ class TestSubagentLifecycle:
         child_path = branch / "tickets" / "bbbb.md"
         write_ticket(Ticket(id="bbbb", status="open", title="Child ticket"), child_path)
 
-        handle_subagent_start(self.event(tmp_path, "SubagentStart", ticket_id="bbbb"))
+        handle_subagent_start(
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.SUBAGENT_START,
+                session_id="parent-session",
+                cwd=tmp_path,
+                agent_id="child-1",
+                parent_agent_id="parent-session",
+                agent_type="explorer",
+                ticket_hint="bbbb",
+            )
+        )
 
         child = resolve_execution_context(
             host="codex",
@@ -122,8 +132,30 @@ class TestSubagentLifecycle:
         write_ticket(Ticket(id="bbbb", status="open", title="First child ticket"), first_path)
         write_ticket(Ticket(id="cccc", status="open", title="Second child ticket"), second_path)
 
-        handle_subagent_start(self.event(tmp_path, "SubagentStart", ticket_id="bbbb"))
-        handle_subagent_start(self.event(tmp_path, "SubagentStart", ticket_id="cccc"))
+        handle_subagent_start(
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.SUBAGENT_START,
+                session_id="parent-session",
+                cwd=tmp_path,
+                agent_id="child-1",
+                parent_agent_id="parent-session",
+                agent_type="explorer",
+                ticket_hint="bbbb",
+            )
+        )
+        handle_subagent_start(
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.SUBAGENT_START,
+                session_id="parent-session",
+                cwd=tmp_path,
+                agent_id="child-1",
+                parent_agent_id="parent-session",
+                agent_type="explorer",
+                ticket_hint="cccc",
+            )
+        )
 
         child = resolve_execution_context(
             host="codex",
@@ -140,9 +172,32 @@ class TestSubagentLifecycle:
 
     def test_subagent_stop_appends_handoff_and_marks_child_complete(self, tmp_path: Path) -> None:
         parent, ticket_path = self.setup_parent(tmp_path)
-        handle_subagent_start(self.event(tmp_path, "SubagentStart"))
+        handle_subagent_start(
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.SUBAGENT_START,
+                session_id="parent-session",
+                cwd=tmp_path,
+                agent_id="child-1",
+                parent_agent_id="parent-session",
+                agent_type="explorer",
+            )
+        )
 
-        assert handle_subagent_stop(self.event(tmp_path, "SubagentStop")) == ""
+        assert (
+            handle_subagent_stop(
+                HostEvent(
+                    host=Host.CODEX,
+                    kind=EventKind.SUBAGENT_STOP,
+                    session_id="parent-session",
+                    cwd=tmp_path,
+                    agent_id="child-1",
+                    parent_agent_id="parent-session",
+                    agent_type="explorer",
+                )
+            )
+            == ""
+        )
 
         child = resolve_execution_context(
             host="codex",
@@ -164,7 +219,19 @@ class TestSubagentLifecycle:
         ensure_branch_layout(tmp_path, "feature/native-agents")
         set_current_run(tmp_path, "feature/native-agents")
 
-        output = json.loads(handle_subagent_start(self.event(tmp_path, "SubagentStart")))
+        output = json.loads(
+            handle_subagent_start(
+                HostEvent(
+                    host=Host.CODEX,
+                    kind=EventKind.SUBAGENT_START,
+                    session_id="parent-session",
+                    cwd=tmp_path,
+                    agent_id="child-1",
+                    parent_agent_id="parent-session",
+                    agent_type="explorer",
+                )
+            )
+        )
 
         assert "kd tk start <id>" in output["hookSpecificOutput"]["additionalContext"]
         assert list_execution_contexts(tmp_path) == []
@@ -183,40 +250,39 @@ class TestCursorHookAdapter:
         record_execution_ticket_context(tmp_path, context, ticket.id, feature=feature)
         return context, ticket_path
 
-    def event(self, tmp_path: Path, name: str, **extra: object):
-        event = normalize_host_event(
-            Host.CURSOR,
-            {
-                "hook_event_name": name,
-                "conversation_id": "cursor-parent",
-                "workspace_roots": [str(tmp_path)],
-                **extra,
-            },
-        )
-        assert event is not None
-        return event
-
     def test_session_start_uses_cursor_output_schema(self, tmp_path: Path) -> None:
-        output = json.loads(handle_session_start(self.event(tmp_path, "sessionStart", session_id="cursor-parent")))
+        output = json.loads(
+            handle_session_start(
+                HostEvent(host=Host.CURSOR, kind=EventKind.SESSION_START, session_id="cursor-parent", cwd=tmp_path)
+            )
+        )
 
         assert "KINGDOM WORKFLOW" in output["additional_context"]
         assert output["env"] == {"KD_CONTEXT": "cursor-parent", "KD_HOST": "cursor"}
         assert "hookSpecificOutput" not in output
 
     def test_prompt_submit_allows_without_claiming_context_injection(self, tmp_path: Path) -> None:
-        output = json.loads(handle_user_prompt_submit(self.event(tmp_path, "beforeSubmitPrompt")))
+        output = json.loads(
+            handle_user_prompt_submit(
+                HostEvent(host=Host.CURSOR, kind=EventKind.PROMPT_SUBMIT, session_id="cursor-parent", cwd=tmp_path)
+            )
+        )
 
         assert output == {"continue": True}
 
     def test_shell_log_command_updates_cursor_turn_state(self, tmp_path: Path) -> None:
-        handle_user_prompt_submit(self.event(tmp_path, "beforeSubmitPrompt"))
+        handle_user_prompt_submit(
+            HostEvent(host=Host.CURSOR, kind=EventKind.PROMPT_SUBMIT, session_id="cursor-parent", cwd=tmp_path)
+        )
 
         handle_post_tool_use(
-            self.event(
-                tmp_path,
-                "postToolUse",
+            HostEvent(
+                host=Host.CURSOR,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="cursor-parent",
+                cwd=tmp_path,
                 tool_name="Shell",
-                tool_input={"command": 'uv run kd tk log cafe "checkpoint"'},
+                command='uv run kd tk log cafe "checkpoint"',
             )
         )
 
@@ -227,7 +293,17 @@ class TestCursorHookAdapter:
     def test_pre_compact_uses_cursor_user_message(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
 
-        output = json.loads(handle_pre_compact(self.event(tmp_path, "preCompact", trigger="auto")))
+        output = json.loads(
+            handle_pre_compact(
+                HostEvent(
+                    host=Host.CURSOR,
+                    kind=EventKind.PRE_COMPACT,
+                    session_id="cursor-parent",
+                    cwd=tmp_path,
+                    trigger="auto",
+                )
+            )
+        )
 
         assert "ticket cafe" in output["user_message"]
         assert "systemMessage" not in output
@@ -237,12 +313,14 @@ class TestCursorHookAdapter:
 
         output = json.loads(
             handle_subagent_start(
-                self.event(
-                    tmp_path,
-                    "subagentStart",
-                    subagent_id="cursor-child",
-                    subagent_type="explore",
-                    parent_conversation_id="cursor-parent",
+                HostEvent(
+                    host=Host.CURSOR,
+                    kind=EventKind.SUBAGENT_START,
+                    session_id="cursor-parent",
+                    cwd=tmp_path,
+                    agent_id="cursor-child",
+                    agent_type="explore",
+                    parent_agent_id="cursor-parent",
                 )
             )
         )
@@ -263,16 +341,26 @@ class TestCursorHookAdapter:
     def test_subagent_stop_without_child_id_preserves_recorded_child(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
         handle_subagent_start(
-            self.event(
-                tmp_path,
-                "subagentStart",
-                subagent_id="cursor-child",
-                subagent_type="explore",
-                parent_conversation_id="cursor-parent",
+            HostEvent(
+                host=Host.CURSOR,
+                kind=EventKind.SUBAGENT_START,
+                session_id="cursor-parent",
+                cwd=tmp_path,
+                agent_id="cursor-child",
+                agent_type="explore",
+                parent_agent_id="cursor-parent",
             )
         )
 
-        output = handle_subagent_stop(self.event(tmp_path, "subagentStop", subagent_type="explore"))
+        output = handle_subagent_stop(
+            HostEvent(
+                host=Host.CURSOR,
+                kind=EventKind.SUBAGENT_STOP,
+                session_id="cursor-parent",
+                cwd=tmp_path,
+                agent_type="explore",
+            )
+        )
 
         contexts = list_execution_contexts(tmp_path)
         child = next(context for context in contexts if context.get("session_id") == "cursor-child")
@@ -282,7 +370,15 @@ class TestCursorHookAdapter:
     def test_session_end_records_checkpoint_without_claiming_visible_output(self, tmp_path: Path) -> None:
         context, _ = self.setup_binding(tmp_path)
 
-        output = handle_session_end(self.event(tmp_path, "sessionEnd", reason="completed"))
+        output = handle_session_end(
+            HostEvent(
+                host=Host.CURSOR,
+                kind=EventKind.SESSION_END,
+                session_id="cursor-parent",
+                cwd=tmp_path,
+                reason="completed",
+            )
+        )
 
         checkpoint = json.loads(checkpoint_state_file(tmp_path, "cursor", "cursor-parent").read_text())
         stored = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
@@ -291,17 +387,31 @@ class TestCursorHookAdapter:
         assert checkpoint["phase"] == "session handoff"
         assert stored["active"] is False
 
-        handle_session_start(self.event(tmp_path, "sessionStart"))
+        handle_session_start(
+            HostEvent(host=Host.CURSOR, kind=EventKind.SESSION_START, session_id="cursor-parent", cwd=tmp_path)
+        )
 
         resumed = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
         assert resumed["active"] is True
 
     def test_stop_uses_exact_cursor_binding_and_followup_schema(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
-        handle_user_prompt_submit(self.event(tmp_path, "beforeSubmitPrompt"))
-        handle_post_tool_use(self.event(tmp_path, "postToolUse", tool_name="Edit", tool_input={}))
+        handle_user_prompt_submit(
+            HostEvent(host=Host.CURSOR, kind=EventKind.PROMPT_SUBMIT, session_id="cursor-parent", cwd=tmp_path)
+        )
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CURSOR,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="cursor-parent",
+                cwd=tmp_path,
+                tool_name="Edit",
+            )
+        )
 
-        output = json.loads(handle_stop(self.event(tmp_path, "stop", status="completed", loop_count=0)))
+        output = json.loads(
+            handle_stop(HostEvent(host=Host.CURSOR, kind=EventKind.STOP, session_id="cursor-parent", cwd=tmp_path))
+        )
 
         assert "kd tk log cafe" in output["followup_message"]
         assert "decision" not in output
@@ -319,25 +429,18 @@ class TestTicketCheckpoints:
         record_execution_ticket_context(tmp_path, context, ticket_id, feature=feature)
         return path
 
-    def event(self, tmp_path: Path, name: str, **extra: str):
-        event = normalize_host_event(
-            Host.CODEX,
-            {
-                "hook_event_name": name,
-                "session_id": "session-1",
-                "cwd": str(tmp_path),
-                **extra,
-            },
-        )
-        assert event is not None
-        return event
-
     def test_pre_compact_requests_structured_exact_ticket_checkpoint(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
         other = ensure_branch_layout(tmp_path, "feature/checkpoint") / "tickets" / "bbbb.md"
         write_ticket(Ticket(id="bbbb", status="in_progress", title="Unrelated recent ticket"), other)
 
-        output = json.loads(handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto")))
+        output = json.loads(
+            handle_pre_compact(
+                HostEvent(
+                    host=Host.CODEX, kind=EventKind.PRE_COMPACT, session_id="session-1", cwd=tmp_path, trigger="auto"
+                )
+            )
+        )
 
         message = output["systemMessage"]
         assert "ticket aaaa" in message
@@ -349,17 +452,21 @@ class TestTicketCheckpoints:
 
     def test_repeated_checkpoint_is_idempotent_until_ticket_update(self, tmp_path: Path) -> None:
         ticket_path = self.setup_binding(tmp_path)
-        event = self.event(tmp_path, "PreCompact", trigger="auto")
+        event = HostEvent(
+            host=Host.CODEX, kind=EventKind.PRE_COMPACT, session_id="session-1", cwd=tmp_path, trigger="auto"
+        )
 
         assert handle_pre_compact(event)
         assert handle_pre_compact(event) == ""
 
         handle_post_tool_use(
-            self.event(
-                tmp_path,
-                "PostToolUse",
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="session-1",
+                cwd=tmp_path,
                 tool_name="Edit",
-                tool_input={"file_path": str(ticket_path)},
+                file_paths=(str(ticket_path),),
             )
         )
         assert not checkpoint_state_file(tmp_path, "codex", "session-1").exists()
@@ -367,48 +474,58 @@ class TestTicketCheckpoints:
 
     def test_checkpoint_requires_log_command_for_exact_ticket(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
-        handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto"))
+        handle_pre_compact(
+            HostEvent(host=Host.CODEX, kind=EventKind.PRE_COMPACT, session_id="session-1", cwd=tmp_path, trigger="auto")
+        )
         checkpoint_path = checkpoint_state_file(tmp_path, "codex", "session-1")
 
         handle_post_tool_use(
-            self.event(
-                tmp_path,
-                "PostToolUse",
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="session-1",
+                cwd=tmp_path,
                 tool_name="Bash",
-                tool_input={"command": 'uv run kd tk log bbbb "note: aaaa also affected"'},
+                command='uv run kd tk log bbbb "note: aaaa also affected"',
             )
         )
 
         assert checkpoint_path.exists()
 
         handle_post_tool_use(
-            self.event(
-                tmp_path,
-                "PostToolUse",
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="session-1",
+                cwd=tmp_path,
                 tool_name="Bash",
-                tool_input={"command": "echo kd tk log aaaa"},
+                command="echo kd tk log aaaa",
             )
         )
 
         assert checkpoint_path.exists()
 
         handle_post_tool_use(
-            self.event(
-                tmp_path,
-                "PostToolUse",
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="session-1",
+                cwd=tmp_path,
                 tool_name="Bash",
-                tool_input={"command": "# kd tk log aaaa"},
+                command="# kd tk log aaaa",
             )
         )
 
         assert checkpoint_path.exists()
 
         handle_post_tool_use(
-            self.event(
-                tmp_path,
-                "PostToolUse",
+            HostEvent(
+                host=Host.CODEX,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="session-1",
+                cwd=tmp_path,
                 tool_name="Bash",
-                tool_input={"command": 'uv run kd tk log aaaa "checkpoint complete"'},
+                command='uv run kd tk log aaaa "checkpoint complete"',
             )
         )
 
@@ -416,10 +533,28 @@ class TestTicketCheckpoints:
 
     def test_post_compact_and_compact_resume_repeat_pending_request(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
-        handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto"))
+        handle_pre_compact(
+            HostEvent(host=Host.CODEX, kind=EventKind.PRE_COMPACT, session_id="session-1", cwd=tmp_path, trigger="auto")
+        )
 
-        post = json.loads(handle_post_compact(self.event(tmp_path, "PostCompact", trigger="auto")))
-        resumed = json.loads(handle_session_start(self.event(tmp_path, "SessionStart", source="compact")))
+        post = json.loads(
+            handle_post_compact(
+                HostEvent(
+                    host=Host.CODEX, kind=EventKind.POST_COMPACT, session_id="session-1", cwd=tmp_path, trigger="auto"
+                )
+            )
+        )
+        resumed = json.loads(
+            handle_session_start(
+                HostEvent(
+                    host=Host.CODEX,
+                    kind=EventKind.SESSION_START,
+                    session_id="session-1",
+                    cwd=tmp_path,
+                    source="compact",
+                )
+            )
+        )
 
         assert "ticket aaaa" in post["systemMessage"]
         assert "ticket aaaa" in resumed["hookSpecificOutput"]["additionalContext"]
@@ -432,7 +567,13 @@ class TestTicketCheckpoints:
         assert sibling is not None
         record_execution_ticket_context(tmp_path, sibling, "aaaa", feature="feature/checkpoint")
 
-        output = json.loads(handle_session_end(self.event(tmp_path, "SessionEnd", reason="other")))
+        output = json.loads(
+            handle_session_end(
+                HostEvent(
+                    host=Host.CODEX, kind=EventKind.SESSION_END, session_id="session-1", cwd=tmp_path, reason="other"
+                )
+            )
+        )
 
         assert "ticket aaaa" in output["systemMessage"]
         assert "continue" not in output
@@ -450,7 +591,11 @@ class TestTicketCheckpoints:
         record_execution_ticket_context(tmp_path, sibling, "aaaa", feature="feature/checkpoint")
 
         with patch.dict(os.environ, {"KD_CONTEXT": "session-2", "KD_HOST": "codex"}):
-            handle_session_end(self.event(tmp_path, "SessionEnd", reason="other"))
+            handle_session_end(
+                HostEvent(
+                    host=Host.CODEX, kind=EventKind.SESSION_END, session_id="session-1", cwd=tmp_path, reason="other"
+                )
+            )
 
         contexts = {item["context_id"]: item for item in list_execution_contexts(tmp_path)}
         assert contexts[context.context_id]["active"] is False
@@ -460,9 +605,15 @@ class TestTicketCheckpoints:
         self.setup_binding(tmp_path)
         context = resolve_execution_context(host="codex", session_id="session-1", cwd=tmp_path)
         assert context is not None
-        handle_session_end(self.event(tmp_path, "SessionEnd", reason="other"))
+        handle_session_end(
+            HostEvent(host=Host.CODEX, kind=EventKind.SESSION_END, session_id="session-1", cwd=tmp_path, reason="other")
+        )
 
-        handle_session_start(self.event(tmp_path, "SessionStart", source="resume"))
+        handle_session_start(
+            HostEvent(
+                host=Host.CODEX, kind=EventKind.SESSION_START, session_id="session-1", cwd=tmp_path, source="resume"
+            )
+        )
 
         stored = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
         assert stored["active"] is True
@@ -476,7 +627,14 @@ class TestTicketCheckpoints:
         context = resolve_execution_context(host="codex", session_id="session-1", cwd=tmp_path)
         assert context is not None
 
-        assert handle_session_end(self.event(tmp_path, "SessionEnd", reason="other")) == ""
+        assert (
+            handle_session_end(
+                HostEvent(
+                    host=Host.CODEX, kind=EventKind.SESSION_END, session_id="session-1", cwd=tmp_path, reason="other"
+                )
+            )
+            == ""
+        )
 
         assert not checkpoint_state_file(tmp_path, "codex", "session-1").exists()
         stored = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
@@ -486,7 +644,14 @@ class TestTicketCheckpoints:
         ensure_branch_layout(tmp_path, "feature/checkpoint")
         set_current_run(tmp_path, "feature/checkpoint")
 
-        assert handle_pre_compact(self.event(tmp_path, "PreCompact", trigger="auto")) == ""
+        assert (
+            handle_pre_compact(
+                HostEvent(
+                    host=Host.CODEX, kind=EventKind.PRE_COMPACT, session_id="session-1", cwd=tmp_path, trigger="auto"
+                )
+            )
+            == ""
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +661,9 @@ class TestTicketCheckpoints:
 
 class TestSessionStart:
     def test_emits_brief_as_additional_context(self) -> None:
-        output = handle_session_start({"hook_event_name": "SessionStart", "session_id": "sess-1", "cwd": "/workspace"})
+        output = handle_session_start(
+            HostEvent(host=Host.CLAUDE, kind=EventKind.SESSION_START, session_id="sess-1", cwd=Path("/workspace"))
+        )
         parsed = json.loads(output)
         hso = parsed["hookSpecificOutput"]
         assert hso["hookEventName"] == "SessionStart"
@@ -508,12 +675,13 @@ class TestSessionStart:
 
     def test_emits_on_resume(self) -> None:
         output = handle_session_start(
-            {
-                "hook_event_name": "SessionStart",
-                "session_id": "sess-1",
-                "cwd": "/workspace",
-                "source": "resume",
-            }
+            HostEvent(
+                host=Host.CLAUDE,
+                kind=EventKind.SESSION_START,
+                session_id="sess-1",
+                cwd=Path("/workspace"),
+                source="resume",
+            )
         )
         parsed = json.loads(output)
         assert "KINGDOM WORKFLOW" in parsed["hookSpecificOutput"]["additionalContext"]
@@ -526,8 +694,9 @@ class TestSessionStart:
 
 class TestUserPromptSubmit:
     def test_emits_reminder_as_additional_context(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"})
+        output = handle_user_prompt_submit(
+            HostEvent(host=Host.CLAUDE, kind=EventKind.PROMPT_SUBMIT, session_id="sess-1", cwd=tmp_path)
+        )
         parsed = json.loads(output)
         hso = parsed["hookSpecificOutput"]
         assert hso["hookEventName"] == "UserPromptSubmit"
@@ -537,34 +706,28 @@ class TestUserPromptSubmit:
         assert "kd tk move" not in hso["additionalContext"]
 
     def test_creates_state_file(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"})
+        handle_user_prompt_submit(
+            HostEvent(host=Host.CLAUDE, kind=EventKind.PROMPT_SUBMIT, session_id="sess-1", cwd=tmp_path)
+        )
         sf = state_file_for(str(tmp_path), "sess-1")
         state = json.loads(sf.read_text())
         assert state == {"had_work": False, "did_log": False, "stop_blocked": False}
 
     def test_resets_state(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"})
-            handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": "sess-1", "tool_name": "Edit", "tool_input": {}}
+        handle_user_prompt_submit(
+            HostEvent(host=Host.CLAUDE, kind=EventKind.PROMPT_SUBMIT, session_id="sess-1", cwd=tmp_path)
+        )
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id="sess-1", cwd=tmp_path, tool_name="Edit"
             )
-            sf = state_file_for(str(tmp_path), "sess-1")
-            assert json.loads(sf.read_text())["had_work"] is True
-            # New submit resets.
-            handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"})
-            assert json.loads(sf.read_text()) == {"had_work": False, "did_log": False, "stop_blocked": False}
-
-    def test_accepts_normalized_event_with_claude_project_dir(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            event = normalize_host_event(
-                Host.CLAUDE,
-                {"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"},
-            )
-            assert event is not None
-            handle_user_prompt_submit(event)
-
+        )
         sf = state_file_for(str(tmp_path), "sess-1")
+        assert json.loads(sf.read_text())["had_work"] is True
+        # New submit resets.
+        handle_user_prompt_submit(
+            HostEvent(host=Host.CLAUDE, kind=EventKind.PROMPT_SUBMIT, session_id="sess-1", cwd=tmp_path)
+        )
         assert json.loads(sf.read_text()) == {"had_work": False, "did_log": False, "stop_blocked": False}
 
 
@@ -575,8 +738,9 @@ class TestUserPromptSubmit:
 
 class TestPostToolUse:
     def setup_session(self, tmp_path: Path, session_id: str = "sess-1") -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": session_id})
+        handle_user_prompt_submit(
+            HostEvent(host=Host.CLAUDE, kind=EventKind.PROMPT_SUBMIT, session_id=session_id, cwd=tmp_path)
+        )
 
     def read_state(self, tmp_path: Path, session_id: str = "sess-1") -> dict:
         sf = state_file_for(str(tmp_path), session_id)
@@ -584,106 +748,111 @@ class TestPostToolUse:
 
     def test_edit_sets_had_work(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": "sess-1", "tool_name": "Edit", "tool_input": {}}
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id="sess-1", cwd=tmp_path, tool_name="Edit"
             )
+        )
         assert self.read_state(tmp_path)["had_work"] is True
 
     def test_write_sets_had_work(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": "sess-1", "tool_name": "Write", "tool_input": {}}
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id="sess-1", cwd=tmp_path, tool_name="Write"
             )
+        )
         assert self.read_state(tmp_path)["had_work"] is True
 
     def test_web_search_sets_had_work(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": "sess-1", "tool_name": "WebSearch", "tool_input": {}}
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id="sess-1", cwd=tmp_path, tool_name="WebSearch"
             )
+        )
         assert self.read_state(tmp_path)["had_work"] is True
 
     def test_web_fetch_sets_had_work(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": "sess-1", "tool_name": "WebFetch", "tool_input": {}}
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id="sess-1", cwd=tmp_path, tool_name="WebFetch"
             )
+        )
         assert self.read_state(tmp_path)["had_work"] is True
 
     def test_read_does_not_set_had_work(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": "sess-1", "tool_name": "Read", "tool_input": {}}
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id="sess-1", cwd=tmp_path, tool_name="Read"
             )
+        )
         assert self.read_state(tmp_path)["had_work"] is False
 
     def test_bash_does_not_set_had_work(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "session_id": "sess-1",
-                    "tool_name": "Bash",
-                    "tool_input": {"command": "ls -la"},
-                }
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="sess-1",
+                cwd=tmp_path,
+                tool_name="Bash",
+                command="ls -la",
             )
+        )
         assert self.read_state(tmp_path)["had_work"] is False
 
     def test_kd_tk_log_sets_did_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "session_id": "sess-1",
-                    "tool_name": "Bash",
-                    "tool_input": {"command": 'kd tk log d4fc "did stuff"'},
-                }
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="sess-1",
+                cwd=tmp_path,
+                tool_name="Bash",
+                command='kd tk log d4fc "did stuff"',
             )
+        )
         assert self.read_state(tmp_path)["did_log"] is True
 
     def test_kd_ticket_log_sets_did_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "session_id": "sess-1",
-                    "tool_name": "Bash",
-                    "tool_input": {"command": 'kd ticket log d4fc "did stuff"'},
-                }
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="sess-1",
+                cwd=tmp_path,
+                tool_name="Bash",
+                command='kd ticket log d4fc "did stuff"',
             )
+        )
         assert self.read_state(tmp_path)["did_log"] is True
 
     def test_unrelated_bash_does_not_set_did_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "session_id": "sess-1",
-                    "tool_name": "Bash",
-                    "tool_input": {"command": "pytest"},
-                }
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="sess-1",
+                cwd=tmp_path,
+                tool_name="Bash",
+                command="pytest",
             )
+        )
         assert self.read_state(tmp_path)["did_log"] is False
 
-    def test_no_session_id_silent(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_post_tool_use({"hook_event_name": "PostToolUse", "tool_name": "Edit", "tool_input": {}})
-        assert output == ""
-
     def test_no_state_file_fails_open(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": "sess-1", "tool_name": "Edit", "tool_input": {}}
+        output = handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id="sess-1", cwd=tmp_path, tool_name="Edit"
             )
+        )
         assert output == ""
 
 
@@ -714,36 +883,40 @@ class TestStopHandler:
         )
 
     def setup_session(self, tmp_path: Path, session_id: str = "sess-1") -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "session_id": session_id})
+        handle_user_prompt_submit(
+            HostEvent(host=Host.CLAUDE, kind=EventKind.PROMPT_SUBMIT, session_id=session_id, cwd=tmp_path)
+        )
 
     def do_work(self, tmp_path: Path, session_id: str = "sess-1") -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": session_id, "tool_name": "Edit", "tool_input": {}}
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id=session_id, cwd=tmp_path, tool_name="Edit"
             )
+        )
 
     def edit_path(self, tmp_path: Path, path: Path, session_id: str = "sess-1") -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "session_id": session_id,
-                    "tool_name": "Edit",
-                    "tool_input": {"file_path": str(path)},
-                }
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE,
+                kind=EventKind.POST_TOOL_USE,
+                session_id=session_id,
+                cwd=tmp_path,
+                tool_name="Edit",
+                file_paths=(str(path),),
             )
+        )
 
     def do_log(self, tmp_path: Path, session_id: str = "sess-1") -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "session_id": session_id,
-                    "tool_name": "Bash",
-                    "tool_input": {"command": 'kd tk log d4fc "summary"'},
-                }
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE,
+                kind=EventKind.POST_TOOL_USE,
+                session_id=session_id,
+                cwd=tmp_path,
+                tool_name="Bash",
+                command='kd tk log d4fc "summary"',
             )
+        )
 
     def bind_ticket(
         self,
@@ -770,8 +943,7 @@ class TestStopHandler:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_bound_ticket(tmp_path, "0042")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         result = json.loads(output)
         assert result["decision"] == "block"
         assert "kd tk log 0042" in result["reason"]
@@ -782,8 +954,7 @@ class TestStopHandler:
         ticket_path = tmp_path / ".kd" / "branches" / "branch-a" / "tickets" / "7e15.md"
         self.edit_path(tmp_path, ticket_path)
 
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         assert output == ""
 
@@ -795,8 +966,7 @@ class TestStopHandler:
         self.edit_path(tmp_path, code_path)
         self.edit_path(tmp_path, ticket_path)
 
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         assert output == ""
 
@@ -806,12 +976,9 @@ class TestStopHandler:
         self.create_bound_ticket(tmp_path, "9999", session_id="other-session")
         self.create_ticket(tmp_path, "branch-a", "7e15")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
-        with patch.dict(os.environ, env):
-            self.bind_ticket(tmp_path, "7e15", feature="branch-a")
+        self.bind_ticket(tmp_path, "7e15", feature="branch-a")
 
-        with patch.dict(os.environ, env):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         result = json.loads(output)
         assert "kd tk log 7e15" in result["reason"]
@@ -834,7 +1001,7 @@ class TestStopHandler:
             self.bind_ticket(kingdom_base, "7e15", feature="branch-a", cwd=worktree)
 
         with patch.dict(os.environ, env):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+            output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=worktree))
 
         result = json.loads(output)
         assert "kd tk log 7e15" in result["reason"]
@@ -852,12 +1019,9 @@ class TestStopHandler:
         )
         ensure_branch_layout(tmp_path, "branch-a")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
-        with patch.dict(os.environ, env):
-            self.bind_ticket(tmp_path, "7e15", feature="branch-a", location="backlog")
+        self.bind_ticket(tmp_path, "7e15", feature="branch-a", location="backlog")
 
-        with patch.dict(os.environ, env):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         result = json.loads(output)
         assert "kd tk log 7e15" in result["reason"]
@@ -875,12 +1039,9 @@ class TestStopHandler:
         )
         ensure_branch_layout(tmp_path, "branch-a")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
-        with patch.dict(os.environ, env):
-            self.bind_ticket(tmp_path, "7e15", feature="branch-a", location="archive:old-feature")
+        self.bind_ticket(tmp_path, "7e15", feature="branch-a", location="archive:old-feature")
 
-        with patch.dict(os.environ, env):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         result = json.loads(output)
         assert "kd tk log 7e15" in result["reason"]
@@ -890,12 +1051,9 @@ class TestStopHandler:
         self.do_work(tmp_path)
         self.create_ticket(tmp_path, "branch-a", "7e15", status="closed")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
-        with patch.dict(os.environ, env):
-            self.bind_ticket(tmp_path, "7e15", feature="branch-a")
+        self.bind_ticket(tmp_path, "7e15", feature="branch-a")
 
-        with patch.dict(os.environ, env):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         assert output == ""
 
     def test_ignores_peasant_execution_ticket_context(self, tmp_path: Path) -> None:
@@ -903,12 +1061,9 @@ class TestStopHandler:
         self.do_work(tmp_path)
         self.create_ticket(tmp_path, "branch-a", "7e15", assignee="peasant-7e15")
         set_current_run(tmp_path, "branch-a")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
-        with patch.dict(os.environ, env):
-            self.bind_ticket(tmp_path, "7e15", feature="branch-a")
+        self.bind_ticket(tmp_path, "7e15", feature="branch-a")
 
-        with patch.dict(os.environ, env):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         assert output == ""
 
     def test_ignores_execution_ticket_context_from_other_feature(self, tmp_path: Path) -> None:
@@ -917,12 +1072,9 @@ class TestStopHandler:
         self.create_ticket(tmp_path, "branch-a", "7e15")
         ensure_branch_layout(tmp_path, "branch-b")
         set_current_run(tmp_path, "branch-b")
-        env = {"CLAUDE_PROJECT_DIR": str(tmp_path)}
-        with patch.dict(os.environ, env):
-            self.bind_ticket(tmp_path, "7e15", feature="branch-a")
+        self.bind_ticket(tmp_path, "7e15", feature="branch-a")
 
-        with patch.dict(os.environ, env):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         assert output == ""
 
     def test_execution_ticket_context_is_isolated(self, tmp_path: Path) -> None:
@@ -932,17 +1084,13 @@ class TestStopHandler:
         self.do_work(tmp_path, session_id="sess-b")
         self.create_ticket(tmp_path, "branch-a", "aaaa", session_id="sess-a")
         self.create_ticket(tmp_path, "branch-b", "bbbb", session_id="sess-b")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            self.bind_ticket(tmp_path, "aaaa", feature="branch-a", session_id="sess-a")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            self.bind_ticket(tmp_path, "bbbb", feature="branch-b", session_id="sess-b")
+        self.bind_ticket(tmp_path, "aaaa", feature="branch-a", session_id="sess-a")
+        self.bind_ticket(tmp_path, "bbbb", feature="branch-b", session_id="sess-b")
 
         set_current_run(tmp_path, "branch-a")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output_a = handle_stop({"hook_event_name": "Stop", "session_id": "sess-a", "stop_hook_active": False})
+        output_a = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-a", cwd=tmp_path))
         set_current_run(tmp_path, "branch-b")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output_b = handle_stop({"hook_event_name": "Stop", "session_id": "sess-b", "stop_hook_active": False})
+        output_b = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-b", cwd=tmp_path))
 
         assert "kd tk log aaaa" in json.loads(output_a)["reason"]
         assert "kd tk log bbbb" in json.loads(output_b)["reason"]
@@ -952,43 +1100,39 @@ class TestStopHandler:
         self.create_bound_ticket(tmp_path, "7e15")
         self.do_work(tmp_path)
         self.do_log(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         assert output == ""
 
     def test_allows_when_no_work(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.create_bound_ticket(tmp_path, "7e15")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         assert output == ""
 
     def test_allows_when_stop_hook_active(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.create_bound_ticket(tmp_path, "7e15")
         self.do_work(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": True})
+        output = handle_stop(
+            HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path, stop_hook_active=True)
+        )
         assert output == ""
 
     def test_no_state_file_fails_open(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         assert output == ""
 
     def test_no_active_ticket_passes_through(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         assert output == ""
 
     def test_active_ticket_blocks_with_real_id(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_bound_ticket(tmp_path, "a1b2")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         result = json.loads(output)
         assert result["decision"] == "block"
         assert "kd tk log a1b2" in result["reason"]
@@ -998,8 +1142,7 @@ class TestStopHandler:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_bound_ticket(tmp_path, "0240")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         result = json.loads(output)
         assert result["decision"] == "block"
         assert "kd tk log 0240" in result["reason"]
@@ -1009,9 +1152,8 @@ class TestStopHandler:
         self.do_work(tmp_path)
 
         self.create_bound_ticket(tmp_path, "0042")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            first_output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
-            second_output = handle_stop({"hook_event_name": "Stop", "session_id": "sess-1", "stop_hook_active": False})
+        first_output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
+        second_output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         assert json.loads(first_output)["decision"] == "block"
         assert second_output == ""
@@ -1023,31 +1165,32 @@ class TestStopHandler:
         self.setup_session(tmp_path, session_id="sess-b")
         self.do_work(tmp_path, session_id="sess-a")
         # Session B's Stop should not block.
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output_b = handle_stop({"hook_event_name": "Stop", "session_id": "sess-b", "stop_hook_active": False})
+        output_b = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-b", cwd=tmp_path))
         assert output_b == ""
         # Session A's Stop should block.
         self.create_bound_ticket(tmp_path, "0099", session_id="sess-a")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output_a = handle_stop({"hook_event_name": "Stop", "session_id": "sess-a", "stop_hook_active": False})
+        output_a = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-a", cwd=tmp_path))
         result = json.loads(output_a)
         assert result["decision"] == "block"
 
     def test_sessions_have_independent_state(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path, session_id="sess-a")
         self.setup_session(tmp_path, session_id="sess-b")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            handle_post_tool_use(
-                {"hook_event_name": "PostToolUse", "session_id": "sess-a", "tool_name": "Write", "tool_input": {}}
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE, kind=EventKind.POST_TOOL_USE, session_id="sess-a", cwd=tmp_path, tool_name="Write"
             )
-            handle_post_tool_use(
-                {
-                    "hook_event_name": "PostToolUse",
-                    "session_id": "sess-b",
-                    "tool_name": "Bash",
-                    "tool_input": {"command": 'kd tk log x "y"'},
-                }
+        )
+        handle_post_tool_use(
+            HostEvent(
+                host=Host.CLAUDE,
+                kind=EventKind.POST_TOOL_USE,
+                session_id="sess-b",
+                cwd=tmp_path,
+                tool_name="Bash",
+                command='kd tk log x "y"',
             )
+        )
         sf_a = state_file_for(str(tmp_path), "sess-a")
         sf_b = state_file_for(str(tmp_path), "sess-b")
         assert json.loads(sf_a.read_text()) == {"had_work": True, "did_log": False, "stop_blocked": False}
@@ -1055,16 +1198,7 @@ class TestStopHandler:
 
     def test_same_session_identifier_is_isolated_between_hosts(self, tmp_path: Path) -> None:
         for host in (Host.CLAUDE, Host.CODEX, Host.CURSOR):
-            event_name = "beforeSubmitPrompt" if host is Host.CURSOR else "UserPromptSubmit"
-            event = normalize_host_event(
-                host,
-                {
-                    "hook_event_name": event_name,
-                    "session_id": "shared-session",
-                    "cwd": str(tmp_path),
-                },
-            )
-            assert event is not None
+            event = HostEvent(host=host, kind=EventKind.PROMPT_SUBMIT, session_id="shared-session", cwd=tmp_path)
             handle_user_prompt_submit(event)
 
         turn_states = list((tmp_path / ".kd" / "runtime").glob("turn-*.json"))
@@ -1076,8 +1210,7 @@ class TestStopHandler:
         stale = runtime / "turn-old-session.json"
         stale.write_text(json.dumps({"had_work": True, "did_log": False}))
         self.setup_session(tmp_path, session_id="new-session")
-        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
-            output = handle_stop({"hook_event_name": "Stop", "session_id": "new-session", "stop_hook_active": False})
+        output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="new-session", cwd=tmp_path))
         assert output == ""
 
 
@@ -1161,6 +1294,17 @@ class TestHookRunCLI:
         assert result.exit_code == 0
         parsed = json.loads(result.output.strip())
         assert "Kingdom:" in parsed["hookSpecificOutput"]["additionalContext"]
+
+    def test_user_prompt_uses_claude_project_directory(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(tmp_path)}):
+            result = runner.invoke(
+                app,
+                ["hook", "run", "--host", "claude"],
+                input=json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": "sess-1"}),
+            )
+        assert result.exit_code == 0, result.output
+        state = json.loads(state_file_for(str(tmp_path), "sess-1").read_text())
+        assert state == {"had_work": False, "did_log": False, "stop_blocked": False}
 
     def test_unknown_event_silent(self) -> None:
         result = runner.invoke(app, ["hook", "run"], input='{"hook_event_name": "Notification"}')

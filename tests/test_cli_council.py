@@ -1507,6 +1507,26 @@ class TestCouncilRetry:
             assert result.exit_code == 0
             assert "codex" in result.output
 
+    def test_retry_uses_latest_response_status(self) -> None:
+        from kingdom.thread import add_message, create_thread, thread_response_status
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = "council-retry-latest"
+            create_thread(base, BRANCH, thread_id, ["king", "codex"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="codex", body="question")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="first", status="complete")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="failed", status="error")
+            assert thread_response_status(base, BRANCH, thread_id).member_states["codex"].state == "errored"
+
+            with mock_council_query_to_thread({"codex": AgentResponse(name="codex", text="Recovered", elapsed=0)}):
+                result = runner.invoke(council_app, ["retry"])
+
+            assert result.exit_code == 0
+            assert "Retrying: codex" in result.output
+
     def test_retry_missing_members(self) -> None:
         """Retry should re-query members that never responded."""
         from kingdom.thread import add_message, create_thread

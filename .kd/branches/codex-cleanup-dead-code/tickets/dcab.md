@@ -1,12 +1,16 @@
 ---
 id: "dcab"
-status: open
+status: closed
+deps: [79a4, 80d2]
 links: []
 created: 2026-09-05T23:42:47Z
 type: task
 priority: 2
-deps: ["79a4", "80d2"]
-parent: "1465"
+closed_at: 2026-09-06T00:17:32Z
+resolution: completed
+closed_context: codex:a65a16d552d2bd0a
+assignee: codex:a65a16d552d2bd0a
+parent: 1465
 ---
 # Consolidate streaming hook normalization and message status handling
 
@@ -18,11 +22,11 @@ Keep the real provider-format distinctions at ingress and preserve interruption,
 
 ## Acceptance Criteria
 
-- [ ] Peasant and lord share one streaming function and live output is flushed visibly during execution.
-- [ ] Hook normalization occurs once at ingress; handler tests use normalized events and ingress tests cover provider payloads.
-- [ ] Thread/TUI/retry agree on current message status with no synthetic backward-compatibility fallback.
-- [ ] Meaningful streaming, error, interruption, and shutdown tests cover the shared path.
-- [ ] Full suite including Textual integration and Ruff pass; watch output is manually verified using controlled local subprocesses.
+- [x] Peasant and lord share one streaming function and live output is flushed visibly during execution.
+- [x] Hook normalization occurs once at ingress; handler tests use normalized events and ingress tests cover provider payloads.
+- [x] Thread/TUI/retry agree on current message status with no synthetic backward-compatibility fallback.
+- [x] Meaningful streaming, error, interruption, and shutdown tests cover the shared path.
+- [x] Full suite including Textual integration and Ruff pass; watch output is manually verified using controlled local subprocesses.
 
 ## Worklog
 
@@ -32,3 +36,9 @@ Keep the real provider-format distinctions at ingress and preserve interruption,
 - [2026-09-05 20:09] [codex:a65a16d5] — Independent streaming review found a descendant-pipe shutdown hang: killing only the direct child left drain threads waiting for inherited pipe handles. Follow-up dcee42d adds separate process-session launch and process-group termination on failure/interruption. Descendant regressions failed for log-write and KeyboardInterrupt paths before fix, then passed; agent full suite 2358 passed, 3 old skips, 1 old xfail. Reviewed scope stays one function and preserves meaningful process cleanup.
 - [2026-09-05 20:11] [codex:a65a16d5] — Root added and ran failing retry regression: latest codex message status=error after an earlier complete response makes thread status errored, but council retry says Nothing to retry. Saved regression patch for dcab integration; fix will use the same latest-message status calculation as thread status, preserving targeted ask filtering. This is a real consistency bug, not only synthetic-state cleanup.
 - [2026-09-05 20:14] [codex:a65a16d5] — Hook normalization preparation ca73b5f removes handler_event and internal dict acceptance; tests construct normalized HostEvent fields directly. Raw cwd fallback moved to CLI ingress; malformed direct-handler case removed while provider/lifecycle integration remains covered. Agent targeted 121 tests pass, whole-tree Ruff/hooks pass. Integration will use this commit only, not its temporary runtime snapshot parent.
+- [2026-09-05 20:17] [codex:a65a16d5] — Integrated reviewed streaming commits 94551e6/dcee42d and normalized-hook commit ca73b5f. Root removed synthetic missing member-state fallback and fixed retry to reuse thread_response_status, so latest failure overrides earlier success. Saved failing retry regression now passes, along with existing targeted-ask behavior. Updated thread-status documentation to explicit metadata.
+  Parent controlled subprocess smoke displayed stdout/stderr while child remained blocked, then appended finished after release. Manual council status --verbose rendered explicit complete response as responded despite error-like text, and explicit error as errored. Integrated full suite with Textual: 2303 passed, 3 skipped, 1 xfailed in 35.85s. Ruff, formatting and all-file hooks pass. All streaming/handler/status criteria satisfied.
+
+## Lifecycle
+
+- 2026-09-06T00:17:32Z [codex:a65a16d552d2bd0a] — closed (completed)

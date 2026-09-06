@@ -613,9 +613,9 @@ def thread_response_status(base: Path, branch: str, thread_id: str) -> ThreadSta
     """Compute per-member status for the most recent king ask in a thread.
 
     States derived from concrete runtime signals:
-      - responded: message exists with no error marker
-      - errored: message exists with ``*Error:`` marker (non-timeout)
-      - timed_out: message exists with ``*Error: Timeout`` marker
+      - responded: latest message has successful or unspecified status
+      - errored: latest message has error or interrupted status
+      - timed_out: latest message has timeout status
       - running: no message yet but ``.stream-{member}.jsonl`` file exists
       - pending: no message and no stream file
 

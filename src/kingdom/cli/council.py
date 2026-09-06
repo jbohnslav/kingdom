@@ -1025,17 +1025,12 @@ def print_thread_status(status: ThreadStatus, base: Path, feature: str, verbose:
     }
 
     for name in sorted(status.expected):
-        ms = status.member_states.get(name)
-        if ms:
-            styled = STATE_STYLES.get(ms.state, ms.state)
-            line = f"  {name}: {styled}"
-            if verbose and ms.error:
-                # Show truncated error detail
-                err_preview = ms.error.replace("\n", " ")[:80]
-                line += f"  [dim]{err_preview}[/dim]"
-        else:
-            # Fallback for missing member_states (backward compat)
-            line = f"  {name}: {'responded' if name in status.responded else 'pending'}"
+        ms = status.member_states[name]
+        styled = STATE_STYLES.get(ms.state, ms.state)
+        line = f"  {name}: {styled}"
+        if verbose and ms.error:
+            err_preview = ms.error.replace("\n", " ")[:80]
+            line += f"  [dim]{err_preview}[/dim]"
 
         if verbose:
             log_file = logs_root(base, feature) / f"council-{name}.log"
@@ -1245,7 +1240,7 @@ def council_retry(
 
     Uses the original prompt from the most recent king message in the thread.
     """
-    from kingdom.thread import get_thread, list_messages
+    from kingdom.thread import MEMBER_RESPONDED, get_thread, list_messages, thread_response_status
 
     base = require_project_root()
     feature = resolve_current_run(base)
@@ -1276,14 +1271,8 @@ def council_retry(
         # Single or comma-separated targets
         expected = {t.strip() for t in last_king_msg.to.split(",") if t.strip() != "king"} & all_members
 
-    # Find members that responded successfully after the last ask.
-    # Explicit persisted status is authoritative.
-    ok_members: set[str] = set()
-    for msg in messages:
-        if msg.sequence > last_king_msg.sequence and msg.from_ in expected and msg.status in (None, "complete"):
-            ok_members.add(msg.from_)
-
-    failed = expected - ok_members
+    status = thread_response_status(base, feature, thread_id)
+    failed = {name for name in expected if status.member_states[name].state != MEMBER_RESPONDED}
     if not failed:
         typer.echo("All members responded successfully. Nothing to retry.")
         return

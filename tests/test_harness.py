@@ -1939,51 +1939,6 @@ class TestCleanAgentEnvKdBase:
         assert "CLAUDECODE" not in env
 
 
-class TestRunStreamingSubprocess:
-    """Tests for run_streaming_subprocess."""
-
-    def test_captures_stdout_and_stderr(self, tmp_path: Path) -> None:
-        from kingdom.harness import run_streaming_subprocess
-
-        result = run_streaming_subprocess(
-            ["echo", "hello world"],
-            cwd=tmp_path,
-            env={},
-        )
-        assert result.returncode == 0
-        assert "hello world" in result.stdout
-
-    def test_writes_to_live_log(self, tmp_path: Path) -> None:
-        from kingdom.harness import run_streaming_subprocess
-
-        log_path = tmp_path / "logs" / "live.log"
-        result = run_streaming_subprocess(
-            ["echo", "streamed output"],
-            cwd=tmp_path,
-            env={},
-            live_log_path=log_path,
-        )
-        assert result.returncode == 0
-        assert log_path.exists()
-        log_content = log_path.read_text()
-        assert "streamed output" in log_content
-
-    def test_accumulates_full_output(self, tmp_path: Path) -> None:
-        """Full stdout must be accumulated for parse_response compatibility."""
-        import sys
-
-        from kingdom.harness import run_streaming_subprocess
-
-        result = run_streaming_subprocess(
-            [sys.executable, "-c", "for i in range(5): print(f'line {i}')"],
-            cwd=tmp_path,
-            env={},
-        )
-        assert result.returncode == 0
-        for i in range(5):
-            assert f"line {i}" in result.stdout
-
-
 class TestCheckWorktreeBranch:
     """Tests for check_worktree_branch — the branch escape tripwire."""
 

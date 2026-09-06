@@ -18,13 +18,13 @@ import logging
 import re
 import signal
 import subprocess
-import threading
 import time
 import types
 from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.agent import build_command, clean_agent_env, extract_token_count, parse_response, resolve_agent
+from kingdom.process import run_streaming_subprocess
 from kingdom.session import get_agent_state, update_agent_state
 from kingdom.state import logs_root
 from kingdom.thread import add_message, list_messages
@@ -418,63 +418,6 @@ def extract_worklog(ticket_path: Path) -> str:
             break
         result.append(line)
     return "\n".join(result).strip()
-
-
-def run_streaming_subprocess(
-    cmd: list[str],
-    *,
-    cwd: Path,
-    env: dict[str, str],
-    live_log_path: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess with real-time stdout/stderr streaming.
-
-    Pipes stdout and stderr, writing each line to *live_log_path* in real time
-    while accumulating full buffers for the returned ``CompletedProcess``.
-    This gives ``parse_response()`` the same interface as ``subprocess.run()``
-    while making output visible to ``peasant watch`` during execution.
-    """
-    live_log_path.parent.mkdir(parents=True, exist_ok=True) if live_log_path else None
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        cwd=cwd,
-        env=env,
-        text=True,
-    )
-
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
-
-    def drain(stream, buf: list[str]) -> None:
-        for line in stream:
-            buf.append(line)
-            if live_log_path:
-                try:
-                    with live_log_path.open("a", encoding="utf-8") as f:
-                        f.write(line)
-                except OSError:
-                    pass
-
-    stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_lines), daemon=True)
-    stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_lines), daemon=True)
-    stdout_thread.start()
-    stderr_thread.start()
-
-    proc.wait()
-
-    stdout_thread.join(timeout=5)
-    stderr_thread.join(timeout=5)
-
-    return subprocess.CompletedProcess(
-        args=cmd,
-        returncode=proc.returncode,
-        stdout="".join(stdout_lines),
-        stderr="".join(stderr_lines),
-    )
 
 
 def get_new_directives(base: Path, branch: str, thread_id: str, last_seen_seq: int) -> tuple[list[str], int]:

@@ -178,7 +178,7 @@ def test_stopping_and_restarting_one_lord_does_not_stop_the_other(multi_epic_pro
         patch("kingdom.lord_harness.signal.signal"),
         patch("kingdom.lord_harness.time.sleep"),
         patch("kingdom.lord_harness.build_command", side_effect=build_scripted_command),
-        patch("kingdom.lord_harness.run_lord_streaming_subprocess", side_effect=run_scripted_lord),
+        patch("kingdom.lord_harness.run_streaming_subprocess", side_effect=run_scripted_lord),
         patch("kingdom.lord_harness.parse_response", side_effect=parse_scripted_response),
         ThreadPoolExecutor(max_workers=3) as executor,
     ):
