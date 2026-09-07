@@ -11,17 +11,14 @@ from pathlib import Path
 import pytest
 
 from kingdom.session import (
-    AgentState,
     get_agent_state,
     get_current_thread,
-    legacy_session_path,
     list_active_agents,
     session_path,
-    set_agent_state,
     set_current_thread,
     update_agent_state,
 )
-from kingdom.state import ensure_branch_layout, sessions_root
+from kingdom.state import sessions_root
 
 BRANCH = "feature/test-branch"
 
@@ -30,10 +27,6 @@ class TestPathHelpers:
     def test_session_path(self, project: Path) -> None:
         p = session_path(project, BRANCH, "claude")
         assert p == sessions_root(project, BRANCH) / "claude.json"
-
-    def test_legacy_session_path(self, project: Path) -> None:
-        p = legacy_session_path(project, BRANCH, "claude")
-        assert p == sessions_root(project, BRANCH) / "claude.session"
 
 
 class TestGetAgentState:
@@ -53,8 +46,8 @@ class TestGetAgentState:
                     "status": "working",
                     "resume_id": "sess-abc",
                     "pid": 12345,
-                    "ticket": "kin-042",
-                    "thread": "kin-042-work",
+                    "ticket": "042",
+                    "thread": "042-work",
                     "started_at": "2026-02-07T15:30:00Z",
                     "last_activity": "2026-02-07T15:44:00Z",
                 }
@@ -68,53 +61,15 @@ class TestGetAgentState:
         assert state.status == "working"
         assert state.resume_id == "sess-abc"
         assert state.pid == 12345
-        assert state.ticket == "kin-042"
-        assert state.thread == "kin-042-work"
+        assert state.ticket == "042"
+        assert state.thread == "042-work"
         assert state.started_at == "2026-02-07T15:30:00Z"
         assert state.last_activity == "2026-02-07T15:44:00Z"
 
 
-class TestSetAgentState:
-    def test_writes_json_file(self, project: Path) -> None:
-        state = AgentState(name="claude", status="working", resume_id="sess-123")
-        set_agent_state(project, BRANCH, "claude", state)
-
-        p = session_path(project, BRANCH, "claude")
-        assert p.exists()
-
-        data = json.loads(p.read_text(encoding="utf-8"))
-        assert data["name"] == "claude"
-        assert data["status"] == "working"
-        assert data["resume_id"] == "sess-123"
-
-    def test_omits_none_fields(self, project: Path) -> None:
-        state = AgentState(name="claude")
-        set_agent_state(project, BRANCH, "claude", state)
-
-        p = session_path(project, BRANCH, "claude")
-        data = json.loads(p.read_text(encoding="utf-8"))
-        assert "pid" not in data
-        assert "ticket" not in data
-        assert "name" in data
-        assert "status" in data
-
-    def test_creates_sessions_dir_if_missing(self, tmp_path: Path) -> None:
-        # Don't use the project fixture — start from scratch
-        ensure_branch_layout(tmp_path, "fresh/branch")
-        sdir = sessions_root(tmp_path, "fresh/branch")
-        # Remove sessions dir to test auto-creation
-        sdir.rmdir()
-        assert not sdir.exists()
-
-        state = AgentState(name="claude", status="idle")
-        set_agent_state(tmp_path, "fresh/branch", "claude", state)
-        assert session_path(tmp_path, "fresh/branch", "claude").exists()
-
-
 class TestUpdateAgentState:
     def test_updates_single_field(self, project: Path) -> None:
-        state = AgentState(name="claude", status="idle", resume_id="sess-1")
-        set_agent_state(project, BRANCH, "claude", state)
+        update_agent_state(project, BRANCH, "claude", status="idle", resume_id="sess-1")
 
         updated = update_agent_state(project, BRANCH, "claude", status="working")
         assert updated.status == "working"
@@ -126,7 +81,7 @@ class TestUpdateAgentState:
         assert reread.resume_id == "sess-1"
 
     def test_updates_multiple_fields(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude"))
+        update_agent_state(project, BRANCH, "claude")
 
         updated = update_agent_state(
             project,
@@ -134,55 +89,17 @@ class TestUpdateAgentState:
             "claude",
             status="working",
             pid=9999,
-            ticket="kin-042",
+            ticket="042",
         )
         assert updated.status == "working"
         assert updated.pid == 9999
-        assert updated.ticket == "kin-042"
+        assert updated.ticket == "042"
 
     def test_unknown_field_raises(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude"))
+        update_agent_state(project, BRANCH, "claude")
 
         with pytest.raises(ValueError, match="Unknown AgentState field"):
             update_agent_state(project, BRANCH, "claude", bogus="value")
-
-
-class TestLegacyMigration:
-    def test_migrates_session_to_json(self, project: Path) -> None:
-        # Write a legacy .session file
-        old_path = legacy_session_path(project, BRANCH, "claude")
-        old_path.write_text("sess-legacy-123\n", encoding="utf-8")
-
-        state = get_agent_state(project, BRANCH, "claude")
-        assert state.resume_id == "sess-legacy-123"
-        assert state.status == "idle"
-
-        # Legacy file should be removed
-        assert not old_path.exists()
-        # New JSON file should exist
-        assert session_path(project, BRANCH, "claude").exists()
-
-    def test_empty_session_file_migrates_as_none(self, project: Path) -> None:
-        old_path = legacy_session_path(project, BRANCH, "codex")
-        old_path.write_text("\n", encoding="utf-8")
-
-        state = get_agent_state(project, BRANCH, "codex")
-        assert state.resume_id is None
-        assert not old_path.exists()
-
-    def test_json_takes_precedence_over_session(self, project: Path) -> None:
-        # Both files exist — JSON should win, legacy ignored
-        old_path = legacy_session_path(project, BRANCH, "claude")
-        old_path.write_text("old-session-id\n", encoding="utf-8")
-
-        new_state = AgentState(name="claude", status="working", resume_id="new-session-id")
-        set_agent_state(project, BRANCH, "claude", new_state)
-
-        state = get_agent_state(project, BRANCH, "claude")
-        assert state.resume_id == "new-session-id"
-        assert state.status == "working"
-        # Legacy file should still be there (not touched when JSON exists)
-        assert old_path.exists()
 
 
 class TestListActiveAgents:
@@ -190,14 +107,14 @@ class TestListActiveAgents:
         assert list_active_agents(project, BRANCH) == []
 
     def test_all_idle_returns_empty(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude", status="idle"))
-        set_agent_state(project, BRANCH, "codex", AgentState(name="codex", status="idle"))
+        update_agent_state(project, BRANCH, "claude", status="idle")
+        update_agent_state(project, BRANCH, "codex", status="idle")
         assert list_active_agents(project, BRANCH) == []
 
     def test_returns_non_idle_agents(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude", status="working"))
-        set_agent_state(project, BRANCH, "codex", AgentState(name="codex", status="idle"))
-        set_agent_state(project, BRANCH, "extra", AgentState(name="extra", status="blocked"))
+        update_agent_state(project, BRANCH, "claude", status="working")
+        update_agent_state(project, BRANCH, "codex", status="idle")
+        update_agent_state(project, BRANCH, "extra", status="blocked")
 
         active = list_active_agents(project, BRANCH)
         names = [a.name for a in active]
@@ -206,9 +123,9 @@ class TestListActiveAgents:
         assert "codex" not in names
 
     def test_includes_done_and_failed(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "p1", AgentState(name="p1", status="done"))
-        set_agent_state(project, BRANCH, "p2", AgentState(name="p2", status="failed"))
-        set_agent_state(project, BRANCH, "p3", AgentState(name="p3", status="stopped"))
+        update_agent_state(project, BRANCH, "p1", status="done")
+        update_agent_state(project, BRANCH, "p2", status="failed")
+        update_agent_state(project, BRANCH, "p3", status="stopped")
 
         active = list_active_agents(project, BRANCH)
         assert len(active) == 3
@@ -235,34 +152,24 @@ class TestNewSessionFields:
         assert state.review_bounce_count == 0
 
     def test_start_sha_persists(self, project: Path) -> None:
-        set_agent_state(
-            project,
-            BRANCH,
-            "claude",
-            AgentState(name="claude", status="working", start_sha="abc123def"),
-        )
+        update_agent_state(project, BRANCH, "claude", status="working", start_sha="abc123def")
         state = get_agent_state(project, BRANCH, "claude")
         assert state.start_sha == "abc123def"
 
     def test_review_bounce_count_persists(self, project: Path) -> None:
-        set_agent_state(
-            project,
-            BRANCH,
-            "claude",
-            AgentState(name="claude", status="working", review_bounce_count=2),
-        )
+        update_agent_state(project, BRANCH, "claude", status="working", review_bounce_count=2)
         state = get_agent_state(project, BRANCH, "claude")
         assert state.review_bounce_count == 2
 
     def test_update_start_sha(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude"))
+        update_agent_state(project, BRANCH, "claude")
         updated = update_agent_state(project, BRANCH, "claude", start_sha="deadbeef")
         assert updated.start_sha == "deadbeef"
         reread = get_agent_state(project, BRANCH, "claude")
         assert reread.start_sha == "deadbeef"
 
     def test_update_review_bounce_count(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude"))
+        update_agent_state(project, BRANCH, "claude")
         updated = update_agent_state(project, BRANCH, "claude", review_bounce_count=3)
         assert updated.review_bounce_count == 3
         reread = get_agent_state(project, BRANCH, "claude")
@@ -282,8 +189,8 @@ class TestNewSessionFields:
         assert state.pid == 1234
 
     def test_new_statuses_work_with_list_active(self, project: Path) -> None:
-        set_agent_state(project, BRANCH, "p1", AgentState(name="p1", status="awaiting_council"))
-        set_agent_state(project, BRANCH, "p2", AgentState(name="p2", status="needs_king_review"))
+        update_agent_state(project, BRANCH, "p1", status="awaiting_council")
+        update_agent_state(project, BRANCH, "p2", status="needs_king_review")
         active = list_active_agents(project, BRANCH)
         statuses = {a.name: a.status for a in active}
         assert statuses["p1"] == "awaiting_council"
@@ -378,7 +285,7 @@ class TestLockedJsonUpdate:
 
     def test_concurrent_update_agent_state(self, project: Path) -> None:
         """Multiple processes bump a counter on an existing agent state file."""
-        set_agent_state(project, BRANCH, "claude", AgentState(name="claude", status="working"))
+        update_agent_state(project, BRANCH, "claude", status="working")
 
         json_path = session_path(project, BRANCH, "claude")
         n = 20

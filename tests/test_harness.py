@@ -29,7 +29,7 @@ from kingdom.harness import (
     run_council_review,
     summarize_feedback,
 )
-from kingdom.session import AgentState, get_agent_state, set_agent_state
+from kingdom.session import get_agent_state, update_agent_state
 from kingdom.thread import add_message, create_thread, list_messages
 from kingdom.ticket import Ticket, read_ticket, write_ticket
 
@@ -52,40 +52,40 @@ def ticket_path(project: Path) -> Path:
     tickets_dir = project / ".kd" / "branches" / "feature-harness-test" / "tickets"
     tickets_dir.mkdir(parents=True, exist_ok=True)
     ticket = Ticket(
-        id="kin-test",
+        id="test",
         status="open",
         title="Test ticket",
         body="Implement the thing.\n\n## Acceptance\n\n- [ ] It works",
         created=datetime.now(UTC),
     )
-    path = tickets_dir / "kin-test.md"
+    path = tickets_dir / "test.md"
     write_ticket(ticket, path)
     return path
 
 
 class TestBuildPrompt:
     def test_basic_prompt(self) -> None:
-        ticket_path = Path("/project/tickets/kin-001.md")
+        ticket_path = Path("/project/tickets/001.md")
         prompt = build_prompt(
             ticket_path,
             "",
             [],
             1,
             50,
-            worktree=Path("/project/.kd/worktrees/kin-001"),
+            worktree=Path("/project/.kd/worktrees/001"),
             repo_root=Path("/project"),
-            ticket_id="kin-001",
+            ticket_id="001",
             ticket_title="Fix the thing",
         )
         assert str(ticket_path) in prompt
-        assert "/project/.kd/worktrees/kin-001" in prompt
-        assert "ticket/kin-001" in prompt
+        assert "/project/.kd/worktrees/001" in prompt
+        assert "ticket/001" in prompt
         assert "Fix the thing" in prompt
         assert "iteration 1 of 50" in prompt
         assert "STATUS: DONE" in prompt
         assert "STATUS: BLOCKED" in prompt
         assert "STATUS: CONTINUE" in prompt
-        assert "kd tk log kin-001" in prompt
+        assert "kd tk log 001" in prompt
         assert "No headings, no numbered list" in prompt
         # Kingdom context
         assert "Kingdom" in prompt
@@ -93,35 +93,35 @@ class TestBuildPrompt:
         assert "peasant" in prompt
 
     def test_prompt_does_not_contain_ticket_body(self) -> None:
-        ticket_path = Path("/project/tickets/kin-001.md")
+        ticket_path = Path("/project/tickets/001.md")
         prompt = build_prompt(ticket_path, "", [], 1, 50)
         assert "Do the thing" not in prompt
         assert str(ticket_path) in prompt
 
     def test_prompt_with_worklog(self) -> None:
-        ticket_path = Path("/project/tickets/kin-001.md")
+        ticket_path = Path("/project/tickets/001.md")
         prompt = build_prompt(ticket_path, "- Did step 1", [], 2, 50)
         assert "worklog" in prompt.lower()
         assert "Did step 1" in prompt
 
     def test_prompt_with_directives(self) -> None:
-        ticket_path = Path("/project/tickets/kin-001.md")
+        ticket_path = Path("/project/tickets/001.md")
         prompt = build_prompt(ticket_path, "", ["Focus on tests", "Use pytest"], 3, 50)
         assert "directive" in prompt.lower()
         assert "Focus on tests" in prompt
         assert "Use pytest" in prompt
 
     def test_prompt_with_all(self) -> None:
-        ticket_path = Path("/project/tickets/kin-001.md")
+        ticket_path = Path("/project/tickets/001.md")
         prompt = build_prompt(
             ticket_path,
             "- Done A",
             ["Do B"],
             5,
             50,
-            worktree=Path("/project/.kd/worktrees/kin-001"),
+            worktree=Path("/project/.kd/worktrees/001"),
             repo_root=Path("/project"),
-            ticket_id="kin-001",
+            ticket_id="001",
             ticket_title="Fix the thing",
         )
         assert str(ticket_path) in prompt
@@ -132,18 +132,18 @@ class TestBuildPrompt:
         assert "bounced back" in prompt
 
     def test_prompt_with_phase_prompt(self) -> None:
-        ticket_path = Path("/project/tickets/kin-001.md")
+        ticket_path = Path("/project/tickets/001.md")
         prompt = build_prompt(ticket_path, "", [], 1, 50, phase_prompt="Always write tests first.")
         assert prompt.startswith("Always write tests first.")
         assert "peasant" in prompt
 
     def test_prompt_without_phase_prompt(self) -> None:
-        ticket_path = Path("/project/tickets/kin-001.md")
+        ticket_path = Path("/project/tickets/001.md")
         prompt = build_prompt(ticket_path, "", [], 1, 50)
         assert prompt.startswith("You are a peasant")
 
     def test_prompt_custom_max_iterations(self) -> None:
-        ticket_path = Path("/project/tickets/kin-001.md")
+        ticket_path = Path("/project/tickets/001.md")
         prompt = build_prompt(ticket_path, "", [], 3, 10)
         assert "iteration 3 of 10" in prompt
 
@@ -353,11 +353,11 @@ class TestGetNewDirectives:
 class TestRunAgentLoop:
     def setup_for_loop(self, project: Path, ticket_path: Path) -> tuple[str, str]:
         """Set up thread and session for a loop test. Returns (thread_id, session_name)."""
-        thread_id = "kin-test-work"
-        session_name = "peasant-kin-test"
+        thread_id = "test-work"
+        session_name = "peasant-test"
         create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
         add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
-        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        update_agent_state(project, BRANCH, session_name)
         return thread_id, session_name
 
     def test_loop_writes_iteration_start_to_worklog(self, project: Path, ticket_path: Path) -> None:
@@ -377,7 +377,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -403,7 +403,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -437,7 +437,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -468,7 +468,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -494,7 +494,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -517,7 +517,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -551,7 +551,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -580,7 +580,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -617,7 +617,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -644,7 +644,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -675,7 +675,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -702,7 +702,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -728,7 +728,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -763,7 +763,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -802,7 +802,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -818,7 +818,7 @@ class TestRunAgentLoop:
             base=project,
             branch=BRANCH,
             agent_name="nonexistent-agent",
-            ticket_id="kin-test",
+            ticket_id="test",
             worktree=project,
             thread_id=thread_id,
             session_name=session_name,
@@ -830,13 +830,13 @@ class TestRunAgentLoop:
         thread_id = "missing-ticket-work"
         session_name = "peasant-missing"
         create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
-        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        update_agent_state(project, BRANCH, session_name)
 
         status = run_agent_loop(
             base=project,
             branch=BRANCH,
             agent_name="claude",
-            ticket_id="kin-nonexistent",
+            ticket_id="nonexistent",
             worktree=project,
             thread_id=thread_id,
             session_name=session_name,
@@ -862,7 +862,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -895,7 +895,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -916,7 +916,7 @@ class TestRunAgentLoop:
             result = MagicMock()
             if cmd and "rev-parse" in cmd:
                 if "--abbrev-ref" in cmd:
-                    result.stdout = "ticket/kin-test\n"
+                    result.stdout = "ticket/test\n"
                 else:
                     result.stdout = "abc123def456\n"
                 result.returncode = 0
@@ -941,7 +941,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -973,7 +973,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1005,7 +1005,7 @@ class TestRunAgentLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1435,11 +1435,11 @@ class TestCouncilReviewInLoop:
     """Integration tests for council review within the harness loop."""
 
     def setup_for_loop(self, project: Path, ticket_path: Path) -> tuple[str, str]:
-        thread_id = "kin-test-work"
-        session_name = "peasant-kin-test"
+        thread_id = "test-work"
+        session_name = "peasant-test"
         create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
         add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
-        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        update_agent_state(project, BRANCH, session_name)
         return thread_id, session_name
 
     def test_council_approved_sets_needs_king_review(self, project: Path, ticket_path: Path) -> None:
@@ -1462,7 +1462,7 @@ class TestCouncilReviewInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1513,7 +1513,7 @@ class TestCouncilReviewInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1556,7 +1556,7 @@ class TestCouncilReviewInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1603,7 +1603,7 @@ class TestCouncilReviewInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1630,7 +1630,7 @@ class TestCouncilReviewInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1658,7 +1658,7 @@ class TestCouncilReviewInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1699,7 +1699,7 @@ class TestCouncilReviewInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1796,11 +1796,11 @@ class TestFirstIterationContext:
     """Tests for first iteration worklog entry including ticket context."""
 
     def setup_for_loop(self, project: Path, ticket_path: Path) -> tuple[str, str]:
-        thread_id = "kin-test-work"
-        session_name = "peasant-kin-test"
+        thread_id = "test-work"
+        session_name = "peasant-test"
         create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
         add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
-        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        update_agent_state(project, BRANCH, session_name)
         return thread_id, session_name
 
     def test_first_iteration_includes_ticket_title(self, project: Path, ticket_path: Path) -> None:
@@ -1819,7 +1819,7 @@ class TestFirstIterationContext:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1833,11 +1833,11 @@ class TestAgentResultFallbackSummary:
     """Tests for fallback agent-result summaries when extraction is empty."""
 
     def setup_for_loop(self, project: Path, ticket_path: Path) -> tuple[str, str]:
-        thread_id = "kin-test-work"
-        session_name = "peasant-kin-test"
+        thread_id = "test-work"
+        session_name = "peasant-test"
         create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
         add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
-        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        update_agent_state(project, BRANCH, session_name)
         return thread_id, session_name
 
     def test_empty_agent_summary_shows_diff_stat_only(self, project: Path, ticket_path: Path) -> None:
@@ -1862,7 +1862,7 @@ class TestAgentResultFallbackSummary:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -1939,67 +1939,22 @@ class TestCleanAgentEnvKdBase:
         assert "CLAUDECODE" not in env
 
 
-class TestRunStreamingSubprocess:
-    """Tests for run_streaming_subprocess."""
-
-    def test_captures_stdout_and_stderr(self, tmp_path: Path) -> None:
-        from kingdom.harness import run_streaming_subprocess
-
-        result = run_streaming_subprocess(
-            ["echo", "hello world"],
-            cwd=tmp_path,
-            env={},
-        )
-        assert result.returncode == 0
-        assert "hello world" in result.stdout
-
-    def test_writes_to_live_log(self, tmp_path: Path) -> None:
-        from kingdom.harness import run_streaming_subprocess
-
-        log_path = tmp_path / "logs" / "live.log"
-        result = run_streaming_subprocess(
-            ["echo", "streamed output"],
-            cwd=tmp_path,
-            env={},
-            live_log_path=log_path,
-        )
-        assert result.returncode == 0
-        assert log_path.exists()
-        log_content = log_path.read_text()
-        assert "streamed output" in log_content
-
-    def test_accumulates_full_output(self, tmp_path: Path) -> None:
-        """Full stdout must be accumulated for parse_response compatibility."""
-        import sys
-
-        from kingdom.harness import run_streaming_subprocess
-
-        result = run_streaming_subprocess(
-            [sys.executable, "-c", "for i in range(5): print(f'line {i}')"],
-            cwd=tmp_path,
-            env={},
-        )
-        assert result.returncode == 0
-        for i in range(5):
-            assert f"line {i}" in result.stdout
-
-
 class TestCheckWorktreeBranch:
     """Tests for check_worktree_branch — the branch escape tripwire."""
 
     def test_matching_branch_returns_true(self) -> None:
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "ticket/kin-042\n"
+        mock_result.stdout = "ticket/042\n"
         with patch("kingdom.harness.subprocess.run", return_value=mock_result):
-            assert check_worktree_branch(Path("/fake"), "ticket/kin-042") is True
+            assert check_worktree_branch(Path("/fake"), "ticket/042") is True
 
     def test_wrong_branch_returns_false(self) -> None:
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "code-cleanup\n"
         with patch("kingdom.harness.subprocess.run", return_value=mock_result):
-            assert check_worktree_branch(Path("/fake"), "ticket/kin-042") is False
+            assert check_worktree_branch(Path("/fake"), "ticket/042") is False
 
     def test_git_failure_returns_true(self) -> None:
         """Git errors should not block the agent — return True (pass)."""
@@ -2007,14 +1962,14 @@ class TestCheckWorktreeBranch:
         mock_result.returncode = 128
         mock_result.stdout = ""
         with patch("kingdom.harness.subprocess.run", return_value=mock_result):
-            assert check_worktree_branch(Path("/fake"), "ticket/kin-042") is True
+            assert check_worktree_branch(Path("/fake"), "ticket/042") is True
 
     def test_git_timeout_returns_true(self) -> None:
         """Timeouts should not block the agent — return True (pass)."""
         import subprocess
 
         with patch("kingdom.harness.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)):
-            assert check_worktree_branch(Path("/fake"), "ticket/kin-042") is True
+            assert check_worktree_branch(Path("/fake"), "ticket/042") is True
 
     def test_hand_mode_feature_branch(self) -> None:
         """In hand mode, expected branch is the feature branch, not ticket/."""
@@ -2030,11 +1985,11 @@ class TestBranchEscapeInLoop:
 
     def setup_for_loop(self, project: Path, ticket_path: Path) -> tuple[str, str]:
         """Set up thread and session for a loop test. Returns (thread_id, session_name)."""
-        thread_id = "kin-test-work"
-        session_name = "peasant-kin-test"
+        thread_id = "test-work"
+        session_name = "peasant-test"
         create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
         add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
-        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name))
+        update_agent_state(project, BRANCH, session_name)
         return thread_id, session_name
 
     def test_pre_loop_escape_aborts(self, project: Path, ticket_path: Path) -> None:
@@ -2046,7 +2001,7 @@ class TestBranchEscapeInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -2090,7 +2045,7 @@ class TestBranchEscapeInLoop:
                 base=project,
                 branch=BRANCH,
                 agent_name="claude",
-                ticket_id="kin-test",
+                ticket_id="test",
                 worktree=project,
                 thread_id=thread_id,
                 session_name=session_name,
@@ -2109,11 +2064,11 @@ class TestBranchEscapeInLoop:
         raw branch (feature/foo). The escape check must compare against the raw
         git branch, not the normalized kingdom name.
         """
-        thread_id = "kin-test-work"
-        session_name = "peasant-kin-test"
+        thread_id = "test-work"
+        session_name = "peasant-test"
         create_thread(project, BRANCH, thread_id, [session_name, "king"], "work")
         add_message(project, BRANCH, thread_id, from_="king", to=session_name, body="Start work")
-        set_agent_state(project, BRANCH, session_name, AgentState(name=session_name, hand_mode=True))
+        update_agent_state(project, BRANCH, session_name, hand_mode=True)
 
         # Simulate git reporting a slash branch while kingdom uses normalized (dash) name
         mock_git = MagicMock()

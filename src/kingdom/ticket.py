@@ -6,7 +6,7 @@ frontmatter followed by markdown content.
 
 Example ticket file format:
     ---
-    id: kin-a1b2
+    id: a1b2
     status: open
     deps: []
     links: []
@@ -108,9 +108,7 @@ def generate_ticket_id(tickets_dir: Path | None = None) -> str:
         entropy = f"{os.getpid()}{datetime.now().timestamp()}{os.urandom(4).hex()}"
         ticket_id = hashlib.sha256(entropy.encode()).hexdigest()[:4]
 
-        if tickets_dir is not None and (
-            (tickets_dir / f"{ticket_id}.md").exists() or (tickets_dir / f"kin-{ticket_id}.md").exists()
-        ):
+        if tickets_dir is not None and ((tickets_dir / f"{ticket_id}.md").exists()):
             continue
 
         return ticket_id
@@ -371,11 +369,6 @@ def write_ticket(ticket: Ticket, path: Path) -> None:
         update_ticket_snapshot(ticket, written, path, content)
 
 
-def write_ticket_content(path: Path, content: str) -> None:
-    with flock(ticket_lock_path(path)):
-        atomic_write_ticket_content(path, content)
-
-
 def atomic_write_ticket_content(path: Path, content: str) -> None:
     """Replace a ticket atomically while the caller holds its mutation lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -387,42 +380,6 @@ def atomic_write_ticket_content(path: Path, content: str) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def replace_ticket_assignee(content: str, assignee: str) -> str:
-    """Change only the assignee line while preserving the rest of a ticket verbatim."""
-    lines = content.splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
-        raise ValueError("Content must start with YAML frontmatter (---)")
-
-    closing_index = next(
-        (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
-        None,
-    )
-    if closing_index is None:
-        raise ValueError("Invalid frontmatter: missing closing ---")
-
-    for index in range(1, closing_index):
-        if lines[index].partition(":")[0].strip() != "assignee":
-            continue
-        newline = "\r\n" if lines[index].endswith("\r\n") else "\n"
-        if not lines[index].endswith(("\n", "\r")):
-            newline = ""
-        lines[index] = f"assignee: {assignee}{newline}"
-        return "".join(lines)
-
-    newline = "\r\n" if lines[0].endswith("\r\n") else "\n"
-    lines.insert(closing_index, f"assignee: {assignee}{newline}")
-    return "".join(lines)
-
-
-def write_ticket_assignee(path: Path, assignee: str) -> None:
-    """Persist a migration-only assignee change without canonicalizing Markdown."""
-    with flock(ticket_lock_path(path)):
-        content = path.read_text(encoding="utf-8")
-        updated = replace_ticket_assignee(content, assignee)
-        if updated != content:
-            atomic_write_ticket_content(path, updated)
 
 
 def list_tickets(directory: Path) -> list[Ticket]:
@@ -441,11 +398,10 @@ def list_tickets(directory: Path) -> list[Ticket]:
     return tickets
 
 
-def collect_all_tickets(base: Path, *, include_archive: bool = False, include_done: bool = False) -> list[Ticket]:
+def collect_all_tickets(base: Path, *, include_archive: bool = False) -> list[Ticket]:
     """Collect all tickets across branches, backlog, and optionally archive.
 
-    Searches branches/*/tickets/ (skipping done branches unless include_done=True)
-    and backlog/tickets/.
+    Searches branches/*/tickets/ and backlog/tickets/.
     With include_archive=True, also searches archive/*/tickets/.
     """
     from kingdom.state import archive_root, backlog_root, branch_root, branches_root, resolve_current_run
@@ -462,15 +418,6 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False, include_do
             key=lambda path: (path != current_branch_dir, path.name),
         )
         for branch_dir in branch_dirs:
-            state_path = branch_dir / "state.json"
-            if not include_done and state_path.exists():
-                try:
-                    state = json.loads(state_path.read_text())
-                    if state.get("status") == "done":
-                        continue
-                except (json.JSONDecodeError, OSError):
-                    pass
-
             tickets_dir = branch_dir / "tickets"
             if tickets_dir.exists():
                 all_tickets.extend(list_tickets(tickets_dir))
@@ -499,8 +446,8 @@ def collect_all_tickets(base: Path, *, include_archive: bool = False, include_do
 
 
 def collect_ticket_statuses(base: Path) -> dict[str, str]:
-    """Return dependency statuses from every live, done, backlog, and archived workspace."""
-    tickets = collect_all_tickets(base, include_archive=True, include_done=True)
+    """Return dependency statuses from every branch, backlog, and archived workspace."""
+    tickets = collect_all_tickets(base, include_archive=True)
     return {ticket.id: ticket.status for ticket in tickets}
 
 
@@ -552,36 +499,13 @@ def find_newly_unblocked(closed_ticket_id: str, base: Path) -> list[Ticket]:
     return newly_unblocked
 
 
+@dataclass(frozen=True)
 class TicketMatch:
-    """Result from find_ticket — backward-compatible with ``ticket, path = result`` unpacking.
+    """A ticket and its file location returned by find_ticket."""
 
-    Supports 2-tuple unpacking (ticket, path) for existing callers,
-    plus a ``.location`` attribute for the search origin.
-    """
-
-    __slots__ = ("location", "path", "ticket")
-
-    def __init__(self, ticket: Ticket, path: Path, location: str) -> None:
-        self.ticket = ticket
-        self.path = path
-        self.location = location
-
-    def __iter__(self):
-        yield self.ticket
-        yield self.path
-
-    def __len__(self) -> int:
-        return 2
-
-    def __getitem__(self, index: int) -> Ticket | Path:
-        if index == 0:
-            return self.ticket
-        if index == 1:
-            return self.path
-        raise IndexError(index)
-
-    def __repr__(self) -> str:
-        return f"TicketMatch(ticket={self.ticket!r}, path={self.path!r}, location={self.location!r})"
+    ticket: Ticket
+    path: Path
+    location: str
 
 
 class AmbiguousTicketMatch(Exception):
@@ -601,8 +525,6 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> Ticke
     from kingdom.state import archive_root, backlog_root, branch_root, branches_root
 
     search_id = partial_id.lower()
-    if search_id.startswith("kin-"):
-        search_id = search_id[4:]
 
     matches: list[TicketMatch] = []
     search_dirs: list[tuple[Path, str]] = []
@@ -635,12 +557,7 @@ def find_ticket(base: Path, partial_id: str, branch: str | None = None) -> Ticke
     for search_dir, location in search_dirs:
         for ticket_file in sorted(search_dir.glob("*.md")):
             file_id = ticket_file.stem.lower()
-            if file_id.startswith("kin-"):
-                file_id_suffix = file_id[4:]
-            else:
-                file_id_suffix = file_id
-
-            if file_id_suffix.startswith(search_id) or file_id.startswith(f"kin-{search_id}"):
+            if file_id.startswith(search_id):
                 try:
                     ticket = read_ticket(ticket_file)
                     matches.append(TicketMatch(ticket, ticket_file, location))
@@ -729,29 +646,18 @@ def insert_worklog_entry(content: str, entry: str) -> str:
 
 
 def effective_resolution(ticket: Ticket) -> str | None:
-    """Return the active resolution, including legacy closed-ticket inference."""
+    """Return the active resolution, from explicit metadata."""
     if ticket.status != "closed":
         return None
-    if ticket.resolution:
-        return ticket.resolution
-    if ticket.duplicate_of:
-        return "duplicate"
-    if ticket.superseded_by:
-        return "superseded"
-    return "completed"
+    return ticket.resolution
 
 
 def effective_close_reason(ticket: Ticket) -> str | None:
-    """Return the active reason, deriving it for legacy reference-based closures."""
+    """Return the active reason, from explicit metadata."""
     if ticket.status != "closed":
         return None
     if ticket.close_reason and ticket.close_reason.strip():
         return ticket.close_reason.strip()
-    if ticket.resolution is None:
-        if ticket.duplicate_of:
-            return f"Duplicate of {ticket.duplicate_of}"
-        if ticket.superseded_by:
-            return f"Superseded by {ticket.superseded_by}"
     return None
 
 
@@ -820,13 +726,6 @@ def append_worklog_entry(
     return entry
 
 
-def get_ticket_location(base: Path, ticket_id: str) -> Path | None:
-    result = find_ticket(base, ticket_id)
-    if result is None:
-        return None
-    return result[1]
-
-
 # ---------------------------------------------------------------------------
 # Pure filtering functions (no I/O, no CLI deps)
 # ---------------------------------------------------------------------------
@@ -890,7 +789,6 @@ def filter_tickets_by_deps(
 def collect_tickets_by_location(
     base: Path,
     *,
-    include_done: bool = False,
     include_archive: bool = False,
 ) -> list[tuple[str, Ticket]]:
     """Collect tickets from all branches and backlog with location labels.
@@ -898,7 +796,6 @@ def collect_tickets_by_location(
     Returns a list of ``(location_label, ticket)`` pairs where location_label
     is e.g. ``"branch:feature-foo"``, ``"backlog"``, or ``"archive:backlog"``.
     """
-    import json as _json
 
     from kingdom.state import archive_root, backlog_root, branches_root
 
@@ -909,15 +806,6 @@ def collect_tickets_by_location(
         for branch_dir in branches_dir.iterdir():
             if not branch_dir.is_dir():
                 continue
-            if not include_done:
-                state_path = branch_dir / "state.json"
-                if state_path.exists():
-                    try:
-                        state = _json.loads(state_path.read_text())
-                        if state.get("status") == "done":
-                            continue
-                    except (_json.JSONDecodeError, OSError):
-                        pass
             tickets_dir = branch_dir / "tickets"
             if tickets_dir.exists():
                 label = f"branch:{branch_dir.name}"
@@ -951,15 +839,13 @@ def collect_tickets_by_location(
 # Matches tagged worklog entries in both bracketed and unbracketed timestamp forms:
 #   - [HH:MM] [author] — ...
 #   - [YYYY-MM-DD HH:MM] [author] — ...
-#   - YYYY-MM-DD HH:MM [author] — ...  (legacy unbracketed)
-WORKLOG_AUTHOR_RE = re.compile(r"^- (?:\[[\d:. -]+\]|[\d][\d:. -]+\d)\s+\[([^\]]+)\]\s+—")
+WORKLOG_AUTHOR_RE = re.compile(r"^- \[[\d:. -]+\]\s+\[([^\]]+)\]\s+—")
 
 
 def parse_worklog_author(line: str) -> str:
     """Extract the author tag from a worklog line.
 
-    Returns the author string if present, or ``"unknown"`` for legacy
-    untagged entries.
+    Returns the author string if present, or ``"unknown"`` for untagged entries.
     """
     m = WORKLOG_AUTHOR_RE.match(line)
     if m:
@@ -970,7 +856,7 @@ def parse_worklog_author(line: str) -> str:
 def filter_worklog_lines(lines: list[str], *, show_all: bool = False) -> list[str]:
     """Filter worklog lines to lord-relevant entries.
 
-    By default keeps ``lord-*`` and ``unknown`` (legacy) entries.
+    By default keeps ``lord-*`` and ``unknown`` entries.
     With ``show_all=True``, returns all lines unfiltered.
 
     Continuation lines (indented, starting with spaces) follow their

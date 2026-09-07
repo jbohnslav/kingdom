@@ -52,10 +52,8 @@ it uses the current workspace, falling back to backlog when no workspace exists.
 
 Types: `task`, `bug`, `feature`, `epic`. Priorities: 0 (highest) to 3.
 
-`-t` also works as a short title flag when no positional title is provided:
-`kd tk create -t "Flag title"`. To avoid ambiguity, prefer `--title` for flag
-titles and `--type` for ticket types in new examples. The legacy form
-`kd tk create "Title" -t bug` remains supported.
+Use `-t` or `--title` for a flag title: `kd tk create -t "Flag title"`.
+Use `--type` for ticket types: `kd tk create "Fix the parser" --type bug`.
 
 ## Working Tickets
 

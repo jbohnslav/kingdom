@@ -61,26 +61,6 @@ def ticket_issues(base: Path) -> list[DoctorIssue]:
 
 def binding_issues(base: Path) -> list[DoctorIssue]:
     issues = []
-    root = base / ".kd" / "branches"
-    if not root.exists():
-        return issues
-
-    for branch in sorted(path for path in root.iterdir() if path.is_dir()):
-        tickets = read_valid_tickets(sorted((branch / "tickets").glob("*.md")))
-        legacy = sorted(
-            ticket.id for ticket, _ in tickets if ticket.status == "in_progress" and ticket.assignee in (None, "hand")
-        )
-        if len(legacy) > 1:
-            choices = ", ".join(legacy)
-            issues.append(
-                DoctorIssue(
-                    code="binding.ambiguous",
-                    path=str(branch.relative_to(base)),
-                    message=f"Branch {branch.name} has multiple legacy active tickets: {choices}.",
-                    repair="Choose the intended ticket, then from that session run `kd tk start <id>`.",
-                )
-            )
-
     exact_assignments: dict[str, list[str]] = {}
     for ticket, _ in read_valid_tickets(ticket_files(base)):
         if ticket.status != "in_progress" or ticket.assignee in (None, "hand", "peasant"):
@@ -104,12 +84,11 @@ def binding_issues(base: Path) -> list[DoctorIssue]:
     return issues
 
 
-def context_ticket_paths(base: Path, context: dict) -> list[Path]:
+def context_ticket_path(base: Path, context: dict) -> Path | None:
     ticket_id = context.get("ticket_id")
     location = context.get("location")
-    feature = context.get("feature")
     if not isinstance(ticket_id, str) or not ticket_id:
-        return []
+        return None
 
     if location == "backlog":
         tickets_dir = base / ".kd" / "backlog" / "tickets"
@@ -117,22 +96,21 @@ def context_ticket_paths(base: Path, context: dict) -> list[Path]:
         tickets_dir = base / ".kd" / "archive" / location.removeprefix("archive:") / "tickets"
     elif isinstance(location, str) and location.startswith("branch:"):
         tickets_dir = base / ".kd" / "branches" / location.removeprefix("branch:") / "tickets"
-    elif isinstance(feature, str) and feature:
-        tickets_dir = base / ".kd" / "branches" / feature / "tickets"
     else:
-        return []
-    return [tickets_dir / f"{ticket_id}.md", tickets_dir / f"kin-{ticket_id}.md"]
+        return None
+    return tickets_dir / f"{ticket_id}.md"
 
 
 def ticket_from_context(base: Path, context: dict) -> tuple[Ticket, Path] | None:
-    ticket_id = context.get("ticket_id")
-    for path in context_ticket_paths(base, context):
-        try:
-            ticket = read_ticket(path)
-        except (FileNotFoundError, OSError, ValueError):
-            continue
-        if ticket.id == ticket_id:
-            return ticket, path
+    path = context_ticket_path(base, context)
+    if path is None:
+        return None
+    try:
+        ticket = read_ticket(path)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    if ticket.id == context.get("ticket_id"):
+        return ticket, path
     return None
 
 
@@ -141,13 +119,13 @@ def global_ticket_matches(base: Path, ticket_id: str) -> list[tuple[Ticket, Path
 
 
 def context_has_unreadable_ticket(base: Path, context: dict) -> bool:
-    for path in context_ticket_paths(base, context):
-        if not path.exists():
-            continue
-        try:
-            read_ticket(path)
-        except (FileNotFoundError, OSError, ValueError):
-            return True
+    path = context_ticket_path(base, context)
+    if path is None or not path.exists():
+        return False
+    try:
+        read_ticket(path)
+    except (FileNotFoundError, OSError, ValueError):
+        return True
     return False
 
 
@@ -259,83 +237,6 @@ def execution_context_issues(base: Path) -> list[DoctorIssue]:
     return issues
 
 
-def legacy_context_issues(base: Path) -> list[DoctorIssue]:
-    issues = []
-    contexts_root = base / ".kd" / "runtime" / "terminal-context"
-    if not contexts_root.exists():
-        return issues
-
-    for path in sorted(contexts_root.glob("*.json")):
-        relative = str(path.relative_to(base))
-        try:
-            context = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            issues.append(
-                DoctorIssue(
-                    code="context.invalid",
-                    path=relative,
-                    message=f"Legacy terminal context is unreadable: {exc}.",
-                    repair=move_aside_repair(base, path),
-                )
-            )
-            continue
-        if not isinstance(context, dict) or not isinstance(context.get("ticket_id"), str):
-            issues.append(
-                DoctorIssue(
-                    code="context.invalid",
-                    path=relative,
-                    message="Legacy terminal context is missing its ticket identity.",
-                    repair=move_aside_repair(base, path),
-                )
-            )
-            continue
-
-        ticket_id = context["ticket_id"]
-        resolved = ticket_from_context(base, context)
-        if resolved is None:
-            matches = global_ticket_matches(base, ticket_id)
-            if len(matches) == 1 and matches[0][0].status == "in_progress":
-                ticket, actual_path = matches[0]
-                issues.append(
-                    DoctorIssue(
-                        code="binding.location_mismatch",
-                        path=relative,
-                        message=(
-                            f"Legacy terminal context records a stale location for {ticket.id}; "
-                            f"the ticket is at {actual_path.relative_to(base)}."
-                        ),
-                        repair=f"From the owning terminal run `kd tk start {ticket.id}`.",
-                    )
-                )
-                continue
-            if context_has_unreadable_ticket(base, context):
-                continue
-            issues.append(
-                DoctorIssue(
-                    code="context.orphan",
-                    path=relative,
-                    message=f"Legacy terminal context points to missing or ambiguous ticket {ticket_id}.",
-                    repair=move_aside_repair(base, path),
-                )
-            )
-            continue
-        ticket, _ = resolved
-        if ticket.status != "in_progress":
-            issues.append(
-                DoctorIssue(
-                    code="binding.mismatch",
-                    path=relative,
-                    message=f"Legacy terminal context claims {ticket.id}, but the ticket is {ticket.status}.",
-                    repair=move_aside_repair(base, path),
-                )
-            )
-    return issues
-
-
-def context_issues(base: Path) -> list[DoctorIssue]:
-    return [*execution_context_issues(base), *legacy_context_issues(base)]
-
-
 def resolution_issues(base: Path) -> list[DoctorIssue]:
     issues = []
     tickets = read_valid_tickets(ticket_files(base))
@@ -389,7 +290,6 @@ def claude_install_issues(base: Path) -> list[DoctorIssue]:
         SUPPORTED_HOOK_EVENTS,
         has_full_hook_installation,
         has_hook_for_event,
-        has_legacy_hook_installation,
         read_settings,
     )
 
@@ -415,24 +315,15 @@ def claude_install_issues(base: Path) -> list[DoctorIssue]:
             )
         ]
 
-    if has_legacy_hook_installation(settings):
-        return [
-            DoctorIssue(
-                code="host.claude.hooks_legacy",
-                path=str(settings_path.relative_to(base)),
-                message="Claude uses Kingdom's retired hook script command.",
-                repair="Run `kd plugin enable` to replace legacy hooks and add current lifecycle coverage.",
-            )
-        ]
     installed_events = [event for event in SUPPORTED_HOOK_EVENTS if has_hook_for_event(settings, event)]
     if not installed_events or has_full_hook_installation(settings):
         return []
     missing = ", ".join(event for event in SUPPORTED_HOOK_EVENTS if event not in installed_events)
     return [
         DoctorIssue(
-            code="host.claude.hooks_legacy",
+            code="host.claude.hooks_incomplete",
             path=str(settings_path.relative_to(base)),
-            message=f"Claude has legacy Kingdom lifecycle coverage; missing: {missing}.",
+            message=f"Claude has incomplete Kingdom lifecycle coverage; missing: {missing}.",
             repair="Run `kd plugin enable` to add the missing hooks without replacing other settings.",
         )
     ]

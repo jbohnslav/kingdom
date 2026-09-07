@@ -37,9 +37,6 @@ from kingdom.ticket import Ticket, read_ticket, write_ticket
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOST_EVENTS = REPO_ROOT / "tests" / "fixtures" / "host_events.json"
-SUPPORT_MATRIX = REPO_ROOT / "docs" / "support-matrix.md"
-README = REPO_ROOT / "README.md"
-PUBLISH_CHECKLIST = REPO_ROOT / "docs" / "publish-checklist.md"
 
 EXPECTED_EVENT_NAMES = {
     "claude": {
@@ -222,46 +219,3 @@ def test_full_host_subagent_inherits_and_records_handoff(host: Host, tmp_path: P
     ticket = read_ticket(ticket_path)
     assert ticket.assignee == parent_context_id
     assert "Native subagent worker completed" in ticket.body
-
-
-def test_published_matrix_has_dated_versioned_host_contract() -> None:
-    matrix = SUPPORT_MATRIX.read_text(encoding="utf-8")
-
-    for required_text in (
-        "Verified: 2026-08-21",
-        "Kingdom: 1.0.0",
-        "Baseline commit: `a9120675c2cadcd62c9117f8e2cc329f48cdd7d9`",
-        "Claude Code 2.1.220",
-        "Codex CLI 0.147.0-alpha.6.6",
-        "Cursor Agent 2026.02.27-e7d2ef6",
-        "Cursor desktop 3.17.8",
-        "**Live**",
-        "**Contract**",
-        "**Limited**",
-        "**Unsupported**",
-        "same branch",
-        "stale state",
-        "fails open",
-        "missing-host failure",
-        "| Host | Install and update | Session isolation and Stop | Compaction | Native subagents | Uninstall |",
-        "`kd plugin disable`",
-        "`kd plugin uninstall codex`",
-        "Cursor has no `postCompact`",
-        "`subagentStop` omits the child ID",
-        "https://cursor.com/docs/hooks",
-        "https://cursor.com/changelog/side-chat",
-    ):
-        assert required_text in matrix
-
-    readme = README.read_text(encoding="utf-8")
-    checklist = PUBLISH_CHECKLIST.read_text(encoding="utf-8")
-    assert "[supported host integration matrix](docs/support-matrix.md)" in readme
-    assert "[supported host integration matrix](support-matrix.md)" in checklist
-    for command in (
-        "claude --version",
-        "codex --version",
-        "cursor-agent --version",
-        "cursor --version",
-        "uv run pytest tests/test_host_integration_matrix.py",
-    ):
-        assert command in checklist

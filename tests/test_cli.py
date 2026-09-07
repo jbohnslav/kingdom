@@ -9,7 +9,7 @@ import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
-import kingdom.cli as cli_mod
+import kingdom.cli.display as display_mod
 from kingdom.cli import app
 from kingdom.cli.config import AgentRuntimeCheck
 from kingdom.cli.helpers import verbose_echo
@@ -20,7 +20,10 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def mock_doctor_model_check():
+def mock_doctor_model_check(tmp_path, monkeypatch):
+    isolated_project = tmp_path / "project"
+    ensure_base_layout(isolated_project)
+    monkeypatch.chdir(isolated_project)
     runtime = AgentRuntimeCheck(status="available", version="provider-cli 1.0")
     with (
         patch("kingdom.cli.check_agent_model", return_value=("unchecked", None)),
@@ -78,14 +81,6 @@ class TestCliWiring:
         assert "Power tools:" in output
         assert "Design docs are optional" in output
 
-    def test_top_level_re_exports(self) -> None:
-        """kingdom.cli re-exports key symbols from submodules."""
-        assert hasattr(cli_mod, "app")
-        assert hasattr(cli_mod, "Council")
-        assert hasattr(cli_mod, "install_skill")
-        assert hasattr(cli_mod, "format_ticket_line")
-        assert hasattr(cli_mod, "resolve_peasant_context")
-
     def test_version_option_matches_package_metadata(self) -> None:
         manifest = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
 
@@ -98,7 +93,6 @@ class TestCliWiring:
 def test_doctor_all_installed(tmp_path: Path) -> None:
     """Test doctor command when all CLIs are installed."""
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.cli.check_config", return_value=(True, None)),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
     ):
@@ -127,17 +121,6 @@ def test_doctor_missing_cli() -> None:
         assert "✗" in result.output
         assert "Issues found:" in result.output
         assert "npm install -g @openai/codex" in result.output
-
-
-def test_check_cli_treats_nonzero_exit_as_failure() -> None:
-    from kingdom.cli.config import check_cli
-
-    result = subprocess.CompletedProcess(["agent", "--version"], 1, stdout="", stderr="authentication failed")
-    with patch("kingdom.cli.config.subprocess.run", return_value=result):
-        installed, error = check_cli(["agent", "--version"])
-
-    assert installed is False
-    assert error == "authentication failed"
 
 
 def test_check_agent_model_validates_codex_catalog() -> None:
@@ -211,7 +194,6 @@ def test_doctor_json_output(tmp_path: Path) -> None:
     kd_dir = tmp_path / ".kd"
     kd_dir.mkdir()
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.cli.check_config", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
@@ -241,7 +223,6 @@ def test_doctor_json_reports_pinned_model_and_effort(tmp_path) -> None:
     (kd_dir / "config.json").write_text(json.dumps(config))
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
@@ -284,7 +265,6 @@ def test_doctor_invalid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"council": {"timout": 123}}')
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
@@ -333,7 +313,6 @@ def test_doctor_no_config_shows_defaults(tmp_path) -> None:
     kd_dir.mkdir()
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
@@ -366,7 +345,6 @@ def test_doctor_valid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text("{}")
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
         patch("kingdom.cli.Path.home", return_value=tmp_path),
@@ -385,7 +363,6 @@ def test_doctor_json_invalid_config(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"peasant": {"agent": "nonexistent"}}')
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
@@ -405,7 +382,6 @@ def test_doctor_unknown_backend(tmp_path) -> None:
     (kd_dir / "config.json").write_text('{"agents": {"test": {"backend": "foo"}}}')
 
     with (
-        patch("kingdom.cli.check_cli", return_value=(True, None)),
         patch("kingdom.config.state_root", return_value=kd_dir),
         patch("kingdom.state.state_root", return_value=kd_dir),
     ):
@@ -497,10 +473,10 @@ def test_config_show_indicates_sources(tmp_path) -> None:
             raise AssertionError("council.ask.mode not found in output")
 
 
-def test_config_show_marks_deprecated_reasoning_effort_as_config(tmp_path) -> None:
+def test_config_show_marks_effort_as_config(tmp_path) -> None:
     kd_dir = tmp_path / ".kd"
     kd_dir.mkdir()
-    config = {"agents": {"codex": {"backend": "codex", "reasoning_effort": "high"}}}
+    config = {"agents": {"codex": {"backend": "codex", "effort": "high"}}}
     (kd_dir / "config.json").write_text(json.dumps(config))
 
     with patch("kingdom.config.state_root", return_value=kd_dir):
@@ -544,20 +520,19 @@ def test_config_show_invalid_config(tmp_path) -> None:
 
 
 class TestNoColor:
-    def test_styled_echo_strips_color_when_no_color(self) -> None:
-        """styled_echo should not pass fg when NO_COLOR is set."""
-        with patch.object(cli_mod, "NO_COLOR", True):
-            result = runner.invoke(app, ["doctor"])
-            # Output should not contain ANSI escape codes
-            assert "\x1b[" not in result.output
+    @pytest.mark.parametrize("no_color,expected_fg", [(True, None), (False, "green")])
+    def test_styled_echo_respects_color_policy(self, no_color, expected_fg) -> None:
+        with patch.object(display_mod, "NO_COLOR", no_color), patch.object(display_mod.typer, "secho") as secho:
+            display_mod.styled_echo("Ready", fg="green", err=True)
+        secho.assert_called_once_with("Ready", fg=expected_fg, err=True)
 
     def test_no_color_flag_detects_env(self) -> None:
         """NO_COLOR module flag should reflect environment."""
         import importlib
 
         with patch.dict("os.environ", {"NO_COLOR": "1"}):
-            importlib.reload(cli_mod)
-            assert cli_mod.NO_COLOR is True
+            importlib.reload(display_mod)
+            assert display_mod.NO_COLOR is True
 
         with patch.dict("os.environ", {"TERM": "dumb"}, clear=False):
             # Remove NO_COLOR if present
@@ -567,11 +542,11 @@ class TestNoColor:
             env.pop("NO_COLOR", None)
             env["TERM"] = "dumb"
             with patch.dict("os.environ", env, clear=True):
-                importlib.reload(cli_mod)
-                assert cli_mod.NO_COLOR is True
+                importlib.reload(display_mod)
+                assert display_mod.NO_COLOR is True
 
         # Restore normal state
-        importlib.reload(cli_mod)
+        importlib.reload(display_mod)
 
 
 class TestVerboseFlag:
@@ -620,7 +595,7 @@ class TestPeasantWatch:
         mock_state = AgentState(name="peasant-t1", status="done")
 
         with (
-            patch("kingdom.cli.resolve_peasant_context", return_value=mock_ctx),
+            patch("kingdom.cli.peasant.resolve_peasant_context", return_value=mock_ctx),
             patch("kingdom.session.get_agent_state", return_value=mock_state),
             patch("kingdom.harness.extract_worklog", return_value="- [12:00] — Started"),
         ):

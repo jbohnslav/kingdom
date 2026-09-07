@@ -13,7 +13,6 @@ from kingdom.cli.helpers import (
     install_skill,
     install_skill_target,
     read_skill_manifest,
-    skill_install_targets,
     write_skill_bundle,
 )
 from kingdom.state import (
@@ -21,7 +20,6 @@ from kingdom.state import (
     ensure_base_layout,
     ensure_branch_layout,
     read_execution_ticket_context,
-    read_json,
     record_execution_ticket_context,
     resolve_execution_context,
     set_current_run,
@@ -93,25 +91,6 @@ def test_cli_start_kd_base_unset_keeps_auto_init() -> None:
         assert result.exit_code == 0
         assert "Auto-initializing" in result.output
         assert (Path.cwd() / ".kd" / "branches" / "test-feature").is_dir()
-
-
-def test_cli_start_preserves_legacy_runs_hard_boundary() -> None:
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        subprocess.run(["git", "init", "-q"], check=True)
-        ensure_base_layout(base)
-        legacy_runs = base / ".kd" / "runs"
-        legacy_runs.mkdir()
-        (legacy_runs / "old-feature").mkdir()
-
-        result = runner.invoke(app, ["start", "test-feature"])
-
-        assert result.exit_code == 1
-        output = " ".join(result.output.splitlines())
-        assert "Legacy .kd/runs/ directory found. Rename it to .kd/branches/ manually and retry." in output
-        assert "Auto-initializing" not in result.output
-        assert not (base / ".kd" / "branches" / "test-feature").exists()
 
 
 def test_cli_start_auto_init_from_subdirectory_uses_git_root() -> None:
@@ -290,32 +269,6 @@ def test_cli_start_help_describes_workspace_selection() -> None:
     assert "Initialize, resume, or select a branch workspace" in " ".join(result.output.split())
 
 
-def test_cli_start_reactivates_done_workspace_without_changing_tickets() -> None:
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        branch = "feature/legacy-done"
-        branch_dir = ensure_branch_layout(base, branch)
-        ticket_path = branch_dir / "tickets" / "done1.md"
-        write_ticket(Ticket(id="done1", status="closed", title="Finished task"), ticket_path)
-        ticket_history = ticket_path.read_text(encoding="utf-8")
-        write_json(
-            branch_dir / "state.json",
-            {
-                "branch": branch,
-                "status": "done",
-                "done_at": "2026-08-01T12:00:00+00:00",
-            },
-        )
-
-        result = runner.invoke(app, ["start", branch])
-
-        assert result.exit_code == 0, result.output
-        state = read_json(branch_dir / "state.json")
-        assert state == {"branch": branch}
-        assert ticket_path.read_text(encoding="utf-8") == ticket_history
-
-
 def test_cli_start_does_not_move_execution_context_binding() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
@@ -434,30 +387,6 @@ def test_install_skill_uses_explicit_target_home(monkeypatch, tmp_path: Path) ->
 
     assert result == "refreshed"
     assert_skill_files_copied(skill_home / ".claude" / "skills" / "kingdom")
-
-
-def test_skill_install_targets_include_cursor_and_codex_when_roots_exist(tmp_path: Path) -> None:
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    (fake_home / ".cursor").mkdir()
-    (fake_home / ".codex").mkdir()
-
-    targets = skill_install_targets(fake_home)
-
-    assert fake_home / ".claude" / "skills" / "kingdom" in targets
-    assert fake_home / ".cursor" / "skills" / "kingdom" in targets
-    assert fake_home / ".codex" / "skills" / "kingdom" in targets
-
-
-def test_skill_install_targets_skip_missing_cursor_and_codex_roots(tmp_path: Path) -> None:
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-
-    targets = skill_install_targets(fake_home)
-
-    assert targets == [fake_home / ".claude" / "skills" / "kingdom"]
-    assert not (fake_home / ".cursor").exists()
-    assert not (fake_home / ".codex").exists()
 
 
 def test_install_skill_copies_files_to_cursor_when_root_exists(tmp_path: Path) -> None:
@@ -803,41 +732,24 @@ def test_install_skill_preserves_modified_managed_skill(tmp_path: Path, capsys) 
     assert "claude: manual action needed" in capsys.readouterr().out
 
 
-def test_install_skill_permission_error_warns(tmp_path: Path) -> None:
-    """install_skill should warn and continue when target dir is unwritable."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    # Make .claude read-only so mkdir inside it fails
-    claude_dir = fake_home / ".claude"
-    claude_dir.mkdir()
-    claude_dir.chmod(0o444)
+def test_install_skill_permission_error_warns(tmp_path: Path, capsys) -> None:
+    """An unwritable target reports the failure and identifies the affected host."""
+    with (
+        patch("kingdom.cli.helpers.Path.home", return_value=tmp_path),
+        patch("kingdom.cli.helpers.Path.mkdir", side_effect=PermissionError("permission denied")),
+    ):
+        result = install_skill()
 
-    with patch("kingdom.cli.helpers.Path.home", return_value=fake_home):
-        # Should not raise — just warn
-        install_skill()
-
-    # Restore permissions for cleanup
-    claude_dir.chmod(0o755)
+    assert result == "failed"
+    output = capsys.readouterr().out
+    assert "claude: manual action needed" in output
+    assert "permission denied" in output
 
 
-def test_install_skill_runtime_error_warns() -> None:
-    """install_skill should warn and continue when Path.home() raises RuntimeError."""
+def test_install_skill_runtime_error_warns(capsys) -> None:
+    """A missing home directory reports the installation failure."""
     with patch("kingdom.cli.helpers.Path.home", side_effect=RuntimeError("no home")):
-        install_skill()  # should not raise
+        result = install_skill()
 
-
-def test_legacy_runs_guard_shows_clean_cli_error() -> None:
-    """kd status with non-empty .kd/runs/ should show a clean error, not a traceback."""
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        subprocess.run(["git", "init", "-q"], check=True)
-        ensure_base_layout(base)
-        runs_dir = base / ".kd" / "runs"
-        runs_dir.mkdir()
-        (runs_dir / "old-branch").mkdir()
-
-        result = runner.invoke(app, ["status"])
-        assert result.exit_code == 1
-        assert "Legacy .kd/runs/ directory found" in result.output
-        assert "Traceback" not in result.output
+    assert result == "failed"
+    assert "Warning: could not install skill (no home)" in capsys.readouterr().out

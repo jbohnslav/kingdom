@@ -20,8 +20,13 @@ from rich.console import Console
 from rich.panel import Panel
 
 from kingdom.codex_plugin import codex_plugin_install_detected, install_codex_plugin, package_version
-from kingdom.council import Council, create_council  # noqa: F401 (Council used by tests)
-from kingdom.doctor import binding_issues, context_issues, host_install_issues, resolution_issues, ticket_issues
+from kingdom.doctor import (
+    binding_issues,
+    execution_context_issues,
+    host_install_issues,
+    resolution_issues,
+    ticket_issues,
+)
 from kingdom.state import (
     ProjectRootNotFoundError,
     branch_root,
@@ -51,33 +56,23 @@ from kingdom.ticket import (
     list_tickets,
     validate_terminal_evidence,
 )
-from kingdom.worktree import create_worktree, remove_worktree, worktree_path_for  # noqa: F401
 
 from .config import (
     check_agent_model,
     check_agent_runtime,
-    check_cli,  # noqa: F401 (re-export)
     check_config,
     config_app,
     get_doctor_checks,
 )
 from .council import council_app
-from .design import design_app, get_branch_paths, get_doc_status  # noqa: F401 (re-export)
+from .design import design_app, get_doc_status
 from .display import error_console, print_error, styled_echo
-from .helpers import install_skill, is_git_repo, require_project_root, verbose_echo  # noqa: F401
+from .helpers import install_skill, is_git_repo, require_project_root
 from .hook import hook_app
 from .lord import lord_app
-from .peasant import (  # noqa: F401
-    PeasantContext,
-    launch_work_background,
-    launch_work_tmux,
-    peasant_app,
-    resolve_peasant_context,
-)
+from .peasant import peasant_app
 from .plugin import activate_codex_plugin, plugin_app
-from .ticket import format_ticket_line, format_ticket_summary, get_tickets_dir, ticket_app  # noqa: F401
-
-NO_COLOR = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb"
+from .ticket import get_tickets_dir, ticket_app
 
 # ---------------------------------------------------------------------------
 # Main app
@@ -172,9 +167,6 @@ app.add_typer(ticket_app, name="tk", hidden=True)  # Alias for muscle memory
 )
 def start(
     branch: Annotated[str | None, typer.Argument(help="Branch name (defaults to current git branch).")] = None,
-    force: Annotated[
-        bool, typer.Option("--force", "-f", help="Accepted for compatibility; start is already idempotent.")
-    ] = False,
 ) -> None:
     # If KD_BASE is explicitly set, require it to be valid — no auto-init fallback.
     # Otherwise, fall back to cwd so auto-init can create .kd/ in a fresh repo.
@@ -233,13 +225,11 @@ def start(
     state_path = branch_dir / "state.json"
     state = read_json(state_path)
     state["branch"] = branch
-    state.pop("status", None)
-    state.pop("done_at", None)
     write_json(state_path, state)
 
     branch_tickets = list_tickets(branch_dir / "tickets")
     backlog_tickets = list_tickets(state_root(base) / "backlog" / "tickets")
-    all_known_tickets = collect_all_tickets(base, include_done=True)
+    all_known_tickets = collect_all_tickets(base)
     ticket_status = {ticket.id: ticket.status for ticket in all_known_tickets}
     visible_branch_tickets = [ticket for ticket in branch_tickets if ticket.status != "closed"]
     has_ready = bool(filter_tickets_by_deps(visible_branch_tickets, ticket_status, ready=True))
@@ -334,7 +324,6 @@ def status(
     bdir = branch_root(base, feature)
     state_path = bdir / "state.json"
     design_path = bdir / "design.md"
-    breakdown_path = bdir / "breakdown.md"
 
     # Read state to get original branch name
     if state_path.exists():
@@ -352,9 +341,8 @@ def status(
             normalized_git_branch = normalize_branch_name(git_branch)
     branch_mismatch = normalized_git_branch is not None and normalized_git_branch != normalized
 
-    # Get design and breakdown status
+    # Get design status
     design_status = get_doc_status(design_path)
-    breakdown_status = get_doc_status(breakdown_path)
 
     # Get design doc path relative to base for display
     design_path_str = str(design_path.relative_to(base)) if design_path.exists() else None
@@ -385,9 +373,6 @@ def status(
     ready_count = len(filter_tickets_by_deps(tickets, status_by_id, ready=True))
     readiness = workspace_readiness_report(tickets)
 
-    # Design approved status
-    design_approved = state.get("design_approved", False)
-
     # Build output structure
     output = {
         "branch": original_branch,
@@ -396,8 +381,6 @@ def status(
         "branch_mismatch": branch_mismatch,
         "design_path": design_path_str,
         "design_status": design_status,
-        "design_approved": design_approved,
-        "breakdown_status": breakdown_status,
         "tickets": status_counts,
         "ready_count": ready_count,
         "readiness": readiness,
@@ -507,9 +490,8 @@ def status(
                 typer.echo(f"  {ticket.id} [{ticket.status}] {ticket.title}")
 
         if design_path_str:
-            approved_str = " (approved)" if design_approved else ""
             typer.echo()
-            typer.echo(f"Optional design: {design_path_str}{approved_str}")
+            typer.echo(f"Optional design: {design_path_str}")
 
     if check and not readiness["ready"]:
         raise typer.Exit(code=1)
@@ -676,7 +658,7 @@ def doctor(
                 cli_issues.append({"name": check["name"], "hint": f"{model_error or 'Model unavailable'}. {recovery}"})
 
     bindings = binding_issues(base)
-    contexts = context_issues(base)
+    contexts = execution_context_issues(base)
     tickets = ticket_issues(base)
     resolutions = resolution_issues(base)
     host_installs = host_install_issues(base, Path.home())

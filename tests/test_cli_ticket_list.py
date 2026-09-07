@@ -526,25 +526,6 @@ class TestTicketListResolution:
         assert "done" not in result.output
         assert "open" not in result.output
 
-    def test_resolution_filter_understands_legacy_duplicates(self, cli_project: Path) -> None:
-        tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        write_ticket(
-            Ticket(
-                id="legacy",
-                status="closed",
-                title="Legacy duplicate",
-                duplicate_of="original",
-                created=datetime.now(UTC),
-            ),
-            tickets_dir / "legacy.md",
-        )
-
-        result = runner.invoke(ticket_app, ["list", "--resolution", "duplicate"])
-
-        assert result.exit_code == 0, result.output
-        assert "legacy" in result.output
-        assert "duplicate" in result.output
-
     def test_list_json_includes_closure_fields(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
         write_ticket(
@@ -873,8 +854,8 @@ class TestTicketListTable:
         assert "cccc \u2713" not in result.output
         assert "cccc" in result.output
 
-    def test_table_shows_dep_status_include_done(self, cli_project: Path) -> None:
-        """Deps in done branches should still show checkmark with --all --include-done."""
+    def test_table_shows_dep_status_across_branches(self, cli_project: Path) -> None:
+        """Deps in done branches should still show checkmark with --all."""
         from kingdom.state import write_json
 
         # Create a done branch with a closed dep ticket
@@ -896,7 +877,7 @@ class TestTicketListTable:
         )
         write_ticket(ticket, tickets_dir / "eeee.md")
 
-        result = runner.invoke(ticket_app, ["list", "--all", "--include-done", "--closed"])
+        result = runner.invoke(ticket_app, ["list", "--all", "--closed"])
 
         assert result.exit_code == 0
         assert "dddd \u2713" in result.output
@@ -1244,63 +1225,6 @@ class TestNoResultsMessages:
         assert result.exit_code == 0
         assert "No tickets on this branch" in result.output
         assert "kd tk create" in result.output
-
-
-class TestFormatTicketLine:
-    """Tests for the format_ticket_line helper."""
-
-    def test_basic_line_no_deps(self) -> None:
-        from kingdom.cli.ticket import format_ticket_line
-
-        ticket = Ticket(id="ab12", status="open", title="Fix bug", body="", created=datetime.now(UTC))
-        line = format_ticket_line(ticket)
-        assert line == "ab12 [P2][open] - Fix bug"
-
-    def test_line_with_deps(self) -> None:
-        from kingdom.cli.ticket import format_ticket_line
-
-        ticket = Ticket(
-            id="ab12", status="open", title="Fix bug", body="", deps=["cd34", "ef56"], created=datetime.now(UTC)
-        )
-        line = format_ticket_line(ticket)
-        assert line == "ab12 [P2][open] - Fix bug  <- cd34, ef56"
-
-    def test_line_with_single_dep(self) -> None:
-        from kingdom.cli.ticket import format_ticket_line
-
-        ticket = Ticket(
-            id="ab12", status="in_progress", title="Work", body="", deps=["zz99"], created=datetime.now(UTC)
-        )
-        line = format_ticket_line(ticket)
-        assert line == "ab12 [P2][in_progress] - Work  <- zz99"
-
-    def test_line_with_location(self) -> None:
-        from kingdom.cli.ticket import format_ticket_line
-
-        ticket = Ticket(id="ab12", status="open", title="Task", body="", created=datetime.now(UTC))
-        line = format_ticket_line(ticket, location="backlog")
-        assert line == "ab12 [P2][open] - Task (backlog)"
-
-    def test_line_with_deps_and_location(self) -> None:
-        from kingdom.cli.ticket import format_ticket_line
-
-        ticket = Ticket(id="ab12", status="open", title="Task", body="", deps=["cd34"], created=datetime.now(UTC))
-        line = format_ticket_line(ticket, location="branch:main")
-        assert line == "ab12 [P2][open] - Task (branch:main)  <- cd34"
-
-    def test_line_with_assignee(self) -> None:
-        from kingdom.cli.ticket import format_ticket_line
-
-        ticket = Ticket(id="ab12", status="open", title="Task", body="", assignee="alice", created=datetime.now(UTC))
-        line = format_ticket_line(ticket)
-        assert line == "ab12 [P2][open] @alice - Task"
-
-    def test_line_priority_1(self) -> None:
-        from kingdom.cli.ticket import format_ticket_line
-
-        ticket = Ticket(id="ab12", status="open", title="Urgent", body="", priority=1, created=datetime.now(UTC))
-        line = format_ticket_line(ticket)
-        assert line == "ab12 [P1][open] - Urgent"
 
 
 class TestFormatTicketSummary:

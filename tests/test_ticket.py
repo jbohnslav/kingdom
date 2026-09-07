@@ -27,7 +27,6 @@ from kingdom.ticket import (
     find_newly_unblocked,
     find_ticket,
     generate_ticket_id,
-    get_ticket_location,
     insert_markdown_section_entry,
     insert_worklog_entry,
     list_tickets,
@@ -37,7 +36,6 @@ from kingdom.ticket import (
     read_ticket,
     serialize_ticket,
     write_ticket,
-    write_ticket_assignee,
 )
 
 
@@ -69,7 +67,7 @@ class TestTicketDataclass:
 
     def test_default_values(self) -> None:
         """Ticket has sensible defaults."""
-        ticket = Ticket(id="kin-test", status="open", title="Test")
+        ticket = Ticket(id="test", status="open", title="Test")
         assert ticket.deps == []
         assert ticket.links == []
         assert ticket.type == "task"
@@ -84,9 +82,9 @@ class TestTicketDataclass:
         """Ticket can be created with all fields."""
         created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
         ticket = Ticket(
-            id="kin-a1b2",
+            id="a1b2",
             status="in_progress",
-            deps=["kin-1234"],
+            deps=["1234"],
             links=["https://example.com"],
             created=created,
             type="bug",
@@ -95,12 +93,12 @@ class TestTicketDataclass:
             title="Fix critical bug",
             body="Description here",
             tags=["urgent", "backend"],
-            parent="kin-parent",
+            parent="parent",
             external_ref="JIRA-123",
         )
-        assert ticket.id == "kin-a1b2"
+        assert ticket.id == "a1b2"
         assert ticket.status == "in_progress"
-        assert ticket.deps == ["kin-1234"]
+        assert ticket.deps == ["1234"]
         assert ticket.links == ["https://example.com"]
         assert ticket.created == created
         assert ticket.type == "bug"
@@ -109,7 +107,7 @@ class TestTicketDataclass:
         assert ticket.title == "Fix critical bug"
         assert ticket.body == "Description here"
         assert ticket.tags == ["urgent", "backend"]
-        assert ticket.parent == "kin-parent"
+        assert ticket.parent == "parent"
         assert ticket.external_ref == "JIRA-123"
 
 
@@ -135,7 +133,7 @@ class TestGenerateTicketId:
 
         # Create many existing tickets to increase collision chance
         for i in range(10):
-            (tickets_dir / f"kin-{i:04x}.md").write_text("---\nid: test\n---\n# Test")
+            (tickets_dir / f"{i:04x}.md").write_text("---\nid: test\n---\n# Test")
 
         # Should still generate a unique ID
         ticket_id = generate_ticket_id(tickets_dir)
@@ -148,7 +146,7 @@ class TestParseTicket:
     def test_basic_ticket(self) -> None:
         """Parse a basic ticket."""
         content = """---
-id: kin-a1b2
+id: a1b2
 status: open
 deps: []
 links: []
@@ -162,7 +160,7 @@ assignee: Test User
 Body content here.
 """
         ticket = parse_ticket(content)
-        assert ticket.id == "kin-a1b2"
+        assert ticket.id == "a1b2"
         assert ticket.status == "open"
         assert ticket.deps == []
         assert ticket.links == []
@@ -176,9 +174,9 @@ Body content here.
     def test_ticket_with_deps(self) -> None:
         """Parse ticket with dependencies."""
         content = """---
-id: kin-test
+id: test
 status: open
-deps: [kin-1234, kin-5678]
+deps: [1234, 5678]
 links: []
 created: 2026-02-04T16:00:00Z
 type: task
@@ -189,12 +187,12 @@ priority: 2
 Body
 """
         ticket = parse_ticket(content)
-        assert ticket.deps == ["kin-1234", "kin-5678"]
+        assert ticket.deps == ["1234", "5678"]
 
     def test_ticket_with_scalar_dep(self) -> None:
         """Parse ticket where deps is a bare scalar (no brackets)."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: 3642
 links: []
@@ -212,7 +210,7 @@ Body
     def test_ticket_with_scalar_string_dep(self) -> None:
         """Parse ticket where deps is a bare string (no brackets)."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: abcd
 links: []
@@ -230,7 +228,7 @@ Body
     def test_ticket_with_tags(self) -> None:
         """Parse ticket with tags."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
@@ -249,26 +247,26 @@ Body
     def test_ticket_with_parent(self) -> None:
         """Parse ticket with parent reference."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
 created: 2026-02-04T16:00:00Z
 type: task
 priority: 2
-parent: kin-parent
+parent: parent
 ---
 # Test
 
 Body
 """
         ticket = parse_ticket(content)
-        assert ticket.parent == "kin-parent"
+        assert ticket.parent == "parent"
 
     def test_ticket_with_external_ref(self) -> None:
         """Parse ticket with external reference."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
@@ -287,7 +285,7 @@ Body
     def test_multiline_body(self) -> None:
         """Parse ticket with multiline body."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
@@ -325,7 +323,7 @@ Second paragraph.
     def test_no_assignee(self) -> None:
         """Parse ticket without assignee."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
@@ -343,7 +341,7 @@ Body
     def test_empty_body(self) -> None:
         """Parse ticket with empty body."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
@@ -361,7 +359,7 @@ priority: 2
     def test_priority_out_of_range_defaults(self) -> None:
         """Priority outside 0-3 defaults to 2 when parsing ticket files."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
@@ -379,7 +377,7 @@ Body
     def test_priority_zero_allowed(self) -> None:
         """Priority 0 is valid and preserved."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
@@ -397,7 +395,7 @@ Body
     def test_priority_negative_defaults(self) -> None:
         """Negative priority defaults to 2 when parsing ticket files."""
         content = """---
-id: kin-test
+id: test
 status: open
 deps: []
 links: []
@@ -419,7 +417,7 @@ class TestSerializeTicket:
     def test_basic_ticket(self) -> None:
         """Serialize a basic ticket."""
         ticket = Ticket(
-            id="kin-a1b2",
+            id="a1b2",
             status="open",
             deps=[],
             links=[],
@@ -435,7 +433,7 @@ class TestSerializeTicket:
         # Verify structure
         assert content.startswith("---\n")
         assert "\n---\n" in content
-        assert 'id: "kin-a1b2"' in content
+        assert 'id: "a1b2"' in content
         assert "status: open" in content
         assert "deps: []" in content
         assert "created: 2026-02-04T16:00:00Z" in content
@@ -446,19 +444,19 @@ class TestSerializeTicket:
     def test_ticket_with_deps(self) -> None:
         """Serialize ticket with dependencies."""
         ticket = Ticket(
-            id="kin-test",
+            id="test",
             status="open",
-            deps=["kin-1234", "kin-5678"],
+            deps=["1234", "5678"],
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
         )
         content = serialize_ticket(ticket)
-        assert "deps: [kin-1234, kin-5678]" in content
+        assert "deps: [1234, 5678]" in content
 
     def test_ticket_with_tags(self) -> None:
         """Serialize ticket with tags."""
         ticket = Ticket(
-            id="kin-test",
+            id="test",
             status="open",
             tags=["mvp", "urgent"],
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
@@ -470,7 +468,7 @@ class TestSerializeTicket:
     def test_optional_fields_omitted_when_empty(self) -> None:
         """Optional fields are not included when None/empty."""
         ticket = Ticket(
-            id="kin-test",
+            id="test",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
@@ -488,7 +486,7 @@ class TestRoundTrip:
     def test_round_trip_basic(self) -> None:
         """Parse then serialize produces equivalent content."""
         original = """---
-id: kin-a1b2
+id: a1b2
 status: open
 deps: []
 links: []
@@ -519,16 +517,16 @@ Body content here.
     def test_round_trip_with_all_fields(self) -> None:
         """Round trip preserves all fields."""
         original = """---
-id: kin-test
+id: test
 status: in_progress
-deps: [kin-1234]
+deps: [1234]
 links: [https://example.com]
 created: 2026-02-04T16:00:00Z
 type: bug
 priority: 0
 assignee: User Name
 external-ref: JIRA-999
-parent: kin-parent
+parent: parent
 tags: [urgent, backend]
 ---
 # Complex Ticket
@@ -551,7 +549,7 @@ More content.
 
     def test_round_trip_with_resolution_metadata(self) -> None:
         ticket = Ticket(
-            id="kin-done",
+            id="done",
             status="closed",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Finished ticket",
@@ -559,7 +557,7 @@ More content.
             resolution="superseded",
             closed_context="codex:abc123",
             close_reason='Replaced by "v2":\nold path retired',
-            superseded_by="kin-v2",
+            superseded_by="v2",
         )
 
         reparsed = parse_ticket(serialize_ticket(ticket))
@@ -567,12 +565,12 @@ More content.
         assert reparsed.resolution == "superseded"
         assert reparsed.closed_context == "codex:abc123"
         assert reparsed.close_reason == 'Replaced by "v2":\nold path retired'
-        assert reparsed.superseded_by == "kin-v2"
+        assert reparsed.superseded_by == "v2"
 
     def test_legacy_ticket_without_resolution_remains_readable(self) -> None:
         ticket = parse_ticket(
             """---
-id: kin-old
+id: old
 status: closed
 deps: []
 links: []
@@ -591,7 +589,7 @@ closed_at: 2026-02-05T12:30:00Z
     def test_legacy_unquoted_close_reason_keeps_backslashes_literal(self) -> None:
         ticket = parse_ticket(
             r"""---
-id: kin-old
+id: old
 status: closed
 deps: []
 links: []
@@ -613,13 +611,13 @@ class TestReadWriteTicket:
     def test_write_then_read(self, tmp_path: Path) -> None:
         """Write ticket then read it back."""
         ticket = Ticket(
-            id="kin-test",
+            id="test",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test Ticket",
             body="Test body",
         )
-        path = tmp_path / "kin-test.md"
+        path = tmp_path / "test.md"
 
         write_ticket(ticket, path)
         assert path.exists()
@@ -632,20 +630,20 @@ class TestReadWriteTicket:
     def test_write_creates_parent_dirs(self, tmp_path: Path) -> None:
         """write_ticket creates parent directories."""
         ticket = Ticket(
-            id="kin-test",
+            id="test",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
         )
-        path = tmp_path / "tickets" / "subdir" / "kin-test.md"
+        path = tmp_path / "tickets" / "subdir" / "test.md"
 
         write_ticket(ticket, path)
         assert path.exists()
 
     def test_failed_atomic_replace_preserves_existing_ticket(self, tmp_path: Path) -> None:
-        path = tmp_path / "kin-test.md"
+        path = tmp_path / "test.md"
         path.write_text("original ticket bytes\n", encoding="utf-8")
-        ticket = Ticket(id="kin-test", status="open", title="Replacement")
+        ticket = Ticket(id="test", status="open", title="Replacement")
 
         with (
             patch("kingdom.ticket.os.replace", side_effect=OSError("interrupted")),
@@ -657,8 +655,8 @@ class TestReadWriteTicket:
         assert list(tmp_path.glob("*.tmp")) == []
 
     def test_stale_full_write_preserves_concurrent_worklog_and_assignee_updates(self, tmp_path: Path) -> None:
-        path = tmp_path / "kin-test.md"
-        write_ticket(Ticket(id="kin-test", status="open", title="Concurrent work"), path)
+        path = tmp_path / "test.md"
+        write_ticket(Ticket(id="test", status="open", title="Concurrent work"), path)
         stale_read_complete = Event()
         allow_full_write = Event()
 
@@ -674,7 +672,9 @@ class TestReadWriteTicket:
             full_write = pool.submit(close_from_stale_read)
             assert stale_read_complete.wait(timeout=2)
             append_worklog_entry(path, "Concurrent note")
-            write_ticket_assignee(path, "codex:peer")
+            reassigned = read_ticket(path)
+            reassigned.assignee = "codex:peer"
+            write_ticket(reassigned, path)
             allow_full_write.set()
             full_write.result(timeout=2)
 
@@ -685,8 +685,8 @@ class TestReadWriteTicket:
         assert "Concurrent note" in ticket.body
 
     def test_same_body_section_uses_the_last_locked_writer(self, tmp_path: Path) -> None:
-        path = tmp_path / "kin-test.md"
-        write_ticket(Ticket(id="kin-test", status="open", title="Same section"), path)
+        path = tmp_path / "test.md"
+        write_ticket(Ticket(id="test", status="open", title="Same section"), path)
         stale_ticket = read_ticket(path)
 
         append_worklog_entry(path, "Concurrent note")
@@ -698,14 +698,14 @@ class TestReadWriteTicket:
         assert "Concurrent note" not in body
 
     def test_write_ticket_waits_for_the_ticket_mutation_lock(self, tmp_path: Path) -> None:
-        path = tmp_path / "kin-test.md"
+        path = tmp_path / "test.md"
         lock_path = path.parent / f".{path.name}.lock"
         started = Event()
         finished = Event()
 
         def write() -> None:
             started.set()
-            write_ticket(Ticket(id="kin-test", status="open", title="Locked write"), path)
+            write_ticket(Ticket(id="test", status="open", title="Locked write"), path)
             finished.set()
 
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -721,47 +721,6 @@ class TestReadWriteTicket:
         """read_ticket raises FileNotFoundError for missing file."""
         with pytest.raises(FileNotFoundError):
             read_ticket(tmp_path / "nonexistent.md")
-
-
-class TestParseExistingTickets:
-    """Tests that verify parsing of actual ticket files from the codebase."""
-
-    def test_parse_ticket_from_repo(self) -> None:
-        """Parse the ticket that defines this task (kin-6fc1)."""
-        # This test verifies compatibility with the existing tk format
-        ticket_path = Path(__file__).parent.parent / ".tickets" / "kin-6fc1.md"
-        if not ticket_path.exists():
-            pytest.skip("Ticket file not found in repo")
-
-        ticket = read_ticket(ticket_path)
-
-        assert ticket.id == "kin-6fc1"
-        assert ticket.status in ("open", "in_progress", "closed")
-        assert ticket.type == "task"
-        assert isinstance(ticket.priority, int)
-        assert ticket.title == "Create ticket model"
-
-    def test_parse_ticket_with_tags(self) -> None:
-        """Parse a ticket that has tags field."""
-        ticket_path = Path(__file__).parent.parent / ".tickets" / "kin-ac22.md"
-        if not ticket_path.exists():
-            pytest.skip("Ticket file not found in repo")
-
-        ticket = read_ticket(ticket_path)
-
-        assert ticket.id == "kin-ac22"
-        assert "mvp" in ticket.tags or "kd" in ticket.tags
-
-    def test_parse_ticket_with_deps(self) -> None:
-        """Parse a ticket that has dependencies."""
-        ticket_path = Path(__file__).parent.parent / ".tickets" / "kin-d0b5.md"
-        if not ticket_path.exists():
-            pytest.skip("Ticket file not found in repo")
-
-        ticket = read_ticket(ticket_path)
-
-        assert ticket.id == "kin-d0b5"
-        assert "kin-ac22" in ticket.deps
 
 
 class TestTicketIdRoundtrip:
@@ -802,16 +761,16 @@ class TestListTickets:
         tickets_dir.mkdir()
 
         ticket = Ticket(
-            id="kin-a1b2",
+            id="a1b2",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test Ticket",
         )
-        write_ticket(ticket, tickets_dir / "kin-a1b2.md")
+        write_ticket(ticket, tickets_dir / "a1b2.md")
 
         result = list_tickets(tickets_dir)
         assert len(result) == 1
-        assert result[0].id == "kin-a1b2"
+        assert result[0].id == "a1b2"
 
     def test_list_sorted_by_priority(self, tmp_path: Path) -> None:
         """list_tickets sorts by priority (lower is higher priority)."""
@@ -821,13 +780,13 @@ class TestListTickets:
         created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
         for priority, suffix in [(3, "low"), (1, "high"), (2, "medium")]:
             ticket = Ticket(
-                id=f"kin-{suffix}",
+                id=f"{suffix}",
                 status="open",
                 priority=priority,
                 created=created,
                 title=f"Priority {priority}",
             )
-            write_ticket(ticket, tickets_dir / f"kin-{suffix}.md")
+            write_ticket(ticket, tickets_dir / f"{suffix}.md")
 
         result = list_tickets(tickets_dir)
         assert len(result) == 3
@@ -842,19 +801,19 @@ class TestListTickets:
 
         for day, suffix in [(5, "newer"), (3, "older"), (4, "middle")]:
             ticket = Ticket(
-                id=f"kin-{suffix}",
+                id=f"{suffix}",
                 status="open",
                 priority=1,
                 created=datetime(2026, 2, day, 16, 0, 0, tzinfo=UTC),
                 title=f"Created on day {day}",
             )
-            write_ticket(ticket, tickets_dir / f"kin-{suffix}.md")
+            write_ticket(ticket, tickets_dir / f"{suffix}.md")
 
         result = list_tickets(tickets_dir)
         assert len(result) == 3
-        assert result[0].id == "kin-older"  # day 3
-        assert result[1].id == "kin-middle"  # day 4
-        assert result[2].id == "kin-newer"  # day 5
+        assert result[0].id == "older"  # day 3
+        assert result[1].id == "middle"  # day 4
+        assert result[2].id == "newer"  # day 5
 
     def test_list_skips_invalid_files(self, tmp_path: Path) -> None:
         """list_tickets skips files that aren't valid tickets."""
@@ -863,19 +822,19 @@ class TestListTickets:
 
         # Valid ticket
         ticket = Ticket(
-            id="kin-good",
+            id="good",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Valid Ticket",
         )
-        write_ticket(ticket, tickets_dir / "kin-good.md")
+        write_ticket(ticket, tickets_dir / "good.md")
 
         # Invalid file (no frontmatter)
         (tickets_dir / "invalid.md").write_text("Just some text, no frontmatter")
 
         result = list_tickets(tickets_dir)
         assert len(result) == 1
-        assert result[0].id == "kin-good"
+        assert result[0].id == "good"
 
 
 class TestFindTicket:
@@ -893,32 +852,33 @@ class TestFindTicket:
         created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
 
         # Ticket in branch feature-one
-        ticket1 = Ticket(id="kin-a1b2", status="open", created=created, title="Branch One Ticket")
-        write_ticket(ticket1, base / ".kd" / "branches" / "feature-one" / "tickets" / "kin-a1b2.md")
+        ticket1 = Ticket(id="a1b2", status="open", created=created, title="Branch One Ticket")
+        write_ticket(ticket1, base / ".kd" / "branches" / "feature-one" / "tickets" / "a1b2.md")
 
         # Ticket in branch feature-two
-        ticket2 = Ticket(id="kin-c3d4", status="open", created=created, title="Branch Two Ticket")
-        write_ticket(ticket2, base / ".kd" / "branches" / "feature-two" / "tickets" / "kin-c3d4.md")
+        ticket2 = Ticket(id="c3d4", status="open", created=created, title="Branch Two Ticket")
+        write_ticket(ticket2, base / ".kd" / "branches" / "feature-two" / "tickets" / "c3d4.md")
 
         # Ticket in backlog
-        ticket3 = Ticket(id="kin-e5f6", status="open", created=created, title="Backlog Ticket")
-        write_ticket(ticket3, base / ".kd" / "backlog" / "tickets" / "kin-e5f6.md")
+        ticket3 = Ticket(id="e5f6", status="open", created=created, title="Backlog Ticket")
+        write_ticket(ticket3, base / ".kd" / "backlog" / "tickets" / "e5f6.md")
 
         # Ticket in archive
         archive_item = base / ".kd" / "archive" / "old-feature" / "tickets"
         archive_item.mkdir(parents=True)
-        ticket4 = Ticket(id="kin-g7h8", status="closed", created=created, title="Archived Ticket")
-        write_ticket(ticket4, archive_item / "kin-g7h8.md")
+        ticket4 = Ticket(id="g7h8", status="closed", created=created, title="Archived Ticket")
+        write_ticket(ticket4, archive_item / "g7h8.md")
 
     def test_find_by_full_id(self, tmp_path: Path) -> None:
-        """find_ticket finds by full ID including kin- prefix."""
+        """find_ticket finds by full ID including  prefix."""
         self.create_test_structure(tmp_path)
 
-        result = find_ticket(tmp_path, "kin-a1b2")
+        result = find_ticket(tmp_path, "a1b2")
         assert result is not None
-        ticket, path = result
-        assert ticket.id == "kin-a1b2"
-        assert path.name == "kin-a1b2.md"
+        ticket = result.ticket
+        path = result.path
+        assert ticket.id == "a1b2"
+        assert path.name == "a1b2.md"
 
     def test_find_by_partial_id(self, tmp_path: Path) -> None:
         """find_ticket finds by partial ID without prefix."""
@@ -926,8 +886,8 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "a1b2")
         assert result is not None
-        ticket, _path = result
-        assert ticket.id == "kin-a1b2"
+        ticket = result.ticket
+        assert ticket.id == "a1b2"
 
     def test_find_by_prefix(self, tmp_path: Path) -> None:
         """find_ticket finds by ID prefix."""
@@ -935,8 +895,8 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "a1")
         assert result is not None
-        ticket, _ = result
-        assert ticket.id == "kin-a1b2"
+        ticket = result.ticket
+        assert ticket.id == "a1b2"
 
     def test_find_in_backlog(self, tmp_path: Path) -> None:
         """find_ticket finds tickets in backlog."""
@@ -944,8 +904,9 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "e5f6")
         assert result is not None
-        ticket, path = result
-        assert ticket.id == "kin-e5f6"
+        ticket = result.ticket
+        path = result.path
+        assert ticket.id == "e5f6"
         assert "backlog" in str(path)
 
     def test_find_in_archive(self, tmp_path: Path) -> None:
@@ -954,8 +915,9 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "g7h8")
         assert result is not None
-        ticket, path = result
-        assert ticket.id == "kin-g7h8"
+        ticket = result.ticket
+        path = result.path
+        assert ticket.id == "g7h8"
         assert "archive" in str(path)
 
     def test_find_not_found(self, tmp_path: Path) -> None:
@@ -971,8 +933,8 @@ class TestFindTicket:
 
         # Create another ticket with similar ID prefix
         created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
-        ticket = Ticket(id="kin-a1c2", status="open", created=created, title="Another A1 Ticket")
-        write_ticket(ticket, tmp_path / ".kd" / "branches" / "feature-one" / "tickets" / "kin-a1c2.md")
+        ticket = Ticket(id="a1c2", status="open", created=created, title="Another A1 Ticket")
+        write_ticket(ticket, tmp_path / ".kd" / "branches" / "feature-one" / "tickets" / "a1c2.md")
 
         with pytest.raises(AmbiguousTicketMatch) as exc_info:
             find_ticket(tmp_path, "a1")
@@ -986,8 +948,8 @@ class TestFindTicket:
 
         result = find_ticket(tmp_path, "A1B2")
         assert result is not None
-        ticket, _ = result
-        assert ticket.id == "kin-a1b2"
+        ticket = result.ticket
+        assert ticket.id == "a1b2"
 
     def test_find_empty_base(self, tmp_path: Path) -> None:
         """find_ticket handles empty/nonexistent base gracefully."""
@@ -1005,23 +967,23 @@ class TestMoveTicket:
         dest_dir = tmp_path / "dest"
 
         ticket = Ticket(
-            id="kin-test",
+            id="test",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test Ticket",
         )
-        source_path = source_dir / "kin-test.md"
+        source_path = source_dir / "test.md"
         write_ticket(ticket, source_path)
 
         new_path = move_ticket(source_path, dest_dir)
 
-        assert new_path == dest_dir / "kin-test.md"
+        assert new_path == dest_dir / "test.md"
         assert new_path.exists()
         assert not source_path.exists()
 
         # Verify content preserved
         moved_ticket = read_ticket(new_path)
-        assert moved_ticket.id == "kin-test"
+        assert moved_ticket.id == "test"
         assert moved_ticket.title == "Test Ticket"
 
     def test_move_creates_dest_directory(self, tmp_path: Path) -> None:
@@ -1031,12 +993,12 @@ class TestMoveTicket:
         dest_dir = tmp_path / "nested" / "dest" / "dir"
 
         ticket = Ticket(
-            id="kin-test",
+            id="test",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Test",
         )
-        source_path = source_dir / "kin-test.md"
+        source_path = source_dir / "test.md"
         write_ticket(ticket, source_path)
 
         new_path = move_ticket(source_path, dest_dir)
@@ -1046,9 +1008,9 @@ class TestMoveTicket:
 
     @pytest.mark.parametrize("held_path", ["source", "destination"])
     def test_move_waits_for_source_and_destination_locks(self, tmp_path: Path, held_path: str) -> None:
-        source_path = tmp_path / "source" / "kin-test.md"
+        source_path = tmp_path / "source" / "test.md"
         destination = tmp_path / "dest" / source_path.name
-        write_ticket(Ticket(id="kin-test", status="open", title="Locked move"), source_path)
+        write_ticket(Ticket(id="test", status="open", title="Locked move"), source_path)
         lock_target = source_path if held_path == "source" else destination
         started = Event()
         finished = Event()
@@ -1070,9 +1032,9 @@ class TestMoveTicket:
         assert (destination.parent / f".{destination.name}.lock").exists()
 
     def test_stale_snapshot_cannot_resurrect_moved_ticket(self, tmp_path: Path) -> None:
-        source_path = tmp_path / "source" / "kin-test.md"
+        source_path = tmp_path / "source" / "test.md"
         destination_dir = tmp_path / "dest"
-        write_ticket(Ticket(id="kin-test", status="open", title="Moved"), source_path)
+        write_ticket(Ticket(id="test", status="open", title="Moved"), source_path)
         stale_ticket = read_ticket(source_path)
 
         destination = move_ticket(source_path, destination_dir)
@@ -1089,8 +1051,8 @@ class TestDeleteTicket:
     def test_delete_waits_for_ticket_lock_and_leaves_it_in_place(self, tmp_path: Path) -> None:
         from kingdom.ticket import delete_ticket
 
-        path = tmp_path / "kin-test.md"
-        write_ticket(Ticket(id="kin-test", status="open", title="Locked delete"), path)
+        path = tmp_path / "test.md"
+        write_ticket(Ticket(id="test", status="open", title="Locked delete"), path)
         lock_path = path.parent / f".{path.name}.lock"
         started = Event()
         finished = Event()
@@ -1113,8 +1075,8 @@ class TestDeleteTicket:
     def test_stale_snapshot_cannot_resurrect_deleted_ticket(self, tmp_path: Path) -> None:
         from kingdom.ticket import delete_ticket
 
-        path = tmp_path / "kin-test.md"
-        write_ticket(Ticket(id="kin-test", status="open", title="Deleted"), path)
+        path = tmp_path / "test.md"
+        write_ticket(Ticket(id="test", status="open", title="Deleted"), path)
         stale_ticket = read_ticket(path)
 
         delete_ticket(path)
@@ -1138,12 +1100,12 @@ class TestDeleteTicket:
         dest_dir = tmp_path / "dest"
 
         ticket = Ticket(
-            id="kin-xfs",
+            id="xfs",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Cross FS",
         )
-        source_path = source_dir / "kin-xfs.md"
+        source_path = source_dir / "xfs.md"
         write_ticket(ticket, source_path)
 
         # Force Path.rename to raise OSError (simulating cross-filesystem)
@@ -1154,12 +1116,12 @@ class TestDeleteTicket:
 
         new_path = move_ticket(source_path, dest_dir)
 
-        assert new_path == dest_dir / "kin-xfs.md"
+        assert new_path == dest_dir / "xfs.md"
         assert new_path.exists()
         assert not source_path.exists()
 
         moved_ticket = read_ticket(new_path)
-        assert moved_ticket.id == "kin-xfs"
+        assert moved_ticket.id == "xfs"
 
     def test_move_destination_exists(self, tmp_path: Path) -> None:
         """move_ticket raises FileExistsError when destination already has the file."""
@@ -1169,62 +1131,19 @@ class TestDeleteTicket:
         dest_dir.mkdir()
 
         ticket = Ticket(
-            id="kin-dup",
+            id="dup",
             status="open",
             created=datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC),
             title="Duplicate",
         )
-        source_path = source_dir / "kin-dup.md"
+        source_path = source_dir / "dup.md"
         write_ticket(ticket, source_path)
         # Pre-create destination
-        dest_path = dest_dir / "kin-dup.md"
+        dest_path = dest_dir / "dup.md"
         dest_path.write_text("existing")
 
         with pytest.raises(FileExistsError):
             move_ticket(source_path, dest_dir)
-
-
-class TestGetTicketLocation:
-    """Tests for get_ticket_location function."""
-
-    def create_test_structure(self, base: Path) -> None:
-        """Create a test directory structure with tickets."""
-        from kingdom.state import ensure_base_layout, ensure_branch_layout
-
-        ensure_base_layout(base)
-        ensure_branch_layout(base, "feature-test")
-
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
-        ticket = Ticket(id="kin-abcd", status="open", created=created, title="Test Ticket")
-        write_ticket(ticket, base / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abcd.md")
-
-    def test_get_location_found(self, tmp_path: Path) -> None:
-        """get_ticket_location returns path when found."""
-        self.create_test_structure(tmp_path)
-
-        result = get_ticket_location(tmp_path, "abcd")
-        assert result is not None
-        assert result.name == "kin-abcd.md"
-        assert result.exists()
-
-    def test_get_location_not_found(self, tmp_path: Path) -> None:
-        """get_ticket_location returns None when not found."""
-        self.create_test_structure(tmp_path)
-
-        result = get_ticket_location(tmp_path, "zzzz")
-        assert result is None
-
-    def test_get_location_ambiguous(self, tmp_path: Path) -> None:
-        """get_ticket_location raises AmbiguousTicketMatch for multiple matches."""
-        self.create_test_structure(tmp_path)
-
-        # Create another ticket with similar prefix
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
-        ticket = Ticket(id="kin-abef", status="open", created=created, title="Another AB Ticket")
-        write_ticket(ticket, tmp_path / ".kd" / "branches" / "feature-test" / "tickets" / "kin-abef.md")
-
-        with pytest.raises(AmbiguousTicketMatch):
-            get_ticket_location(tmp_path, "ab")
 
 
 class TestFindNewlyUnblocked:
@@ -1741,37 +1660,6 @@ class TestCollectTicketsByLocation:
         assert labels["aaa1"].startswith("branch:")
         assert labels["bbb2"] == "backlog"
 
-    def test_excludes_done_branches_by_default(self, tmp_path: Path) -> None:
-        from kingdom.state import ensure_base_layout, ensure_branch_layout, write_json
-
-        ensure_base_layout(tmp_path)
-        branch_dir = ensure_branch_layout(tmp_path, "done-branch")
-
-        # Mark branch as done
-        write_json(branch_dir / "state.json", {"status": "done"})
-
-        t = Ticket(id="ccc3", status="open", title="Done branch ticket")
-        write_ticket(t, branch_dir / "tickets" / "ccc3.md")
-
-        pairs = collect_tickets_by_location(tmp_path)
-        ids = [t.id for _, t in pairs]
-        assert "ccc3" not in ids
-
-    def test_includes_done_branches_when_requested(self, tmp_path: Path) -> None:
-        from kingdom.state import ensure_base_layout, ensure_branch_layout, write_json
-
-        ensure_base_layout(tmp_path)
-        branch_dir = ensure_branch_layout(tmp_path, "done-branch")
-
-        write_json(branch_dir / "state.json", {"status": "done"})
-
-        t = Ticket(id="ddd4", status="open", title="Done branch ticket")
-        write_ticket(t, branch_dir / "tickets" / "ddd4.md")
-
-        pairs = collect_tickets_by_location(tmp_path, include_done=True)
-        ids = [t.id for _, t in pairs]
-        assert "ddd4" in ids
-
 
 class TestPriorityZero:
     """Priority 0 should survive parse/serialize round-trip."""
@@ -1887,22 +1775,6 @@ class TestFindTicketLocations:
         with pytest.raises(AmbiguousTicketMatch) as exc_info:
             find_ticket(tmp_path, "same1")
         assert {match.location for match in exc_info.value.matches} == {"branch:aaa-other", "branch:zzz-current"}
-
-    def test_ticket_match_unpacking_still_works(self, tmp_path: Path) -> None:
-        """Existing callers using ``ticket, path = result`` still work."""
-        from kingdom.state import ensure_base_layout
-
-        ensure_base_layout(tmp_path)
-
-        created = datetime(2026, 2, 4, 16, 0, 0, tzinfo=UTC)
-        ticket = Ticket(id="unp1", status="open", created=created, title="Unpack test")
-        write_ticket(ticket, tmp_path / ".kd" / "backlog" / "tickets" / "unp1.md")
-
-        result = find_ticket(tmp_path, "unp1")
-        assert result is not None
-        ticket, path = result
-        assert ticket.id == "unp1"
-        assert path.name == "unp1.md"
 
 
 class TestCollectAllTicketsDedup:
@@ -2024,9 +1896,6 @@ class TestParseWorklogAuthor:
 
     def test_king_author(self) -> None:
         assert parse_worklog_author("- [14:32] [king] — decision made") == "king"
-
-    def test_unbracketed_timestamp_with_author(self) -> None:
-        assert parse_worklog_author("- 2026-03-07 14:32 [king] — decision made") == "king"
 
 
 class TestFilterWorklogLines:

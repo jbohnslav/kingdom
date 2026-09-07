@@ -10,18 +10,16 @@ Called by ``python -m kingdom.lord_worker`` (spawned by ``kd lord start``).
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import re
 import signal
-import subprocess
-import threading
 import time
 import types
 from datetime import UTC, datetime
 from pathlib import Path
 
 from kingdom.agent import build_command, clean_agent_env, extract_token_count, parse_response, resolve_agent
+from kingdom.process import run_streaming_subprocess
 from kingdom.session import ACTIVE_PEASANT_STATUSES, get_agent_state, update_agent_state
 from kingdom.state import logs_root
 from kingdom.ticket import (
@@ -602,7 +600,7 @@ def run_lord_loop(
     if result is None:
         logger.error("Epic ticket not found: %s", epic_id)
         return "failed"
-    _, epic_path = result
+    epic_path = result.path
 
     # Verify it's actually an epic
     epic = read_ticket(epic_path)
@@ -739,7 +737,7 @@ def run_lord_loop(
         live_log_path = logs_root(base, branch) / session_name / "agent-live.log"
 
         try:
-            proc = run_lord_streaming_subprocess(
+            proc = run_streaming_subprocess(
                 cmd,
                 cwd=base,
                 env=clean_agent_env(role="lord", agent_name=session_name, kd_base=str(base)),
@@ -885,63 +883,3 @@ def extract_lord_summary(response_text: str) -> str:
             stripped = stripped[:497] + "..."
         return stripped
     return ""
-
-
-def run_lord_streaming_subprocess(
-    cmd: list[str],
-    *,
-    cwd: Path,
-    env: dict[str, str],
-    live_log_path: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess with real-time streaming for the lord agent."""
-    if live_log_path:
-        live_log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        cwd=cwd,
-        env=env,
-        text=True,
-    )
-
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
-
-    def drain(stream, buf: list[str]) -> None:
-        if live_log_path:
-            try:
-                f = live_log_path.open("a", encoding="utf-8")
-            except OSError:
-                f = None
-        else:
-            f = None
-        try:
-            for line in stream:
-                buf.append(line)
-                if f:
-                    with contextlib.suppress(OSError):
-                        f.write(line)
-        finally:
-            if f:
-                f.close()
-
-    stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_lines), daemon=True)
-    stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_lines), daemon=True)
-    stdout_thread.start()
-    stderr_thread.start()
-
-    proc.wait()
-
-    stdout_thread.join(timeout=5)
-    stderr_thread.join(timeout=5)
-
-    return subprocess.CompletedProcess(
-        args=cmd,
-        returncode=proc.returncode,
-        stdout="".join(stdout_lines),
-        stderr="".join(stderr_lines),
-    )

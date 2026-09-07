@@ -2,6 +2,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -13,41 +15,26 @@ def test_uv_and_pre_commit_pin_the_same_ruff_version() -> None:
     assert ruff_dependency.startswith("ruff==")
     uv_version = ruff_dependency.removeprefix("ruff==")
 
-    pre_commit = (REPO_ROOT / ".pre-commit-config.yaml").read_text()
-    ruff_repo = pre_commit.split("repo: https://github.com/astral-sh/ruff-pre-commit", 1)[1].split("\n  - repo:", 1)[0]
-    hook_version = re.search(r"rev: v([^\s]+)", ruff_repo)
-
-    assert hook_version is not None
-    assert hook_version.group(1) == uv_version
-
-
-def test_readme_documents_canonical_ruff_checks() -> None:
-    readme = (REPO_ROOT / "README.md").read_text()
-
-    for command in (
-        "uv run ruff check .",
-        "uv run ruff format --check .",
-        "uv run pre-commit run ruff --all-files",
-        "uv run pre-commit run ruff-format --all-files",
-    ):
-        assert command in readme
+    pre_commit = yaml.safe_load((REPO_ROOT / ".pre-commit-config.yaml").read_text())
+    ruff_repo = next(
+        repo for repo in pre_commit["repos"] if repo["repo"] == "https://github.com/astral-sh/ruff-pre-commit"
+    )
+    assert ruff_repo["rev"] == f"v{uv_version}"
 
 
-def test_release_metadata_has_final_version_and_direct_click_dependency() -> None:
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+def test_project_and_lock_agree_on_version_and_direct_click_dependency() -> None:
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["project"]
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text())
+    package = next(package for package in lock["package"] if package["name"] == project["name"])
 
-    assert pyproject["project"]["version"] == "1.0.2"
-    assert any(dependency.startswith("click") for dependency in pyproject["project"]["dependencies"])
-
-    lock = (REPO_ROOT / "uv.lock").read_text()
-    package_block = lock.split('name = "kingdom-cli"', 1)[1].split("\n[[package]]", 1)[0]
-    assert 'version = "1.0.2"' in package_block
-    assert '{ name = "click" }' in package_block
+    assert package["version"] == project["version"]
+    assert any(re.match(r"click(?:[<>=!~;\s]|$)", dependency) for dependency in project["dependencies"])
+    assert "click" in {dependency["name"] for dependency in package["dependencies"]}
 
 
 def test_claude_review_runs_only_when_pull_request_opens() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "claude-code-review.yml").read_text()
-
-    assert "types: [opened]" in workflow
-    for repeated_review_event in ("synchronize", "ready_for_review", "reopened"):
-        assert repeated_review_event not in workflow
+    # Preserve GitHub's `on` key instead of interpreting it as a YAML 1.1 boolean.
+    workflow = yaml.load(
+        (REPO_ROOT / ".github" / "workflows" / "claude-code-review.yml").read_text(), Loader=yaml.BaseLoader
+    )
+    assert workflow["on"] == {"pull_request": {"types": ["opened"]}}

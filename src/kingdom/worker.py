@@ -1,6 +1,6 @@
 """Worker entry point for the peasant agent loop.
 
-Invoked as ``python -m kingdom.worker`` by :func:`kingdom.cli.launch_work_background`
+Invoked as ``python -m kingdom.worker`` by :func:`kingdom.cli.peasant.launch_work_background`
 and :func:`kingdom.cli.launch_work_tmux`.  All arguments are required — context
 resolution happens in the CLI layer before launch.
 """

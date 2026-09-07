@@ -33,11 +33,11 @@ class TestTicketTypeValidation:
 
     def test_create_with_valid_type(self, cli_project: Path) -> None:
         for t in ("task", "bug", "feature", "epic"):
-            result = runner.invoke(ticket_app, ["create", f"{t} ticket", "-t", t])
+            result = runner.invoke(ticket_app, ["create", f"{t} ticket", "--type", t])
             assert result.exit_code == 0, f"Failed for type {t}: {result.output}"
 
     def test_create_rejects_invalid_type(self, cli_project: Path) -> None:
-        result = runner.invoke(ticket_app, ["create", "Bad type", "-t", "story"])
+        result = runner.invoke(ticket_app, ["create", "Bad type", "--type", "story"])
         assert result.exit_code == 1
         assert "Invalid type" in result.output
         assert "story" in result.output
@@ -68,7 +68,7 @@ class TestTicketTypeValidation:
         assert result.exit_code == 0
 
     def test_create_epic_type_persisted(self, cli_project: Path) -> None:
-        result = runner.invoke(ticket_app, ["create", "My epic", "-t", "epic"])
+        result = runner.invoke(ticket_app, ["create", "My epic", "--type", "epic"])
         assert result.exit_code == 0
         ticket_id = result.output.strip().split(":")[0].replace("Created ", "")
         found = find_ticket(cli_project, ticket_id)
@@ -139,11 +139,11 @@ class TestPeasantEpicGuard:
             tdir = base / ".kd" / "branches" / "feature-ticket-test" / "tickets"
             tdir.mkdir(parents=True, exist_ok=True)
             epic = Ticket(
-                id="kin-epc1", status="open", title="Epic ticket", type="epic", body="", created=datetime.now(UTC)
+                id="epc1", status="open", title="Epic ticket", type="epic", body="", created=datetime.now(UTC)
             )
-            write_ticket(epic, tdir / "kin-epc1.md")
+            write_ticket(epic, tdir / "epc1.md")
 
-            result = runner.invoke(peasant_app, ["start", "kin-epc1"])
+            result = runner.invoke(peasant_app, ["start", "epc1"])
             assert result.exit_code == 1
             assert "epic" in result.output.lower()
             assert "atomic" in result.output.lower() or "not atomic" in result.output.lower()
@@ -155,12 +155,12 @@ class TestPeasantEpicGuard:
             tdir = base / ".kd" / "branches" / "feature-ticket-test" / "tickets"
             tdir.mkdir(parents=True, exist_ok=True)
             task = Ticket(
-                id="kin-tsk1", status="open", title="Task ticket", type="task", body="", created=datetime.now(UTC)
+                id="tsk1", status="open", title="Task ticket", type="task", body="", created=datetime.now(UTC)
             )
-            write_ticket(task, tdir / "kin-tsk1.md")
+            write_ticket(task, tdir / "tsk1.md")
 
-            with patch("kingdom.cli.launch_work_background", return_value=12345):
-                result = runner.invoke(peasant_app, ["start", "kin-tsk1", "--hand"])
+            with patch("kingdom.cli.peasant.launch_work_background", return_value=12345):
+                result = runner.invoke(peasant_app, ["start", "tsk1", "--hand"])
             assert result.exit_code == 0, result.output
 
 

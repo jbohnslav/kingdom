@@ -248,7 +248,6 @@ artifact; existing repositories and commands remain supported:
 kd design                       # initialize and print the design path
 # edit the design document when the extra planning artifact is useful
 kd design show
-kd design approve
 ```
 
 ## Consolidated command replacements
@@ -297,20 +296,21 @@ closure fields without erasing that history.
 
 Use `kd tk list --resolution <value>` to filter terminal outcomes.
 `kd status --check` validates terminal evidence and reports the same resolution
-breakdown without changing workspace state. Resolution-less legacy closures
-remain readable and map to their compatible inferred outcome.
+breakdown without changing workspace state. Closed tickets need an explicit
+valid resolution; missing closure evidence fails readiness checks.
 
 ## Upgrading existing repositories
 
 `kd update` refreshes the CLI and configured host integrations. Existing `.kd`
-repositories use a lazy, idempotent context migration that preserves ticket IDs
-and Markdown. Back up `.kd`, verify with the read-only `kd doctor`, and use the
-retained legacy context state if you need to roll back. See the complete
+repositories use the current branch and execution-context formats. Old runtime
+formats are no longer migrated or read. Back up `.kd` before upgrading and verify
+with the read-only `kd doctor`. See the complete
 [upgrade and rollback guide](docs/upgrading.md).
 
 ## How it works
 
-All state lives in `.kd/` as plain Markdown and JSON tracked with the code:
+All state lives in `.kd/` as plain Markdown and JSON. Tickets and discussions
+are tracked with the code; runtime state is gitignored:
 
 ```text
 .kd/
@@ -318,11 +318,11 @@ All state lives in `.kd/` as plain Markdown and JSON tracked with the code:
 │   └── feature-oauth-refresh/
 │       ├── tickets/             # active tickets and epics
 │       ├── design.md            # optional planning artifact
-│       ├── breakdown.md         # optional legacy planning artifact
 │       └── threads/             # council discussions and reviews
 ├── backlog/tickets/             # work not selected yet
 ├── archive/                     # completed branches and tickets
-└── worktrees/                   # peasant worktrees (gitignored)
+├── runtime/contexts/            # execution-context bindings (gitignored)
+└── worktrees/<branch>/<ticket>/ # peasant worktrees (gitignored)
 ```
 
 No database. No server. Just files on disk.
@@ -350,7 +350,7 @@ resolve to a separately installed release instead of the working tree.
 
 ```bash
 uv sync
-uv run pytest tests/
+uv run pytest --run-textual-integration
 uv run ruff check .
 uv run ruff format --check .
 uv run pre-commit run ruff --all-files

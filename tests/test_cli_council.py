@@ -369,28 +369,6 @@ class TestCouncilShow:
 
             assert result.exit_code == 1
 
-    def test_show_legacy_run_fallback(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-
-            from kingdom.state import council_logs_root
-
-            # Create a legacy run bundle
-            council_dir = council_logs_root(base, BRANCH)
-            run_dir = council_dir / "run-abcd"
-            run_dir.mkdir(parents=True)
-            (run_dir / "claude.md").write_text("# claude\n\nSome response", encoding="utf-8")
-            (run_dir / "metadata.json").write_text(
-                '{"timestamp": "2026-01-01T00:00:00Z", "prompt": "test"}',
-                encoding="utf-8",
-            )
-
-            result = runner.invoke(council_app, ["show", "run-abcd"])
-
-            assert result.exit_code == 0
-            assert "Archived session" in result.output
-
     def test_show_not_found_errors(self) -> None:
         with runner.isolated_filesystem():
             base = Path.cwd()
@@ -636,7 +614,9 @@ class TestCouncilList:
             create_thread(base, BRANCH, "council-err", ["king", "claude", "codex"], "council")
             add_message(base, BRANCH, "council-err", from_="king", to="all", body="Question?")
             add_message(base, BRANCH, "council-err", from_="claude", to="king", body="Good answer")
-            add_message(base, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*")
+            add_message(
+                base, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*", status="error"
+            )
 
             result = runner.invoke(council_app, ["list"])
 
@@ -887,19 +867,6 @@ class TestCouncilWatch:
             assert "Timeout" in result.output
 
 
-class TestCouncilShowLast:
-    def test_show_last_no_logs_dir(self) -> None:
-        """council show last should not crash when logs/council dir doesn't exist."""
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-
-            result = runner.invoke(council_app, ["show", "last"])
-
-            assert result.exit_code == 1
-            assert "No council history found" in result.output
-
-
 class TestCouncilMentions:
     def test_single_mention_targets_member(self) -> None:
         with runner.isolated_filesystem():
@@ -1137,7 +1104,9 @@ class TestCouncilStatus:
             set_current_thread(base, BRANCH, "council-err")
             add_message(base, BRANCH, "council-err", from_="king", to="all", body="Q")
             add_message(base, BRANCH, "council-err", from_="claude", to="king", body="Good")
-            add_message(base, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*")
+            add_message(
+                base, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*", status="error"
+            )
 
             result = runner.invoke(council_app, ["status"])
 
@@ -1158,7 +1127,15 @@ class TestCouncilStatus:
             set_current_thread(base, BRANCH, "council-to")
             add_message(base, BRANCH, "council-to", from_="king", to="all", body="Q")
             add_message(base, BRANCH, "council-to", from_="claude", to="king", body="Good")
-            add_message(base, BRANCH, "council-to", from_="codex", to="king", body="*Error: Timeout after 600s*")
+            add_message(
+                base,
+                BRANCH,
+                "council-to",
+                from_="codex",
+                to="king",
+                body="*Error: Timeout after 600s*",
+                status="timeout",
+            )
 
             result = runner.invoke(council_app, ["status"])
 
@@ -1516,7 +1493,9 @@ class TestCouncilRetry:
             set_current_thread(base, BRANCH, thread_id)
             add_message(base, BRANCH, thread_id, from_="king", to="all", body="test question")
             add_message(base, BRANCH, thread_id, from_="claude", to="king", body="Good response")
-            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="*Error: Timeout after 600s*")
+            add_message(
+                base, BRANCH, thread_id, from_="codex", to="king", body="*Error: Timeout after 600s*", status="timeout"
+            )
 
             # Mock query_to_thread to handle the retry
             retry_responses = {
@@ -1527,6 +1506,26 @@ class TestCouncilRetry:
 
             assert result.exit_code == 0
             assert "codex" in result.output
+
+    def test_retry_uses_latest_response_status(self) -> None:
+        from kingdom.thread import add_message, create_thread, thread_response_status
+
+        with runner.isolated_filesystem():
+            base = Path.cwd()
+            setup_project(base)
+            thread_id = "council-retry-latest"
+            create_thread(base, BRANCH, thread_id, ["king", "codex"], "council")
+            set_current_thread(base, BRANCH, thread_id)
+            add_message(base, BRANCH, thread_id, from_="king", to="codex", body="question")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="first", status="complete")
+            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="failed", status="error")
+            assert thread_response_status(base, BRANCH, thread_id).member_states["codex"].state == "errored"
+
+            with mock_council_query_to_thread({"codex": AgentResponse(name="codex", text="Recovered", elapsed=0)}):
+                result = runner.invoke(council_app, ["retry"])
+
+            assert result.exit_code == 0
+            assert "Retrying: codex" in result.output
 
     def test_retry_missing_members(self) -> None:
         """Retry should re-query members that never responded."""
@@ -1565,7 +1564,9 @@ class TestCouncilRetry:
             create_thread(base, BRANCH, thread_id, ["king", "claude", "codex"], "council")
             set_current_thread(base, BRANCH, thread_id)
             add_message(base, BRANCH, thread_id, from_="king", to="codex", body="targeted question")
-            add_message(base, BRANCH, thread_id, from_="codex", to="king", body="*Error: Timeout after 600s*")
+            add_message(
+                base, BRANCH, thread_id, from_="codex", to="king", body="*Error: Timeout after 600s*", status="timeout"
+            )
 
             retry_responses = {
                 "codex": AgentResponse(name="codex", text="Recovered", elapsed=5.0),
@@ -1601,17 +1602,6 @@ class TestNoResultsMessages:
 
             assert result.exit_code == 0
             assert "No council threads" in result.output
-            assert "kd council ask" in result.output
-
-    def test_council_show_last_empty_shows_guidance(self) -> None:
-        with runner.isolated_filesystem():
-            base = Path.cwd()
-            setup_project(base)
-
-            result = runner.invoke(council_app, ["show", "last"])
-
-            assert result.exit_code == 1
-            assert "No council history found" in result.output
             assert "kd council ask" in result.output
 
     def test_council_show_thread_no_messages_shows_guidance(self) -> None:

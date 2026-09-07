@@ -17,7 +17,7 @@ runner = CliRunner()
 BRANCH = "feature/ticket-test"
 
 
-def create_ticket_in(directory: Path, ticket_id: str = "kin-t001") -> Path:
+def create_ticket_in(directory: Path, ticket_id: str = "t001") -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     ticket = Ticket(
         id=ticket_id,
@@ -34,9 +34,9 @@ def create_ticket_in(directory: Path, ticket_id: str = "kin-t001") -> Path:
 class TestTicketShow:
     def test_show_outputs_raw_markdown_by_default(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        ticket_path = create_ticket_in(tickets_dir, "kin-sh01")
+        ticket_path = create_ticket_in(tickets_dir, "sh01")
 
-        result = runner.invoke(ticket_app, ["show", "kin-sh01"])
+        result = runner.invoke(ticket_app, ["show", "sh01"])
 
         assert result.exit_code == 0, result.output
         assert result.output.startswith(ticket_path.read_text(encoding="utf-8").strip())
@@ -70,9 +70,9 @@ class TestTicketShow:
 
     def test_show_raw_markdown_ends_with_ticket_path(self, cli_project: Path) -> None:
         tickets_dir = branch_root(cli_project, BRANCH) / "tickets"
-        ticket_path = create_ticket_in(tickets_dir, "kin-path")
+        ticket_path = create_ticket_in(tickets_dir, "path")
 
-        result = runner.invoke(ticket_app, ["show", "kin-path"])
+        result = runner.invoke(ticket_app, ["show", "path"])
 
         assert result.exit_code == 0
         assert result.output.rstrip().endswith(f"File: {ticket_path.resolve()}")

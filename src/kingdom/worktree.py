@@ -11,28 +11,13 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from kingdom.state import find_git_root, locked_json_update, resolve_current_run, state_root
+from kingdom.state import find_git_root, locked_json_update, normalize_branch_name, resolve_current_run, state_root
 
 
-def worktree_path_for(base: Path, full_ticket_id: str, *, feature: str | None = None) -> Path:
+def worktree_path_for(base: Path, full_ticket_id: str, *, feature: str) -> Path:
     """Return the canonical worktree path for a ticket (may not exist yet)."""
     root = state_root(base) / "worktrees"
-    if feature:
-        return root / feature / full_ticket_id
-    return root / full_ticket_id
-
-
-def existing_worktree_path_for(base: Path, full_ticket_id: str, *, feature: str) -> Path:
-    """Return the current worktree path, accepting the legacy un-namespaced path."""
-    namespaced = worktree_path_for(base, full_ticket_id, feature=feature)
-    if namespaced.exists():
-        return namespaced
-
-    legacy = worktree_path_for(base, full_ticket_id)
-    if legacy.exists():
-        return legacy
-
-    return namespaced
+    return root / normalize_branch_name(feature) / full_ticket_id
 
 
 def design_state_path(base: Path, feature: str) -> Path:
@@ -149,7 +134,7 @@ def create_worktree(
 ) -> Path:
     """Create a git worktree for a ticket. Returns the worktree path."""
     feature = resolve_current_run(base)
-    worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
+    worktree_path = worktree_path_for(base, full_ticket_id, feature=feature)
     git_root = git_root or find_git_root() or base
 
     if worktree_path.exists():
@@ -208,7 +193,7 @@ def remove_worktree(
     feature: str,
 ) -> None:
     """Remove a git worktree for a ticket."""
-    worktree_path = existing_worktree_path_for(base, full_ticket_id, feature=feature)
+    worktree_path = worktree_path_for(base, full_ticket_id, feature=feature)
     git_root = git_root or find_git_root() or base
 
     if not worktree_path.exists():

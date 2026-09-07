@@ -1,91 +1,71 @@
 # Upgrading existing repositories
 
 `kd update` upgrades the Kingdom CLI and refreshes configured host integrations.
-Repository compatibility is separate: current `.kd` repositories migrate lazily
-when an execution context first runs `kd tk current`.
+Current Kingdom reads one repository layout and one execution-context format;
+it does not migrate older runtime formats automatically.
 
-## Supported starting point
+## Current formats
 
-The minimum supported repository shape already stores active branch work under
-`.kd/branches/`. A non-empty legacy `.kd/runs/` directory is an intentional hard
-boundary: current Kingdom refuses to open it and does not attempt to combine or
-rewrite that older layout.
+- Branch tickets and threads live under `.kd/branches/<branch>/`.
+- Session state uses `.kd/branches/<branch>/sessions/<agent>.json`.
+- Current-ticket bindings live under `.kd/runtime/contexts/` and identify their
+  owning host execution context. Ordinary terminal sessions also use this store.
+- Peasant worktrees use `.kd/worktrees/<branch>/<ticket>/`.
+- Ticket IDs are used as stored, without alternate filename or `kin-` aliases.
+- Closed tickets need explicit resolution fields; readiness checks do not infer
+  outcomes from old status or body text.
+- Council response messages carry explicit status metadata.
 
-Back up `.kd` before crossing this boundary. If `.kd/branches/` does not already
-exist, follow the CLI diagnostic to rename `.kd/runs/` to `.kd/branches/`
-manually, then inspect the result before retrying. If both directories contain
-work, stop and reconcile them from the backup rather than merging automatically.
-The lazy migration below begins only after the repository has the supported
-`.kd/branches/` shape.
+Old `.kd/runs/` bundles, plaintext `.session` files, terminal-context records,
+unnamespaced worktrees, and generic `hand` assignments are no longer imported or
+used as fallback state. Historical ticket files can remain in the repository;
+retaining them does not make them current runtime inputs. No bulk rewrite of
+closed history is required for unrelated active workspaces.
 
-## Back up first
+## Back up and verify
 
-Kingdom's state is plain files, so a complete backup is a directory copy. Stop
-active Kingdom sessions, choose a timestamped destination outside `.kd`, and run:
+Stop active Kingdom workers before changing versions. Preserve the complete
+state, including ignored runtime files, outside the working directory:
 
 ```bash
 cp -R .kd ../kd-backup-YYYYMMDD-HHMMSS
+kd update
+kd start
+kd doctor
+kd tk current
 ```
 
-Keep that backup until the upgraded workflow and `kd doctor` both pass. The copy
-includes tracked ticket history and ignored runtime bindings; it does not alter
-the working repository.
+Check the selected workspace and execution context before resuming work. If an
+old binding is absent, explicitly select the intended ticket with `kd tk start`;
+starting a ticket reassigns it to the calling context. Diagnose
+invalid current state with `kd doctor`. Refresh the supported host integration
+with `kd plugin enable` or the appropriate `kd plugin install` command instead
+of relying on old hook-layout migration.
 
-## Supported lazy migration
+Configuration uses `effort`; remove the old `reasoning_effort` key. `kd start`
+is idempotent and has no `--force` option. In ticket creation, `-t`/`--title`
+sets the title and `--type` sets the type. Optional design documents are created
+with `kd design` and displayed with `kd design show`; they need no approval step.
 
-Older repositories can identify current work with a generic `hand` assignment or
-a terminal-context record. On the first `kd tk current`, Kingdom:
+## Workspace lifecycle
 
-1. uses an exact legacy terminal binding when one exists;
-2. otherwise migrates one unambiguous generic active ticket;
-3. refuses to guess when multiple tickets are candidates;
-4. changes only the active ticket's `assignee` line and writes a new ignored
-   `.kd/runtime/contexts/` record.
-
-Ticket IDs, unknown frontmatter, Markdown bodies, and Worklogs remain intact.
-Backlog and archived tickets are not rewritten. Repeating the command is
-idempotent, and a retry completes a migration interrupted between the ticket and
-runtime-state writes.
-
-Use `kd doctor` after upgrading. It is read-only and reports exact next steps for
-ambiguous bindings, invalid or orphaned contexts, bad closure resolutions, and
-stale configured Claude or Codex integrations.
-
-## Consolidated lifecycle commands
-
-Kingdom 1.0 derives workspace readiness from ticket state and uses `start` as the
-single workspace entry point:
-
-| Previous command | 1.0 replacement | Behavior |
-| --- | --- | --- |
-| `kd done` | `kd status --check` | Validate terminal ticket resolutions without changing workspace state. |
-| `kd switch <branch>` | `kd start <branch>` | Initialize, resume, or select the named workspace idempotently. |
-
-Legacy workspaces recorded with `status: done` remain readable. Selecting one
-with `kd start <branch>` reactivates the workspace while preserving its ticket
-history. There is no global cleanup step: ticket close/defer operations clear
+`kd start <branch>` initializes or selects a workspace. `kd status --check`
+checks its tickets and closure evidence without changing state. There is no
+workspace `done` flag or global finalizer: ticket close/defer operations clear
 their bindings, `kd status --prune-stale` removes stale context bindings, and
-`kd peasant accept`, `clean`, or `prune` own worker cleanup.
+`kd peasant accept`, `clean`, and `prune` own worker cleanup.
 
 ## Roll back
 
-The legacy terminal-context record is retained, so the previous Kingdom version
-can continue to read it. The newer `.kd/runtime/contexts/` directory is ignored
-runtime state and can be moved aside without changing ticket Markdown:
-
-```bash
-mv -n .kd/runtime/contexts ../kd-contexts-after-upgrade
-uv tool install --force kingdom-cli==PREVIOUS_VERSION
-```
-
-To restore the complete backup, first preserve the upgraded state, then copy the
-backup into place:
+Restore the previous CLI version and the matching complete backup together.
+Preserve the upgraded state first:
 
 ```bash
 mv -n .kd ../kd-after-upgrade
 cp -R ../kd-backup-YYYYMMDD-HHMMSS .kd
+uv tool install --force kingdom-cli==PREVIOUS_VERSION
 kd doctor
 ```
 
-These commands are intentionally recoverable: neither the upgraded state nor the
-backup is deleted. Inspect both copies before removing either one.
+Neither state copy is deleted by these commands. The current version does not
+maintain old runtime records for older releases to read.

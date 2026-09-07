@@ -207,8 +207,7 @@ Optional planning when real ambiguity or cross-cutting design warrants it:
 ```bash
 kd design show
 kd council ask "Review the unresolved tradeoffs in this feature"
-kd design approve
-# merge approved decisions and scope into the epic and child tickets
+# record decisions and scope in the epic and child tickets
 ```
 
 Backlog sprint:

@@ -441,7 +441,9 @@ class TestThreadResponseStatus:
         create_thread(project, BRANCH, "council-err", ["king", "claude", "codex"], "council")
         add_message(project, BRANCH, "council-err", from_="king", to="all", body="Question")
         add_message(project, BRANCH, "council-err", from_="claude", to="king", body="Good answer")
-        add_message(project, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*")
+        add_message(
+            project, BRANCH, "council-err", from_="codex", to="king", body="*Error: Exit code 1*", status="error"
+        )
 
         status = thread_response_status(project, BRANCH, "council-err")
 
@@ -456,7 +458,15 @@ class TestThreadResponseStatus:
         create_thread(project, BRANCH, "council-to", ["king", "claude", "codex"], "council")
         add_message(project, BRANCH, "council-to", from_="king", to="all", body="Question")
         add_message(project, BRANCH, "council-to", from_="claude", to="king", body="Good answer")
-        add_message(project, BRANCH, "council-to", from_="codex", to="king", body="*Error: Timeout after 600s*")
+        add_message(
+            project,
+            BRANCH,
+            "council-to",
+            from_="codex",
+            to="king",
+            body="*Error: Timeout after 600s*",
+            status="timeout",
+        )
 
         status = thread_response_status(project, BRANCH, "council-to")
 
@@ -490,6 +500,7 @@ class TestThreadResponseStatus:
             from_="claude",
             to="king",
             body="*Empty response — no text or error returned.*",
+            status="error",
         )
 
         status = thread_response_status(project, BRANCH, "council-empty")
@@ -608,35 +619,6 @@ class TestThreadResponseStatusWithMetadata:
         status = thread_response_status(project, BRANCH, "meta-ok")
         assert status.member_states["claude"].state == MEMBER_RESPONDED
 
-    def test_legacy_error_body_still_detected(self, project: Path) -> None:
-        """Legacy messages without status field still work via body sniffing."""
-        from kingdom.thread import MEMBER_ERRORED, thread_response_status
-
-        create_thread(project, BRANCH, "legacy-err", ["king", "claude"], "council")
-        add_message(project, BRANCH, "legacy-err", from_="king", to="all", body="Q?")
-        add_message(project, BRANCH, "legacy-err", from_="claude", to="king", body="*Error: Exit code 1*")
-
-        status = thread_response_status(project, BRANCH, "legacy-err")
-        assert status.member_states["claude"].state == MEMBER_ERRORED
-
-    def test_mixed_status_and_legacy(self, project: Path) -> None:
-        """Thread with some messages having status metadata and some without."""
-        from kingdom.thread import MEMBER_RESPONDED, MEMBER_TIMED_OUT, thread_response_status
-
-        create_thread(project, BRANCH, "mixed", ["king", "claude", "codex", "gemini"], "council")
-        add_message(project, BRANCH, "mixed", from_="king", to="all", body="Q?")
-        # claude: new-style complete
-        add_message(project, BRANCH, "mixed", from_="claude", to="king", body="Answer", status="complete")
-        # codex: legacy error body, no status
-        add_message(project, BRANCH, "mixed", from_="codex", to="king", body="*Error: Timeout after 600s*")
-        # gemini: new-style timeout
-        add_message(project, BRANCH, "mixed", from_="gemini", to="king", body="Partial...", status="timeout")
-
-        status = thread_response_status(project, BRANCH, "mixed")
-        assert status.member_states["claude"].state == MEMBER_RESPONDED
-        assert status.member_states["codex"].state == MEMBER_TIMED_OUT  # legacy body sniffing
-        assert status.member_states["gemini"].state == MEMBER_TIMED_OUT  # metadata
-
 
 class TestAgentResponseThreadStatus:
     """Tests for AgentResponse.thread_status() method."""
@@ -664,9 +646,3 @@ class TestAgentResponseThreadStatus:
 
         r = AgentResponse(name="claude", text="", error="Exit code 1")
         assert r.thread_status() == "error"
-
-    def test_interrupted_response(self) -> None:
-        from kingdom.council.base import AgentResponse
-
-        r = AgentResponse(name="claude", text="Some text *[Interrupted by user]* more", error=None)
-        assert r.thread_status() == "interrupted"

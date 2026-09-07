@@ -29,7 +29,7 @@ class TestChatCommand:
     def test_nonexistent_thread(self, project: Path) -> None:
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
         ):
             result = runner.invoke(council_app, ["chat", "nonexistent"])
         assert result.exit_code == 1
@@ -39,7 +39,7 @@ class TestChatCommand:
         """Bare `chat` always creates a new thread and launches the TUI."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -58,7 +58,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -75,7 +75,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat", "council-abc1"])
@@ -90,7 +90,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat", "council-test"])
@@ -102,7 +102,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp") as mock_chat_app,
         ):
             result = runner.invoke(council_app, ["chat", "council-debug", "--debug"])
@@ -124,7 +124,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -141,7 +141,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
         ):
             result = runner.invoke(council_app, ["chat", "council-xyz1"])
@@ -154,7 +154,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat", "council-ab"])
@@ -168,7 +168,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
         ):
             result = runner.invoke(council_app, ["chat", "council-aa"])
         assert result.exit_code == 1
@@ -181,7 +181,7 @@ class TestChatCommand:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
         ):
             result = runner.invoke(council_app, ["chat", "council-nope"])
         assert result.exit_code == 1
@@ -829,7 +829,7 @@ class TestPhase1SmokeTest:
         # Simulate king message + member responses
         add_msg(project, BRANCH, tid, from_="king", to="all", body="What do you think?")
         add_msg(project, BRANCH, tid, from_="claude", to="king", body="I think we should...")
-        add_msg(project, BRANCH, tid, from_="codex", to="king", body="*Error: Timeout after 600s*")
+        add_msg(project, BRANCH, tid, from_="codex", to="king", body="*Error: Timeout after 600s*", status="timeout")
 
         poller = ThreadPoller(thread_dir=tdir, member_backends={"claude": "claude_code", "codex": "codex"})
         events = poller.poll()
@@ -840,12 +840,8 @@ class TestPhase1SmokeTest:
         assert msgs[1].sender == "claude"
         assert msgs[2].sender == "codex"
 
-        # Error detection
-        from kingdom.thread import is_error_response, is_timeout_response
-
-        assert not is_error_response(msgs[1].body)
-        assert is_error_response(msgs[2].body)
-        assert is_timeout_response(msgs[2].body)
+        assert msgs[1].status is None
+        assert msgs[2].status == "timeout"
 
     def test_chat_app_composes_with_thread(self, project: Path) -> None:
         """Verify ChatApp composes correctly with a real thread."""
@@ -881,7 +877,7 @@ class TestPhase1SmokeTest:
         """kd council chat --new creates thread and would launch TUI."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -895,7 +891,7 @@ class TestPhase1SmokeTest:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run") as mock_run,
         ):
             result = runner.invoke(council_app, ["chat"])
@@ -911,7 +907,7 @@ class TestPhase1SmokeTest:
         """--color auto enables ansi_color when tmux -CC is detected."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=True),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
@@ -925,7 +921,7 @@ class TestPhase1SmokeTest:
         """--color auto (default) uses normal colors when not in tmux -CC."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
@@ -938,7 +934,7 @@ class TestPhase1SmokeTest:
         """--color ansi forces ansi_color regardless of environment."""
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run"),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
@@ -956,7 +952,7 @@ class TestPhase1SmokeTest:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run", side_effect=check_no_color),
             patch("kingdom.tui.app.ChatApp.__init__", return_value=None) as mock_init,
         ):
@@ -984,7 +980,7 @@ class TestPhase1SmokeTest:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run", side_effect=run_side_effect),
             patch("kingdom.tui.terminal.in_tmux_control_mode", return_value=False),
         ):
@@ -1001,29 +997,12 @@ class TestPhase1SmokeTest:
 
         with (
             patch("kingdom.cli.Path.cwd", return_value=project),
-            patch("kingdom.cli.resolve_current_run", return_value=BRANCH),
+            patch("kingdom.cli.council.resolve_current_run", return_value=BRANCH),
             patch("kingdom.tui.app.ChatApp.run", side_effect=crash),
         ):
             result = runner.invoke(council_app, ["chat", "--color", "truecolor"])
         # Should re-raise, not silently retry
         assert result.exit_code != 0
-
-
-class TestErrorDetection:
-    """Test that error messages from thread files are detected."""
-
-    def test_error_body_detected(self) -> None:
-        from kingdom.thread import is_error_response
-
-        assert is_error_response("*Error: Timeout after 600s*")
-        assert is_error_response("*Empty response — no text or error returned.*")
-        assert not is_error_response("Normal response text")
-
-    def test_timeout_body_detected(self) -> None:
-        from kingdom.thread import is_timeout_response
-
-        assert is_timeout_response("*Error: Timeout after 600s*")
-        assert not is_timeout_response("*Error: API key not set*")
 
 
 class TestRunQuery:
@@ -1229,6 +1208,7 @@ class TestRunQuery:
         # Body should contain the partial text AND an interrupted marker
         assert "Partial answer before interrupt" in messages[0].body
         assert "[Interrupted" in messages[0].body
+        assert messages[0].status == "interrupted"
 
     def test_run_query_uses_formatted_thread_history(self, project: Path) -> None:
         """run_query should send full formatted history, not only the latest text."""
@@ -2841,7 +2821,7 @@ class TestSendMessageQueue:
 
     def test_queued_send_keeps_existing_wait_panels(self, project: Path) -> None:
         """A follow-up must not disturb the exchange that is still running."""
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
 
         from kingdom.tui.app import ChatApp, MessageLog
 
@@ -2851,15 +2831,7 @@ class TestSendMessageQueue:
         app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
         list(app_instance.compose())
 
-        # Track calls to remove_member_panels
-        removed = []
-        original_remove = app_instance.remove_member_panels
-
-        def tracking_remove(log, name):
-            removed.append(name)
-            original_remove(log, name)
-
-        app_instance.remove_member_panels = tracking_remove
+        app_instance.await_remove_member_panels = AsyncMock()
 
         # Mock the log and worker to prevent actual Textual operations
         mock_log = MagicMock(spec=MessageLog)
@@ -2883,7 +2855,7 @@ class TestSendMessageQueue:
 
         app_instance.send_message()
 
-        assert removed == []
+        app_instance.await_remove_member_panels.assert_not_called()
         assert len(app_instance.delivery_queue) == 1
         app_instance.run_worker.assert_not_called()
 
@@ -2900,9 +2872,7 @@ class TestSendMessageQueue:
         list(app_instance.compose())
 
         mock_log = MagicMock(spec=MessageLog)
-        # remove_member_panels calls query for each prefix; the guard calls
-        # query for "#wait-<name>".  Make all removal queries return empty
-        # (nothing to remove) but the guard query find an existing panel.
+        # Simulate the waiting panel owned by the active exchange.
         existing_panel = MagicMock()
         mock_log.query.side_effect = lambda sel: [existing_panel] if sel == "#wait-claude" else []
         mock_log.scroll_if_following = MagicMock()
@@ -2930,31 +2900,6 @@ class TestSendMessageQueue:
             widget = call[0][0]
             assert not isinstance(widget, WaitingPanel)
         app_instance.run_worker.assert_not_called()
-
-
-class TestRemoveMemberPanels:
-    def test_removes_thinking_panels(self, project: Path) -> None:
-        """remove_member_panels should remove thinking panels, not just wait/stream/interrupted."""
-        from unittest.mock import MagicMock
-
-        from kingdom.tui.app import ChatApp, MessageLog
-
-        tid = "remove-panels-test"
-        create_thread(project, BRANCH, tid, ["king", "claude"], "council")
-        app_instance = ChatApp(base=project, branch=BRANCH, thread_id=tid)
-        list(app_instance.compose())
-
-        mock_log = MagicMock(spec=MessageLog)
-        thinking_panel = MagicMock(name="thinking-claude")
-        mock_log.query.side_effect = lambda sel: [thinking_panel] if sel == "#thinking-claude" else []
-
-        app_instance.remove_member_panels(mock_log, "claude")
-
-        # Should have queried for thinking panels
-        queried_selectors = [call.args[0] for call in mock_log.query.call_args_list]
-        assert "#thinking-claude" in queried_selectors
-        # The thinking panel should have been removed
-        thinking_panel.remove.assert_called_once()
 
 
 class TestFakeMemberProtocol:

@@ -4,18 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-try:
-    from kingdom.parsing import (
-        parse_frontmatter,
-        parse_iso_datetime,
-        parse_yaml_value,
-        serialize_frontmatter,
-        serialize_yaml_value,
-    )
-except ImportError:
-    # When run from the parent worktree's venv, kingdom.parsing may not
-    # exist yet.  Skip the entire module in that case.
-    pytest.skip("kingdom.parsing not available in this environment", allow_module_level=True)
+from kingdom.parsing import (
+    parse_frontmatter,
+    parse_iso_datetime,
+    parse_yaml_value,
+    serialize_frontmatter,
+    serialize_yaml_value,
+)
 
 
 class TestParseIsoDatetime:
@@ -163,9 +158,9 @@ class TestParseFrontmatter:
         assert body == "Body text"
 
     def test_multiple_fields(self) -> None:
-        content = "---\nid: kin-1234\nstatus: open\npriority: 1\n---\n# Title\n\nBody"
+        content = '---\nid: "1234"\nstatus: open\npriority: 1\n---\n# Title\n\nBody'
         fm, body = parse_frontmatter(content)
-        assert fm["id"] == "kin-1234"
+        assert fm["id"] == "1234"
         assert fm["status"] == "open"
         assert fm["priority"] == 1
         assert body == "# Title\n\nBody"
@@ -203,9 +198,9 @@ class TestParseFrontmatter:
         assert fm["created"] == "2026-02-04T16:00:00Z"
 
     def test_list_value(self) -> None:
-        content = "---\ndeps: [kin-0001, kin-0002]\n---\n"
+        content = "---\ndeps: [0001, 0002]\n---\n"
         fm, _ = parse_frontmatter(content)
-        assert fm["deps"] == ["kin-0001", "kin-0002"]
+        assert fm["deps"] == ["0001", "0002"]
 
     def test_empty_list_value(self) -> None:
         content = "---\ndeps: []\n---\n"

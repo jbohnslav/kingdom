@@ -197,9 +197,9 @@ def test_status_human_readable_with_tickets() -> None:
 
         tickets_dir = branch_root(base, feature) / "tickets"
 
-        write_ticket(Ticket(id="kin-0001", title="First", status="open"), tickets_dir / "kin-0001.md")
-        write_ticket(Ticket(id="kin-0002", title="Second", status="in_progress"), tickets_dir / "kin-0002.md")
-        write_ticket(Ticket(id="kin-0003", title="Third", status="closed"), tickets_dir / "kin-0003.md")
+        write_ticket(Ticket(id="0001", title="First", status="open"), tickets_dir / "0001.md")
+        write_ticket(Ticket(id="0002", title="Second", status="in_progress"), tickets_dir / "0002.md")
+        write_ticket(Ticket(id="0003", title="Third", status="closed"), tickets_dir / "0003.md")
 
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
@@ -220,9 +220,9 @@ def test_status_counts_in_review_separately() -> None:
 
         tickets_dir = branch_root(base, feature) / "tickets"
 
-        write_ticket(Ticket(id="kin-0001", title="First", status="open"), tickets_dir / "kin-0001.md")
-        write_ticket(Ticket(id="kin-0002", title="Second", status="in_review"), tickets_dir / "kin-0002.md")
-        write_ticket(Ticket(id="kin-0003", title="Third", status="closed"), tickets_dir / "kin-0003.md")
+        write_ticket(Ticket(id="0001", title="First", status="open"), tickets_dir / "0001.md")
+        write_ticket(Ticket(id="0002", title="Second", status="in_review"), tickets_dir / "0002.md")
+        write_ticket(Ticket(id="0003", title="Third", status="closed"), tickets_dir / "0003.md")
 
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
@@ -242,13 +242,13 @@ def test_status_shows_unassigned_ticket_after_leaving_in_progress() -> None:
         tickets_dir = ensure_branch_layout(base, feature) / "tickets"
         set_current_run(base, feature)
         write_ticket(
-            Ticket(id="kin-blocked", title="Needs a decision", status="open"),
-            tickets_dir / "kin-blocked.md",
+            Ticket(id="blocked", title="Needs a decision", status="open"),
+            tickets_dir / "blocked.md",
         )
 
         with patch.dict(os.environ, {"KD_CONTEXT": "status-owner"}, clear=True):
-            start_result = runner.invoke(app, ["tk", "start", "kin-blocked"])
-            transition_result = runner.invoke(app, ["tk", "status", "kin-blocked", "blocked"])
+            start_result = runner.invoke(app, ["tk", "start", "blocked"])
+            transition_result = runner.invoke(app, ["tk", "status", "blocked", "blocked"])
             human_result = runner.invoke(app, ["status"])
             json_result = runner.invoke(app, ["status", "--json"])
 
@@ -257,11 +257,11 @@ def test_status_shows_unassigned_ticket_after_leaving_in_progress() -> None:
         assert human_result.exit_code == 0, human_result.output
         assert "1 blocked" in human_result.output
         assert "Unassigned:" in human_result.output
-        assert "kin-blocked [blocked] Needs a decision" in human_result.output
+        assert "blocked [blocked] Needs a decision" in human_result.output
 
         data = json.loads(json_result.output)
         assert data["tickets"]["blocked"] == 1
-        assert data["unassigned"] == ["kin-blocked"]
+        assert data["unassigned"] == ["blocked"]
 
 
 def test_status_ready_count_uses_global_dependency_state() -> None:
@@ -338,7 +338,6 @@ def test_status_json_still_includes_design_breakdown(monkeypatch) -> None:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert "design_status" in data
-        assert "breakdown_status" in data
         assert data["role"] == "king"
         assert data["agent_name"] == ""
         assert data["assignments"] == {}
@@ -354,29 +353,29 @@ def test_status_human_assignments_exclude_closed_tickets() -> None:
         tickets_dir = branch_root(base, feature) / "tickets"
 
         write_ticket(
-            Ticket(id="kin-0001", title="Assigned", status="open", assignee="hand"),
-            tickets_dir / "kin-0001.md",
+            Ticket(id="0001", title="Assigned", status="open", assignee="hand"),
+            tickets_dir / "0001.md",
         )
         write_ticket(
-            Ticket(id="kin-0002", title="Unassigned", status="open"),
-            tickets_dir / "kin-0002.md",
+            Ticket(id="0002", title="Unassigned", status="open"),
+            tickets_dir / "0002.md",
         )
         write_ticket(
-            Ticket(id="kin-0003", title="Active work", status="in_progress", assignee="hand"),
-            tickets_dir / "kin-0003.md",
+            Ticket(id="0003", title="Active work", status="in_progress", assignee="hand"),
+            tickets_dir / "0003.md",
         )
         write_ticket(
-            Ticket(id="kin-0004", title="Historical work", status="closed", assignee="hand"),
-            tickets_dir / "kin-0004.md",
+            Ticket(id="0004", title="Historical work", status="closed", assignee="hand"),
+            tickets_dir / "0004.md",
         )
 
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
         assert "Assignments:" in result.output
-        assert "hand: kin-0001 [open] Assigned" in result.output
-        assert "hand: kin-0003 [in_progress] Active work" in result.output
-        assert "hand: kin-0002" not in result.output
-        assert "kin-0004" not in result.output
+        assert "hand: 0001 [open] Assigned" in result.output
+        assert "hand: 0003 [in_progress] Active work" in result.output
+        assert "hand: 0002" not in result.output
+        assert "0004" not in result.output
 
 
 def test_status_json_assignments_exclude_closed_tickets() -> None:
@@ -389,20 +388,20 @@ def test_status_json_assignments_exclude_closed_tickets() -> None:
         tickets_dir = branch_root(base, feature) / "tickets"
 
         write_ticket(
-            Ticket(id="kin-0001", title="Assigned to hand", status="open", assignee="hand"),
-            tickets_dir / "kin-0001.md",
+            Ticket(id="0001", title="Assigned to hand", status="open", assignee="hand"),
+            tickets_dir / "0001.md",
         )
         write_ticket(
-            Ticket(id="kin-0002", title="Assigned to peasant", status="in_progress", assignee="peasant-kin-0002"),
-            tickets_dir / "kin-0002.md",
+            Ticket(id="0002", title="Assigned to peasant", status="in_progress", assignee="peasant-0002"),
+            tickets_dir / "0002.md",
         )
         write_ticket(
-            Ticket(id="kin-0003", title="Historical hand work", status="closed", assignee="hand"),
-            tickets_dir / "kin-0003.md",
+            Ticket(id="0003", title="Historical hand work", status="closed", assignee="hand"),
+            tickets_dir / "0003.md",
         )
         write_ticket(
-            Ticket(id="kin-0004", title="Historical peasant work", status="closed", assignee="peasant-kin-0002"),
-            tickets_dir / "kin-0004.md",
+            Ticket(id="0004", title="Historical peasant work", status="closed", assignee="peasant-0002"),
+            tickets_dir / "0004.md",
         )
 
         result = runner.invoke(
@@ -415,8 +414,8 @@ def test_status_json_assignments_exclude_closed_tickets() -> None:
 
         assert data["role"] == "hand"
         assert data["agent_name"] == "hand"
-        assert data["assignments"]["hand"] == ["kin-0001"]
-        assert data["assignments"]["peasant-kin-0002"] == ["kin-0002"]
+        assert data["assignments"]["hand"] == ["0001"]
+        assert data["assignments"]["peasant-0002"] == ["0002"]
 
 
 def test_status_json_includes_live_and_stale_execution_contexts() -> None:
@@ -574,47 +573,6 @@ def test_status_json_check_reports_same_readiness_and_failure_details() -> None:
                 ],
             }
         ]
-
-
-def test_status_check_reads_legacy_done_workspace_without_mutating_it() -> None:
-    with runner.isolated_filesystem():
-        base = Path.cwd()
-        feature = "legacy-feature"
-        branch_dir = ensure_branch_layout(base, feature)
-        set_current_run(base, feature)
-        legacy_state = {"branch": feature, "status": "done", "done_at": "2026-01-01T00:00:00+00:00"}
-        write_json(branch_dir / "state.json", legacy_state)
-        write_terminal_tickets(
-            branch_dir / "tickets",
-            [
-                Ticket(id="legacy", title="Legacy completion", status="closed"),
-                Ticket(
-                    id="legacy-dupe",
-                    title="Legacy duplicate",
-                    status="closed",
-                    duplicate_of="legacy",
-                ),
-                Ticket(
-                    id="legacy-old",
-                    title="Legacy superseded",
-                    status="closed",
-                    superseded_by="legacy",
-                ),
-            ],
-        )
-        state_before = (branch_dir / "state.json").read_bytes()
-
-        result = runner.invoke(app, ["status", "--check", "--json"])
-
-        assert result.exit_code == 0, result.output
-        readiness = json.loads(result.output)["readiness"]
-        assert readiness["ready"] is True
-        assert readiness["resolutions"]["completed"] == 1
-        assert readiness["resolutions"]["duplicate"] == 1
-        assert readiness["resolutions"]["superseded"] == 1
-        assert readiness["outcomes"]["duplicate"][0]["reason"] == "Duplicate of legacy"
-        assert readiness["outcomes"]["superseded"][0]["reason"] == "Superseded by legacy"
-        assert (branch_dir / "state.json").read_bytes() == state_before
 
 
 def test_status_check_succeeds_for_active_workspace_with_valid_terminal_tickets() -> None:

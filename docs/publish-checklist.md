@@ -7,7 +7,7 @@ Steps to release a new version of `kingdom-cli`.
 Run checkout commands through `uv run` so release validation cannot accidentally
 exercise a stale installed `kd`.
 
-1. All tests pass: `uv run pytest`
+1. All tests pass: `uv run pytest --run-textual-integration`
 2. Lint clean: `uv run ruff check .`
 3. Documented CLI workflow passes: `bash scripts/smoke.sh`
    This smoke creates an isolated repository and reaches a real
@@ -16,26 +16,23 @@ exercise a stale installed `kd`.
    are closed. `kd done` is not a release step and has no replacement mutation.
 4. Manually inspect the changed human CLI and council-chat TUI surfaces. At
    minimum review root/ticket help, status in human and JSON modes, closure and
-   migration help, and the TUI `/status` output.
-5. Review the [1.0.0 release notes](releases/1.0.0.md). Every pre-cut blocker and
-   dogfood regression must be resolved or explicitly closed with a reason.
-6. For the 1.0.0 cut, verify the public `tk move` command and hidden `add-note`
-   alias are absent. Their 0.6.x warnings promised removal in 1.0.0 and 0.8.0,
-   respectively; retaining either in 1.0.0 breaks the staged-deprecation contract.
-7. Refresh the dated [supported host integration matrix](support-matrix.md):
+   context cleanup help, and the TUI `/status` output.
+5. Write or update `docs/releases/X.Y.Z.md` for the version being released.
+   Record behavior changes, upgrade boundaries, and validation evidence.
+6. Refresh the dated [supported host integration matrix](support-matrix.md):
    - capture `claude --version`, `codex --version`, and
      `cursor-agent --version` without starting interactive sessions;
    - use `cursor --version` only when recording desktop-specific evidence;
    - run `uv run pytest tests/test_host_integration_matrix.py`;
    - label fixture/CLI evidence Contract and reserve Live for real host checks;
    - preserve the documented Cursor limits instead of assuming host parity.
-8. Bump the version in `pyproject.toml` and update all version references.
-9. Close the final release ticket and epic, then run
+7. Bump the version in `pyproject.toml` and refresh `uv.lock` with `uv lock`.
+8. Close the final release ticket and epic, then run
    `uv run kd status --check`. Any open ticket or invalid closure evidence means
    the release is not ready. The check is read-only; ticket closure,
    `status --prune-stale`, and peasant lifecycle commands own their respective
    cleanup.
-10. Commit: `git commit -m "Bump version to X.Y.Z"`
+9. Commit: `git commit -m "Bump version to X.Y.Z"`
 
 ## Build & Validate
 

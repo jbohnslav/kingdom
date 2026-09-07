@@ -2,7 +2,7 @@
 
 Verified: 2026-08-21
 
-Kingdom: 1.0.0
+Kingdom at verification: 1.0.0
 
 Baseline commit: `a9120675c2cadcd62c9117f8e2cc329f48cdd7d9`
 
@@ -40,7 +40,7 @@ broader lifecycle surface. Cloud agents also omit `sessionStart` and
 Kingdom accepts from each host. `tests/test_host_integration_matrix.py` keeps
 those fixture sets aligned with the configured Claude and Codex hooks and the
 limited Cursor adapter, proves same-branch host sessions retain separate current
-tickets, and locks this document's dated/versioned contract.
+tickets, without treating the historical host versions above as current requirements.
 
 The shared lifecycle, hook, plugin, skill-update, and execution-context tests add
 the detailed behavior behind each Contract cell. Live host checks are a release

@@ -22,8 +22,8 @@ This gives you a practical path from current code to parallel peasants and itera
 
 Local Kingdom docs and code:
 
-- `docs/cli-skill-architecture.md`
-- `docs/council-design.md`
+- `docs/archive/cli-skill-architecture.md`
+- `docs/archive/council-design.md`
 - `docs/third_party/gastown.md`
 - `docs/third_party/beads.md`
 - `docs/third_party/ralph.md`

@@ -28,9 +28,6 @@ from kingdom.thread import (
     add_message,
     format_thread_history,
     get_thread,
-    is_error_response,
-    is_interrupted_response,
-    is_timeout_response,
     list_messages,
     thread_dir,
 )
@@ -642,6 +639,7 @@ class ChatApp(App):
                         error_panel = ErrorPanel(
                             sender=member.name,
                             error="*Interrupted*",
+                            interrupted=True,
                             id=f"interrupted-{member.name}",
                         )
                         log.mount(error_panel, before=panel)
@@ -663,18 +661,14 @@ class ChatApp(App):
         log = self.query_one("#message-log", MessageLog)
 
         for msg in messages:
-            # Prefer msg.status metadata; fall back to body-prefix sniffing for legacy messages
-            has_error = (
-                msg.status in ("error", "timeout", "interrupted")
-                if msg.status
-                else (is_error_response(msg.body) or is_interrupted_response(msg.body))
-            )
+            has_error = msg.status in ("error", "timeout", "interrupted")
             if msg.from_ != "king" and has_error:
-                timed_out = msg.status == "timeout" if msg.status else is_timeout_response(msg.body)
+                timed_out = msg.status == "timeout"
                 panel = ErrorPanel(
                     sender=msg.from_,
                     error=msg.body,
                     timed_out=timed_out,
+                    interrupted=msg.status == "interrupted",
                     id=f"msg-{msg.sequence}",
                 )
             else:
@@ -1015,6 +1009,9 @@ class ChatApp(App):
                 body = response.thread_body()
 
             # Always persist response to thread files (source of truth)
+            metadata = response.thread_metadata()
+            if self.interrupted:
+                metadata["status"] = "interrupted"
             add_message(
                 self.base,
                 self.branch,
@@ -1023,7 +1020,7 @@ class ChatApp(App):
                 to="king",
                 body=body,
                 delivery_id=self.active_delivery_id,
-                **response.thread_metadata(),
+                **metadata,
             )
             persisted = True
 
@@ -1235,12 +1232,6 @@ class ChatApp(App):
                 body = await self.run_query(member, stream_path, generation=generation)
                 if body and queue:
                     queue = mention_bump(body, queue, self.member_names)
-
-    def remove_member_panels(self, log: MessageLog, name: str) -> None:
-        """Remove any existing wait/stream/thinking/interrupted panels for a member."""
-        for prefix in ("wait", "stream", "thinking", "interrupted"):
-            for panel in list(log.query(f"#{prefix}-{name}")):
-                panel.remove()
 
     async def await_remove_member_panels(self, log: MessageLog, name: str) -> None:
         """Remove member panels and wait for DOM to update (for async callers)."""
@@ -1471,20 +1462,14 @@ class ChatApp(App):
             if self.thinking_visibility == "auto":
                 new_panel.collapse()
 
-        # Detect error/interrupted responses from thread message body
-        if event.sender != "king" and is_error_response(event.body):
-            timed_out = is_timeout_response(event.body)
+        # Render errors from explicit persisted status
+        if event.sender != "king" and event.status in ("error", "timeout", "interrupted"):
+            timed_out = event.status == "timeout"
             panel = ErrorPanel(
                 sender=event.sender,
                 error=event.body,
                 timed_out=timed_out,
-                id=f"msg-{event.sequence}",
-            )
-        elif event.sender != "king" and is_interrupted_response(event.body):
-            panel = ErrorPanel(
-                sender=event.sender,
-                error=event.body,
-                timed_out=False,
+                interrupted=event.status == "interrupted",
                 id=f"msg-{event.sequence}",
             )
         else:

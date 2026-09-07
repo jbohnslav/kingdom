@@ -22,7 +22,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from kingdom.council import create_council
 from kingdom.session import get_current_thread, set_current_thread
-from kingdom.state import council_logs_root, logs_root, read_json, resolve_current_run
+from kingdom.state import logs_root, resolve_current_run
 
 from .display import error_console, print_error
 from .helpers import require_project_root, verbose_echo
@@ -213,23 +213,6 @@ def topic_for_thread(base: Path, feature: str, thread_id: str) -> str:
         messages = list_messages(base, feature, thread_id)
     except FileNotFoundError:
         return ""
-    for msg in messages:
-        if msg.from_ == "king":
-            first_line = msg.body.strip().split("\n", 1)[0]
-            if len(first_line) > 60:
-                return first_line[:60] + "..."
-            return first_line
-    return ""
-
-
-def topic_for_location(base: Path, loc: ThreadLocation) -> str:
-    """Return the topic for a ThreadLocation."""
-    from kingdom.thread import list_messages_from_dir, thread_dir_for_location
-
-    tdir = thread_dir_for_location(base, loc)
-    if not tdir.exists():
-        return ""
-    messages = list_messages_from_dir(tdir)
     for msg in messages:
         if msg.from_ == "king":
             first_line = msg.body.strip().split("\n", 1)[0]
@@ -695,41 +678,6 @@ def print_turn(console: Console, turn_msgs: list, turn_number: int, total_turns:
         console.print()
 
 
-def show_legacy_run(base: Path, feature: str, thread_id: str, console: Console) -> None:
-    """Display a legacy run-bundle from logs/council/."""
-    council_logs_dir = council_logs_root(base, feature)
-    run_dir = council_logs_dir / thread_id
-    if not run_dir.exists():
-        # Try 'last' alias
-        if thread_id == "last":
-            if not council_logs_dir.exists():
-                print_error('No council history found. Start a conversation with `kd council ask "prompt"`.')
-                raise typer.Exit(code=1)
-            runs = [d for d in council_logs_dir.iterdir() if d.is_dir() and d.name.startswith("run-")]
-            if not runs:
-                print_error('No council history found. Start a conversation with `kd council ask "prompt"`.')
-                raise typer.Exit(code=1)
-            run_dir = max(runs, key=lambda d: d.stat().st_mtime)
-        else:
-            print_error(f"Legacy run not found: {thread_id}")
-            raise typer.Exit(code=1)
-
-    metadata_path = run_dir / "metadata.json"
-    if metadata_path.exists():
-        metadata = read_json(metadata_path)
-        typer.echo(f"Session: {run_dir.name}")
-        typer.echo(f"Timestamp: {metadata.get('timestamp', 'unknown')}")
-        prompt_text = metadata.get("prompt", "unknown")
-        typer.echo(f"Prompt: {prompt_text[:100]}...")
-        typer.echo()
-
-    for md_file in sorted(run_dir.glob("*.md")):
-        content = md_file.read_text(encoding="utf-8")
-        console.print(Markdown(f"## {md_file.stem}\n\n{content}"))
-
-    console.print(f"\n[dim]Archived session: {run_dir}[/dim]")
-
-
 @council_app.command("show", help="Display a council thread.")
 def council_show(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID.")] = None,
@@ -742,11 +690,6 @@ def council_show(
     base = require_project_root()
     feature = resolve_current_run(base)
     console = Console()
-
-    # Legacy run-bundle support: "last" alias and "run-*" IDs bypass thread resolution
-    if thread_id is not None and (thread_id == "last" or thread_id.startswith("run-")):
-        show_legacy_run(base, feature, thread_id, console)
-        return
 
     # Resolve via archive-aware location lookup
     loc = resolve_council_thread_location(base, feature, thread_id, command="show")
@@ -805,6 +748,7 @@ def council_show(
 
 
 @council_app.command("list", help="List all council threads.")
+@council_app.command("ls", hidden=True)
 def council_list(
     show_all: Annotated[bool, typer.Option("--all", help="Show threads from all branches including archived.")] = False,
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
@@ -980,15 +924,6 @@ def council_list(
         console.print(f"[dim]{' '.join(legend_parts)}[/dim]")
 
 
-@council_app.command("ls", hidden=True)
-def council_ls(
-    show_all: Annotated[bool, typer.Option("--all", help="Show threads from all branches including archived.")] = False,
-    output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
-) -> None:
-    """Alias for 'council list'."""
-    council_list(show_all=show_all, output_json=output_json)
-
-
 @council_app.command("status", help="Show response status for council threads.")
 def council_status(
     thread_id: Annotated[str | None, typer.Argument(help="Thread ID (defaults to current/most recent).")] = None,
@@ -1090,17 +1025,12 @@ def print_thread_status(status: ThreadStatus, base: Path, feature: str, verbose:
     }
 
     for name in sorted(status.expected):
-        ms = status.member_states.get(name)
-        if ms:
-            styled = STATE_STYLES.get(ms.state, ms.state)
-            line = f"  {name}: {styled}"
-            if verbose and ms.error:
-                # Show truncated error detail
-                err_preview = ms.error.replace("\n", " ")[:80]
-                line += f"  [dim]{err_preview}[/dim]"
-        else:
-            # Fallback for missing member_states (backward compat)
-            line = f"  {name}: {'responded' if name in status.responded else 'pending'}"
+        ms = status.member_states[name]
+        styled = STATE_STYLES.get(ms.state, ms.state)
+        line = f"  {name}: {styled}"
+        if verbose and ms.error:
+            err_preview = ms.error.replace("\n", " ")[:80]
+            line += f"  [dim]{err_preview}[/dim]"
 
         if verbose:
             log_file = logs_root(base, feature) / f"council-{name}.log"
@@ -1310,7 +1240,7 @@ def council_retry(
 
     Uses the original prompt from the most recent king message in the thread.
     """
-    from kingdom.thread import get_thread, is_error_response, list_messages
+    from kingdom.thread import MEMBER_RESPONDED, get_thread, list_messages, thread_response_status
 
     base = require_project_root()
     feature = resolve_current_run(base)
@@ -1341,18 +1271,8 @@ def council_retry(
         # Single or comma-separated targets
         expected = {t.strip() for t in last_king_msg.to.split(",") if t.strip() != "king"} & all_members
 
-    # Find members that responded successfully after the last ask.
-    # Check msg.status first (new metadata), fall back to body prefix for legacy messages.
-    ok_members: set[str] = set()
-    for msg in messages:
-        if msg.sequence > last_king_msg.sequence and msg.from_ in expected:
-            if msg.status:
-                if msg.status == "complete":
-                    ok_members.add(msg.from_)
-            elif not is_error_response(msg.body):
-                ok_members.add(msg.from_)
-
-    failed = expected - ok_members
+    status = thread_response_status(base, feature, thread_id)
+    failed = {name for name in expected if status.member_states[name].state != MEMBER_RESPONDED}
     if not failed:
         typer.echo("All members responded successfully. Nothing to retry.")
         return
@@ -1413,14 +1333,6 @@ def query_with_progress(council, prompt, json_output, console):
     return responses
 
 
-def display_rich_panels(responses, thread_id, console):
-    """Display responses as Rich panels with Markdown."""
-    for name in sorted(responses.keys()):
-        render_response(responses[name], console)
-
-    console.print(f"[dim]Thread: {thread_id}[/dim]")
-
-
 # ---------------------------------------------------------------------------
 # kd council chat — TUI council chat
 # ---------------------------------------------------------------------------
@@ -1452,12 +1364,11 @@ def council_chat(
 
     Creates a new thread by default, or opens an existing one by ID.
     """
-    import kingdom.cli as _cli
     from kingdom.config import load_config
     from kingdom.thread import create_thread
 
     base = require_project_root()
-    feature = _cli.resolve_current_run(base)
+    feature = resolve_current_run(base)
     cfg = load_config(base)
 
     if thread_id:

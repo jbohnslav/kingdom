@@ -103,12 +103,7 @@ def config_show() -> None:
                         return True
             return False
 
-        if walk(dotted_key, raw):
-            return True
-        if dotted_key.endswith(".effort"):
-            legacy_key = f"{dotted_key.rsplit('.', 1)[0]}.reasoning_effort"
-            return walk(legacy_key, raw)
-        return False
+        return walk(dotted_key, raw)
 
     effective = dataclasses.asdict(cfg)
     entries = flatten(effective)
@@ -125,22 +120,6 @@ def config_show() -> None:
         source = "config" if is_in_raw(key) else "default"
         color = typer.colors.CYAN if source == "config" else None
         styled_echo(f"  {key:<{key_width}}  {value!s}  ({source})", fg=color)
-
-
-def check_cli(command: list[str]) -> tuple[bool, str | None]:
-    """Check if a CLI command is available."""
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
-    except FileNotFoundError:
-        return (False, "Command not found")
-    except subprocess.TimeoutExpired:
-        return (False, "Command timed out")
-    except OSError as exc:
-        return (False, f"Could not run command: {exc}")
-    if result.returncode != 0:
-        error = result.stderr.strip() or result.stdout.strip() or f"Command exited with status {result.returncode}"
-        return (False, error)
-    return (True, None)
 
 
 def authentication_succeeded(backend: str, stdout: str) -> bool | None:
