@@ -5,23 +5,20 @@ Tickets track units of work within a branch. They live in `.kd/branches/<branch>
 ## Resolve Context Before Creating
 
 The goal is one accurate ticket per unit of work, not one new ticket per user
-message. Discover context once for a new request, after changing branches, or
-when ownership may have changed. Reuse known context during ongoing work; skip
-rediscovery for routine follow-ups on an already-resolved ticket. When discovery
-is needed, identify the active context and scan current, recent, backlog,
-archived, parent, and related work:
+message. Continue on the known ticket for routine follow-ups, using the last
+ticket started in this terminal when available. Update or log it directly;
+do not run orientation commands or reread its contents to reconfirm known context.
 
-```bash
-kd status
-kd tk current
-kd tk list
-kd tk list --recently-closed --limit 10
-kd tk show <related-id>
-```
+When context is missing or there is concrete evidence it changed, choose only
+the lookup needed: `kd status` for the workspace, `kd tk current` for the owning
+ticket, `kd tk list` to select work, or `kd tk show <id>` for unread details.
+Use `kd tk list --recently-closed --limit 10` only when looking for completed
+work. These are alternatives for different questions, not a startup checklist.
 
-Use the host's file search across `.kd/**/tickets/*.md` when title scans are not
-enough. If the request already belongs to a ticket, update that ticket. Create a
-small new ticket only when the request is genuinely separate.
+Search `.kd/**/tickets/*.md` for relevant active, backlog, archived, parent, or
+related work when needed to avoid a duplicate. Stop once ownership is resolved.
+If the request already belongs to a ticket, update that ticket. Create a small
+new ticket only when the request is genuinely separate.
 
 ## Ticket States
 

@@ -24,23 +24,29 @@ repository—including Python/uv projects—use the installed `kd` command direc
 The reflex is not "always create." It is: **make sure the request is represented
 exactly once, then keep that ticket current.**
 
-### 1. Resolve context and search first
+### 1. Reuse known context; discover only what is missing
 
-Run the context-discovery commands once when beginning a new request, after
-changing branches, or when ticket ownership may have changed. Do not repeat
-them for routine follow-ups on an already-resolved ticket. Reuse known context
-during ongoing work and keep its ticket current.
+On a follow-up, continue with the branch and owning ticket already established
+in this conversation. Prefer the last ticket started in this terminal with
+`kd tk start`. A new user message is not a new session or a reason to rediscover
+context. Update or log the known ticket directly; do not first run `kd status`,
+`kd tk current`, ticket lists, or `kd tk show` just to reconfirm it.
 
-```bash
-kd status
-kd tk current
-kd tk list
-kd tk list --recently-closed --limit 10
-```
+Discover context only at session entry when it is unknown, after a branch or
+workspace switch, when selecting separate work, or when concrete evidence
+suggests ownership or ticket state changed. Use the smallest lookup that answers
+the missing question, not a fixed command sequence:
 
-Search active, backlog, archived, parent, and related ticket titles/content with
-`kd tk show <id>` and the host's file-search tools. This is context discovery,
-not implementation exploration. Stop as soon as you can answer:
+- Unknown branch/workspace: `kd status`.
+- Unknown owning ticket: `kd tk current`. If no ticket is bound, use known
+  conversation context or a targeted ticket search; do not keep retrying it.
+- Need to select work: `kd tk list` or a targeted file search.
+- Need to find recently completed work: `kd tk list --recently-closed --limit 10`.
+- Need unread ticket details or changed dependency state: `kd tk show <id>`.
+
+Search backlog, archived, parent, and related work only when relevant to the
+request. Do not reread a ticket whose relevant contents are already in context.
+Stop discovery as soon as you can answer:
 
 - Which branch, epic, and ticket owns this request?
 - Is the request already represented by active or recent work?
