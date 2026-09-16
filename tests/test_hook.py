@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from kingdom.cli import app
@@ -257,7 +258,7 @@ class TestCursorHookAdapter:
             )
         )
 
-        assert "KINGDOM WORKFLOW" in output["additional_context"]
+        assert "Kingdom:" in output["additional_context"]
         assert output["env"] == {"KD_CONTEXT": "cursor-parent", "KD_HOST": "cursor"}
         assert "hookSpecificOutput" not in output
 
@@ -394,7 +395,7 @@ class TestCursorHookAdapter:
         resumed = next(item for item in list_execution_contexts(tmp_path) if item["context_id"] == context.context_id)
         assert resumed["active"] is True
 
-    def test_stop_uses_exact_cursor_binding_and_followup_schema(self, tmp_path: Path) -> None:
+    def test_cursor_stop_does_not_force_a_followup(self, tmp_path: Path) -> None:
         self.setup_binding(tmp_path)
         handle_user_prompt_submit(
             HostEvent(host=Host.CURSOR, kind=EventKind.PROMPT_SUBMIT, session_id="cursor-parent", cwd=tmp_path)
@@ -409,12 +410,9 @@ class TestCursorHookAdapter:
             )
         )
 
-        output = json.loads(
-            handle_stop(HostEvent(host=Host.CURSOR, kind=EventKind.STOP, session_id="cursor-parent", cwd=tmp_path))
-        )
+        output = handle_stop(HostEvent(host=Host.CURSOR, kind=EventKind.STOP, session_id="cursor-parent", cwd=tmp_path))
 
-        assert "kd tk log cafe" in output["followup_message"]
-        assert "decision" not in output
+        assert output == ""
 
 
 class TestTicketCheckpoints:
@@ -667,10 +665,9 @@ class TestSessionStart:
         parsed = json.loads(output)
         hso = parsed["hookSpecificOutput"]
         assert hso["hookEventName"] == "SessionStart"
-        assert "KINGDOM WORKFLOW" in hso["additionalContext"]
-        assert "TICKET FIRST" in hso["additionalContext"]
-        assert "LOG PROACTIVELY" in hso["additionalContext"]
-        assert "kd tk defer" in hso["additionalContext"]
+        assert "Kingdom:" in hso["additionalContext"]
+        assert "owning ticket" in hso["additionalContext"]
+        assert "Markdown" in hso["additionalContext"]
         assert "kd tk move" not in hso["additionalContext"]
 
     def test_emits_on_resume(self) -> None:
@@ -684,7 +681,7 @@ class TestSessionStart:
             )
         )
         parsed = json.loads(output)
-        assert "KINGDOM WORKFLOW" in parsed["hookSpecificOutput"]["additionalContext"]
+        assert "Kingdom:" in parsed["hookSpecificOutput"]["additionalContext"]
 
 
 # ---------------------------------------------------------------------------
@@ -701,8 +698,8 @@ class TestUserPromptSubmit:
         hso = parsed["hookSpecificOutput"]
         assert hso["hookEventName"] == "UserPromptSubmit"
         assert "Kingdom:" in hso["additionalContext"]
-        assert "kd tk create" in hso["additionalContext"]
-        assert "kd tk defer" in hso["additionalContext"]
+        assert "owning ticket" in hso["additionalContext"]
+        assert "Markdown body" in hso["additionalContext"]
         assert "kd tk move" not in hso["additionalContext"]
 
     def test_creates_state_file(self, tmp_path: Path) -> None:
@@ -711,7 +708,7 @@ class TestUserPromptSubmit:
         )
         sf = state_file_for(str(tmp_path), "sess-1")
         state = json.loads(sf.read_text())
-        assert state == {"had_work": False, "did_log": False, "stop_blocked": False}
+        assert state == {"had_work": False, "did_log": False, "stop_reminded": False}
 
     def test_resets_state(self, tmp_path: Path) -> None:
         handle_user_prompt_submit(
@@ -728,7 +725,7 @@ class TestUserPromptSubmit:
         handle_user_prompt_submit(
             HostEvent(host=Host.CLAUDE, kind=EventKind.PROMPT_SUBMIT, session_id="sess-1", cwd=tmp_path)
         )
-        assert json.loads(sf.read_text()) == {"had_work": False, "did_log": False, "stop_blocked": False}
+        assert json.loads(sf.read_text()) == {"had_work": False, "did_log": False, "stop_reminded": False}
 
 
 # ---------------------------------------------------------------------------
@@ -939,14 +936,27 @@ class TestStopHandler:
         set_current_run(tmp_path, "branch-a")
         self.bind_ticket(tmp_path, ticket_id, session_id=session_id)
 
-    def test_blocks_when_had_work_no_log(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("host", [Host.CLAUDE, Host.CODEX])
+    def test_stop_reminder_never_blocks_or_requests_continuation(self, tmp_path: Path, host: Host) -> None:
+        handle_user_prompt_submit(HostEvent(host=host, kind=EventKind.PROMPT_SUBMIT, session_id="sess-1", cwd=tmp_path))
+        handle_post_tool_use(
+            HostEvent(host=host, kind=EventKind.POST_TOOL_USE, session_id="sess-1", cwd=tmp_path, tool_name="Edit")
+        )
+        with patch("kingdom.cli.hook.find_stop_ticket_id", return_value="0042"):
+            output = handle_stop(HostEvent(host=host, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
+        result = json.loads(output)
+        assert set(result) == {"systemMessage"}
+        assert "0042" in result["systemMessage"]
+        assert "kd tk log" not in result["systemMessage"]
+
+    def test_reminds_when_had_work_no_ticket_update(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_bound_ticket(tmp_path, "0042")
         output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         result = json.loads(output)
-        assert result["decision"] == "block"
-        assert "kd tk log 0042" in result["reason"]
+        assert set(result) == {"systemMessage"}
+        assert "ticket 0042" in result["systemMessage"]
 
     def test_ticket_markdown_only_edit_does_not_block(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
@@ -981,7 +991,7 @@ class TestStopHandler:
         output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         result = json.loads(output)
-        assert "kd tk log 7e15" in result["reason"]
+        assert "ticket 7e15" in result["systemMessage"]
 
     def test_reads_execution_ticket_context_from_kd_base(self, tmp_path: Path) -> None:
         kingdom_base = tmp_path / "main"
@@ -1004,7 +1014,7 @@ class TestStopHandler:
             output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=worktree))
 
         result = json.loads(output)
-        assert "kd tk log 7e15" in result["reason"]
+        assert "ticket 7e15" in result["systemMessage"]
 
     def test_resolves_started_backlog_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
@@ -1024,7 +1034,7 @@ class TestStopHandler:
         output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         result = json.loads(output)
-        assert "kd tk log 7e15" in result["reason"]
+        assert "ticket 7e15" in result["systemMessage"]
 
     def test_resolves_started_archived_branch_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
@@ -1044,7 +1054,7 @@ class TestStopHandler:
         output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
         result = json.loads(output)
-        assert "kd tk log 7e15" in result["reason"]
+        assert "ticket 7e15" in result["systemMessage"]
 
     def test_ignores_closed_execution_ticket_context(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
@@ -1092,8 +1102,8 @@ class TestStopHandler:
         set_current_run(tmp_path, "branch-b")
         output_b = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-b", cwd=tmp_path))
 
-        assert "kd tk log aaaa" in json.loads(output_a)["reason"]
-        assert "kd tk log bbbb" in json.loads(output_b)["reason"]
+        assert "ticket aaaa" in json.loads(output_a)["systemMessage"]
+        assert "ticket bbbb" in json.loads(output_b)["systemMessage"]
 
     def test_allows_when_did_log(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
@@ -1128,24 +1138,24 @@ class TestStopHandler:
         output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         assert output == ""
 
-    def test_active_ticket_blocks_with_real_id(self, tmp_path: Path) -> None:
+    def test_active_ticket_reminder_uses_real_id(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_bound_ticket(tmp_path, "a1b2")
         output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         result = json.loads(output)
-        assert result["decision"] == "block"
-        assert "kd tk log a1b2" in result["reason"]
-        assert "<" not in result["reason"]
+        assert set(result) == {"systemMessage"}
+        assert "ticket a1b2" in result["systemMessage"]
+        assert "<" not in result["systemMessage"]
 
-    def test_mid_turn_ticket_accept_enforces_at_stop(self, tmp_path: Path) -> None:
+    def test_mid_turn_ticket_accept_reminds_at_stop(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
         self.do_work(tmp_path)
         self.create_bound_ticket(tmp_path, "0240")
         output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         result = json.loads(output)
-        assert result["decision"] == "block"
-        assert "kd tk log 0240" in result["reason"]
+        assert set(result) == {"systemMessage"}
+        assert "ticket 0240" in result["systemMessage"]
 
     def test_second_stop_same_turn_does_not_loop(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path)
@@ -1155,7 +1165,7 @@ class TestStopHandler:
         first_output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
         second_output = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-1", cwd=tmp_path))
 
-        assert json.loads(first_output)["decision"] == "block"
+        assert set(json.loads(first_output)) == {"systemMessage"}
         assert second_output == ""
 
     # --- Multi-agent isolation ---
@@ -1164,14 +1174,14 @@ class TestStopHandler:
         self.setup_session(tmp_path, session_id="sess-a")
         self.setup_session(tmp_path, session_id="sess-b")
         self.do_work(tmp_path, session_id="sess-a")
-        # Session B's Stop should not block.
+        # Session B should receive no reminder.
         output_b = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-b", cwd=tmp_path))
         assert output_b == ""
-        # Session A's Stop should block.
+        # Session A should receive an advisory reminder.
         self.create_bound_ticket(tmp_path, "0099", session_id="sess-a")
         output_a = handle_stop(HostEvent(host=Host.CLAUDE, kind=EventKind.STOP, session_id="sess-a", cwd=tmp_path))
         result = json.loads(output_a)
-        assert result["decision"] == "block"
+        assert set(result) == {"systemMessage"}
 
     def test_sessions_have_independent_state(self, tmp_path: Path) -> None:
         self.setup_session(tmp_path, session_id="sess-a")
@@ -1193,8 +1203,8 @@ class TestStopHandler:
         )
         sf_a = state_file_for(str(tmp_path), "sess-a")
         sf_b = state_file_for(str(tmp_path), "sess-b")
-        assert json.loads(sf_a.read_text()) == {"had_work": True, "did_log": False, "stop_blocked": False}
-        assert json.loads(sf_b.read_text()) == {"had_work": False, "did_log": True, "stop_blocked": False}
+        assert json.loads(sf_a.read_text()) == {"had_work": True, "did_log": False, "stop_reminded": False}
+        assert json.loads(sf_b.read_text()) == {"had_work": False, "did_log": True, "stop_reminded": False}
 
     def test_same_session_identifier_is_isolated_between_hosts(self, tmp_path: Path) -> None:
         for host in (Host.CLAUDE, Host.CODEX, Host.CURSOR):
@@ -1277,7 +1287,7 @@ class TestHookRunCLI:
         )
         assert result.exit_code == 0
         parsed = json.loads(result.output.strip())
-        assert "KINGDOM WORKFLOW" in parsed["hookSpecificOutput"]["additionalContext"]
+        assert "Kingdom:" in parsed["hookSpecificOutput"]["additionalContext"]
 
     def test_user_prompt_submit_via_cli(self, tmp_path: Path) -> None:
         result = runner.invoke(
@@ -1304,7 +1314,7 @@ class TestHookRunCLI:
             )
         assert result.exit_code == 0, result.output
         state = json.loads(state_file_for(str(tmp_path), "sess-1").read_text())
-        assert state == {"had_work": False, "did_log": False, "stop_blocked": False}
+        assert state == {"had_work": False, "did_log": False, "stop_reminded": False}
 
     def test_unknown_event_silent(self) -> None:
         result = runner.invoke(app, ["hook", "run"], input='{"hook_event_name": "Notification"}')

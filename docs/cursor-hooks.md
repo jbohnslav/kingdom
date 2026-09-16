@@ -41,7 +41,7 @@ parent ticket. Cursor responses use Cursor's own schemas:
 | `preCompact` | Requests an exact-ticket checkpoint through `user_message`. |
 | `subagentStart` | Records the stable child/parent relationship and allows creation. |
 | `postToolUse` | Observes content-free worklog signals. |
-| `stop` | Uses `followup_message` once when meaningful work was not logged. |
+| `stop` | Emits no follow-up: Cursor messages auto-continue the agent and cannot serve as nonblocking reminders. |
 | `sessionEnd` | Records checkpoint state, but emits no message because responses are ignored. |
 
 The `sessionStart` environment is useful to later hooks. Cursor's documentation
