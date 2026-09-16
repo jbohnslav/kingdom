@@ -5,23 +5,20 @@ Tickets track units of work within a branch. They live in `.kd/branches/<branch>
 ## Resolve Context Before Creating
 
 The goal is one accurate ticket per unit of work, not one new ticket per user
-message. Discover context once for a new request, after changing branches, or
-when ownership may have changed. Reuse known context during ongoing work; skip
-rediscovery for routine follow-ups on an already-resolved ticket. When discovery
-is needed, identify the active context and scan current, recent, backlog,
-archived, parent, and related work:
+message. Continue on the known ticket for routine follow-ups, using the last
+ticket started in this terminal when available. Update or log it directly;
+do not run orientation commands or reread its contents to reconfirm known context.
 
-```bash
-kd status
-kd tk current
-kd tk list
-kd tk list --recently-closed --limit 10
-kd tk show <related-id>
-```
+When context is missing or there is concrete evidence it changed, choose only
+the lookup needed: `kd status` for the workspace, `kd tk current` for the owning
+ticket, `kd tk list` to select work, or `kd tk show <id>` for unread details.
+Use `kd tk list --recently-closed --limit 10` only when looking for completed
+work. These are alternatives for different questions, not a startup checklist.
 
-Use the host's file search across `.kd/**/tickets/*.md` when title scans are not
-enough. If the request already belongs to a ticket, update that ticket. Create a
-small new ticket only when the request is genuinely separate.
+Search `.kd/**/tickets/*.md` for relevant active, backlog, archived, parent, or
+related work when needed to avoid a duplicate. Stop once ownership is resolved.
+If the request already belongs to a ticket, update that ticket. Create a small
+new ticket only when the request is genuinely separate.
 
 ## Ticket States
 
@@ -117,35 +114,60 @@ relocation; stale bindings are
 cleared after a move. Ambiguous IDs and destination collisions fail without
 moving the ticket.
 
-## Best Practices
+## Editing the Working Document
 
-- **Commit `.kd/` changes as you go** — ticket state changes, closures, pulls, and deferrals are tracked in git
-- **Use dependencies** to enforce ordering when tickets have prerequisites
-- **Edit ticket Markdown directly** for body text, acceptance criteria, scope changes, and rich worklog entries
-- **Use inline `kd tk log` only for short plain-text-only notes**; send command-rich or multiline notes through stdin or direct Markdown editing so the shell cannot expand them
-- **Append a work log** to the ticket body when closing — record key decisions and what was done
-- **Use `kd tk list --ready`** to find the next unblocked ticket rather than picking arbitrarily
-- **Use `kd tk list --recently-closed --limit 10`** when reviewing recently completed work
+Edit the ticket file directly for current purpose, scope, acceptance criteria,
+plan, consolidated findings, and open questions. Find its path with
+`kd tk find <id>` when it is not already known. Replace stale text rather than
+adding corrections below it. Use sections that suit the task; no fixed template
+is required beyond the ticket's structured frontmatter.
 
-## Durable Ticket Updates
+For example, when investigation changes the root-cause diagnosis, replace the
+old diagnosis and revise the plan and affected acceptance criteria together.
+Keep the rejected explanation in history only if it helps future work. Integrate
+useful delegated findings into these sections as well.
 
-Use lifecycle commands for status and movement. Edit Markdown directly for the
-ticket's meaning:
+Use lifecycle commands for status, assignment, movement, and structured
+relationships. Their validation and context-binding side effects are not
+reproduced by editing YAML fields. Commit `.kd/` changes with the work they explain.
 
-- requirements, scope, and acceptance criteria
-- parent, dependency, and related-work context
-- decisions and their rationale
-- root causes and rejected leads
-- verification commands and results
-- blockers, handoffs, and remaining concerns
+## Worklog History and Evidence
 
-Append durable discoveries to `## Worklog` before continuing. A useful entry
-states what changed, why it matters, the evidence, and any affected work. Keep
-requirements in the ticket body rather than burying them in timeline notes.
+The worklog preserves useful history: decision rationale, significant rejected
+approaches, verification results, blockers, and handoffs. It is not a transcript
+of every turn or a second copy of the current plan. Before closure, ensure the
+body reflects the result and the ticket contains the evidence required by the
+repository's verification policy.
 
-The owning session must synthesize native-subagent results into these durable
-sections. Automatic hook handoffs and chat responses are useful inputs, but they
-do not replace ownership of the ticket's final state.
+Edit the worklog directly or append with `kd tk log`. For short plain text:
+
+```bash
+kd tk log <id> "Rejected polling because the provider already emits events."
+```
+
+For multiline notes or text with shell metacharacters, use a quoted heredoc so
+backticks, dollar signs, and command substitutions remain literal:
+
+```bash
+kd tk log <id> <<'WORKLOG'
+Verified `uv run pytest`; all tests passed.
+WORKLOG
+```
+
+## Workspace and Readiness
+
+`kd start` initializes or selects the current branch's workspace. For a larger
+feature, an epic and child tickets can express distinct deliverables; use
+`kd tk create --type epic` and `kd tk create --parent <id>` when useful. Planning
+documents and council consultation are optional tools for resolving ambiguity.
+
+`kd status --check` validates terminal ticket resolutions without changing state.
+Run it before creating or merging a PR, after completing the workspace's work.
+Ticket closure clears active bindings; `kd status --prune-stale` handles stale
+execution contexts, while peasant cleanup commands own their worker resources.
+
+For older workflows, `kd status --check` replaces `kd done` as the readiness
+gate, and idempotent `kd start <branch>` replaces `kd switch <branch>`.
 
 ## Recovery
 

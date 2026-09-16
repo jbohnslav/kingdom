@@ -49,22 +49,15 @@ hook_app = typer.Typer(name="hook", help="Agent-host hook handlers (internal).")
 # ---------------------------------------------------------------------------
 
 SESSION_START_BRIEF = (
-    "KINGDOM WORKFLOW: You are working in a project managed by the kd CLI."
-    " Before coding or research, ensure work is tracked with a ticket.\n"
-    " 1. TICKET FIRST — King says something? Ask yourself: does this need a"
-    " ticket? Bug, idea, complaint, scope change → kd tk create immediately.\n"
-    " 2. LOG PROACTIVELY — Decision made, root cause found, scope changed,"
-    " work completed → kd tk log. The King should never have to ask.\n"
-    " 3. DEFER vs CREATE — Existing work is not for now → kd tk defer --reason."
-    " New problem noticed → kd tk create --backlog."
+    "Kingdom: track meaningful work in .kd tickets and keep the owning ticket accurate."
+    " Rewrite its Markdown as understanding changes; use the worklog for history and evidence."
+    " Use kd commands for lifecycle changes. See the kingdom skill for guidance."
 )
 
 USER_PROMPT_REMINDER = (
-    "Kingdom: keep the ticket accurate (body/AC/status/worklog)."
-    " Prefer the last ticket started in this terminal with `kd tk start` when logging."
-    " Requirement or acceptance-criteria change -> edit ticket markdown now."
-    " Work/findings -> kd tk log. Existing work not for now -> kd tk defer --reason."
-    " New bug/scope -> kd tk create --backlog."
+    "Kingdom: if durable understanding or state changed, update the owning ticket."
+    " Current truth belongs in the Markdown body; history and evidence belong in the worklog."
+    " Skip ticket operations when nothing durable changed."
 )
 
 WORK_TOOLS = {"WebSearch", "WebFetch", "Edit", "Write", "apply_patch"}
@@ -113,7 +106,7 @@ def write_turn_state(path: Path, state: dict) -> None:
 
 
 def fresh_turn_state() -> dict[str, bool]:
-    return {"had_work": False, "did_log": False, "stop_blocked": False}
+    return {"had_work": False, "did_log": False, "stop_reminded": False}
 
 
 def read_checkpoint(base: Path, event: HostEvent) -> dict | None:
@@ -623,8 +616,8 @@ def handle_post_tool_use(event: HostEvent) -> str:
 
 
 def handle_stop(event: HostEvent) -> str:
-    # If stop_hook_active is set, another stop handler is running — bail.
-    if event.stop_hook_active:
+    # Cursor's only Stop message auto-continues the agent; it has no advisory output.
+    if event.host is Host.CURSOR or event.stop_hook_active:
         return ""
 
     project_dir = str(event.cwd)
@@ -635,7 +628,7 @@ def handle_stop(event: HostEvent) -> str:
     if state is None:
         return ""
 
-    if state.get("stop_blocked"):
+    if state.get("stop_reminded"):
         return ""
 
     if not (state.get("had_work") and not state.get("did_log")):
@@ -646,17 +639,13 @@ def handle_stop(event: HostEvent) -> str:
     if not ticket_id:
         return ""  # Timeout or error — fail open.
 
-    reason = (
-        f"KINGDOM: You did meaningful work this turn but didn't log it."
-        f" Run: kd tk log {ticket_id} 'summary of what you did'"
+    message = (
+        f"Kingdom: if this work changed what's true about ticket {ticket_id},"
+        " update its Markdown body; keep history and evidence in the worklog."
     )
-    if event.host is Host.CURSOR:
-        result = {"followup_message": reason}
-    else:
-        result = {"decision": "block", "reason": reason}
-    state["stop_blocked"] = True
+    state["stop_reminded"] = True
     write_turn_state(sf, state)
-    return json.dumps(result)
+    return json.dumps({"systemMessage": message})
 
 
 # Map event names to handlers.

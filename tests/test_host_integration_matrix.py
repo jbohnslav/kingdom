@@ -178,8 +178,8 @@ def test_full_host_stop_and_compaction_target_exact_binding(host: Host, tmp_path
     pre_compact = json.loads(handle_pre_compact(full_host_event(host, tmp_path, "PreCompact")))
     post_compact = json.loads(handle_post_compact(full_host_event(host, tmp_path, "PostCompact")))
 
-    assert stop["decision"] == "block"
-    assert "kd tk log host1" in stop["reason"]
+    assert set(stop) == {"systemMessage"}
+    assert "ticket host1" in stop["systemMessage"]
     assert "exact ticket host1" in pre_compact["systemMessage"]
     assert "exact ticket host1" in post_compact["systemMessage"]
 

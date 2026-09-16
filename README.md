@@ -2,8 +2,8 @@
 
 Kingdom (`kd`) is a ticket-first CLI for software development with multiple AI
 agents. Work lives in plain Markdown tickets and epics, each agent session gets
-its own execution context, and decisions and verification stay durable in the
-ticket worklog.
+its own execution context, and each ticket captures current understanding with
+useful history and verification evidence.
 
 Start with the small loop. Add the TUI, multi-model council, reviewed peasant
 workers, or an epic-level lord only when the work benefits from them.
@@ -36,8 +36,9 @@ verified versions, evidence levels, and known Claude, Codex, and Cursor limits.
 
 ## Core ticket loop
 
-The everyday workflow is create or find, select and start, keep the worklog
-current, then close with evidence.
+Represent each unit of work once, keep its ticket accurate as understanding
+evolves, and close with evidence. The commands below are examples, not a
+checklist to repeat on every turn.
 
 ### 1. Create or find the work
 
@@ -48,18 +49,14 @@ kd tk create "Fix login redirect loop"
 kd tk find <id>                 # print the canonical Markdown file path
 ```
 
-If the request may already exist, inspect the current and recent work before
-creating another ticket:
+Reuse the known ticket on follow-ups. When context is missing, choose the lookup
+that answers your question: `kd tk current` for ownership, `kd tk list` to select
+work, or `kd tk show <id>` for unread details. Search recently closed tickets only
+when looking for completed work.
 
-```bash
-kd tk current
-kd tk list
-kd tk list --recently-closed --limit 10
-kd tk show <id>
-```
-
-Tickets are living Markdown documents. Edit the file directly for requirements,
-acceptance criteria, relationships, and rich worklog entries.
+The ticket body is the working document. Edit purpose, scope, acceptance criteria,
+plan, and findings directly; rewrite stale text rather than appending corrections.
+Use lifecycle commands for status, ownership, and structured relationships.
 
 ### 2. Pull or start it
 
@@ -74,9 +71,10 @@ kd tk start <id>
 `kd tk start` binds only the calling execution context. Other agent sessions can
 start and own different tickets concurrently.
 
-### 3. Log and close
+### 3. Keep the ticket current and close with evidence
 
-Record durable findings while they are fresh, not only at the end:
+Keep current findings in the body. Use the worklog for useful history and
+verification evidence, either by editing it directly or appending a note:
 
 ```bash
 # Plain-text-only notes without shell metacharacters may be inline.
@@ -94,9 +92,9 @@ Record the second line here.
 WORKLOG
 ```
 
-Alternatively, edit the ticket's `## Worklog` as direct Markdown. Before
-closing, check off acceptance criteria and record changed files, decisions,
-verification commands, results, and remaining concerns.
+Before closing, ensure the body reflects the result, acceptance criteria are
+met, and verification evidence is recorded. Routine turns need no ticket update
+when nothing durable changed.
 
 ### 4. Organize related work with epics
 
@@ -178,7 +176,7 @@ Use direct work for small, sequential, integration-sensitive tickets:
 
 ```bash
 kd tk start <id>
-# implement, test, and update the Markdown worklog
+# implement, test, and keep the ticket body accurate
 kd tk log <id> "Verified with: pytest tests/test_login.py"
 kd tk close <id>
 ```
@@ -193,8 +191,7 @@ conclusion into the ticket:
 ```bash
 kd tk start <id>
 # delegate one bounded slice with the host's native subagent tool
-# owning session reviews and integrates the returned work
-kd tk log <id> "Integrated subagent audit; findings and verification recorded"
+# owning session reviews the result and consolidates findings in the ticket body
 ```
 
 ## Power tools
